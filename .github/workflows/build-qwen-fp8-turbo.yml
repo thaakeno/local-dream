@@ -146,11 +146,25 @@ jobs:
               export QNN_SDK_ROOT=/qnn
               export HEXAGON_SDK_ROOT="$hexagon_root"
 
+              # tokenizers-cpp builds its Hugging Face tokenizer bridge in
+              # Rust. The Snapdragon toolchain image intentionally focuses on
+              # Android/Hexagon and does not ship cargo/rustc, so install a
+              # minimal Rust toolchain here and add the Android ARM64 stdlib.
+              if ! command -v cargo >/dev/null 2>&1; then
+                curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | \
+                  sh -s -- -y --profile minimal --default-toolchain stable
+              fi
+              export PATH="$HOME/.cargo/bin:$PATH"
+              rustup target add aarch64-linux-android
+
               echo "NDK: $ANDROID_NDK_ROOT"
               echo "Ninja: $ninja_bin"
               echo "Hexagon: $HEXAGON_SDK_ROOT"
               cmake --version
               ninja --version
+              cargo --version
+              rustc --version
+              rustup target list --installed
               test -f /data/android-ndk-r28/build/cmake/android.toolchain.cmake
 
               cd /workspace/app/src/main/cpp
