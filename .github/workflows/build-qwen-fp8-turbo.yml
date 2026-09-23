@@ -181,10 +181,11 @@ jobs:
           rustup target list --installed --toolchain 1.88.0
           test -f /data/android-ndk-r28/build/cmake/android.toolchain.cmake
 
+          # Build the new Xet bridge first so bridge/toolchain errors fail fast.
+          bash /workspace/app/src/main/rust/xet_downloader/build.sh
           cd /workspace/app/src/main/cpp
           bash build.sh
           bash dit/build.sh
-          bash /workspace/app/src/main/rust/xet_downloader/build.sh
           CONTAINER_SCRIPT
 
       - name: Verify staged native artifacts
