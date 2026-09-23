@@ -66,7 +66,7 @@ jobs:
           yes | "$sdkmanager_bin" --licenses >/dev/null || true
           # Android 17 / API 37 is currently published on the preview
           # channel. Compose 1.12 / Material3 1.5 require compileSdk 37.
-          "$sdkmanager_bin" --channel=3 "platforms;android-37" "build-tools;36.0.0"
+          "$sdkmanager_bin" --channel=3 "platforms;android-37.0" "build-tools;37.0.0"
 
       - name: Cache QAIRT SDK
         id: qnn-cache
