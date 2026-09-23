@@ -122,11 +122,37 @@ jobs:
             ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
             bash -lc '
               set -euxo pipefail
+
+              toolchain_file="$(find /opt /usr/local -path "*/build/cmake/android.toolchain.cmake" -print -quit)"
+              test -n "$toolchain_file"
+              ndk_root="${toolchain_file%/build/cmake/android.toolchain.cmake}"
+              test -d "$ndk_root"
+
+              ninja_bin="$(command -v ninja || true)"
+              if [ -z "$ninja_bin" ]; then
+                ninja_bin="$(find /opt /usr/local /usr -type f -name ninja -perm -u+x -print -quit)"
+              fi
+              test -x "$ninja_bin"
+              export PATH="$(dirname "$ninja_bin"):$PATH"
+
+              hexagon_root="$(find /opt/hexagon -maxdepth 2 -type d -name "6.6*" -print -quit)"
+              test -d "$hexagon_root"
+
               mkdir -p /data
-              ln -sfn /opt/android-ndk-r28b /data/android-ndk-r28
-              export ANDROID_NDK_ROOT=/opt/android-ndk-r28b
+              rm -rf /data/android-ndk-r28
+              ln -s "$ndk_root" /data/android-ndk-r28
+
+              export ANDROID_NDK_ROOT="$ndk_root"
               export QNN_SDK_ROOT=/qnn
-              export HEXAGON_SDK_ROOT=/opt/hexagon/6.6.0.0
+              export HEXAGON_SDK_ROOT="$hexagon_root"
+
+              echo "NDK: $ANDROID_NDK_ROOT"
+              echo "Ninja: $ninja_bin"
+              echo "Hexagon: $HEXAGON_SDK_ROOT"
+              cmake --version
+              ninja --version
+              test -f /data/android-ndk-r28/build/cmake/android.toolchain.cmake
+
               cd /workspace/app/src/main/cpp
               bash build.sh
               bash dit/build.sh
