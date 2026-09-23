@@ -1,3 +1,4 @@
+# Qwen Image 2.1 FP8 + Viggle Turbo reproducible APK build
 name: Build Qwen FP8 Turbo APK
 
 on:
