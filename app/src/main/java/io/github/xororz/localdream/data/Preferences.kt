@@ -35,6 +35,8 @@ class GenerationPreferences(private val context: Context) {
     private val SHARE_USE_BASE64_KEY = booleanPreferencesKey("share_use_base64")
     private val SHARE_CLEAR_CLIPBOARD_KEY =
         booleanPreferencesKey("share_clear_clipboard_on_import")
+    private val XET_ACCELERATED_DOWNLOADS_KEY =
+        booleanPreferencesKey("xet_accelerated_downloads")
 
     // UltraFix step/denoise are per-model (each model keeps its own repair
     // recipe), independent of that model's main generation params. Denoise is
@@ -93,6 +95,20 @@ class GenerationPreferences(private val context: Context) {
 
     suspend fun setShareClearClipboardOnImport(value: Boolean) {
         context.dataStore.edit { it[SHARE_CLEAR_CLIPBOARD_KEY] = value }
+    }
+
+    fun observeXetAcceleratedDownloads(): Flow<Boolean> = context.dataStore.data
+        .catch { exception ->
+            if (exception is IOException) emit(emptyPreferences()) else throw exception
+        }
+        .map { it[XET_ACCELERATED_DOWNLOADS_KEY] ?: false }
+
+    suspend fun getXetAcceleratedDownloads(): Boolean = context.dataStore.data
+        .map { it[XET_ACCELERATED_DOWNLOADS_KEY] ?: false }
+        .first()
+
+    suspend fun setXetAcceleratedDownloads(value: Boolean) {
+        context.dataStore.edit { it[XET_ACCELERATED_DOWNLOADS_KEY] = value }
     }
 
     suspend fun saveBaseUrl(url: String) {
