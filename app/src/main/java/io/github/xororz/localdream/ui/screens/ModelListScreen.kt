@@ -271,6 +271,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var currentProgress by remember { mutableStateOf<DownloadProgress?>(null) }
     var currentSpeedBytesPerSecond by remember { mutableLongStateOf(0L) }
     var currentEtaSeconds by remember { mutableStateOf<Long?>(null) }
+    var currentDownloadFile by remember { mutableStateOf<String?>(null) }
+    var currentDownloadUsesXet by remember { mutableStateOf(false) }
+    var downloadPaused by remember { mutableStateOf(false) }
     var downloadError by remember { mutableStateOf<String?>(null) }
     var showDownloadConfirm by remember { mutableStateOf<Model?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -337,6 +340,26 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         )
                         currentSpeedBytesPerSecond = state.bytesPerSecond
                         currentEtaSeconds = state.etaSeconds
+                        currentDownloadFile = state.currentFileName
+                        currentDownloadUsesXet = state.usingXet
+                        downloadPaused = false
+                    }
+                }
+
+                is ModelDownloadService.DownloadState.Paused -> {
+                    val model = modelRepository.models.find { it.id == state.modelId }
+                    if (model != null) {
+                        downloadingModel = model
+                        currentProgress = DownloadProgress(
+                            progress = state.progress,
+                            downloadedBytes = state.downloadedBytes,
+                            totalBytes = state.totalBytes,
+                        )
+                        currentSpeedBytesPerSecond = 0L
+                        currentEtaSeconds = null
+                        currentDownloadFile = state.currentFileName
+                        currentDownloadUsesXet = state.usingXet
+                        downloadPaused = true
                     }
                 }
 
@@ -345,6 +368,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     if (model != null) {
                         downloadingModel = model
                         currentProgress = null
+                        currentDownloadFile = null
+                        currentDownloadUsesXet = false
+                        downloadPaused = false
                     }
                 }
 
@@ -354,6 +380,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     currentProgress = null
                     currentSpeedBytesPerSecond = 0L
                     currentEtaSeconds = null
+                    currentDownloadFile = null
+                    currentDownloadUsesXet = false
+                    downloadPaused = false
                     // Fire-and-forget so the snackbar's display time does not
                     // block this collector from seeing further states.
                     scope.launch { snackbarHostState.showSnackbar(msgDownloadDone) }
@@ -364,6 +393,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     currentProgress = null
                     currentSpeedBytesPerSecond = 0L
                     currentEtaSeconds = null
+                    currentDownloadFile = null
+                    currentDownloadUsesXet = false
+                    downloadPaused = false
                     downloadError = state.message
                 }
 
@@ -373,6 +405,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         currentProgress = null
                         currentSpeedBytesPerSecond = 0L
                         currentEtaSeconds = null
+                        currentDownloadFile = null
+                        currentDownloadUsesXet = false
+                        downloadPaused = false
                     }
                 }
             }
@@ -1939,11 +1974,24 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
         verticalSpacing = 24.dp,
     ) {
         Text(
-            text = stringResource(R.string.downloading_model, downloadingModel?.name ?: ""),
+            text = if (downloadPaused) {
+                stringResource(R.string.download_paused)
+            } else {
+                stringResource(R.string.downloading_model, downloadingModel?.name ?: "")
+            },
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.onSurface,
             textAlign = TextAlign.Center,
         )
+
+        if (downloadPaused) {
+            Text(
+                text = downloadingModel?.name.orEmpty(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
 
         currentProgress?.let { progress ->
             Column(
@@ -1983,6 +2031,24 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
+
+                val mode = if (currentDownloadUsesXet) {
+                    stringResource(R.string.download_mode_xet)
+                } else {
+                    stringResource(R.string.download_mode_http)
+                }
+                Text(
+                    text = buildString {
+                        append(mode)
+                        currentDownloadFile?.let {
+                            append("  •  ")
+                            append(it)
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
             }
         } ?: Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1996,25 +2062,60 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             )
         }
 
-        Text(
-            text = stringResource(R.string.download_background_hint),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
+        if (!downloadPaused) {
+            Text(
+                text = stringResource(R.string.download_background_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
 
-        FilledTonalButton(
-            onClick = {
-                context.startService(
-                    Intent(context, ModelDownloadService::class.java).apply {
-                        action = ModelDownloadService.ACTION_CANCEL_DOWNLOAD
-                    },
-                )
-            },
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Default.Close, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text(stringResource(R.string.cancel))
+            FilledTonalButton(
+                onClick = {
+                    context.startService(
+                        Intent(context, ModelDownloadService::class.java).apply {
+                            action = if (downloadPaused) {
+                                ModelDownloadService.ACTION_RESUME_DOWNLOAD
+                            } else {
+                                ModelDownloadService.ACTION_PAUSE_DOWNLOAD
+                            }
+                        },
+                    )
+                },
+            ) {
+                Icon(
+                    imageVector = if (downloadPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                    contentDescription = null,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    stringResource(
+                        if (downloadPaused) R.string.resume else R.string.pause,
+                    ),
+                )
+            }
+
+            TextButton(
+                onClick = {
+                    context.startService(
+                        Intent(context, ModelDownloadService::class.java).apply {
+                            action = ModelDownloadService.ACTION_CANCEL_DOWNLOAD
+                        },
+                    )
+                },
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) {
+                Icon(Icons.Default.Close, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.cancel))
+            }
         }
     }
 }
