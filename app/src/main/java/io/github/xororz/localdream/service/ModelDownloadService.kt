@@ -428,42 +428,115 @@ class ModelDownloadService : Service() {
         if (!wantXet) return RemoteInfo(remoteSize(url))
 
         return runCatching {
-            val request = Request.Builder()
-                .url(url)
-                .head()
-                .header("X-HF-Download-Counter", "1")
-                .build()
+            // Hugging Face's Xet protocol exposes X-Xet-* metadata on the
+            // resolve response. A /resolve/main/... URL can first redirect to
+            // another Hub URL (/api/resolve-cache/...) before the Xet/LFS
+            // redirect. Do NOT follow the final storage/CDN redirect, otherwise
+            // the request drops onto the legacy HTTP download path.
+            //
+            // Use GET here, matching the Xet file-id protocol. Response bodies
+            // are never consumed; redirects are handled manually.
+            var currentUrl = url
+            var bestSize = -1L
 
-            metadataClient.newCall(request).execute().use { response ->
-                val size = response.header("X-Linked-Size")?.toLongOrNull()
-                    ?: response.header("Content-Length")?.toLongOrNull()
-                    ?: remoteSize(url)
+            for (hop in 0 until 8) {
+                var nextHubUrl: String? = null
+                val request = Request.Builder()
+                    .url(currentUrl)
+                    .get()
+                    .header("X-HF-Download-Counter", "1")
+                    .build()
 
-                val hash = response.header("X-Xet-Hash")
-                val refreshHeader = response.header("X-Xet-Refresh-Route")
-                val refreshLink = response.header("Link")
-                    ?.split(',')
-                    ?.firstOrNull { it.contains("rel=\"xet-auth\"") }
-                    ?.substringBefore(';')
-                    ?.trim()
-                    ?.removePrefix("<")
-                    ?.removeSuffix(">")
+                val resolved = metadataClient.newCall(request).execute().use { response ->
+                    val size = response.header("X-Linked-Size")?.toLongOrNull()
+                        ?: response.header("Content-Range")
+                            ?.substringAfterLast('/')
+                            ?.toLongOrNull()
+                        ?: response.header("Content-Length")?.toLongOrNull()
+                        ?: -1L
+                    if (size > 0) bestSize = size
 
-                val rawRefresh = refreshLink ?: refreshHeader
-                val refresh = rawRefresh?.let {
-                    when {
-                        it.startsWith("https://") || it.startsWith("http://") -> it
-                        it.startsWith("/") -> "https://huggingface.co$it"
-                        else -> "https://huggingface.co/$it"
+                    val hash = response.header("X-Xet-Hash")
+                    if (!hash.isNullOrBlank()) {
+                        val refresh = extractXetRefreshUrl(response, url)
+                            ?: deriveXetRefreshUrl(url)
+
+                        if (!refresh.isNullOrBlank()) {
+                            Log.i(TAG, "Xet metadata resolved for $url (hop=$hop, size=$bestSize)")
+                            return@use RemoteInfo(
+                                size = if (bestSize > 0) bestSize else remoteSize(url),
+                                xetHash = hash,
+                                xetRefreshUrl = refresh,
+                            )
+                        }
+
+                        Log.w(TAG, "Xet hash found but no refresh route could be resolved for $url")
                     }
+
+                    val location = response.header("Location")
+                    if (response.code in 300..399 && !location.isNullOrBlank()) {
+                        val next = response.request.url.resolve(location)
+                        if (next != null && isHuggingFaceHubHost(next.host)) {
+                            nextHubUrl = next.toString()
+                        }
+                    }
+                    null
                 }
 
-                RemoteInfo(size = size, xetHash = hash, xetRefreshUrl = refresh)
+                if (resolved != null) return@runCatching resolved
+                if (nextHubUrl == null) break
+                currentUrl = nextHubUrl!!
             }
+
+            Log.w(TAG, "Xet metadata not found for $url; falling back to HTTP")
+            RemoteInfo(if (bestSize > 0) bestSize else remoteSize(url))
         }.getOrElse {
             Log.w(TAG, "Xet metadata probe failed; using HTTP", it)
             RemoteInfo(remoteSize(url))
         }
+    }
+
+    private fun extractXetRefreshUrl(response: okhttp3.Response, originalUrl: String): String? {
+        val refreshHeader = response.header("X-Xet-Refresh-Route")
+        val refreshLink = response.header("Link")
+            ?.split(',')
+            ?.firstOrNull { part ->
+                part.contains("rel=\"xet-auth\"", ignoreCase = true) ||
+                    part.contains("rel=xet-auth", ignoreCase = true)
+            }
+            ?.substringBefore(';')
+            ?.trim()
+            ?.removePrefix("<")
+            ?.removeSuffix(">")
+
+        val raw = refreshLink ?: refreshHeader ?: return null
+        return when {
+            raw.startsWith("https://") || raw.startsWith("http://") -> raw
+            raw.startsWith("/") -> {
+                val base = Request.Builder().url(originalUrl).build().url
+                "${base.scheme}://${base.host}$raw"
+            }
+            else -> "https://huggingface.co/$raw"
+        }
+    }
+
+    private fun deriveXetRefreshUrl(url: String): String? {
+        val parsed = runCatching { Request.Builder().url(url).build().url }.getOrNull()
+            ?: return null
+        if (!isHuggingFaceHubHost(parsed.host)) return null
+
+        val segments = parsed.pathSegments
+        val resolveIndex = segments.indexOf("resolve")
+        if (resolveIndex < 2 || resolveIndex + 1 >= segments.size) return null
+
+        val repoId = segments.take(resolveIndex).joinToString("/")
+        val revision = segments[resolveIndex + 1]
+        return "${parsed.scheme}://${parsed.host}/api/models/$repoId/xet-read-token/$revision"
+    }
+
+    private fun isHuggingFaceHubHost(host: String): Boolean {
+        val normalized = host.lowercase(Locale.US)
+        return normalized == "huggingface.co" || normalized.endsWith(".huggingface.co")
     }
 
     private fun remoteSize(url: String): Long {
