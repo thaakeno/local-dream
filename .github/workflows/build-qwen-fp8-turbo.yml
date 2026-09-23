@@ -146,6 +146,18 @@ jobs:
               export QNN_SDK_ROOT=/qnn
               export HEXAGON_SDK_ROOT="$hexagon_root"
 
+              # Rust build scripts/proc-macros execute on the x86_64 Linux
+              # host even though the final static library targets Android.
+              # The Snapdragon image ships Android clang but no host "cc", so
+              # provide a normal host compiler before invoking Cargo.
+              if ! command -v cc >/dev/null 2>&1; then
+                apt-get update
+                DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config
+                rm -rf /var/lib/apt/lists/*
+              fi
+              command -v cc
+              cc --version
+
               # tokenizers-cpp builds its Hugging Face tokenizer bridge in
               # Rust. The Snapdragon toolchain image intentionally focuses on
               # Android/Hexagon and does not ship cargo/rustc, so install a
