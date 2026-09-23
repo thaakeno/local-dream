@@ -7,10 +7,10 @@ use http::HeaderMap;
 use jni::objects::{JClass, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
-use xet::xet_session::{XetFileInfo, XetSessionBuilder, XetDownloadStreamGroup};
+use xet::xet_session::{XetFileInfo, XetSession, XetSessionBuilder};
 
 static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
-static ACTIVE_GROUP: Mutex<Option<XetDownloadStreamGroup>> = Mutex::new(None);
+static ACTIVE_SESSION: Mutex<Option<XetSession>> = Mutex::new(None);
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 
 fn set_error(message: impl Into<String>) {
@@ -85,8 +85,8 @@ fn run_download(
         .build_blocking()
         .map_err(|e| format!("Xet authentication failed: {e}"))?;
 
-    if let Ok(mut active) = ACTIVE_GROUP.lock() {
-        *active = Some(group.clone());
+    if let Ok(mut active) = ACTIVE_SESSION.lock() {
+        *active = Some(session.clone());
     }
 
     let result = (|| -> Result<i32, String> {
@@ -111,7 +111,7 @@ fn run_download(
         loop {
             if CANCEL_REQUESTED.load(Ordering::Acquire) {
                 stream.cancel();
-                let _ = group.abort();
+                let _ = session.abort();
                 return Ok(1);
             }
 
@@ -135,14 +135,12 @@ fn run_download(
         file.set_len(size)
             .map_err(|e| format!("Finalizing Xet file failed: {e}"))?;
 
-        group
-            .finish_blocking()
-            .map_err(|e| format!("Finalizing Xet session failed: {e}"))?;
-
+        // Streaming groups intentionally have no finish() API. Reaching
+        // blocking_next() == None means the requested range is complete.
         Ok(0)
     })();
 
-    if let Ok(mut active) = ACTIVE_GROUP.lock() {
+    if let Ok(mut active) = ACTIVE_SESSION.lock() {
         *active = None;
     }
     result
@@ -191,9 +189,9 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
     _class: JClass,
 ) {
     CANCEL_REQUESTED.store(true, Ordering::Release);
-    if let Ok(active) = ACTIVE_GROUP.lock() {
-        if let Some(group) = active.as_ref() {
-            let _ = group.abort();
+    if let Ok(active) = ACTIVE_SESSION.lock() {
+        if let Some(session) = active.as_ref() {
+            let _ = session.abort();
         }
     }
 }
