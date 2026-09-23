@@ -7,8 +7,6 @@
 #include "DitEngine.h"
 
 #include <algorithm>
-#include <array>
-#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -173,7 +171,7 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   if (params->backend && params->backend[0]) sd_params.backend = params->backend;
   if (params->params_backend && params->params_backend[0])
     sd_params.params_backend = params->params_backend;
-  // Viggle v0.2 ships as a rank-256 LoRA over Qwen Image 2.1. Keep the base
+  // Viggle ships as a rank-64 LoRA over Qwen Image 2.1. Keep the base
   // transformer in F8_E4M3 and apply the adapter at runtime rather than
   // destructively merging into the FP8 file. Runtime mode is the supported
   // path for quantized weights and preserves the native Hexagon FP8 storage.
@@ -220,57 +218,17 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
     gen.sample_params.sample_method = str_to_sample_method(params->sample_method);
 
   // Base Qwen Image 2.1 uses the normal resolution-dependent flow schedule
-  // and stretches its final non-zero sigma to 0.02.
+  // and stretches its final non-zero sigma to 0.02. Viggle's published
+  // 4-step student uses the same dynamic shift but deliberately disables that
+  // terminal stretch via its scheduler config.
   if (ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1 &&
       ctx->turbo_lora_path.empty()) {
     gen.sample_params.extra_sample_args = "shift_terminal=0.02";
   }
 
-  // Viggle Turbo v0.2 publishes exactly five pre-shift sigma nodes:
-  // [1.0, 0.875, 0.75, 0.5, 0.25], with shift_terminal=None. Diffusers
-  // applies Qwen's dynamic exponential shift to those nodes, then appends
-  // sigma=0, yielding five denoiser passes. stable-diffusion.cpp accepts
-  // already-final custom sigmas, so reproduce that transformation here.
-  std::array<float, 6> turbo_sigmas{};
   sd_lora_t turbo_lora{};
   if (!ctx->turbo_lora_path.empty()) {
-    constexpr std::array<float, 5> raw_sigmas = {
-        1.0f, 0.875f, 0.75f, 0.5f, 0.25f};
-    constexpr float base_seq_len = 256.0f;
-    constexpr float max_seq_len = 4096.0f;
-    constexpr float base_shift = 0.5f;
-    constexpr float max_shift = 1.15f;
-
-    // GenerationRequest aligns Qwen image dimensions to 32 px before the
-    // scheduler runs. Its scheduler sequence length is then (W/16)*(H/16).
-    const auto align32 = [](int value) {
-      const int clamped = std::max(32, value);
-      return ((clamped + 31) / 32) * 32;
-    };
-    const int aligned_width = align32(params->width);
-    const int aligned_height = align32(params->height);
-    const float image_seq_len =
-        static_cast<float>((aligned_width / 16) * (aligned_height / 16));
-
-    const float slope =
-        (max_shift - base_shift) / (max_seq_len - base_seq_len);
-    const float intercept = base_shift - slope * base_seq_len;
-    const float mu = image_seq_len * slope + intercept;
-    const float exp_mu = std::exp(mu);
-
-    for (size_t i = 0; i < raw_sigmas.size(); ++i) {
-      const float t = raw_sigmas[i];
-      turbo_sigmas[i] =
-          t >= 1.0f ? 1.0f
-                    : exp_mu / (exp_mu + (1.0f / t - 1.0f));
-    }
-    turbo_sigmas[5] = 0.0f;
-
-    gen.sample_params.sample_steps = 5;
-    gen.sample_params.custom_sigmas = turbo_sigmas.data();
-    gen.sample_params.custom_sigmas_count =
-        static_cast<int>(turbo_sigmas.size());
-
+    gen.sample_params.sample_steps = 4;
     turbo_lora.is_high_noise = false;
     turbo_lora.multiplier = 1.0f;
     turbo_lora.path = ctx->turbo_lora_path.c_str();
