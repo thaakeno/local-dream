@@ -48,7 +48,8 @@
 //            unet_part1.bin unet_part2.bin vae_decoder.bin
 //            [vae_encoder.bin] (optional; enables img2img/inpaint)
 //   zimage/klein: tokenizer.json dit.safetensors llm.gguf vae.safetensors
-//   qwen21:  tokenizer.json dit.gguf llm.gguf llm_vision.gguf vae.safetensors
+//   qwen21:  tokenizer.json dit.safetensors (FP8) or dit.gguf (Q4)
+//            llm.gguf llm_vision.gguf vae.safetensors
 // SD15/SDXL CLIP runs on MNN (CPU); Anima's CLIP (clip.bin) runs on QNN/HTP
 // (the C++ side still does the qwen token_emb lookup -> input_embedding).
 struct ServerOptions {
@@ -349,11 +350,15 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
   // engine .so ships in the APK's native library directory. Its FastRPC skels
   // are copied from assets into the shared runtime directory at app startup.
   if (opts.isDit()) {
-    std::string dit_path =
-        (dir / (opts.type == ServerOptions::ModelType::kQwenImage21
-                    ? "dit.gguf"
-                    : "dit.safetensors"))
-            .string();
+    // Qwen 2.1 supports both the original Q4 GGUF package and the
+    // native F8_E4M3 safetensor path. Prefer FP8 when the package provides it,
+    // while keeping the existing Q4 model fully backward compatible.
+    std::string dit_file = "dit.safetensors";
+    if (opts.type == ServerOptions::ModelType::kQwenImage21 &&
+        !std::filesystem::exists(dir / dit_file)) {
+      dit_file = "dit.gguf";
+    }
+    std::string dit_path = (dir / dit_file).string();
     std::string llm_path = (dir / "llm.gguf").string();
     std::string llm_vision_path =
         opts.type == ServerOptions::ModelType::kQwenImage21
@@ -376,10 +381,18 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
             : opts.type == ServerOptions::ModelType::kFlux2Klein
                   ? DIT_MODEL_FLUX2_KLEIN
                   : DIT_MODEL_QWEN_IMAGE_2_1;
+    // The Qwen3-VL encoder is only needed for conditioning. Releasing it
+    // afterwards leaves substantially more memory for Qwen's DiT while keeping
+    // the diffusion transformer resident across denoising steps. The old
+    // all=disk behavior repeatedly evicted the expensive part we want hot.
+    const std::string params_backend =
+        opts.type == ServerOptions::ModelType::kQwenImage21
+            ? "te=disk"
+            : opts.dit_params_backend;
     return std::make_unique<PipelineDit>(
         text_encoder, opts.model_dir, engine_path, dit_path, llm_path,
         llm_vision_path, vae_path, kind, opts.dit_backend,
-        opts.dit_params_backend,
+        params_backend,
         opts.dit_threads, opts.dit_vae_tile_size, !opts.no_img2img);
   }
 
