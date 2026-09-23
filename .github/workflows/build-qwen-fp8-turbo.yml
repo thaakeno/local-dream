@@ -120,72 +120,69 @@ jobs:
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$QNN_SDK_ROOT:/qnn:ro" \
             ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
-            bash -lc '
-              set -euxo pipefail
+            bash -s <<'CONTAINER_SCRIPT'
+          set -euxo pipefail
 
-              toolchain_file="$(find /opt /usr/local -path "*/build/cmake/android.toolchain.cmake" -print -quit)"
-              test -n "$toolchain_file"
-              ndk_root="${toolchain_file%/build/cmake/android.toolchain.cmake}"
-              test -d "$ndk_root"
+          toolchain_file="$(find /opt /usr/local -path "*/build/cmake/android.toolchain.cmake" -print -quit)"
+          test -n "$toolchain_file"
+          ndk_root="${toolchain_file%/build/cmake/android.toolchain.cmake}"
+          test -d "$ndk_root"
 
-              ninja_bin="$(command -v ninja || true)"
-              if [ -z "$ninja_bin" ]; then
-                ninja_bin="$(find /opt /usr/local /usr -type f -name ninja -perm -u+x -print -quit)"
-              fi
-              test -x "$ninja_bin"
-              export PATH="$(dirname "$ninja_bin"):$PATH"
+          ninja_bin="$(command -v ninja || true)"
+          if [ -z "$ninja_bin" ]; then
+            ninja_bin="$(find /opt /usr/local /usr -type f -name ninja -perm -u+x -print -quit)"
+          fi
+          test -x "$ninja_bin"
+          export PATH="$(dirname "$ninja_bin"):$PATH"
 
-              hexagon_root="$(find /opt/hexagon -maxdepth 2 -type d -name "6.6*" -print -quit)"
-              test -d "$hexagon_root"
+          hexagon_root="$(find /opt/hexagon -maxdepth 2 -type d -name "6.6*" -print -quit)"
+          test -d "$hexagon_root"
 
-              mkdir -p /data
-              rm -rf /data/android-ndk-r28
-              ln -s "$ndk_root" /data/android-ndk-r28
+          mkdir -p /data
+          rm -rf /data/android-ndk-r28
+          ln -s "$ndk_root" /data/android-ndk-r28
 
-              export ANDROID_NDK_ROOT="$ndk_root"
-              export QNN_SDK_ROOT=/qnn
-              export HEXAGON_SDK_ROOT="$hexagon_root"
+          export ANDROID_NDK_ROOT="$ndk_root"
+          export QNN_SDK_ROOT=/qnn
+          export HEXAGON_SDK_ROOT="$hexagon_root"
 
-              # Rust build scripts/proc-macros execute on the x86_64 Linux
-              # host even though the final static library targets Android.
-              # The Snapdragon image ships Android clang but no host "cc", so
-              # provide a normal host compiler before invoking Cargo.
-              if ! command -v cc >/dev/null 2>&1; then
-                apt-get update
-                DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config
-                rm -rf /var/lib/apt/lists/*
-              fi
-              command -v cc
-              cc --version
+          # Rust build scripts and proc-macros execute on the x86_64 Linux host
+          # even though the final static library targets Android. The Snapdragon
+          # image ships Android clang but no host cc, so install one.
+          if ! command -v cc >/dev/null 2>&1; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config
+            rm -rf /var/lib/apt/lists/*
+          fi
+          command -v cc
+          cc --version
 
-              # tokenizers-cpp's Rust FFI predates Rust 1.89, where
-              # dangerous_implicit_autorefs became deny-by-default. Pin 1.88
-              # so the upstream bridge compiles reproducibly instead of
-              # depending on whatever "stable" happens to be this week.
-              if ! command -v rustup >/dev/null 2>&1; then
-                curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | \
-                  sh -s -- -y --profile minimal --default-toolchain 1.88.0
-              fi
-              export PATH="$HOME/.cargo/bin:$PATH"
-              rustup toolchain install 1.88.0 --profile minimal
-              rustup default 1.88.0
-              rustup target add --toolchain 1.88.0 aarch64-linux-android
+          # tokenizers-cpp predates Rust 1.89, where
+          # dangerous_implicit_autorefs became deny-by-default. Pin 1.88.
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | \
+              sh -s -- -y --profile minimal --default-toolchain 1.88.0
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+          rustup target add --toolchain 1.88.0 aarch64-linux-android
 
-              echo "NDK: $ANDROID_NDK_ROOT"
-              echo "Ninja: $ninja_bin"
-              echo "Hexagon: $HEXAGON_SDK_ROOT"
-              cmake --version
-              ninja --version
-              cargo --version
-              rustc --version
-              rustup show active-toolchain
-              rustup target list --installed --toolchain 1.88.0
-              test -f /data/android-ndk-r28/build/cmake/android.toolchain.cmake
+          echo "NDK: $ANDROID_NDK_ROOT"
+          echo "Ninja: $ninja_bin"
+          echo "Hexagon: $HEXAGON_SDK_ROOT"
+          cmake --version
+          ninja --version
+          cargo --version
+          rustc --version
+          rustup show active-toolchain
+          rustup target list --installed --toolchain 1.88.0
+          test -f /data/android-ndk-r28/build/cmake/android.toolchain.cmake
 
-              cd /workspace/app/src/main/cpp
-              bash build.sh
-              bash dit/build.sh
-            '
+          cd /workspace/app/src/main/cpp
+          bash build.sh
+          bash dit/build.sh
+          CONTAINER_SCRIPT
 
       - name: Verify staged native artifacts
         shell: bash
