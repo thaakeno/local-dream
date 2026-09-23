@@ -2194,6 +2194,13 @@ fun ModelCard(
                             },
                             color = secondaryContent,
                         )
+                        if (model.id == "qwen_image_2_1_viggle_turbo") {
+                            InfoChip(
+                                icon = Icons.Default.Speed,
+                                label = "${model.defaults.steps.toInt()} steps",
+                                color = secondaryContent,
+                            )
+                        }
                     }
 
                     when {
