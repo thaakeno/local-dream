@@ -20,6 +20,20 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-andro
 export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android28-clang"
 export CXX_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android28-clang++"
 export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+export RANLIB_aarch64_linux_android="$TOOLCHAIN/llvm-ranlib"
+export RANLIB="$TOOLCHAIN/llvm-ranlib"
+
+# openssl-src still emits the legacy Android tool name in parts of its generated
+# Makefile. Modern NDKs only ship llvm-ranlib, so provide a private compatibility
+# shim instead of mutating the NDK installation.
+SHIM_DIR="$SCRIPT_DIR/.android-tool-shims"
+mkdir -p "$SHIM_DIR"
+ln -sfn "$TOOLCHAIN/llvm-ranlib" "$SHIM_DIR/aarch64-linux-android-ranlib"
+export PATH="$SHIM_DIR:$PATH"
+
+test -x "$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
+test -x "$AR_aarch64_linux_android"
+test -x "$RANLIB_aarch64_linux_android"
 
 rustup toolchain install 1.95.0 --profile minimal
 rustup target add --toolchain 1.95.0 aarch64-linux-android
