@@ -184,6 +184,7 @@ jobs:
           cd /workspace/app/src/main/cpp
           bash build.sh
           bash dit/build.sh
+          bash /workspace/app/src/main/rust/xet_downloader/build.sh
           CONTAINER_SCRIPT
 
       - name: Verify staged native artifacts
@@ -192,6 +193,7 @@ jobs:
           set -euxo pipefail
           test -s app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
           test -s app/src/main/jniLibs/arm64-v8a/libdit_engine.so
+          test -s app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v79.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
           test -s app/src/main/assets/qnnlibs/libQnnHtp.so
