@@ -314,14 +314,14 @@ data class Model(
                 "qwen_image_2.1_vae_bf16.safetensors|vae.safetensors",
         )
 
-        // Viggle Turbo is a DMD-distilled LoRA over the same FP8 Qwen base.
+        // Viggle Turbo v0.2 is a DMD-distilled rank-256 LoRA over the same FP8 Qwen base.
         // Keep it separate on disk so install/delete remains transactional:
         // turbo_lora.safetensors is detected by libdit_engine and applied at
         // runtime while the base transformer remains on the Hexagon FP8 path.
         val QWEN_IMAGE_2_1_VIGGLE_TURBO_PACKAGE_FILES =
             QWEN_IMAGE_2_1_FP8_PACKAGE_FILES + listOf(
                 "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
-                    "Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors|" +
+                    "Qwen-Image-2.1-viggle-turbo-v0.2-5step-lora-r256.safetensors|" +
                     "turbo_lora.safetensors",
             )
 
@@ -800,12 +800,13 @@ class ModelRepository private constructor(private val context: Context) {
         return Model(
             id = id,
             name = "Qwen Image 2.1 Turbo (Viggle)",
-            description = "DMD Turbo over Qwen Image 2.1 FP8 • 6-step preset",
+            description = "Viggle v0.2 DMD Turbo over Qwen Image 2.1 FP8 • fixed 5-step schedule",
             baseUrl = baseUrl,
             packageFiles = Model.QWEN_IMAGE_2_1_VIGGLE_TURBO_PACKAGE_FILES,
             generationSize = 1024,
-            // Full independent package, including the 339.8 MB Turbo LoRA.
-            approximateSize = "14.09GB",
+            // Full independent package: the ~13.75 GB FP8 Qwen stack plus
+            // Viggle v0.2's ~1.36 GB rank-256 Turbo LoRA.
+            approximateSize = "15.1GB",
             isDownloaded = Model.isDitPackageDownloaded(
                 context,
                 id,
@@ -815,9 +816,9 @@ class ModelRepository private constructor(private val context: Context) {
             codeDefaults = ModelConfig(
                 prompt = "a lovely cat holding a sign that says 'Qwen Turbo',",
                 negativePrompt = "",
-                // Four is the distilled training target; six is the more robust
-                // on-device quality preset and remains user-adjustable.
-                steps = 6f,
+                // Viggle v0.2 publishes a fixed five-pass sigma schedule.
+                // The native engine enforces the corresponding shifted sigmas.
+                steps = 5f,
                 cfg = 1f,
                 scheduler = "euler",
                 denoiseStrength = 1f,
