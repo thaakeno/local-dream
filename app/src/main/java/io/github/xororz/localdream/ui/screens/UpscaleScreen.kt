@@ -701,6 +701,19 @@ fun UpscaleScreen(navController: NavController, modifier: Modifier = Modifier) {
                         }
                     }
 
+                    is ModelDownloadService.DownloadState.Paused -> {
+                        val upscaler =
+                            upscalerRepository.upscalers.find { it.id == state.modelId }
+                        if (upscaler != null) {
+                            downloadingUpscalerId = upscaler.id
+                            downloadProgress = DownloadProgress(
+                                progress = state.progress,
+                                downloadedBytes = state.downloadedBytes,
+                                totalBytes = state.totalBytes,
+                            )
+                        }
+                    }
+
                     is ModelDownloadService.DownloadState.Success -> {
                         upscalerRepository.refreshUpscalerState(state.modelId)
                         downloadingUpscalerId = null
