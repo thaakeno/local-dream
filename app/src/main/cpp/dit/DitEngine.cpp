@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -80,6 +81,7 @@ struct dit_ctx {
   sd_ctx_t *sd = nullptr;
   dit_model_kind kind = DIT_MODEL_Z_IMAGE;
   std::string last_error;
+  std::string turbo_lora_path;
   int preview_interval = 0;
 };
 
@@ -145,6 +147,13 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
     return nullptr;
   }
 
+  const std::filesystem::path diffusion_path(params->diffusion_model_path);
+  const std::filesystem::path turbo_lora =
+      diffusion_path.parent_path() / "turbo_lora.safetensors";
+  const bool has_turbo_lora =
+      params->kind == DIT_MODEL_QWEN_IMAGE_2_1 &&
+      std::filesystem::is_regular_file(turbo_lora);
+
   sd_ctx_params_t sd_params;
   sd_ctx_params_init(&sd_params);
   sd_params.diffusion_model_path = params->diffusion_model_path;
@@ -162,9 +171,15 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   if (params->backend && params->backend[0]) sd_params.backend = params->backend;
   if (params->params_backend && params->params_backend[0])
     sd_params.params_backend = params->params_backend;
+  // Viggle ships as a rank-64 LoRA over Qwen Image 2.1. Keep the base
+  // transformer in F8_E4M3 and apply the adapter at runtime rather than
+  // destructively merging into the FP8 file. Runtime mode is the supported
+  // path for quantized weights and preserves the native Hexagon FP8 storage.
+  if (has_turbo_lora) sd_params.lora_apply_mode = LORA_APPLY_AT_RUNTIME;
 
   auto *ctx = new dit_ctx();
   ctx->kind = params->kind;
+  if (has_turbo_lora) ctx->turbo_lora_path = turbo_lora.string();
   ctx->sd = new_sd_ctx(&sd_params);
   if (!ctx->sd) {
     g_create_error = "new_sd_ctx failed";
@@ -201,6 +216,23 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   gen.sample_params.guidance.distilled_guidance = params->guidance;
   if (params->sample_method && params->sample_method[0])
     gen.sample_params.sample_method = str_to_sample_method(params->sample_method);
+
+  // Qwen Image 2.1's base scheduler stretches the final non-zero sigma to
+  // 0.02. Viggle Turbo was distilled with shift_terminal unset, so its
+  // package is deliberately detected by the LoRA file and skips that stretch.
+  if (ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1 &&
+      ctx->turbo_lora_path.empty()) {
+    gen.sample_params.extra_sample_args = "shift_terminal=0.02";
+  }
+
+  sd_lora_t turbo_lora{};
+  if (!ctx->turbo_lora_path.empty()) {
+    turbo_lora.is_high_noise = false;
+    turbo_lora.multiplier = 1.0f;
+    turbo_lora.path = ctx->turbo_lora_path.c_str();
+    gen.loras = &turbo_lora;
+    gen.lora_count = 1;
+  }
 
   if (params->init_image_rgb && params->init_width > 0 && params->init_height > 0) {
     gen.init_image.width = static_cast<uint32_t>(params->init_width);
