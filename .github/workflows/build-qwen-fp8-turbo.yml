@@ -63,7 +63,7 @@ jobs:
           sdkmanager_bin="$(find "${ANDROID_HOME}/cmdline-tools" -type f -name sdkmanager -perm -u+x | head -n 1)"
           test -x "$sdkmanager_bin"
           yes | "$sdkmanager_bin" --licenses >/dev/null || true
-          "$sdkmanager_bin" "platforms;android-37" "build-tools;36.0.0"
+          "$sdkmanager_bin" "platforms;android-36" "build-tools;36.0.0"
 
       - name: Cache QAIRT SDK
         id: qnn-cache
