@@ -1,0 +1,13 @@
+[package]
+name = "localdream_xet"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hf-xet = { version = "=1.6.0", default-features = false, features = ["rustls-tls", "no-default-cache"] }
+http = "1"
+jni = "0.21.1"
