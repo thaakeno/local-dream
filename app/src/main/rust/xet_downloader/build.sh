@@ -21,9 +21,10 @@ export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android28-clang"
 export CXX_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android28-clang++"
 export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
 
-rustup target add aarch64-linux-android
+rustup toolchain install 1.89.0 --profile minimal
+rustup target add --toolchain 1.89.0 aarch64-linux-android
 cd "$SCRIPT_DIR"
-cargo build --release --target aarch64-linux-android
+cargo +1.89.0 build --release --target aarch64-linux-android
 
 OUT="$APP_DIR/src/main/jniLibs/arm64-v8a"
 mkdir -p "$OUT"
