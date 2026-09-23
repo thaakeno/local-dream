@@ -2,6 +2,7 @@ package io.github.xororz.localdream.ui.screens
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -268,6 +269,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
 
     var downloadingModel by remember { mutableStateOf<Model?>(null) }
     var currentProgress by remember { mutableStateOf<DownloadProgress?>(null) }
+    var currentSpeedBytesPerSecond by remember { mutableLongStateOf(0L) }
+    var currentEtaSeconds by remember { mutableStateOf<Long?>(null) }
     var downloadError by remember { mutableStateOf<String?>(null) }
     var showDownloadConfirm by remember { mutableStateOf<Model?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -330,6 +333,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             downloadedBytes = state.downloadedBytes,
                             totalBytes = state.totalBytes,
                         )
+                        currentSpeedBytesPerSecond = state.bytesPerSecond
+                        currentEtaSeconds = state.etaSeconds
                     }
                 }
 
@@ -345,6 +350,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     modelRepository.refreshModelState(state.modelId)
                     downloadingModel = null
                     currentProgress = null
+                    currentSpeedBytesPerSecond = 0L
+                    currentEtaSeconds = null
                     // Fire-and-forget so the snackbar's display time does not
                     // block this collector from seeing further states.
                     scope.launch { snackbarHostState.showSnackbar(msgDownloadDone) }
@@ -353,6 +360,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 is ModelDownloadService.DownloadState.Error -> {
                     downloadingModel = null
                     currentProgress = null
+                    currentSpeedBytesPerSecond = 0L
+                    currentEtaSeconds = null
                     downloadError = state.message
                 }
 
@@ -360,6 +369,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     if (downloadingModel != null) {
                         downloadingModel = null
                         currentProgress = null
+                        currentSpeedBytesPerSecond = 0L
+                        currentEtaSeconds = null
                     }
                 }
             }
@@ -1915,6 +1926,24 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+
+                if (currentSpeedBytesPerSecond > 0L) {
+                    val eta = currentEtaSeconds?.let { formatDownloadEta(it) }
+                    Text(
+                        text = buildString {
+                            append(formatDownloadSpeed(currentSpeedBytesPerSecond))
+                            if (eta != null) {
+                                append("  •  ")
+                                append(eta)
+                                append(" left")
+                            }
+                        },
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         } ?: Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1934,6 +1963,35 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
+
+        FilledTonalButton(
+            onClick = {
+                context.startService(
+                    Intent(context, ModelDownloadService::class.java).apply {
+                        action = ModelDownloadService.ACTION_CANCEL_DOWNLOAD
+                    },
+                )
+            },
+        ) {
+            Icon(Icons.Default.Close, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.cancel))
+        }
+    }
+}
+
+internal fun formatDownloadSpeed(bytesPerSecond: Long): String =
+    String.format(Locale.US, "%.1f MB/s", bytesPerSecond / (1024.0 * 1024.0))
+
+internal fun formatDownloadEta(seconds: Long): String {
+    val safe = seconds.coerceAtLeast(0L)
+    val hours = safe / 3600
+    val minutes = (safe % 3600) / 60
+    val secs = safe % 60
+    return when {
+        hours > 0 -> String.format(Locale.US, "%dh %02dm", hours, minutes)
+        minutes > 0 -> String.format(Locale.US, "%dm %02ds", minutes, secs)
+        else -> String.format(Locale.US, "%ds", secs)
     }
 }
 
