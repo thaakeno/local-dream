@@ -302,6 +302,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var selectedSource by remember { mutableStateOf("huggingface") }
     val generationPreferences = remember { GenerationPreferences(context) }
     var currentBaseUrl by remember { mutableStateOf("https://huggingface.co/") }
+    val xetAcceleratedDownloads by generationPreferences.observeXetAcceleratedDownloads()
+        .collectAsState(initial = false)
 
     val modelRepository = remember { ModelRepository.getInstance(context) }
     val upscalerRepository = remember { UpscalerRepository.getInstance(context) }
@@ -1381,6 +1383,43 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                                 generationPreferences.saveSelectedSource("custom")
                                             }
                                         },
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(12.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                ),
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = stringResource(R.string.xet_accelerated_downloads),
+                                            style = MaterialTheme.typography.bodyLarge,
+                                        )
+                                        Text(
+                                            text = stringResource(R.string.xet_accelerated_downloads_hint),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Switch(
+                                        checked = xetAcceleratedDownloads,
+                                        onCheckedChange = { enabled ->
+                                            scope.launch {
+                                                generationPreferences.setXetAcceleratedDownloads(enabled)
+                                            }
+                                        },
+                                        enabled = selectedSource == "huggingface",
                                     )
                                 }
                             }
