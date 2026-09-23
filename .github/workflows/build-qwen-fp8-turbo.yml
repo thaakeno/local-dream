@@ -158,16 +158,18 @@ jobs:
               command -v cc
               cc --version
 
-              # tokenizers-cpp builds its Hugging Face tokenizer bridge in
-              # Rust. The Snapdragon toolchain image intentionally focuses on
-              # Android/Hexagon and does not ship cargo/rustc, so install a
-              # minimal Rust toolchain here and add the Android ARM64 stdlib.
-              if ! command -v cargo >/dev/null 2>&1; then
+              # tokenizers-cpp's Rust FFI predates Rust 1.89, where
+              # dangerous_implicit_autorefs became deny-by-default. Pin 1.88
+              # so the upstream bridge compiles reproducibly instead of
+              # depending on whatever "stable" happens to be this week.
+              if ! command -v rustup >/dev/null 2>&1; then
                 curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | \
-                  sh -s -- -y --profile minimal --default-toolchain stable
+                  sh -s -- -y --profile minimal --default-toolchain 1.88.0
               fi
               export PATH="$HOME/.cargo/bin:$PATH"
-              rustup target add aarch64-linux-android
+              rustup toolchain install 1.88.0 --profile minimal
+              rustup default 1.88.0
+              rustup target add --toolchain 1.88.0 aarch64-linux-android
 
               echo "NDK: $ANDROID_NDK_ROOT"
               echo "Ninja: $ninja_bin"
@@ -176,7 +178,8 @@ jobs:
               ninja --version
               cargo --version
               rustc --version
-              rustup target list --installed
+              rustup show active-toolchain
+              rustup target list --installed --toolchain 1.88.0
               test -f /data/android-ndk-r28/build/cmake/android.toolchain.cmake
 
               cd /workspace/app/src/main/cpp
