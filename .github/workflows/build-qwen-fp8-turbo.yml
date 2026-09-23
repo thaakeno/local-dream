@@ -51,6 +51,21 @@ jobs:
           git -C app/src/main/cpp/3rdparty/stable-diffusion.cpp submodule update --init --depth 1 ggml
           git -C app/src/main/cpp/3rdparty/tokenizers-cpp submodule update --init --depth 1 msgpack sentencepiece
 
+      - name: Compute native cache key
+        id: native-key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          native_key="$(
+            {
+              git rev-parse HEAD:app/src/main/cpp
+              git rev-parse HEAD:app/src/main/rust/xet_downloader
+              git submodule status --recursive app/src/main/cpp
+              printf '%s\n' "qnn=$QNN_VERSION" "toolchain=arm64-android-v0.7"
+            } | sha256sum | awk '{print $1}'
+          )"
+          echo "key=localdream-native-$native_key" >> "$GITHUB_OUTPUT"
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
@@ -67,6 +82,13 @@ jobs:
           # Android 17 / API 37 is currently published on the preview
           # channel. Compose 1.12 / Material3 1.5 require compileSdk 37.
           "$sdkmanager_bin" --channel=3 "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Kotlin compile preflight
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:compileBasicDebugKotlin
 
       - name: Cache QAIRT SDK
         id: qnn-cache
@@ -113,7 +135,19 @@ jobs:
           echo "QNN_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
           echo "QAIRT root: $sdk_root"
 
+      - name: Restore native artifacts
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a
+            app/src/main/assets/ditlibs
+            app/src/main/assets/qnnlibs
+            app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
+          key: ${{ steps.native-key.outputs.key }}
+
       - name: Build Android core and Hexagon DiT engine
+        if: steps.native-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -199,6 +233,17 @@ jobs:
           test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
           test -s app/src/main/assets/qnnlibs/libQnnHtp.so
           find app/src/main/jniLibs/arm64-v8a app/src/main/assets/ditlibs -maxdepth 1 -type f -ls
+
+      - name: Save native artifacts cache
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a
+            app/src/main/assets/ditlibs
+            app/src/main/assets/qnnlibs
+            app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
+          key: ${{ steps.native-key.outputs.key }}
 
       - name: Create CI signing key
         shell: bash
