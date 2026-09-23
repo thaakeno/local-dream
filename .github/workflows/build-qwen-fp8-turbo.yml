@@ -1,0 +1,152 @@
+name: Build Qwen FP8 Turbo APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - qwen-fp8-turbo
+    paths:
+      - 'app/**'
+      - '.gitmodules'
+      - '.github/workflows/build-qwen-fp8-turbo.yml'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  QNN_VERSION: '2.50.0.260828'
+  QNN_URL: 'https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout recursively
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK platform
+        shell: bash
+        run: |
+          set -euxo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-37" "build-tools;36.0.0"
+
+      - name: Cache QAIRT SDK
+        id: qnn-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/qnn-sdk-${{ env.QNN_VERSION }}
+          key: qairt-${{ env.QNN_VERSION }}-linux-v1
+
+      - name: Download QAIRT SDK
+        if: steps.qnn-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          install_dir="${RUNNER_TEMP}/qnn-sdk-${QNN_VERSION}"
+          zip_path="${RUNNER_TEMP}/qnn-sdk.zip"
+          mkdir -p "$install_dir"
+          curl -fL --retry 5 --retry-delay 2 "$QNN_URL" -o "$zip_path"
+          unzip -q "$zip_path" -d "$install_dir"
+          rm -f "$zip_path"
+
+      - name: Locate QAIRT SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          install_dir="${RUNNER_TEMP}/qnn-sdk-${QNN_VERSION}"
+          sdk_root=""
+          for c in "$install_dir" "$install_dir/qairt" "$install_dir/qairt/$QNN_VERSION"; do
+            if [ -d "$c/include/QNN" ] && [ -d "$c/lib/aarch64-android" ]; then
+              sdk_root="$(cd "$c" && pwd)"
+              break
+            fi
+          done
+          if [ -z "$sdk_root" ]; then
+            while IFS= read -r d; do
+              if [ -d "$d/include/QNN" ] && [ -d "$d/lib/aarch64-android" ]; then
+                sdk_root="$d"
+                break
+              fi
+            done < <(find "$install_dir" -mindepth 1 -maxdepth 3 -type d)
+          fi
+          test -n "$sdk_root"
+          test -f "$sdk_root/lib/aarch64-android/libQnnHtp.so"
+          test -f "$sdk_root/lib/aarch64-android/libQnnHtpV81Stub.so"
+          echo "QNN_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          echo "QAIRT root: $sdk_root"
+
+      - name: Build Android core and Hexagon DiT engine
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker pull ghcr.io/snapdragon-toolchain/arm64-android:v0.7
+          docker run --rm --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$QNN_SDK_ROOT:/qnn:ro" \
+            ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
+            bash -lc '
+              set -euxo pipefail
+              mkdir -p /data
+              ln -sfn /opt/android-ndk-r28b /data/android-ndk-r28
+              export ANDROID_NDK_ROOT=/opt/android-ndk-r28b
+              export QNN_SDK_ROOT=/qnn
+              export HEXAGON_SDK_ROOT=/opt/hexagon/6.6.0.0
+              cd /workspace/app/src/main/cpp
+              bash build.sh
+              bash dit/build.sh
+            '
+
+      - name: Verify staged native artifacts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
+          test -s app/src/main/jniLibs/arm64-v8a/libdit_engine.so
+          test -s app/src/main/assets/ditlibs/libggml-htp-v79.so
+          test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
+          test -s app/src/main/assets/qnnlibs/libQnnHtp.so
+          find app/src/main/jniLibs/arm64-v8a app/src/main/assets/ditlibs -maxdepth 1 -type f -ls
+
+      - name: Create CI signing key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/localdream-ci.jks" \
+            -storepass android \
+            -keypass android \
+            -alias localdream \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Local Dream Qwen FP8 CI,O=thaakeno,C=DE"
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleBasicDebug \
+            -PRELEASE_STORE_FILE="$RUNNER_TEMP/localdream-ci.jks" \
+            -PRELEASE_STORE_PASSWORD=android \
+            -PRELEASE_KEY_ALIAS=localdream \
+            -PRELEASE_KEY_PASSWORD=android
+          find app/build/outputs/apk -type f -name '*.apk' -ls
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: LocalDream-Qwen-FP8-Turbo
+          path: app/build/outputs/apk/basic/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
