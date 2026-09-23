@@ -26,6 +26,11 @@ fn from_jstring(env: &mut JNIEnv<'_>, value: JString<'_>) -> Result<String, Stri
 }
 
 fn configure_mobile_profile(profile: i32) {
+    // Vendored native-tls uses OpenSSL on Android. Point it at Android's
+    // system CA directory so public Hugging Face/CAS certificates validate.
+    #[cfg(target_os = "android")]
+    std::env::set_var("SSL_CERT_DIR", "/system/etc/security/cacerts");
+
     // Never enable the desktop-oriented HP preset on Android.
     std::env::remove_var("HF_XET_HIGH_PERFORMANCE");
     std::env::remove_var("HF_XET_HP");
