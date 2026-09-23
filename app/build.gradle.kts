@@ -27,7 +27,7 @@ detekt {
 
 android {
     namespace = "io.github.xororz.localdream"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "io.github.xororz.localdream"
