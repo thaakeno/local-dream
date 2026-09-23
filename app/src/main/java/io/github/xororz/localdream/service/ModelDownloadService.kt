@@ -79,6 +79,8 @@ class ModelDownloadService : Service() {
             val progress: Float,
             val downloadedBytes: Long,
             val totalBytes: Long,
+            val bytesPerSecond: Long,
+            val etaSeconds: Long?,
         ) : DownloadState()
 
         data class Extracting(val modelId: String) : DownloadState()
@@ -135,7 +137,14 @@ class ModelDownloadService : Service() {
             var tempFile: File? = null
             var extractTempDir: File? = null
             try {
-                _downloadState.value = DownloadState.Downloading(modelId, 0f, 0, 0)
+                _downloadState.value = DownloadState.Downloading(
+                    modelId = modelId,
+                    progress = 0f,
+                    downloadedBytes = 0,
+                    totalBytes = 0,
+                    bytesPerSecond = 0,
+                    etaSeconds = null,
+                )
 
                 val tempDir = File(filesDir, "temp_downloads")
 
@@ -356,11 +365,13 @@ class ModelDownloadService : Service() {
             val body = response.body ?: throw Exception("Response body is null")
             val totalBytes = body.contentLength()
             var downloadedBytes = 0L
-            var lastUpdateTime = 0L
+            var lastUpdateTime = System.currentTimeMillis()
+            var lastSampleBytes = 0L
+            var smoothedBytesPerSecond = 0.0
 
-            java.io.BufferedOutputStream(FileOutputStream(destFile)).use { output ->
-                body.byteStream().buffered().use { input ->
-                    val buffer = ByteArray(32 * 1024)
+            java.io.BufferedOutputStream(FileOutputStream(destFile), 1024 * 1024).use { output ->
+                body.byteStream().buffered(1024 * 1024).use { input ->
+                    val buffer = ByteArray(1024 * 1024)
                     var bytes: Int
 
                     while (input.read(buffer).also { bytes = it } != -1) {
@@ -369,7 +380,17 @@ class ModelDownloadService : Service() {
 
                         val currentTime = System.currentTimeMillis()
                         if (currentTime - lastUpdateTime >= 500 || downloadedBytes == totalBytes) {
+                            val elapsedMs = (currentTime - lastUpdateTime).coerceAtLeast(1L)
+                            val deltaBytes = downloadedBytes - lastSampleBytes
+                            val instantBytesPerSecond = deltaBytes * 1000.0 / elapsedMs
+                            smoothedBytesPerSecond = if (smoothedBytesPerSecond <= 0.0) {
+                                instantBytesPerSecond
+                            } else {
+                                smoothedBytesPerSecond * 0.75 + instantBytesPerSecond * 0.25
+                            }
                             lastUpdateTime = currentTime
+                            lastSampleBytes = downloadedBytes
+
                             val reportedDone = packageOffset + downloadedBytes
                             val reportedTotal = if (packageTotal > 0) packageTotal else totalBytes
                             val progress = if (reportedTotal > 0) {
@@ -377,15 +398,27 @@ class ModelDownloadService : Service() {
                             } else {
                                 0f
                             }
+                            val speed = smoothedBytesPerSecond.toLong().coerceAtLeast(0L)
+                            val etaSeconds = if (reportedTotal > reportedDone && speed > 0) {
+                                (reportedTotal - reportedDone) / speed
+                            } else {
+                                null
+                            }
 
                             _downloadState.value = DownloadState.Downloading(
-                                modelId,
-                                progress,
-                                reportedDone,
-                                reportedTotal,
+                                modelId = modelId,
+                                progress = progress,
+                                downloadedBytes = reportedDone,
+                                totalBytes = reportedTotal,
+                                bytesPerSecond = speed,
+                                etaSeconds = etaSeconds,
                             )
 
-                            updateNotification(modelName, progress)
+                            updateNotification(
+                                modelName = modelName,
+                                progress = progress,
+                                statusText = buildDownloadStatus(speed, etaSeconds),
+                            )
                         }
                     }
                 }
@@ -422,6 +455,26 @@ class ModelDownloadService : Service() {
         }
     }
 
+    private fun buildDownloadStatus(bytesPerSecond: Long, etaSeconds: Long?): String? {
+        if (bytesPerSecond <= 0) return null
+        val speedMb = bytesPerSecond / (1024.0 * 1024.0)
+        val speed = String.format(java.util.Locale.US, "%.1f MB/s", speedMb)
+        val eta = etaSeconds?.let { formatEta(it) }
+        return if (eta != null) "$speed • $eta remaining" else speed
+    }
+
+    private fun formatEta(seconds: Long): String {
+        val safe = seconds.coerceAtLeast(0L)
+        val hours = safe / 3600
+        val minutes = (safe % 3600) / 60
+        val secs = safe % 60
+        return when {
+            hours > 0 -> String.format(java.util.Locale.US, "%dh %02dm", hours, minutes)
+            minutes > 0 -> String.format(java.util.Locale.US, "%dm %02ds", minutes, secs)
+            else -> String.format(java.util.Locale.US, "%ds", secs)
+        }
+    }
+
     private fun cancelDownload() {
         downloadJob?.cancel()
         _downloadState.value = DownloadState.Idle
@@ -448,6 +501,7 @@ class ModelDownloadService : Service() {
         modelName: String,
         progress: Float,
         isExtracting: Boolean = false,
+        statusText: String? = null,
     ): android.app.Notification {
         val title = if (isExtracting) {
             getString(R.string.extracting)
@@ -465,12 +519,28 @@ class ModelDownloadService : Service() {
             PendingIntent.FLAG_IMMUTABLE,
         )
 
+        val cancelIntent = Intent(this, ModelDownloadService::class.java).apply {
+            action = ACTION_CANCEL_DOWNLOAD
+        }
+        val cancelPendingIntent = PendingIntent.getService(
+            this,
+            1,
+            cancelIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle(title)
+            .setContentText(statusText)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setProgress(100, (progress * 100).toInt(), isExtracting)
             .setOngoing(true)
             .setContentIntent(appPendingIntent)
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                getString(R.string.cancel),
+                cancelPendingIntent,
+            )
             .build()
     }
 
@@ -480,6 +550,7 @@ class ModelDownloadService : Service() {
         success: Boolean = false,
         error: String? = null,
         isExtracting: Boolean = false,
+        statusText: String? = null,
     ) {
         val notification = when {
             success -> {
@@ -501,7 +572,7 @@ class ModelDownloadService : Service() {
             }
 
             else -> {
-                createNotification(modelName, progress, isExtracting)
+                createNotification(modelName, progress, isExtracting, statusText)
             }
         }
 
