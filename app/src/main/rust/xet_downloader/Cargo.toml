@@ -8,6 +8,6 @@ license = "Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-hf-xet = { git = "https://github.com/huggingface/xet-core.git", rev = "99bf2020992b9a2ac369bbedebedb81a61f0af0e", package = "hf-xet", default-features = false, features = ["native-tls-vendored", "no-default-cache"] }
+xet = { git = "https://github.com/huggingface/xet-core.git", rev = "99bf2020992b9a2ac369bbedebedb81a61f0af0e", package = "hf-xet", default-features = false, features = ["native-tls-vendored", "no-default-cache"] }
 http = "1"
 jni = "0.21.1"
