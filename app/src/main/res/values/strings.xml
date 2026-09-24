@@ -474,6 +474,16 @@
     <string name="clear_logs">Clear</string>
     <string name="logs_copied">Download logs copied</string>
     <string name="refresh">Refresh</string>
+    <string name="about_section">About</string>
+    <string name="about_version">Version</string>
+    <string name="about_build_code">Build %1$d</string>
+    <string name="about_commit">Commit</string>
+    <string name="about_branch">Branch</string>
+    <string name="about_source">Source</string>
+    <string name="about_upstream">Upstream</string>
+    <string name="about_fork_badge">Fork</string>
+    <string name="about_open_github">Open on GitHub</string>
+    <string name="about_unknown">Unknown</string>
 
     <!-- Device link (remote control between two devices) -->
     <string name="remote_link">Device link</string>

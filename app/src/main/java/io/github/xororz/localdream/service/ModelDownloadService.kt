@@ -136,6 +136,7 @@ class ModelDownloadService : Service() {
         DownloadDiagnostics.info(
             this,
             "Download service started • app=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) • " +
+                "commit=${BuildConfig.GIT_SHA.take(7)} • repo=${BuildConfig.GIT_REPOSITORY} • " +
                 "xetNative=${XetNative.available}",
         )
     }
@@ -857,10 +858,12 @@ class ModelDownloadService : Service() {
             packageOffset + expectedSize
         }
 
+        val xetRuntimeDir = File(cacheDir, "hf_xet_runtime").apply { mkdirs() }
         DownloadDiagnostics.info(
             this@ModelDownloadService,
             "Xet start file=$currentFileName size=$expectedSize " +
-                "resume=${destFile.length()} profile=$profile",
+                "resume=${destFile.length()} profile=$profile " +
+                "cacheWritable=${xetRuntimeDir.canWrite()} cacheFree=${xetRuntimeDir.usableSpace}",
         )
 
         while (destFile.length() < expectedSize) {
@@ -876,6 +879,7 @@ class ModelDownloadService : Service() {
                     size = expectedSize,
                     refreshUrl = refreshUrl,
                     destPath = destFile.absolutePath,
+                    cacheDir = xetRuntimeDir.absolutePath,
                     offset = offset,
                     profile = profile,
                 )

@@ -22,6 +22,7 @@ internal object XetNative {
         size: Long,
         refreshUrl: String,
         destPath: String,
+        cacheDir: String,
         offset: Long,
         profile: Int,
     ): Int

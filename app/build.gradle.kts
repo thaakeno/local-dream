@@ -6,6 +6,15 @@ plugins {
     alias(libs.plugins.detekt)
 }
 
+fun buildConfigString(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+val buildGitSha = System.getenv("BUILD_GIT_SHA") ?: "unknown"
+val buildGitBranch = System.getenv("BUILD_GIT_BRANCH") ?: "unknown"
+val buildRepository = System.getenv("BUILD_REPOSITORY") ?: "unknown"
+val buildUpstreamRepository = System.getenv("BUILD_UPSTREAM_REPOSITORY") ?: ""
+val buildIsFork = (System.getenv("BUILD_IS_FORK") ?: "false").toBoolean()
+
 ktlint {
     android.set(true)
     version.set("1.8.0")
@@ -34,8 +43,18 @@ android {
         minSdk = 28
 //        minSdk = 31
         targetSdk = 36
-        versionCode = 75
-        versionName = "3.0.0-alpha.4"
+        versionCode = 76
+        versionName = "3.0.0-alpha.5"
+
+        buildConfigField("String", "GIT_SHA", buildConfigString(buildGitSha))
+        buildConfigField("String", "GIT_BRANCH", buildConfigString(buildGitBranch))
+        buildConfigField("String", "GIT_REPOSITORY", buildConfigString(buildRepository))
+        buildConfigField(
+            "String",
+            "UPSTREAM_REPOSITORY",
+            buildConfigString(buildUpstreamRepository),
+        )
+        buildConfigField("boolean", "IS_FORK", buildIsFork.toString())
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -1,4 +1,5 @@
-use std::fs::OpenOptions;
+use std::fs::{create_dir_all, OpenOptions};
+use std::path::PathBuf;
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -23,6 +24,36 @@ fn from_jstring(env: &mut JNIEnv<'_>, value: JString<'_>) -> Result<String, Stri
     env.get_string(&value)
         .map(|s| s.into())
         .map_err(|e| format!("JNI string conversion failed: {e}"))
+}
+
+fn configure_writable_runtime(cache_dir: &str) -> Result<(), String> {
+    let root = PathBuf::from(cache_dir);
+    let xet_cache = root.join("xet");
+    let hf_home = root.join("home");
+    let xdg_cache = root.join("xdg");
+    let tmp_dir = root.join("tmp");
+
+    for dir in [&root, &xet_cache, &hf_home, &xdg_cache, &tmp_dir] {
+        create_dir_all(dir)
+            .map_err(|e| format!("Cannot create Xet runtime directory {}: {e}", dir.display()))?;
+    }
+
+    // Android app processes do not have a normal writable Unix home directory.
+    // Point every Xet/runtime scratch location at app-private storage before
+    // constructing the Xet session.
+    std::env::set_var("HF_XET_CACHE", &xet_cache);
+    std::env::set_var("HF_HOME", &hf_home);
+    std::env::set_var("XDG_CACHE_HOME", &xdg_cache);
+    std::env::set_var("HOME", &hf_home);
+    std::env::set_var("TMPDIR", &tmp_dir);
+
+    // Keep mobile disk usage tiny: downloads do not need the optional chunk
+    // cache, and console logging avoids Xet creating its default logs directory.
+    std::env::set_var("HF_XET_CHUNK_CACHE_SIZE_BYTES", "0");
+    std::env::set_var("HF_XET_SHARD_CACHE_SIZE_LIMIT", "64mb");
+    std::env::set_var("HF_XET_LOG_DEST", "");
+
+    Ok(())
 }
 
 fn configure_mobile_profile(profile: i32) {
@@ -66,6 +97,7 @@ fn run_download(
     size: u64,
     refresh_url: String,
     dest_path: String,
+    cache_dir: String,
     offset: u64,
     profile: i32,
 ) -> Result<i32, String> {
@@ -76,6 +108,7 @@ fn run_download(
         return Ok(0);
     }
 
+    configure_writable_runtime(&cache_dir)?;
     configure_mobile_profile(profile);
     CANCEL_REQUESTED.store(false, Ordering::Release);
 
@@ -159,6 +192,7 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
     size: jlong,
     refresh_url: JString,
     dest_path: JString,
+    cache_dir: JString,
     offset: jlong,
     profile: jint,
 ) -> jint {
@@ -166,6 +200,7 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
         let hash = from_jstring(&mut env, hash)?;
         let refresh_url = from_jstring(&mut env, refresh_url)?;
         let dest_path = from_jstring(&mut env, dest_path)?;
+        let cache_dir = from_jstring(&mut env, cache_dir)?;
         if size < 0 || offset < 0 {
             return Err("negative size/offset".to_string());
         }
@@ -174,6 +209,7 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
             size as u64,
             refresh_url,
             dest_path,
+            cache_dir,
             offset as u64,
             profile,
         )

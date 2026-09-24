@@ -89,6 +89,7 @@ import io.github.xororz.localdream.data.*
 import io.github.xororz.localdream.data.DarkModePreference
 import io.github.xororz.localdream.navigation.Screen
 import io.github.xororz.localdream.service.ModelDownloadService
+import io.github.xororz.localdream.ui.components.AboutSection
 import io.github.xororz.localdream.ui.components.BlockingProgressOverlay
 import io.github.xororz.localdream.ui.components.SmoothCircularWavyProgressIndicator
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
@@ -1585,6 +1586,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     }
                     // Appearance (theme) section
                     item { AppearanceSection() }
+                    // Build/source information
+                    item { AboutSection() }
                     // Feature settings section
                     item {
                         Column {
