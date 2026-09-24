@@ -46,6 +46,9 @@ class ModelDownloadService : Service() {
     @Volatile private var cancelRequested = false
     private var activeRequest: DownloadRequest? = null
 
+    private val hyperOsFocusCapability by lazy { HyperOsSuperIsland.detect(this) }
+    private var lastSystemNotificationUpdateMs = 0L
+
     private data class DownloadRequest(
         val modelId: String,
         val modelName: String,
@@ -89,67 +92,6 @@ class ModelDownloadService : Service() {
         }
     }
 
-    /**
-     * Xet reconstructs ordered output in fairly large chunks even while network
-     * traffic is flowing continuously. This keeps the UI live between confirmed
-     * reconstruction chunks by calibrating network bytes against confirmed model
-     * bytes. It never affects the file or resume offset; it is display-only.
-     */
-    private class LiveXetProgressEstimator(
-        initialConfirmedBytes: Long,
-        initialRxBytes: Long?,
-    ) {
-        private var confirmedBytes = initialConfirmedBytes
-        private var rxAtConfirmed = initialRxBytes
-        private var observedLogicalBytes = 0L
-        private var observedNetworkBytes = 0L
-        private var displayedBytes = initialConfirmedBytes
-
-        fun update(confirmed: Long, rxBytes: Long?, totalBytes: Long): Long {
-            val safeConfirmed = confirmed.coerceIn(0L, totalBytes)
-
-            if (safeConfirmed > confirmedBytes) {
-                val baselineRx = rxAtConfirmed
-                if (rxBytes != null && baselineRx != null) {
-                    val networkDelta = (rxBytes - baselineRx).coerceAtLeast(0L)
-                    val logicalDelta = safeConfirmed - confirmedBytes
-                    if (networkDelta > 0L && logicalDelta > 0L) {
-                        observedNetworkBytes += networkDelta
-                        observedLogicalBytes += logicalDelta
-                    }
-                }
-                confirmedBytes = safeConfirmed
-                rxAtConfirmed = rxBytes
-            }
-
-            displayedBytes = maxOf(displayedBytes, safeConfirmed)
-
-            val baselineRx = rxAtConfirmed
-            if (rxBytes != null && baselineRx != null && safeConfirmed < totalBytes) {
-                val pendingNetworkBytes = (rxBytes - baselineRx).coerceAtLeast(0L)
-                // Before the first reconstruction chunk arrives, use a neutral 1:1
-                // estimate. As soon as Xet confirms bytes, this becomes a measured,
-                // cumulative logical/network ratio for this exact transfer.
-                val ratio = efficiencyRatio() ?: 1.0
-                val estimated = confirmedBytes +
-                    (pendingNetworkBytes.toDouble() * ratio).toLong()
-                val preCompletionCap = (totalBytes - 1L).coerceAtLeast(0L)
-                displayedBytes = maxOf(
-                    displayedBytes,
-                    estimated.coerceAtMost(preCompletionCap),
-                )
-            }
-
-            return displayedBytes.coerceIn(0L, totalBytes)
-        }
-
-        fun efficiencyRatio(): Double? =
-            if (observedNetworkBytes > 0L) {
-                observedLogicalBytes.toDouble() / observedNetworkBytes.toDouble()
-            } else {
-                null
-            }
-    }
 
     private val notificationManager by lazy {
         getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -224,11 +166,13 @@ class ModelDownloadService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        val island = hyperOsFocusCapability
         DownloadDiagnostics.info(
             this,
             "Download service started • app=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) • " +
                 "commit=${BuildConfig.GIT_SHA.take(7)} • repo=${BuildConfig.GIT_REPOSITORY} • " +
-                "xetNative=${XetNative.available}",
+                "xetNative=${XetNative.available} • hyperOsFocusProtocol=${island.protocolVersion} • " +
+                "focusPermission=${island.hasFocusPermission}",
         )
     }
 
@@ -958,19 +902,16 @@ class ModelDownloadService : Service() {
         DownloadDiagnostics.info(
             this@ModelDownloadService,
             "Xet start file=$currentFileName size=$expectedSize " +
-                "resume=${destFile.length()} stream=true " +
-                "progress=100ms-live speed=effective+uid-rx " +
-                "cacheWritable=${xetRuntimeDir.canWrite()} cacheFree=${xetRuntimeDir.usableSpace} " +
-                tuning.summary(),
+                "resume=${destFile.length()} stream=true progress=confirmed-only " +
+                "speed=confirmed-file+uid-rx cacheWritable=${xetRuntimeDir.canWrite()} " +
+                "cacheFree=${xetRuntimeDir.usableSpace} " + tuning.summary(),
         )
 
         while (destFile.length() < expectedSize) {
             val offset = destFile.length()
-            val effectiveSpeedEstimator = RollingThroughputEstimator(windowMs = 4_000L)
-            val etaSpeedEstimator = RollingThroughputEstimator(windowMs = 10_000L)
-            val networkSpeedEstimator = RollingThroughputEstimator(windowMs = 2_000L)
-            val initialRx = currentUidRxBytes()
-            val liveProgress = LiveXetProgressEstimator(offset, initialRx)
+            val fileSpeedEstimator = RollingThroughputEstimator(windowMs = 30_000L)
+            val etaSpeedEstimator = RollingThroughputEstimator(windowMs = 30_000L)
+            val networkSpeedEstimator = RollingThroughputEstimator(windowMs = 4_000L)
             var lastDiagnosticAt = SystemClock.elapsedRealtime()
 
             val nativeJob = async(Dispatchers.IO) {
@@ -986,8 +927,11 @@ class ModelDownloadService : Service() {
             }
 
             while (!nativeJob.isCompleted) {
-                delay(100L)
+                delay(200L)
 
+                // Truthful progress only: these bytes have actually been reconstructed
+                // by Xet and delivered into the partial model file. Never invent model
+                // bytes from network traffic between reconstruction chunks.
                 val nativeProgress =
                     runCatching { XetNative.nativeProgressBytes() }
                         .getOrDefault(offset)
@@ -996,16 +940,11 @@ class ModelDownloadService : Service() {
                 val confirmedBytes = maxOf(nativeProgress, fileProgress)
                 val now = SystemClock.elapsedRealtime()
                 val rxBytes = currentUidRxBytes()
-                val liveBytes = liveProgress.update(
-                    confirmed = confirmedBytes,
-                    rxBytes = rxBytes,
-                    totalBytes = expectedSize,
-                )
 
-                val effectiveSpeed =
-                    effectiveSpeedEstimator.sample(now, liveBytes).coerceAtLeast(0L)
+                val fileSpeed =
+                    fileSpeedEstimator.sample(now, confirmedBytes).coerceAtLeast(0L)
                 val etaSpeed =
-                    etaSpeedEstimator.sample(now, liveBytes).coerceAtLeast(0L)
+                    etaSpeedEstimator.sample(now, confirmedBytes).coerceAtLeast(0L)
                 val networkSpeed =
                     if (rxBytes != null) {
                         networkSpeedEstimator.sample(now, rxBytes).coerceAtLeast(0L)
@@ -1013,7 +952,7 @@ class ModelDownloadService : Service() {
                         0L
                     }
 
-                val reportedDone = packageOffset + liveBytes
+                val reportedDone = packageOffset + confirmedBytes
                 val eta = if (effectivePackageTotal > reportedDone && etaSpeed > 0L) {
                     (effectivePackageTotal - reportedDone) / etaSpeed
                 } else {
@@ -1025,7 +964,7 @@ class ModelDownloadService : Service() {
                     modelName = modelName,
                     done = reportedDone,
                     total = effectivePackageTotal,
-                    speed = effectiveSpeed,
+                    speed = fileSpeed,
                     eta = eta,
                     currentFileName = currentFileName,
                     usingXet = true,
@@ -1033,15 +972,11 @@ class ModelDownloadService : Service() {
                 )
 
                 if (now - lastDiagnosticAt >= 10_000L) {
-                    val ratio = liveProgress.efficiencyRatio()
                     DownloadDiagnostics.info(
                         this@ModelDownloadService,
                         "Xet progress file=$currentFileName " +
-                            "confirmed=$confirmedBytes/$expectedSize live=$liveBytes " +
-                            "effectiveBps=$effectiveSpeed networkBps=$networkSpeed " +
-                            "ratio=" + (ratio?.let {
-                                String.format(Locale.US, "%.3f", it)
-                            } ?: "calibrating"),
+                            "confirmed=$confirmedBytes/$expectedSize " +
+                            "fileBps=$fileSpeed networkBps=$networkSpeed",
                     )
                     lastDiagnosticAt = now
                 }
@@ -1125,14 +1060,24 @@ class ModelDownloadService : Service() {
             xetTransferTotalBytes = xetTransferTotalBytes,
         )
 
-        val mode = if (usingXet) getString(R.string.download_mode_xet) else getString(R.string.download_mode_http)
+        val mode =
+            if (usingXet) getString(R.string.download_mode_xet) else getString(R.string.download_mode_http)
         val file = currentFileName?.let { " • $it" }.orEmpty()
+        val displaySpeed =
+            if (usingXet && networkSpeed > 0L) networkSpeed else speed
         val status = listOfNotNull(
-            if (speed > 0) buildDownloadStatus(speed, eta) else null,
+            if (displaySpeed > 0L) buildDownloadStatus(displaySpeed, eta) else null,
             "$mode$file",
         ).joinToString(" • ")
 
-        updateNotification(modelName, progress, statusText = status)
+        // UI state above can update frequently, but hammering SystemUI / Super Island
+        // hundreds of times per minute is wasteful. Reuse the single foreground
+        // notification ID and refresh it at most once per second.
+        val now = SystemClock.elapsedRealtime()
+        if (lastSystemNotificationUpdateMs == 0L || now - lastSystemNotificationUpdateMs >= 1_000L) {
+            lastSystemNotificationUpdateMs = now
+            updateNotification(modelName, progress, statusText = status)
+        }
     }
 
     private suspend fun unzipFile(zipFile: File, destDir: File) = withContext(Dispatchers.IO) {
@@ -1310,10 +1255,36 @@ class ModelDownloadService : Service() {
             getString(R.string.cancel),
             cancelPendingIntent,
         )
-        return builder.build()
+        val notification = builder
+            .setOnlyAlertOnce(true)
+            .build()
+        HyperOsSuperIsland.decorateDownload(
+            context = this,
+            notification = notification,
+            capability = hyperOsFocusCapability,
+            modelName = modelName,
+            progress = progress,
+            statusText = statusText,
+            paused = false,
+            pauseResumeIntent = pausePendingIntent,
+            cancelIntent = cancelPendingIntent,
+        )
+        return notification
     }
 
-    private fun createPausedNotification(modelName: String, progress: Float): android.app.Notification {
+    private fun createPausedNotification(
+        modelName: String,
+        progress: Float,
+    ): android.app.Notification {
+        val openAppIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        val appPendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            openAppIntent,
+            PendingIntent.FLAG_IMMUTABLE,
+        )
         val resumePendingIntent = PendingIntent.getService(
             this,
             3,
@@ -1327,12 +1298,14 @@ class ModelDownloadService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle(getString(R.string.download_paused))
             .setContentText(modelName)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setProgress(100, (progress * 100).toInt(), false)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(appPendingIntent)
             .addAction(android.R.drawable.ic_media_play, getString(R.string.resume), resumePendingIntent)
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
@@ -1340,6 +1313,19 @@ class ModelDownloadService : Service() {
                 cancelPendingIntent,
             )
             .build()
+
+        HyperOsSuperIsland.decorateDownload(
+            context = this,
+            notification = notification,
+            capability = hyperOsFocusCapability,
+            modelName = modelName,
+            progress = progress,
+            statusText = getString(R.string.download_paused),
+            paused = true,
+            pauseResumeIntent = resumePendingIntent,
+            cancelIntent = cancelPendingIntent,
+        )
+        return notification
     }
 
     private fun updateNotification(

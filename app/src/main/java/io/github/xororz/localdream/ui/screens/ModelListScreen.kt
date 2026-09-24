@@ -1171,6 +1171,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     downloadedBytes = progress?.downloadedBytes ?: 0L,
                     totalBytes = progress?.totalBytes ?: 0L,
                     bytesPerSecond = currentSpeedBytesPerSecond,
+                    networkBytesPerSecond = currentNetworkBytesPerSecond,
                     etaSeconds = currentEtaSeconds,
                     paused = downloadPaused,
                     usingXet = currentDownloadUsesXet,
@@ -2181,6 +2182,7 @@ private fun DownloadMiniCard(
     downloadedBytes: Long,
     totalBytes: Long,
     bytesPerSecond: Long,
+    networkBytesPerSecond: Long,
     etaSeconds: Long?,
     paused: Boolean,
     usingXet: Boolean,
@@ -2192,13 +2194,8 @@ private fun DownloadMiniCard(
         animationSpec = tween(durationMillis = 160, easing = LinearEasing),
         label = "downloadMiniProgress",
     )
-    val shownBytes = if (totalBytes > 0L) {
-        (animatedProgress.toDouble() * totalBytes.toDouble())
-            .toLong()
-            .coerceIn(0L, totalBytes)
-    } else {
-        downloadedBytes
-    }
+    val confirmedProgress = progress.coerceIn(0f, 1f)
+    val shownBytes = downloadedBytes.coerceAtLeast(0L)
 
     ElevatedCard(
         onClick = onClick,
@@ -2264,8 +2261,14 @@ private fun DownloadMiniCard(
                 Text(
                     text = when {
                         paused -> stringResource(R.string.download_paused)
-                        bytesPerSecond > 0L -> buildString {
-                            append(formatDownloadSpeed(bytesPerSecond))
+                        (if (usingXet) networkBytesPerSecond else bytesPerSecond) > 0L -> buildString {
+                            val displaySpeed =
+                                if (usingXet && networkBytesPerSecond > 0L) {
+                                    networkBytesPerSecond
+                                } else {
+                                    bytesPerSecond
+                                }
+                            append(formatDownloadSpeed(displaySpeed))
                             etaSeconds?.let {
                                 append("  •  ")
                                 append(formatDownloadEta(it))
@@ -2286,7 +2289,7 @@ private fun DownloadMiniCard(
 
                 if (totalBytes > 0L) {
                     Text(
-                        text = "${(animatedProgress * 100).toInt()}%  •  " +
+                        text = "${(confirmedProgress * 100).toInt()}%  •  " +
                             "${formatBytes(shownBytes)} / ${formatBytes(totalBytes)}",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontFeatureSettings = "tnum",
@@ -2383,7 +2386,7 @@ private fun DownloadDetailsSheet(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "${(animatedProgress * 100).toInt()}%",
+                text = "${(confirmedProgress * 100).toInt()}%",
                 style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
             )
             if (totalBytes > 0L) {
