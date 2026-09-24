@@ -614,7 +614,7 @@ class BackendService : Service() {
             // SDXL and Anima are the large NPU formats that benefit from
             // per-stage load/release. They share the same backend --lowram flag
             // but keep separate UI toggles so each can opt in independently.
-            if ((backendType == "sdxl" || backendType == "sdxlmnn") && preferences.getBoolean("sdxl_lowram", true)) {
+            if ((backendType == "sdxl" || backendType == "sdxlmnn") && preferences.getBoolean("sdxl_lowram", false)) {
                 command += "--lowram"
             }
             if (backendType == "anima" && preferences.getBoolean("anima_lowram", true)) {
@@ -663,6 +663,17 @@ class BackendService : Service() {
             env["LD_LIBRARY_PATH"] = systemLibPathsStr
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
             if (ditEngineDir != null) {
+                if (backendType == "qwen21") {
+                    // Avoid vendor-library-path ambiguity on recent v81 stacks,
+                    // and expose two virtual sessions for Qwen's split HTP
+                    // transformer. Do not enable OPPOLL or per-op profiling in
+                    // normal generation: both create needless host/UI load.
+                    env["LD_LIBRARY_PATH"] = listOf(
+                        runtimeDir.absolutePath,
+                        "/system/lib64",
+                    ).joinToString(":")
+                    env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
+                }
                 // ggml-hexagon asks FastRPC for its skel by bare name, so both
                 // the runtime directory holding the skels and the platform
                 // defaults have to be on the DSP search path; dropping the

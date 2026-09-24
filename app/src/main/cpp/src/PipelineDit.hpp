@@ -65,28 +65,11 @@ class PipelineDit : public Pipeline {
     }
     api_->set_log_callback(&PipelineDit::forwardLog, nullptr);
 
-    dit_ctx_params params{};
-    params.kind = kind_;
-    params.diffusion_model_path = diffusion_model_path_.c_str();
-    params.llm_path = llm_path_.c_str();
-    params.llm_vision_path =
-        llm_vision_path_.empty() ? nullptr : llm_vision_path_.c_str();
-    params.vae_path = vae_path_.c_str();
-    params.backend = backend_.c_str();
-    params.params_backend = params_backend_.c_str();
-    params.n_threads = n_threads_;
-    params.flash_attn = true;
-    // Required, not just an optimization: the Hexagon backend repacks every
-    // F16 1x1/3x3 conv weight into the HMX tile layout on upload, and only the
-    // direct-conv kernel reads that layout. Without it every VAE conv falls
-    // back to im2col + mul_mat over the repacked weights.
-    params.vae_conv_direct = true;
-
-    ctx_ = api_->create(&params);
-    if (!ctx_) {
-      QNN_ERROR("engine create failed: %s", api_->last_error(nullptr));
-      return false;
-    }
+    // Plain txt2img does not need Qwen3-VL's vision/mmproj weights.
+    // Start with a lean text-only context; the same context is recreated with
+    // vision support only if an edit/reference request actually needs it.
+    ctx_ = createEngineContext(/*with_vision=*/false);
+    if (!ctx_) return false;
     QNN_INFO("DiT engine loaded from %s", engine_path_.c_str());
     return true;
   }
@@ -115,6 +98,15 @@ class PipelineDit : public Pipeline {
     if (!req.reference_images.empty() && !isNativeEditModel())
       throw std::invalid_argument(
           "native reference editing is not supported by this DiT model");
+
+    if (nativeEditRequest(req) && !llm_vision_path_.empty() && !ctx_has_vision_) {
+      QNN_INFO("Switching Qwen context to lazy vision/edit mode");
+      api_->destroy(ctx_);
+      ctx_ = createEngineContext(/*with_vision=*/true);
+      if (!ctx_)
+        throw std::runtime_error("Failed to initialize Qwen vision/edit context");
+      ctx_has_vision_ = true;
+    }
 
     api_->set_preview_interval(
         ctx_, req.show_diffusion_process ? req.show_diffusion_stride : 0);
@@ -289,6 +281,34 @@ class PipelineDit : public Pipeline {
   bool isNativeEditModel() const {
     return kind_ == DIT_MODEL_FLUX2_KLEIN ||
            kind_ == DIT_MODEL_QWEN_IMAGE_2_1;
+  }
+
+  bool nativeEditRequest(const GenerationRequest &req) const {
+    return isNativeEditModel() &&
+           (req.img2img || !req.reference_images.empty());
+  }
+
+  dit_ctx *createEngineContext(bool with_vision) {
+    dit_ctx_params params{};
+    params.kind = kind_;
+    params.diffusion_model_path = diffusion_model_path_.c_str();
+    params.llm_path = llm_path_.c_str();
+    params.llm_vision_path =
+        with_vision && !llm_vision_path_.empty()
+            ? llm_vision_path_.c_str()
+            : nullptr;
+    params.vae_path = vae_path_.c_str();
+    params.backend = backend_.c_str();
+    params.params_backend = params_backend_.c_str();
+    params.n_threads = n_threads_;
+    params.flash_attn = true;
+    params.vae_conv_direct = true;
+    dit_ctx *created = api_->create(&params);
+    if (!created) {
+      QNN_ERROR("engine create failed (vision=%d): %s", with_vision ? 1 : 0,
+                api_->last_error(nullptr));
+    }
+    return created;
   }
 
   struct Callbacks {
@@ -466,6 +486,7 @@ class PipelineDit : public Pipeline {
   void *handle_ = nullptr;
   const dit_engine_api *api_ = nullptr;
   dit_ctx *ctx_ = nullptr;
+  bool ctx_has_vision_ = false;
 };
 
 #endif  // PIPELINEDIT_HPP

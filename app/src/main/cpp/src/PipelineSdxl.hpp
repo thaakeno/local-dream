@@ -292,18 +292,14 @@ class PipelineSdxl : public PipelineQnn {
     return model;
   }
 
-  // Max shared spill-fill buffer (bytes) for the SDXL non-lowram context group.
-  // Hardcoded default = 920 MiB, chosen to cover the measured per-model
-  // requirements (UNet 89,063,424 / VAE-dec 884,801,536 / VAE-enc 575,668,224)
-  // with headroom; the backend honors the group head's value so it must be >=
-  // the largest of the three. Sharing one 920 MiB buffer instead of three
-  // separate ones saves ~600 MB. The LOCALDREAM_SDXL_SPILL_FILL_BYTES env var
-  // overrides this (e.g. after regenerating binaries); set it to 0 to disable
-  // sharing entirely.
+  // Different custom SDXL QNN binaries can require very different scratch
+  // sizes even at the same resolution. 920 MiB was too small for some valid
+  // custom VAEs, so leave conservative compatibility headroom while still
+  // sharing one spill/fill allocation across the resident contexts.
   static uint64_t spillFillGroupBytes() {
     const char *e = getenv("LOCALDREAM_SDXL_SPILL_FILL_BYTES");
     if (e && *e) return strtoull(e, nullptr, 10);
-    return 964689920ULL;  // 920 MiB
+    return 1610612736ULL;  // 1.5 GiB; env override still supported
   }
 
   // Diagnostic: log a model's real HTP spill-fill requirement so the right

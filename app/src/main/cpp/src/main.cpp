@@ -92,7 +92,7 @@ struct ServerOptions {
   // intra-component segment prefetch remains enabled for throughput.
   std::string dit_params_backend = "all=disk";
   int dit_threads = 4;
-  int dit_vae_tile_size = 128;
+  int dit_vae_tile_size = 64;
   bool convert_clip_skip_2 = false;
 
   bool isSdxl() const { return type == ModelType::kSdxl || type == ModelType::kSdxlMnn; }
@@ -385,14 +385,20 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
     // afterwards leaves substantially more memory for Qwen's DiT while keeping
     // the diffusion transformer resident across denoising steps. The old
     // all=disk behavior repeatedly evicted the expensive part we want hot.
+    const bool qwen = opts.type == ServerOptions::ModelType::kQwenImage21;
+    // Qwen is large enough to benefit from two virtual HTP sessions: its
+    // transformer blocks are split across independent VA windows while the
+    // repeatedly-used diffusion weights stay resident. TE and VAE are
+    // stage-local so they relinquish memory before/after denoising.
+    const std::string runtime_backend =
+        qwen
+            ? "diffusion=HTP0:0&HTP0:1,te=HTP0:0&HTP0:1,vae=HTP0:0"
+            : opts.dit_backend;
     const std::string params_backend =
-        opts.type == ServerOptions::ModelType::kQwenImage21
-            ? "te=disk"
-            : opts.dit_params_backend;
+        qwen ? "te=disk,vae=disk" : opts.dit_params_backend;
     return std::make_unique<PipelineDit>(
         text_encoder, opts.model_dir, engine_path, dit_path, llm_path,
-        llm_vision_path, vae_path, kind, opts.dit_backend,
-        params_backend,
+        llm_vision_path, vae_path, kind, runtime_backend, params_backend,
         opts.dit_threads, opts.dit_vae_tile_size, !opts.no_img2img);
   }
 

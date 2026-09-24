@@ -330,6 +330,14 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   if (sample_method && sample_method[0])
     gen.sample_params.sample_method = str_to_sample_method(sample_method);
 
+  // Experimental benchmark only. Six-pass Turbo has little redundancy, so
+  // caching stays opt-in until fixed-seed device A/B tests show no quality hit.
+  const char *cache_dit = std::getenv("LOCALDREAM_QWEN_CACHE_DIT");
+  if (ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1 && cache_dit &&
+      std::strcmp(cache_dit, "1") == 0) {
+    gen.cache.mode = SD_CACHE_CACHE_DIT;
+  }
+
   // Base Qwen uses terminal stretching. A distilled profile can instead own
   // exact raw nodes; those are shifted below and intentionally do not stretch
   // to Qwen's 0.02 terminal.
@@ -352,6 +360,17 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
     gen.sample_params.custom_sigmas = profile_sigmas.data();
     gen.sample_params.custom_sigmas_count =
         static_cast<int>(profile_sigmas.size());
+    if (g_log_cb) {
+      g_log_cb(
+          static_cast<int>(SD_LOG_INFO),
+          "Viggle profile: exact six-node sigma schedule active",
+          g_log_user_data);
+    }
+  } else if (!raw_sigmas.empty() && g_log_cb) {
+    const std::string message =
+        "Viggle profile: user requested " + std::to_string(params->steps) +
+        " steps; exact 6-step nodes disabled, running the requested count";
+    g_log_cb(static_cast<int>(SD_LOG_INFO), message.c_str(), g_log_user_data);
   }
 
   sd_lora_t turbo_lora{};
