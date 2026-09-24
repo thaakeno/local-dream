@@ -20,9 +20,9 @@ internal data class XetRuntimeTuning(
     val downstreamKbps: Int,
 ) {
     fun isMoreConstrainedThan(other: XetRuntimeTuning): Boolean =
-        memoryBudgetBytes < other.memoryBudgetBytes ||
+        thermalStatus > other.thermalStatus ||
             maxConcurrency < other.maxConcurrency ||
-            thermalStatus > other.thermalStatus
+            memoryBudgetBytes * 4L < other.memoryBudgetBytes * 3L
 
     fun summary(): String =
         "budget=$memoryBudgetBytes concurrency=$minConcurrency/$initialConcurrency/$maxConcurrency " +
