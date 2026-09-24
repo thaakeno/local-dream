@@ -205,10 +205,18 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   gen.seed = params->seed;
   gen.batch_count = 1;
   gen.sample_params.sample_steps = params->steps;
-  gen.sample_params.guidance.txt_cfg = params->cfg_scale;
+  gen.sample_params.guidance.txt_cfg =
+      ctx->viggle_turbo_schedule ? 1.0f : params->cfg_scale;
   gen.sample_params.guidance.distilled_guidance = params->guidance;
-  if (params->sample_method && params->sample_method[0])
+  if (ctx->viggle_turbo_schedule) {
+    // Viggle v0.2.1 is trained/evaluated with Euler and CFG 1. Keep those
+    // invariants at the native boundary so a stale UI preference cannot
+    // silently change the distilled recipe.
+    gen.sample_params.sample_method = str_to_sample_method("euler");
+    gen.negative_prompt = "";
+  } else if (params->sample_method && params->sample_method[0]) {
     gen.sample_params.sample_method = str_to_sample_method(params->sample_method);
+  }
 
   // Experimental only: six-pass Turbo leaves little redundancy, so caching is
   // opt-in until fixed-seed device A/B tests prove it is visually harmless.
@@ -315,11 +323,14 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
     gen.vae_tiling_params.target_overlap = params->vae_tile_overlap;
   }
 
-  int sampling_steps = std::max(1, params->steps);
+  const int recipe_steps = ctx->viggle_turbo_schedule
+                               ? 6
+                               : std::max(1, params->steps);
+  int sampling_steps = recipe_steps;
   if (gen.init_image.data && gen.strength < 1.0f) {
     // stable-diffusion.cpp retains t_enc + 1 intervals after trimming.
-    const int t_enc = static_cast<int>(params->steps * gen.strength);
-    sampling_steps = std::clamp(t_enc + 1, 1, std::max(1, params->steps));
+    const int t_enc = static_cast<int>(recipe_steps * gen.strength);
+    sampling_steps = std::clamp(t_enc + 1, 1, recipe_steps);
   }
   g_active = ActiveGeneration{progress, preview, user_data, ctx, false, false,
                               sampling_steps};
