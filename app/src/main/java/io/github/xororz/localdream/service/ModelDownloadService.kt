@@ -907,9 +907,6 @@ class ModelDownloadService : Service() {
                     cacheDir = xetRuntimeDir.absolutePath,
                     offset = offset,
                     memoryBudgetBytes = tuning.memoryBudgetBytes,
-                    minConcurrency = tuning.minConcurrency,
-                    initialConcurrency = tuning.initialConcurrency,
-                    maxConcurrency = tuning.maxConcurrency,
                 )
             }
 

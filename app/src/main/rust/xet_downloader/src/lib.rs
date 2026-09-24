@@ -2,9 +2,7 @@ use std::fs::{create_dir_all, OpenOptions};
 use std::path::PathBuf;
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::sync::Mutex;
 
 use http::HeaderMap;
 use jni::objects::{JClass, JString};
@@ -68,12 +66,7 @@ fn bytes_as_mib_env(bytes: u64) -> String {
     format!("{}mb", mib.max(1))
 }
 
-fn configure_mobile_runtime(
-    memory_budget_bytes: u64,
-    min_concurrency: i32,
-    initial_concurrency: i32,
-    max_concurrency: i32,
-) {
+fn configure_mobile_runtime(memory_budget_bytes: u64) {
     #[cfg(target_os = "android")]
     std::env::set_var("SSL_CERT_DIR", "/system/etc/security/cacerts");
 
@@ -82,26 +75,23 @@ fn configure_mobile_runtime(
 
     let budget = memory_budget_bytes.max(1);
 
-    let min_c = min_concurrency.max(1);
-    let max_c = max_concurrency.max(min_c);
-    let initial_c = initial_concurrency.clamp(min_c, max_c);
-
-    // Keep all sizes derived from the live Android memory/concurrency budget. A single
-    // reconstruction lane should not need to fill hundreds of MB before progress becomes
-    // observable, especially on normal phone Wi-Fi.
-    let lanes = (max_c as u64).max(1);
-    let per_lane = (budget / lanes).max(1);
-    let base_buffer = (budget / 2).max(per_lane);
-    let per_file_buffer = (budget / 4).max(per_lane);
-    let prefetch_buffer = per_lane;
-    let min_fetch = (per_lane / 8).max(1);
-    let max_fetch = per_lane.saturating_mul(2).max(min_fetch);
-
+    // Let xet-core's adaptive controller do what it is designed for. Its defaults
+    // start conservatively and scale based on measured network health; Android's
+    // link-bandwidth estimate is not used as a throughput cap.
     std::env::set_var("HF_XET_CLIENT_ENABLE_ADAPTIVE_CONCURRENCY", "1");
-    std::env::set_var("HF_XET_CLIENT_AC_MIN_DOWNLOAD_CONCURRENCY", min_c.to_string());
-    std::env::set_var("HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY", initial_c.to_string());
-    std::env::set_var("HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY", max_c.to_string());
+    std::env::remove_var("HF_XET_FIXED_DOWNLOAD_CONCURRENCY");
+    std::env::remove_var("HF_XET_CLIENT_AC_MIN_DOWNLOAD_CONCURRENCY");
+    std::env::remove_var("HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY");
+    std::env::remove_var("HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY");
     std::env::set_var("HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS", "1");
+
+    // Keep reconstruction memory phone-safe without imposing one fixed desktop/mobile
+    // profile. Every value scales from Android's current memory budget.
+    let base_buffer = (budget / 4).max(1);
+    let per_file_buffer = (budget / 8).max(1);
+    let prefetch_buffer = (budget / 4).max(1);
+    let min_fetch = (budget / 16).max(1);
+    let max_fetch = (budget / 2).max(min_fetch);
 
     std::env::set_var("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE", bytes_as_mib_env(base_buffer));
     std::env::set_var("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE", bytes_as_mib_env(per_file_buffer));
@@ -119,9 +109,6 @@ fn run_download(
     cache_dir: String,
     offset: u64,
     memory_budget_bytes: u64,
-    min_concurrency: i32,
-    initial_concurrency: i32,
-    max_concurrency: i32,
 ) -> Result<i32, String> {
     if offset > size {
         return Err(format!("resume offset {offset} is larger than file size {size}"));
@@ -131,12 +118,7 @@ fn run_download(
     }
 
     configure_writable_runtime(&cache_dir)?;
-    configure_mobile_runtime(
-        memory_budget_bytes,
-        min_concurrency,
-        initial_concurrency,
-        max_concurrency,
-    );
+    configure_mobile_runtime(memory_budget_bytes);
     CANCEL_REQUESTED.store(false, Ordering::Release);
     ACTIVE_PROGRESS_BYTES.store(offset, Ordering::Release);
     ACTIVE_PROGRESS_TOTAL.store(size, Ordering::Release);
@@ -154,122 +136,66 @@ fn run_download(
         *active = Some(session.clone());
     }
 
-    let file_info = XetFileInfo::new(hash.clone(), size);
+    let file_info = XetFileInfo::new(hash, size);
+    let group = session
+        .new_download_stream_group()
+        .map_err(|e| format!("Xet download group creation failed: {e}"))?
+        .with_token_refresh_url(refresh_url, HeaderMap::new())
+        .build_blocking()
+        .map_err(|e| format!("Xet authentication failed: {e}"))?;
 
-    let result = if offset == 0 {
-        let group = session
-            .new_file_download_group()
-            .map_err(|e| format!("Xet download group creation failed: {e}"))?
-            .with_token_refresh_url(refresh_url.clone(), HeaderMap::new())
-            .build_blocking()
-            .map_err(|e| format!("Xet authentication failed: {e}"))?;
+    // Use the streaming reconstruction path for both fresh and resumed downloads.
+    // This is the low-latency path that previously delivered the best throughput on
+    // Android; the file-download-group path introduced a large throughput regression.
+    let mut stream = group
+        .download_stream_blocking(file_info, Some(offset..size))
+        .map_err(|e| format!("Xet stream creation failed: {e}"))?;
 
-        let observer = group.clone();
-        let monitor_stop = Arc::new(AtomicBool::new(false));
-        let monitor_stop_worker = monitor_stop.clone();
-        let monitor = thread::spawn(move || {
-            while !monitor_stop_worker.load(Ordering::Acquire) {
-                let progress = observer.progress();
-                ACTIVE_PROGRESS_BYTES.store(progress.total_bytes_completed, Ordering::Release);
-                ACTIVE_PROGRESS_TOTAL.store(progress.total_bytes, Ordering::Release);
-                ACTIVE_PROGRESS_SPEED_BPS.store(
-                    progress.total_bytes_completion_rate.unwrap_or(0.0).max(0.0) as u64,
-                    Ordering::Release,
-                );
-                ACTIVE_TRANSFER_BYTES.store(
-                    progress.total_transfer_bytes_completed,
-                    Ordering::Release,
-                );
-                ACTIVE_TRANSFER_TOTAL.store(progress.total_transfer_bytes, Ordering::Release);
-                ACTIVE_TRANSFER_SPEED_BPS.store(
-                    progress
-                        .total_transfer_bytes_completion_rate
-                        .unwrap_or(0.0)
-                        .max(0.0) as u64,
-                    Ordering::Release,
-                );
-                thread::sleep(Duration::from_millis(200));
-            }
-        });
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&dest_path)
+        .map_err(|e| format!("Cannot open partial file: {e}"))?;
 
-        let download_result = (|| -> Result<i32, String> {
-            group
-                .download_file_to_path_blocking(file_info.clone(), PathBuf::from(&dest_path))
-                .map_err(|e| format!("Xet file download start failed: {e}"))?;
-            group
-                .finish_blocking()
-                .map_err(|e| format!("Xet download failed: {e}"))?;
+    file.set_len(offset)
+        .map_err(|e| format!("Cannot truncate partial file: {e}"))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("Cannot seek partial file: {e}"))?;
 
+    let mut written = offset;
+    let result = (|| -> Result<i32, String> {
+        loop {
             if CANCEL_REQUESTED.load(Ordering::Acquire) {
+                stream.cancel();
+                let _ = group.abort();
                 return Ok(1);
             }
 
-            ACTIVE_PROGRESS_BYTES.store(size, Ordering::Release);
-            ACTIVE_PROGRESS_TOTAL.store(size, Ordering::Release);
-            Ok(0)
-        })();
-
-        monitor_stop.store(true, Ordering::Release);
-        let _ = monitor.join();
-        download_result
-    } else {
-        let group = session
-            .new_download_stream_group()
-            .map_err(|e| format!("Xet download group creation failed: {e}"))?
-            .with_token_refresh_url(refresh_url, HeaderMap::new())
-            .build_blocking()
-            .map_err(|e| format!("Xet authentication failed: {e}"))?;
-
-        let mut stream = group
-            .download_stream_blocking(file_info, Some(offset..size))
-            .map_err(|e| format!("Xet stream creation failed: {e}"))?;
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&dest_path)
-            .map_err(|e| format!("Cannot open partial file: {e}"))?;
-
-        file.set_len(offset)
-            .map_err(|e| format!("Cannot truncate partial file: {e}"))?;
-        file.seek(SeekFrom::Start(offset))
-            .map_err(|e| format!("Cannot seek partial file: {e}"))?;
-
-        let mut written = offset;
-        (|| -> Result<i32, String> {
-            loop {
-                if CANCEL_REQUESTED.load(Ordering::Acquire) {
-                    stream.cancel();
-                    let _ = session.abort();
-                    return Ok(1);
+            match stream.blocking_next() {
+                Ok(Some(bytes)) => {
+                    file.write_all(&bytes)
+                        .map_err(|e| format!("Writing Xet data failed: {e}"))?;
+                    written = written.saturating_add(bytes.len() as u64).min(size);
+                    ACTIVE_PROGRESS_BYTES.store(written, Ordering::Release);
+                    ACTIVE_PROGRESS_TOTAL.store(size, Ordering::Release);
                 }
-
-                match stream.blocking_next() {
-                    Ok(Some(bytes)) => {
-                        file.write_all(&bytes)
-                            .map_err(|e| format!("Writing Xet data failed: {e}"))?;
-                        written = written.saturating_add(bytes.len() as u64).min(size);
-                        ACTIVE_PROGRESS_BYTES.store(written, Ordering::Release);
-                        ACTIVE_PROGRESS_TOTAL.store(size, Ordering::Release);
+                Ok(None) => break,
+                Err(e) => {
+                    if CANCEL_REQUESTED.load(Ordering::Acquire) {
+                        return Ok(1);
                     }
-                    Ok(None) => break,
-                    Err(e) => {
-                        if CANCEL_REQUESTED.load(Ordering::Acquire) {
-                            return Ok(1);
-                        }
-                        return Err(format!("Xet download failed: {e}"));
-                    }
+                    return Err(format!("Xet download failed: {e}"));
                 }
             }
+        }
 
-            file.flush()
-                .map_err(|e| format!("Flushing Xet data failed: {e}"))?;
-            file.set_len(size)
-                .map_err(|e| format!("Finalizing Xet file failed: {e}"))?;
-            ACTIVE_PROGRESS_BYTES.store(size, Ordering::Release);
-            Ok(0)
-        })()
-    };
+        file.flush()
+            .map_err(|e| format!("Flushing Xet data failed: {e}"))?;
+        file.set_len(size)
+            .map_err(|e| format!("Finalizing Xet file failed: {e}"))?;
+        ACTIVE_PROGRESS_BYTES.store(size, Ordering::Release);
+        Ok(0)
+    })();
 
     if let Ok(mut active) = ACTIVE_SESSION.lock() {
         *active = None;
@@ -288,9 +214,6 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
     cache_dir: JString,
     offset: jlong,
     memory_budget_bytes: jlong,
-    min_concurrency: jint,
-    initial_concurrency: jint,
-    max_concurrency: jint,
 ) -> jint {
     let result = (|| {
         let hash = from_jstring(&mut env, hash)?;
@@ -308,9 +231,6 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
             cache_dir,
             offset as u64,
             memory_budget_bytes as u64,
-            min_concurrency,
-            initial_concurrency,
-            max_concurrency,
         )
     })();
 

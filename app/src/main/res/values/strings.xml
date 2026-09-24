@@ -466,6 +466,11 @@
     <string name="download_current_file">%1$s</string>
     <string name="download_mode_xet">Xet accelerated</string>
     <string name="xet_network_transfer">Xet network transfer</string>
+    <string name="download_starting">Starting download…</string>
+    <string name="download_open_details">Open download details</string>
+    <string name="download_minimize">Minimize</string>
+    <string name="download_speed">Download speed</string>
+    <string name="download_remaining">Remaining</string>
     <string name="download_mode_http">Normal HTTP</string>
     <string name="download_logs">Download logs</string>
     <string name="download_logs_hint">Transfer diagnostics only. Tokens, signed storage URLs, prompts, and images are not logged.</string>

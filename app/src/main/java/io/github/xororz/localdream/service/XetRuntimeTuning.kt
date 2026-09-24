@@ -5,16 +5,11 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.PowerManager
-import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sqrt
 
 internal data class XetRuntimeTuning(
     val memoryBudgetBytes: Long,
-    val minConcurrency: Int,
-    val initialConcurrency: Int,
-    val maxConcurrency: Int,
     val thermalStatus: Int,
     val meteredNetwork: Boolean,
     val downstreamKbps: Int,
@@ -31,7 +26,7 @@ internal data class XetRuntimeTuning(
             (meteredNetwork && !other.meteredNetwork)
 
     fun summary(): String =
-        "budget=$memoryBudgetBytes concurrency=$minConcurrency/$initialConcurrency/$maxConcurrency " +
+        "budget=$memoryBudgetBytes concurrency=xet-adaptive " +
             "thermal=$thermalStatus lowMemory=$lowMemory metered=$meteredNetwork " +
             "downstreamKbps=$downstreamKbps"
 
@@ -48,8 +43,10 @@ internal data class XetRuntimeTuning(
 
             val systemReserve = max(pressureThreshold * 2L, totalMemory / 8L)
             val headroom = (availableMemory - systemReserve).coerceAtLeast(pressureThreshold)
+            // Bound Xet by a fraction of real device headroom instead of guessing a fixed
+            // phone profile. The native side derives all reconstruction buffers from this.
             var memoryBudget =
-                min(totalMemory / 16L, headroom / 3L).coerceAtLeast(pressureThreshold / 2L)
+                min(totalMemory / 32L, headroom / 6L).coerceAtLeast(pressureThreshold / 2L)
 
             val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
             val thermalStatus =
@@ -75,35 +72,8 @@ internal data class XetRuntimeTuning(
             val downstreamKbps = capabilities?.linkDownstreamBandwidthKbps?.coerceAtLeast(0) ?: 0
             val meteredNetwork = connectivityManager.isActiveNetworkMetered
 
-            val processors = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
-            val cpuCeiling = processors * 2
-            val networkCeiling =
-                if (downstreamKbps > 0) {
-                    ceil(sqrt(downstreamKbps / 1000.0)).toInt().coerceAtLeast(1)
-                } else {
-                    cpuCeiling
-                }
-            val pressureRatio =
-                (headroom.toDouble() / pressureThreshold.toDouble()).coerceAtLeast(1.0)
-            val memoryCeiling =
-                ceil(sqrt(pressureRatio) * processors.toDouble()).toInt().coerceAtLeast(1)
-
-            var maxConcurrency =
-                min(cpuCeiling, min(networkCeiling, memoryCeiling)).coerceAtLeast(1)
-            if (meteredNetwork) {
-                maxConcurrency = max(1, maxConcurrency / 2)
-            }
-            maxConcurrency =
-                max(1, (maxConcurrency * thermalNumerator / 4L).toInt())
-
-            val initialConcurrency =
-                ceil(sqrt(maxConcurrency.toDouble())).toInt().coerceIn(1, maxConcurrency)
-
             return XetRuntimeTuning(
                 memoryBudgetBytes = memoryBudget,
-                minConcurrency = 1,
-                initialConcurrency = initialConcurrency,
-                maxConcurrency = maxConcurrency,
                 thermalStatus = thermalStatus,
                 meteredNetwork = meteredNetwork,
                 downstreamKbps = downstreamKbps,
