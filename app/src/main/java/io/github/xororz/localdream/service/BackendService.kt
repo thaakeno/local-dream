@@ -634,6 +634,13 @@ class BackendService : Service() {
                 // split transformer two independent VA windows.
                 env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
                 env["GGML_HEXAGON_OPPOLL"] = "1"
+                // Basic per-op timing is cheap enough for this profiling
+                // branch and gives us hard evidence for CPU fallbacks and HTP
+                // hotspots. Verbose placement is intentionally enabled here;
+                // release can gate it after the device profile is clean.
+                env["GGML_HEXAGON_VERBOSE"] = "1"
+                env["GGML_HEXAGON_PROFILE"] = "1"
+                env["GGML_HEXAGON_MM_SELECT"] = "3"
                 // ggml-hexagon asks FastRPC for its skel by bare name, so both
                 // the runtime directory holding the skels and the platform
                 // defaults have to be on the DSP search path; dropping the
