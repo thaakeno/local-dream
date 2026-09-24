@@ -878,7 +878,7 @@ class ModelDownloadService : Service() {
         packageOffset: Long,
         packageTotal: Long,
     ) = coroutineScope {
-        var tuning = XetRuntimeTuning.from(this@ModelDownloadService)
+        val tuning = XetRuntimeTuning.from(this@ModelDownloadService)
         val effectivePackageTotal = if (packageTotal > 0L) {
             packageTotal
         } else {
@@ -889,14 +889,15 @@ class ModelDownloadService : Service() {
         DownloadDiagnostics.info(
             this@ModelDownloadService,
             "Xet start file=$currentFileName size=$expectedSize " +
-                "resume=${destFile.length()} cacheWritable=${xetRuntimeDir.canWrite()} " +
-                "cacheFree=${xetRuntimeDir.usableSpace} ${tuning.summary()}",
+                "resume=${destFile.length()} stream=true speedSource=written-bytes " +
+                "cacheWritable=${xetRuntimeDir.canWrite()} cacheFree=${xetRuntimeDir.usableSpace} " +
+                tuning.summary(),
         )
 
         while (destFile.length() < expectedSize) {
             val offset = destFile.length()
-            var requestedConstraintRestart = false
             val estimator = RollingThroughputEstimator(windowMs = 10_000L)
+            var lastDiagnosticAt = SystemClock.elapsedRealtime()
 
             val nativeJob = async(Dispatchers.IO) {
                 XetNative.nativeDownload(
@@ -913,76 +914,46 @@ class ModelDownloadService : Service() {
             while (!nativeJob.isCompleted) {
                 delay(250L)
 
+                // Effective Xet throughput = final model bytes reconstructed and delivered
+                // by the ordered stream. This is what the user cares about and does not
+                // expose Xet's changing internal CAS/prefetch accounting.
                 val nativeProgress =
                     runCatching { XetNative.nativeProgressBytes() }
-                        .getOrDefault(0L)
+                        .getOrDefault(offset)
                         .coerceIn(offset, expectedSize)
                 val fileProgress = destFile.length().coerceIn(offset, expectedSize)
                 val nowBytes = maxOf(nativeProgress, fileProgress)
-
-                val nativeLogicalSpeed =
-                    runCatching { XetNative.nativeProgressBytesPerSecond() }
-                        .getOrDefault(0L)
-                        .coerceAtLeast(0L)
-                val transferBytes =
-                    runCatching { XetNative.nativeTransferBytes() }
-                        .getOrDefault(0L)
-                        .coerceAtLeast(0L)
-                val transferTotal =
-                    runCatching { XetNative.nativeTransferTotalBytes() }
-                        .getOrDefault(0L)
-                        .coerceAtLeast(0L)
-                val transferSpeed =
-                    runCatching { XetNative.nativeTransferBytesPerSecond() }
-                        .getOrDefault(0L)
-                        .coerceAtLeast(0L)
-
-                val rollingLogicalSpeed =
-                    estimator.sample(SystemClock.elapsedRealtime(), nowBytes)
-                val logicalSpeed = when {
-                    nativeLogicalSpeed > 0L -> nativeLogicalSpeed
-                    rollingLogicalSpeed > 0L -> rollingLogicalSpeed
-                    else -> 0L
-                }
-                val displayedSpeed = if (logicalSpeed > 0L) logicalSpeed else transferSpeed
+                val now = SystemClock.elapsedRealtime()
+                val speed = estimator.sample(now, nowBytes).coerceAtLeast(0L)
 
                 val reportedDone = packageOffset + nowBytes
-                val eta = if (effectivePackageTotal > reportedDone && logicalSpeed > 0L) {
-                    (effectivePackageTotal - reportedDone) / logicalSpeed
+                val eta = if (effectivePackageTotal > reportedDone && speed > 0L) {
+                    (effectivePackageTotal - reportedDone) / speed
                 } else {
                     null
                 }
+
                 emitProgress(
                     modelId,
                     modelName,
                     reportedDone,
                     effectivePackageTotal,
-                    displayedSpeed,
+                    speed,
                     eta,
                     currentFileName,
                     true,
-                    transferBytes,
-                    transferTotal,
                 )
 
-                if (pauseRequested || cancelRequested) {
-                    XetNative.nativeCancel()
-                    break
-                }
-
-                val currentTuning = XetRuntimeTuning.from(this@ModelDownloadService)
-                if (currentTuning.requiresRestartComparedTo(tuning)) {
-                    tuning = currentTuning
-                    requestedConstraintRestart = true
-                    Log.i(
-                        TAG,
-                        "Device constraint changed: restarting Xet with ${tuning.summary()}",
-                    )
+                if (now - lastDiagnosticAt >= 10_000L) {
                     DownloadDiagnostics.info(
                         this@ModelDownloadService,
-                        "Device constraint changed: restarting Xet file=$currentFileName " +
-                            tuning.summary(),
+                        "Xet progress file=$currentFileName done=$nowBytes/$expectedSize " +
+                            "effectiveBps=$speed",
                     )
+                    lastDiagnosticAt = now
+                }
+
+                if (pauseRequested || cancelRequested) {
                     XetNative.nativeCancel()
                     break
                 }
@@ -994,20 +965,9 @@ class ModelDownloadService : Service() {
                 throw CancellationException("download interrupted")
             }
             if (result == 0) break
-
-            val nativeError = XetNative.nativeLastError().orEmpty()
-            val controlledCancellation =
-                result == 1 || nativeError.contains("cancel", ignoreCase = true)
-            if (requestedConstraintRestart && controlledCancellation) {
-                DownloadDiagnostics.info(
-                    this@ModelDownloadService,
-                    "Xet controlled restart file=$currentFileName result=$result " +
-                        "resume=${destFile.length()}",
-                )
-                continue
-            }
             if (result == 1) throw CancellationException("Xet cancelled")
 
+            val nativeError = XetNative.nativeLastError().orEmpty()
             val message = nativeError.ifBlank { "unknown Xet error" }
             DownloadDiagnostics.warn(
                 this@ModelDownloadService,

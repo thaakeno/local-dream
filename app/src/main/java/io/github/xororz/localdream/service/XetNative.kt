@@ -31,14 +31,6 @@ internal object XetNative {
 
     external fun nativeProgressTotalBytes(): Long
 
-    external fun nativeProgressBytesPerSecond(): Long
-
-    external fun nativeTransferBytes(): Long
-
-    external fun nativeTransferTotalBytes(): Long
-
-    external fun nativeTransferBytesPerSecond(): Long
-
     external fun nativeCancel()
 
     external fun nativeLastError(): String?

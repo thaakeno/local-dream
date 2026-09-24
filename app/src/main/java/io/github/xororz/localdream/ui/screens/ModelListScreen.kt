@@ -357,8 +357,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var currentEtaSeconds by remember { mutableStateOf<Long?>(null) }
     var currentDownloadFile by remember { mutableStateOf<String?>(null) }
     var currentDownloadUsesXet by remember { mutableStateOf(false) }
-    var currentXetTransferBytes by remember { mutableLongStateOf(0L) }
-    var currentXetTransferTotalBytes by remember { mutableLongStateOf(0L) }
     var downloadPaused by remember { mutableStateOf(false) }
     var downloadError by remember { mutableStateOf<String?>(null) }
     var showDownloadConfirm by remember { mutableStateOf<Model?>(null) }
@@ -439,8 +437,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         currentEtaSeconds = state.etaSeconds
                         currentDownloadFile = state.currentFileName
                         currentDownloadUsesXet = state.usingXet
-                        currentXetTransferBytes = state.xetTransferBytes
-                        currentXetTransferTotalBytes = state.xetTransferTotalBytes
                         downloadPaused = false
                     }
                 }
@@ -458,8 +454,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         currentEtaSeconds = null
                         currentDownloadFile = state.currentFileName
                         currentDownloadUsesXet = state.usingXet
-                        currentXetTransferBytes = 0L
-                        currentXetTransferTotalBytes = 0L
                         downloadPaused = true
                     }
                 }
@@ -471,8 +465,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         currentProgress = null
                         currentDownloadFile = null
                         currentDownloadUsesXet = false
-                        currentXetTransferBytes = 0L
-                        currentXetTransferTotalBytes = 0L
                         downloadPaused = false
                     }
                 }
@@ -514,8 +506,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         currentEtaSeconds = null
                         currentDownloadFile = null
                         currentDownloadUsesXet = false
-                        currentXetTransferBytes = 0L
-                        currentXetTransferTotalBytes = 0L
                         downloadPaused = false
                     }
                 }
@@ -2152,8 +2142,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 currentFileName = currentDownloadFile,
                 paused = downloadPaused,
                 usingXet = currentDownloadUsesXet,
-                xetTransferBytes = currentXetTransferBytes,
-                xetTransferTotalBytes = currentXetTransferTotalBytes,
                 onMinimize = { showDownloadDetails = false },
                 onPauseResume = {
                     context.startService(
@@ -2297,8 +2285,6 @@ private fun DownloadDetailsSheet(
     currentFileName: String?,
     paused: Boolean,
     usingXet: Boolean,
-    xetTransferBytes: Long,
-    xetTransferTotalBytes: Long,
     onMinimize: () -> Unit,
     onPauseResume: () -> Unit,
     onCancel: () -> Unit,
@@ -2419,22 +2405,6 @@ private fun DownloadDetailsSheet(
                         },
                     )
                 },
-            )
-        }
-
-        if (usingXet && xetTransferBytes > 0L) {
-            Text(
-                text = buildString {
-                    append(stringResource(R.string.xet_network_transfer))
-                    append(": ")
-                    append(formatBytes(xetTransferBytes))
-                    if (xetTransferTotalBytes > 0L) {
-                        append(" / ")
-                        append(formatBytes(xetTransferTotalBytes))
-                    }
-                },
-                style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 

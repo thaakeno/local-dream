@@ -14,10 +14,6 @@ static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_SESSION: Mutex<Option<XetSession>> = Mutex::new(None);
 static ACTIVE_PROGRESS_BYTES: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_PROGRESS_TOTAL: AtomicU64 = AtomicU64::new(0);
-static ACTIVE_PROGRESS_SPEED_BPS: AtomicU64 = AtomicU64::new(0);
-static ACTIVE_TRANSFER_BYTES: AtomicU64 = AtomicU64::new(0);
-static ACTIVE_TRANSFER_TOTAL: AtomicU64 = AtomicU64::new(0);
-static ACTIVE_TRANSFER_SPEED_BPS: AtomicU64 = AtomicU64::new(0);
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 
 fn set_error(message: impl Into<String>) {
@@ -75,23 +71,38 @@ fn configure_mobile_runtime(memory_budget_bytes: u64) {
 
     let budget = memory_budget_bytes.max(1);
 
-    // Let xet-core's adaptive controller do what it is designed for. Its defaults
-    // start conservatively and scale based on measured network health; Android's
-    // link-bandwidth estimate is not used as a throughput cap.
+    // Xet already has adaptive concurrency. Start from a device-derived amount of
+    // parallelism so a flagship phone does not spend the first part of a download
+    // stuck at one connection, then let Xet continuously adapt from there.
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(1)
+        .max(1);
+    let initial_download_concurrency = (cpu_count as f64).sqrt().ceil() as u64;
+    let max_download_concurrency = cpu_count
+        .saturating_mul(2)
+        .max(initial_download_concurrency);
+
     std::env::set_var("HF_XET_CLIENT_ENABLE_ADAPTIVE_CONCURRENCY", "1");
     std::env::remove_var("HF_XET_FIXED_DOWNLOAD_CONCURRENCY");
-    std::env::remove_var("HF_XET_CLIENT_AC_MIN_DOWNLOAD_CONCURRENCY");
-    std::env::remove_var("HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY");
-    std::env::remove_var("HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY");
+    std::env::set_var("HF_XET_CLIENT_AC_MIN_DOWNLOAD_CONCURRENCY", "1");
+    std::env::set_var(
+        "HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY",
+        initial_download_concurrency.to_string(),
+    );
+    std::env::set_var(
+        "HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY",
+        max_download_concurrency.to_string(),
+    );
     std::env::set_var("HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS", "1");
 
-    // Keep reconstruction memory phone-safe without imposing one fixed desktop/mobile
-    // profile. Every value scales from Android's current memory budget.
+    // Size reconstruction buffers only from the current Android memory budget.
+    // This keeps the fast stream path fed without using the multi-gigabyte desktop defaults.
     let base_buffer = (budget / 4).max(1);
     let per_file_buffer = (budget / 8).max(1);
     let prefetch_buffer = (budget / 4).max(1);
     let min_fetch = (budget / 16).max(1);
-    let max_fetch = (budget / 2).max(min_fetch);
+    let max_fetch = budget.max(min_fetch);
 
     std::env::set_var("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE", bytes_as_mib_env(base_buffer));
     std::env::set_var("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE", bytes_as_mib_env(per_file_buffer));
@@ -122,10 +133,6 @@ fn run_download(
     CANCEL_REQUESTED.store(false, Ordering::Release);
     ACTIVE_PROGRESS_BYTES.store(offset, Ordering::Release);
     ACTIVE_PROGRESS_TOTAL.store(size, Ordering::Release);
-    ACTIVE_PROGRESS_SPEED_BPS.store(0, Ordering::Release);
-    ACTIVE_TRANSFER_BYTES.store(0, Ordering::Release);
-    ACTIVE_TRANSFER_TOTAL.store(0, Ordering::Release);
-    ACTIVE_TRANSFER_SPEED_BPS.store(0, Ordering::Release);
     set_error("");
 
     let session = XetSessionBuilder::new()
@@ -257,38 +264,6 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
     _class: JClass,
 ) -> jlong {
     ACTIVE_PROGRESS_TOTAL.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_nativeProgressBytesPerSecond(
-    _env: JNIEnv,
-    _class: JClass,
-) -> jlong {
-    ACTIVE_PROGRESS_SPEED_BPS.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_nativeTransferBytes(
-    _env: JNIEnv,
-    _class: JClass,
-) -> jlong {
-    ACTIVE_TRANSFER_BYTES.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_nativeTransferTotalBytes(
-    _env: JNIEnv,
-    _class: JClass,
-) -> jlong {
-    ACTIVE_TRANSFER_TOTAL.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_nativeTransferBytesPerSecond(
-    _env: JNIEnv,
-    _class: JClass,
-) -> jlong {
-    ACTIVE_TRANSFER_SPEED_BPS.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
 }
 
 #[no_mangle]
