@@ -21,7 +21,7 @@
 extern "C" {
 #endif
 
-#define DIT_ENGINE_ABI_VERSION 5
+#define DIT_ENGINE_ABI_VERSION 6
 
 // Name of the single symbol the core resolves after dlopen.
 #define DIT_ENGINE_ENTRY_SYMBOL "dit_engine_get_api"
@@ -42,6 +42,13 @@ typedef struct {
   const char *llm_path;
   const char *llm_vision_path;
   const char *vae_path;
+  // Optional runtime LoRA. Kept separate from the quantized GGUF base so the
+  // adapter update is never destructively merged/requantized.
+  const char *lora_path;
+  float lora_multiplier;
+  // Enables the exact Viggle v0.2.1 six-pass Qwen schedule, including its
+  // resolution-dependent FlowMatch shift and terminal zero.
+  bool viggle_turbo_schedule;
   // ggml device spec, e.g. "HTP0" for the Hexagon NPU or "CPU".
   const char *backend;
   // Where to keep model parameters, e.g. "te=disk" to stream the text encoder
