@@ -54,8 +54,6 @@ fn configure_writable_runtime(cache_dir: &str) -> Result<(), String> {
 
     // Keep mobile disk usage tiny: downloads do not need the optional chunk
     // cache, and console logging avoids Xet creating its default logs directory.
-    std::env::set_var("HF_XET_CHUNK_CACHE_SIZE_BYTES", "0");
-    std::env::set_var("HF_XET_SHARD_CACHE_SIZE_LIMIT", "64mb");
     std::env::set_var("HF_XET_LOG_DEST", "");
 
     Ok(())
