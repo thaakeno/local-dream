@@ -758,7 +758,27 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
+                Row {
+                    TextButton(
+                        enabled = capturedLogs.isNotBlank(),
+                        onClick = {
+                            val clipboard =
+                                context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(
+                                ClipData.newPlainText("Local Dream captured logs", capturedLogs),
+                            )
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.logs_copied),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        },
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.copy_logs))
+                    }
+                    TextButton(onClick = {
                     val timestamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
                         .format(Date())
                     val filename = "local_dream_log_$timestamp.log"
@@ -810,8 +830,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             LogCapture.consume()
                         }
                     }
-                }) {
-                    Text(stringResource(R.string.save))
+                    }) {
+                        Text(stringResource(R.string.save))
+                    }
                 }
             },
             dismissButton = {

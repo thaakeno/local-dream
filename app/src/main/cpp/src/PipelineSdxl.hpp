@@ -58,11 +58,16 @@ class PipelineSdxl : public PipelineQnn {
       QNN_ERROR("Failed create QNN VAE Decoder model.");
       return false;
     }
-    if (!vae_encoder_path_.empty()) {
+    if (vae_encoder_path_.empty()) {
+      QNN_INFO("img2img disabled: VAE encoder not available");
+    } else if (getenv("LOCALDREAM_SDXL_SPILL_FILL_PROBE")) {
+      // Probe mode needs a real encoder context so the backend can report its
+      // standalone spill/fill requirement. Normal mode keeps it lazy instead.
       vae_encoder_ = qnn_runtime::createModel(vae_encoder_path_, "vae_encoder");
       if (!vae_encoder_) QNN_WARN("Failed create QNN VAE Enc model.");
     } else {
-      QNN_INFO("img2img disabled: VAE encoder not loaded");
+      QNN_INFO(
+          "SDXL fast mode: VAE encoder is lazy; UNET + decoder stay resident");
     }
 
     // Probe mode: getProperty(MAX_SPILLFILL_BUFFER_SIZE) returns 0 on this HTP
@@ -90,13 +95,12 @@ class PipelineSdxl : public PipelineQnn {
       return false;
     }
 
-    // Non-lowram keeps UNet + VAE decoder (+ encoder) resident together but
-    // they execute strictly in sequence, never concurrently. Register all three
-    // QNN contexts into one group so they share a single HTP spill-fill scratch
-    // buffer instead of each reserving its own multi-GB allocation. UNet is the
-    // group head (created first, destroyed last); the VAEs reference its
-    // handle. Size comes from the env var because pre-2.35 binaries don't carry
-    // it.
+    // Fast mode keeps UNet + VAE decoder resident. The VAE encoder is loaded
+    // only for img2img/aspect encoding and released before denoising, because
+    // holding an otherwise-idle third QNN context through sampling can exhaust
+    // native allocator headroom even on 16 GB devices. This is not low-RAM
+    // mode: the hot UNet, decoder and CLIP sessions remain resident. UNet is the
+    // spill/fill group head; on-demand VAEs join that same group.
     const uint64_t sf_bytes = spillFillGroupBytes();
     Qnn_ContextHandle_t group_head = nullptr;
     if (sf_bytes)
@@ -118,13 +122,6 @@ class PipelineSdxl : public PipelineQnn {
       return false;
     logSpillFill("VAEDecoder", vae_decoder_);
 
-    if (vae_encoder_) {
-      vae_encoder_->setSpillFillGroup(sf_bytes, group_head);
-      if (qnn_runtime::initializeApp("VAEEncoder", vae_encoder_) !=
-          EXIT_SUCCESS)
-        return false;
-      logSpillFill("VAEEncoder", vae_encoder_);
-    }
     return true;
   }
 
@@ -191,6 +188,13 @@ class PipelineSdxl : public PipelineQnn {
 
   void beginDenoise(const GenerationRequest &req) override {
     const int tokens = text_encoder_.contextLength(req.prompt, req.negative_prompt);
+
+    // The encoder has no work during sampling. Drop only this idle context
+    // before the UNet loop; UNet/decoder/CLIP remain hot in normal fast mode.
+    if (vae_encoder_) {
+      releaseVaeEncoder();
+    }
+
     if (unet_ && unet_tokens_ == tokens) return;
     // The UNet is the spill-fill group head, so release its dependents first.
     vae_encoder_.reset();
@@ -249,7 +253,7 @@ class PipelineSdxl : public PipelineQnn {
                  float *pixels) override {
     if (!vae_decoder_) {
       vae_decoder_ = createVaeModel(vae_decoder_path_, "vae_decoder");
-      QNN_INFO("[lowram] SDXL VAE Decoder loaded");
+      QNN_INFO("SDXL VAE Decoder loaded");
     }
     if (!vae_decoder_) throw std::runtime_error("QNN VAE Dec missing");
     if (StatusCode::SUCCESS != vae_decoder_->executeVaeDecoderGraphsSDXL(
@@ -368,15 +372,15 @@ class PipelineSdxl : public PipelineQnn {
   void loadVaeEncoderIfNeeded() {
     if (vae_encoder_) return;
     if (vae_encoder_path_.empty())
-      throw std::runtime_error("[lowram] SDXL VAE Encoder path missing");
+      throw std::runtime_error("SDXL VAE Encoder path missing");
     vae_encoder_ = createVaeModel(vae_encoder_path_, "vae_encoder");
-    QNN_INFO("[lowram] SDXL VAE Encoder loaded");
+    QNN_INFO("SDXL VAE Encoder loaded on demand");
   }
 
   void releaseVaeEncoder() {
     if (!vae_encoder_) return;
     vae_encoder_.reset();
-    QNN_INFO("[lowram] SDXL VAE Encoder released");
+    QNN_INFO("SDXL VAE Encoder released before denoise");
   }
 
   // Encoder 1 (CLIP-L): 77x768 -> last_hidden_state 77x768.

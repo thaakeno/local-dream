@@ -1051,13 +1051,15 @@ inline GenerationResult Pipeline::generate(
         }
       }
 
-      // The full-resolution pixel buffers are only needed again for the
-      // post-decode laplacian blend, which runs only with a user mask. Free
-      // them otherwise: at ultrafix sizes (e.g. 4096x4096) each one holds
-      // ~190 MB through the whole denoising loop.
-      if (!req.has_mask) {
+      // Full-resolution pixel buffers are needed again only for a REAL user
+      // mask. Aspect-ratio txt2img installs a synthetic mask, so checking
+      // has_mask kept ~25-40 MB of dead image/mask storage alive through every
+      // SDXL denoise step. Drop those buffers before sampling.
+      if (!req.user_supplied_mask) {
         req.img_data = std::vector<float>();
+        req.mask_data_full = std::vector<float>();
         original_image = xt::xarray<float>();
+        mask_full = xt::xarray<float>();
       }
 
       current_step++;
@@ -1080,6 +1082,14 @@ inline GenerationResult Pipeline::generate(
 
     beginDenoise(req);
 
+    // Reuse the host-side UNet IO across every step. The old path allocated
+    // two fresh vectors (plus temporary CFG arrays) after every QNN execution;
+    // under a large resident SDXL QNN working set that allocator churn could
+    // surface as std::bad_alloc even though the graph itself completed.
+    std::vector<float> latents_in_vec(batch_size * single_latent_size);
+    std::vector<float> unet_out_latents(batch_size * single_latent_size);
+    xt::xarray<float> noise_pred = xt::zeros<float>(shape);
+
     for (int i = start_step; i < (int)timesteps.size(); ++i) {
       if (req.show_diffusion_process && previewSupported() &&
           (i - start_step) % req.show_diffusion_stride == 0) {
@@ -1098,35 +1108,30 @@ inline GenerationResult Pipeline::generate(
 
       const bool skip_uncond = canSkipUncond() && (req.cfg == 1.0f);
 
-      xt::xarray<float> noise_pred;
       if (unet_tiled) {
         noise_pred =
             runUnetTiled(req, latents_scaled, static_cast<int>(current_ts),
                          skip_uncond, cond);
       } else {
-        std::vector<float> latents_in_vec;
-        latents_in_vec.reserve(batch_size * single_latent_size);
-        latents_in_vec.insert(latents_in_vec.end(), latents_scaled.begin(),
-                              latents_scaled.end());
-        latents_in_vec.insert(latents_in_vec.end(), latents_scaled.begin(),
-                              latents_scaled.end());
-        std::vector<float> unet_out_latents(batch_size * single_latent_size);
+        std::copy(latents_scaled.begin(), latents_scaled.end(),
+                  latents_in_vec.begin());
+        std::copy(latents_scaled.begin(), latents_scaled.end(),
+                  latents_in_vec.begin() + single_latent_size);
 
         runUnetStep(req, latents_in_vec.data(), current_ts, skip_uncond, cond,
                     unet_out_latents.data());
 
+        float *dst = noise_pred.data();
         if (skip_uncond) {
-          // cfg = 1 path: only the cond half of unet_out_latents was filled.
-          std::vector<float> cond_only(
-              unet_out_latents.begin() + single_latent_size,
-              unet_out_latents.end());
-          noise_pred = xt::adapt(cond_only, shape);
+          // cfg = 1 path: only the conditional half is produced.
+          std::copy(unet_out_latents.begin() + single_latent_size,
+                    unet_out_latents.end(), dst);
         } else {
-          xt::xarray<float> noise_pred_batch =
-              xt::adapt(unet_out_latents, shape_batch2);
-          xt::xarray<float> uncond = xt::view(noise_pred_batch, 0);
-          xt::xarray<float> txt = xt::view(noise_pred_batch, 1);
-          noise_pred = xt::eval(uncond + req.cfg * (txt - uncond));
+          const float *uncond = unet_out_latents.data();
+          const float *txt = uncond + single_latent_size;
+          for (int k = 0; k < single_latent_size; ++k) {
+            dst[k] = uncond[k] + req.cfg * (txt[k] - uncond[k]);
+          }
         }
       }
 

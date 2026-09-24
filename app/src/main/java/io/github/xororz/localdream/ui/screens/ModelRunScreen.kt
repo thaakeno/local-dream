@@ -4012,7 +4012,15 @@ private fun PromptCountLabel(label: String, count: Int, max: Int, showCount: Boo
         Text(label)
         if (showCount) {
             Spacer(Modifier.width(6.dp))
-            Text(if (max == 0) "$count/∞" else "$count/$max")
+            val counterText = when {
+                max == 0 -> stringResource(R.string.prompt_token_count_unlimited, count)
+                max > 77 -> {
+                    val chunks = ((max - 2) / 75).coerceAtLeast(1)
+                    stringResource(R.string.prompt_token_count_chunks, count, max, chunks)
+                }
+                else -> stringResource(R.string.prompt_token_count, count, max)
+            }
+            Text(counterText)
         }
     }
 }
