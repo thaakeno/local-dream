@@ -423,6 +423,12 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 is ModelDownloadService.DownloadState.Downloading -> {
                     val model = modelRepository.models.find { it.id == state.modelId }
                     if (model != null) {
+                        // If the Activity attaches to a download that was already running,
+                        // show the full sheet once. After the user minimizes it, ordinary
+                        // progress updates never force it open again.
+                        if (downloadingModel == null) {
+                            showDownloadDetails = true
+                        }
                         downloadingModel = model
                         currentProgress = DownloadProgress(
                             progress = state.progress,
@@ -966,6 +972,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             showDownloadConfirm = null
                             downloadingModel = model
                             currentProgress = null
+                            showDownloadDetails = true
                             model.startDownload(context)
                         },
                     ) {
