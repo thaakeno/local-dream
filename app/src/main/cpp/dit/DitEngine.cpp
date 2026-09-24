@@ -7,6 +7,7 @@
 #include "DitEngine.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -80,6 +81,9 @@ struct dit_ctx {
   sd_ctx_t *sd = nullptr;
   dit_model_kind kind = DIT_MODEL_Z_IMAGE;
   std::string last_error;
+  std::string lora_path;
+  float lora_multiplier = 1.0f;
+  bool viggle_turbo_schedule = false;
   int preview_interval = 0;
 };
 
@@ -165,6 +169,10 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
 
   auto *ctx = new dit_ctx();
   ctx->kind = params->kind;
+  if (params->lora_path) ctx->lora_path = params->lora_path;
+  ctx->lora_multiplier =
+      params->lora_multiplier == 0.0f ? 1.0f : params->lora_multiplier;
+  ctx->viggle_turbo_schedule = params->viggle_turbo_schedule;
   ctx->sd = new_sd_ctx(&sd_params);
   if (!ctx->sd) {
     g_create_error = "new_sd_ctx failed";
@@ -201,6 +209,45 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   gen.sample_params.guidance.distilled_guidance = params->guidance;
   if (params->sample_method && params->sample_method[0])
     gen.sample_params.sample_method = str_to_sample_method(params->sample_method);
+
+  // Keep quantized base weights immutable. stable-diffusion.cpp's runtime LoRA
+  // path evaluates W*x + scale*B*A*x and therefore avoids the quality loss from
+  // merging the tiny Viggle update into Q4/Q5 weights.
+  sd_lora_t runtime_lora{};
+  if (!ctx->lora_path.empty()) {
+    runtime_lora.is_high_noise = false;
+    runtime_lora.multiplier = ctx->lora_multiplier;
+    runtime_lora.path = ctx->lora_path.c_str();
+    gen.loras = &runtime_lora;
+    gen.lora_count = 1;
+  }
+
+  // Viggle v0.2.1 is not a generic "Euler, six evenly spaced steps" LoRA.
+  // Reproduce its published FlowMatch schedule exactly: shift the six raw
+  // student nodes as a function of Qwen latent token count and append terminal
+  // zero. This fixes the washed-out/ghosted results produced by the old generic
+  // schedule while preserving the six transformer passes.
+  std::vector<float> turbo_sigmas;
+  if (ctx->viggle_turbo_schedule) {
+    static constexpr float kNodes[] = {
+        1.0f, 0.9375f, 0.875f, 0.75f, 0.5f, 0.25f};
+    const double tokens =
+        (static_cast<double>(params->width) / 16.0) *
+        (static_cast<double>(params->height) / 16.0);
+    const double mu =
+        0.5 + (0.9 - 0.5) * (tokens - 256.0) / (8192.0 - 256.0);
+    const double emu = std::exp(mu);
+    turbo_sigmas.reserve(7);
+    for (float t : kNodes) {
+      const double shifted = emu / (emu + (1.0 / static_cast<double>(t) - 1.0));
+      turbo_sigmas.push_back(static_cast<float>(shifted));
+    }
+    turbo_sigmas.push_back(0.0f);
+    gen.sample_params.sample_steps = 6;
+    gen.sample_params.custom_sigmas = turbo_sigmas.data();
+    gen.sample_params.custom_sigmas_count =
+        static_cast<int>(turbo_sigmas.size());
+  }
 
   if (params->init_image_rgb && params->init_width > 0 && params->init_height > 0) {
     gen.init_image.width = static_cast<uint32_t>(params->init_width);
