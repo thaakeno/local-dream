@@ -1,8 +1,10 @@
 use std::fs::{create_dir_all, OpenOptions};
 use std::path::PathBuf;
 use std::io::{Seek, SeekFrom, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use http::HeaderMap;
 use jni::objects::{JClass, JString};
@@ -12,6 +14,9 @@ use xet::xet_session::{XetFileInfo, XetSession, XetSessionBuilder};
 
 static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_SESSION: Mutex<Option<XetSession>> = Mutex::new(None);
+static ACTIVE_PROGRESS_BYTES: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_PROGRESS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_PROGRESS_SPEED_BPS: AtomicU64 = AtomicU64::new(0);
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 
 fn set_error(message: impl Into<String>) {
@@ -56,42 +61,49 @@ fn configure_writable_runtime(cache_dir: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn configure_mobile_profile(profile: i32) {
-    // Vendored native-tls uses OpenSSL on Android. Point it at Android's
-    // system CA directory so public Hugging Face/CAS certificates validate.
+fn bytes_as_mib_env(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    let mib = bytes.saturating_add(MIB - 1) / MIB;
+    format!("{}mb", mib.max(1))
+}
+
+fn configure_mobile_runtime(
+    memory_budget_bytes: u64,
+    min_concurrency: i32,
+    initial_concurrency: i32,
+    max_concurrency: i32,
+) {
     #[cfg(target_os = "android")]
     std::env::set_var("SSL_CERT_DIR", "/system/etc/security/cacerts");
 
-    // Never enable the desktop-oriented HP preset on Android.
     std::env::remove_var("HF_XET_HIGH_PERFORMANCE");
     std::env::remove_var("HF_XET_HP");
 
-    let (initial, max, buffer, per_file, limit, prefetch) = match profile {
-        // Hot / constrained.
-        1 => ("1", "2", "64mb", "24mb", "96mb", "48mb"),
-        // Warm.
-        2 => ("2", "4", "96mb", "32mb", "160mb", "64mb"),
-        // Cool/default. Still intentionally far below desktop Xet defaults.
-        _ => ("3", "6", "128mb", "48mb", "224mb", "96mb"),
-    };
+    let budget = memory_budget_bytes.max(1);
+    let base_buffer = (budget / 2).max(1);
+    let per_file_buffer = (budget / 4).max(1);
+    let prefetch_buffer = (budget / 2).max(1);
+    let min_fetch = (budget / 8).max(1);
+    let max_fetch = budget.saturating_mul(2).max(min_fetch);
+
+    let min_c = min_concurrency.max(1);
+    let max_c = max_concurrency.max(min_c);
+    let initial_c = initial_concurrency.clamp(min_c, max_c);
 
     std::env::set_var("HF_XET_CLIENT_ENABLE_ADAPTIVE_CONCURRENCY", "1");
-    std::env::set_var("HF_XET_CLIENT_AC_MIN_DOWNLOAD_CONCURRENCY", "1");
-    std::env::set_var("HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY", initial);
-    std::env::set_var("HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY", max);
+    std::env::set_var("HF_XET_CLIENT_AC_MIN_DOWNLOAD_CONCURRENCY", min_c.to_string());
+    std::env::set_var("HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY", initial_c.to_string());
+    std::env::set_var("HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY", max_c.to_string());
     std::env::set_var("HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS", "1");
 
-    // Explicitly bound reconstruction memory for a phone. The upstream defaults
-    // can scale into multi-GB buffers on large-memory machines.
-    std::env::set_var("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE", buffer);
-    std::env::set_var("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE", per_file);
-    std::env::set_var("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT", limit);
-    std::env::set_var("HF_XET_RECONSTRUCTION_MIN_PREFETCH_BUFFER", prefetch);
-    std::env::set_var("HF_XET_RECONSTRUCTION_MIN_RECONSTRUCTION_FETCH_SIZE", "32mb");
-    std::env::set_var("HF_XET_RECONSTRUCTION_MAX_RECONSTRUCTION_FETCH_SIZE", "512mb");
+    std::env::set_var("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE", bytes_as_mib_env(base_buffer));
+    std::env::set_var("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE", bytes_as_mib_env(per_file_buffer));
+    std::env::set_var("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT", bytes_as_mib_env(budget));
+    std::env::set_var("HF_XET_RECONSTRUCTION_MIN_PREFETCH_BUFFER", bytes_as_mib_env(prefetch_buffer));
+    std::env::set_var("HF_XET_RECONSTRUCTION_MIN_RECONSTRUCTION_FETCH_SIZE", bytes_as_mib_env(min_fetch));
+    std::env::set_var("HF_XET_RECONSTRUCTION_MAX_RECONSTRUCTION_FETCH_SIZE", bytes_as_mib_env(max_fetch));
     std::env::set_var("HF_XET_TELEMETRY_ENABLED", "0");
 }
-
 fn run_download(
     hash: String,
     size: u64,
@@ -99,7 +111,10 @@ fn run_download(
     dest_path: String,
     cache_dir: String,
     offset: u64,
-    profile: i32,
+    memory_budget_bytes: u64,
+    min_concurrency: i32,
+    initial_concurrency: i32,
+    max_concurrency: i32,
 ) -> Result<i32, String> {
     if offset > size {
         return Err(format!("resume offset {offset} is larger than file size {size}"));
@@ -109,26 +124,80 @@ fn run_download(
     }
 
     configure_writable_runtime(&cache_dir)?;
-    configure_mobile_profile(profile);
+    configure_mobile_runtime(
+        memory_budget_bytes,
+        min_concurrency,
+        initial_concurrency,
+        max_concurrency,
+    );
     CANCEL_REQUESTED.store(false, Ordering::Release);
+    ACTIVE_PROGRESS_BYTES.store(offset, Ordering::Release);
+    ACTIVE_PROGRESS_TOTAL.store(size, Ordering::Release);
+    ACTIVE_PROGRESS_SPEED_BPS.store(0, Ordering::Release);
+    set_error("");
 
     let session = XetSessionBuilder::new()
         .build()
         .map_err(|e| format!("Xet session creation failed: {e}"))?;
 
-    let group = session
-        .new_download_stream_group()
-        .map_err(|e| format!("Xet download group creation failed: {e}"))?
-        .with_token_refresh_url(refresh_url, HeaderMap::new())
-        .build_blocking()
-        .map_err(|e| format!("Xet authentication failed: {e}"))?;
-
     if let Ok(mut active) = ACTIVE_SESSION.lock() {
         *active = Some(session.clone());
     }
 
-    let result = (|| -> Result<i32, String> {
-        let file_info = XetFileInfo::new(hash, size);
+    let file_info = XetFileInfo::new(hash.clone(), size);
+
+    let result = if offset == 0 {
+        let group = session
+            .new_file_download_group()
+            .map_err(|e| format!("Xet download group creation failed: {e}"))?
+            .with_token_refresh_url(refresh_url.clone(), HeaderMap::new())
+            .build_blocking()
+            .map_err(|e| format!("Xet authentication failed: {e}"))?;
+
+        let observer = group.clone();
+        let monitor_stop = Arc::new(AtomicBool::new(false));
+        let monitor_stop_worker = monitor_stop.clone();
+        let monitor = thread::spawn(move || {
+            while !monitor_stop_worker.load(Ordering::Acquire) {
+                let progress = observer.progress();
+                ACTIVE_PROGRESS_BYTES.store(progress.total_bytes_completed, Ordering::Release);
+                ACTIVE_PROGRESS_TOTAL.store(progress.total_bytes, Ordering::Release);
+                ACTIVE_PROGRESS_SPEED_BPS.store(
+                    progress.total_bytes_completion_rate.unwrap_or(0.0).max(0.0) as u64,
+                    Ordering::Release,
+                );
+                thread::sleep(Duration::from_millis(200));
+            }
+        });
+
+        let download_result = (|| -> Result<i32, String> {
+            group
+                .download_file_to_path_blocking(file_info.clone(), PathBuf::from(&dest_path))
+                .map_err(|e| format!("Xet file download start failed: {e}"))?;
+            group
+                .finish_blocking()
+                .map_err(|e| format!("Xet download failed: {e}"))?;
+
+            if CANCEL_REQUESTED.load(Ordering::Acquire) {
+                return Ok(1);
+            }
+
+            ACTIVE_PROGRESS_BYTES.store(size, Ordering::Release);
+            ACTIVE_PROGRESS_TOTAL.store(size, Ordering::Release);
+            Ok(0)
+        })();
+
+        monitor_stop.store(true, Ordering::Release);
+        let _ = monitor.join();
+        download_result
+    } else {
+        let group = session
+            .new_download_stream_group()
+            .map_err(|e| format!("Xet download group creation failed: {e}"))?
+            .with_token_refresh_url(refresh_url, HeaderMap::new())
+            .build_blocking()
+            .map_err(|e| format!("Xet authentication failed: {e}"))?;
+
         let mut stream = group
             .download_stream_blocking(file_info, Some(offset..size))
             .map_err(|e| format!("Xet stream creation failed: {e}"))?;
@@ -139,44 +208,46 @@ fn run_download(
             .open(&dest_path)
             .map_err(|e| format!("Cannot open partial file: {e}"))?;
 
-        // The Kotlin side passes the last known contiguous byte offset. Trim any
-        // stale tail before appending the resumed range.
         file.set_len(offset)
             .map_err(|e| format!("Cannot truncate partial file: {e}"))?;
         file.seek(SeekFrom::Start(offset))
             .map_err(|e| format!("Cannot seek partial file: {e}"))?;
 
-        loop {
-            if CANCEL_REQUESTED.load(Ordering::Acquire) {
-                stream.cancel();
-                let _ = session.abort();
-                return Ok(1);
-            }
-
-            match stream.blocking_next() {
-                Ok(Some(bytes)) => {
-                    file.write_all(&bytes)
-                        .map_err(|e| format!("Writing Xet data failed: {e}"))?;
+        let mut written = offset;
+        (|| -> Result<i32, String> {
+            loop {
+                if CANCEL_REQUESTED.load(Ordering::Acquire) {
+                    stream.cancel();
+                    let _ = session.abort();
+                    return Ok(1);
                 }
-                Ok(None) => break,
-                Err(e) => {
-                    if CANCEL_REQUESTED.load(Ordering::Acquire) {
-                        return Ok(1);
+
+                match stream.blocking_next() {
+                    Ok(Some(bytes)) => {
+                        file.write_all(&bytes)
+                            .map_err(|e| format!("Writing Xet data failed: {e}"))?;
+                        written = written.saturating_add(bytes.len() as u64).min(size);
+                        ACTIVE_PROGRESS_BYTES.store(written, Ordering::Release);
+                        ACTIVE_PROGRESS_TOTAL.store(size, Ordering::Release);
                     }
-                    return Err(format!("Xet download failed: {e}"));
+                    Ok(None) => break,
+                    Err(e) => {
+                        if CANCEL_REQUESTED.load(Ordering::Acquire) {
+                            return Ok(1);
+                        }
+                        return Err(format!("Xet download failed: {e}"));
+                    }
                 }
             }
-        }
 
-        file.flush()
-            .map_err(|e| format!("Flushing Xet data failed: {e}"))?;
-        file.set_len(size)
-            .map_err(|e| format!("Finalizing Xet file failed: {e}"))?;
-
-        // Streaming groups intentionally have no finish() API. Reaching
-        // blocking_next() == None means the requested range is complete.
-        Ok(0)
-    })();
+            file.flush()
+                .map_err(|e| format!("Flushing Xet data failed: {e}"))?;
+            file.set_len(size)
+                .map_err(|e| format!("Finalizing Xet file failed: {e}"))?;
+            ACTIVE_PROGRESS_BYTES.store(size, Ordering::Release);
+            Ok(0)
+        })()
+    };
 
     if let Ok(mut active) = ACTIVE_SESSION.lock() {
         *active = None;
@@ -194,15 +265,18 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
     dest_path: JString,
     cache_dir: JString,
     offset: jlong,
-    profile: jint,
+    memory_budget_bytes: jlong,
+    min_concurrency: jint,
+    initial_concurrency: jint,
+    max_concurrency: jint,
 ) -> jint {
     let result = (|| {
         let hash = from_jstring(&mut env, hash)?;
         let refresh_url = from_jstring(&mut env, refresh_url)?;
         let dest_path = from_jstring(&mut env, dest_path)?;
         let cache_dir = from_jstring(&mut env, cache_dir)?;
-        if size < 0 || offset < 0 {
-            return Err("negative size/offset".to_string());
+        if size < 0 || offset < 0 || memory_budget_bytes <= 0 {
+            return Err("invalid size/offset/runtime memory budget".to_string());
         }
         run_download(
             hash,
@@ -211,7 +285,10 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
             dest_path,
             cache_dir,
             offset as u64,
-            profile,
+            memory_budget_bytes as u64,
+            min_concurrency,
+            initial_concurrency,
+            max_concurrency,
         )
     })();
 
@@ -222,6 +299,30 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
             -1
         }
     }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_nativeProgressBytes(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    ACTIVE_PROGRESS_BYTES.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_nativeProgressTotalBytes(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    ACTIVE_PROGRESS_TOTAL.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_nativeProgressBytesPerSecond(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    ACTIVE_PROGRESS_SPEED_BPS.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
 }
 
 #[no_mangle]
