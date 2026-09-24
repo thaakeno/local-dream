@@ -20,6 +20,7 @@ import io.github.xororz.localdream.utils.Http
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
@@ -370,7 +371,12 @@ class ModelDownloadService : Service() {
             _downloadState.value = paused
             notificationManager.notify(
                 NOTIFICATION_ID,
-                createPausedNotification(request.modelName, paused.progress),
+                createPausedNotification(
+                    request.modelName,
+                    paused.progress,
+                    paused.downloadedBytes,
+                    paused.totalBytes,
+                ),
             )
         } else {
             discardPartialFiles(request.modelType, request.modelId)
@@ -422,6 +428,8 @@ class ModelDownloadService : Service() {
             val info = remoteInfo[remote] ?: RemoteInfo(-1L)
             val expected = info.size
             val url = "$base/$remote"
+
+            recoverInterruptedXetPart(part, expected)
 
             if (dest.exists() && dest.length() > 0L &&
                 (expected <= 0L || dest.length() == expected)
@@ -513,6 +521,32 @@ class ModelDownloadService : Service() {
         }
 
         if (!markerFile.isNullOrEmpty()) File(modelDir, markerFile).createNewFile()
+    }
+
+    private fun recoverInterruptedXetPart(part: File, expectedSize: Long) {
+        val sidecar = File(part.absolutePath + ".xetresume")
+        if (!sidecar.exists()) return
+
+        val frontier = runCatching { sidecar.readText().trim().toLong() }.getOrNull()
+        if (frontier == null || frontier < 0L || (expectedSize > 0L && frontier > expectedSize)) {
+            DownloadDiagnostics.warn(
+                this,
+                "Invalid Xet resume marker for ${part.name}; restarting partial file",
+            )
+            part.delete()
+            sidecar.delete()
+            return
+        }
+
+        if (part.exists() && part.length() != frontier) {
+            DownloadDiagnostics.info(
+                this,
+                "Recovering interrupted Xet partial ${part.name}: " +
+                    "sparseLength=${part.length()} contiguous=$frontier",
+            )
+            RandomAccessFile(part, "rw").use { it.setLength(frontier) }
+        }
+        sidecar.delete()
     }
 
     private fun probeRemote(url: String, wantXet: Boolean): RemoteInfo {
@@ -902,17 +936,18 @@ class ModelDownloadService : Service() {
         DownloadDiagnostics.info(
             this@ModelDownloadService,
             "Xet start file=$currentFileName size=$expectedSize " +
-                "resume=${destFile.length()} stream=true progress=confirmed-only " +
-                "speed=confirmed-file+uid-rx cacheWritable=${xetRuntimeDir.canWrite()} " +
+                "resume=${destFile.length()} stream=unordered progress=exact-logical " +
+                "speed=logical+uid-rx cacheWritable=${xetRuntimeDir.canWrite()} " +
                 "cacheFree=${xetRuntimeDir.usableSpace} " + tuning.summary(),
         )
 
         while (destFile.length() < expectedSize) {
             val offset = destFile.length()
-            val fileSpeedEstimator = RollingThroughputEstimator(windowMs = 30_000L)
+            val logicalSpeedEstimator = RollingThroughputEstimator(windowMs = 20_000L)
             val etaSpeedEstimator = RollingThroughputEstimator(windowMs = 30_000L)
             val networkSpeedEstimator = RollingThroughputEstimator(windowMs = 4_000L)
-            var lastDiagnosticAt = SystemClock.elapsedRealtime()
+            val attemptStartedAt = SystemClock.elapsedRealtime()
+            var lastDiagnosticAt = attemptStartedAt
 
             val nativeJob = async(Dispatchers.IO) {
                 XetNative.nativeDownload(
@@ -927,24 +962,21 @@ class ModelDownloadService : Service() {
             }
 
             while (!nativeJob.isCompleted) {
+                // 200 ms at ordinary phone download rates gives roughly MB-level UI
+                // updates without flooding Compose or SystemUI.
                 delay(200L)
 
-                // Truthful progress only: these bytes have actually been reconstructed
-                // by Xet and delivered into the partial model file. Never invent model
-                // bytes from network traffic between reconstruction chunks.
-                val nativeProgress =
+                val reconstructedBytes =
                     runCatching { XetNative.nativeProgressBytes() }
                         .getOrDefault(offset)
                         .coerceIn(offset, expectedSize)
-                val fileProgress = destFile.length().coerceIn(offset, expectedSize)
-                val confirmedBytes = maxOf(nativeProgress, fileProgress)
                 val now = SystemClock.elapsedRealtime()
                 val rxBytes = currentUidRxBytes()
 
-                val fileSpeed =
-                    fileSpeedEstimator.sample(now, confirmedBytes).coerceAtLeast(0L)
+                val logicalSpeed =
+                    logicalSpeedEstimator.sample(now, reconstructedBytes).coerceAtLeast(0L)
                 val etaSpeed =
-                    etaSpeedEstimator.sample(now, confirmedBytes).coerceAtLeast(0L)
+                    etaSpeedEstimator.sample(now, reconstructedBytes).coerceAtLeast(0L)
                 val networkSpeed =
                     if (rxBytes != null) {
                         networkSpeedEstimator.sample(now, rxBytes).coerceAtLeast(0L)
@@ -952,8 +984,16 @@ class ModelDownloadService : Service() {
                         0L
                     }
 
-                val reportedDone = packageOffset + confirmedBytes
-                val eta = if (effectivePackageTotal > reportedDone && etaSpeed > 0L) {
+                val reportedDone = packageOffset + reconstructedBytes
+                val elapsedMs = now - attemptStartedAt
+                val logicalDelta = reconstructedBytes - offset
+                val etaReady = elapsedMs >= 15_000L &&
+                    logicalDelta >= 8L * 1024L * 1024L
+                val eta = if (
+                    etaReady &&
+                    effectivePackageTotal > reportedDone &&
+                    etaSpeed > 0L
+                ) {
                     (effectivePackageTotal - reportedDone) / etaSpeed
                 } else {
                     null
@@ -964,7 +1004,7 @@ class ModelDownloadService : Service() {
                     modelName = modelName,
                     done = reportedDone,
                     total = effectivePackageTotal,
-                    speed = fileSpeed,
+                    speed = logicalSpeed,
                     eta = eta,
                     currentFileName = currentFileName,
                     usingXet = true,
@@ -975,8 +1015,9 @@ class ModelDownloadService : Service() {
                     DownloadDiagnostics.info(
                         this@ModelDownloadService,
                         "Xet progress file=$currentFileName " +
-                            "confirmed=$confirmedBytes/$expectedSize " +
-                            "fileBps=$fileSpeed networkBps=$networkSpeed",
+                            "logical=$reconstructedBytes/$expectedSize " +
+                            "logicalBps=$logicalSpeed networkBps=$networkSpeed " +
+                            "eta=${eta ?: "calculating"}",
                     )
                     lastDiagnosticAt = now
                 }
@@ -1060,23 +1101,27 @@ class ModelDownloadService : Service() {
             xetTransferTotalBytes = xetTransferTotalBytes,
         )
 
-        val mode =
-            if (usingXet) getString(R.string.download_mode_xet) else getString(R.string.download_mode_http)
-        val file = currentFileName?.let { " • $it" }.orEmpty()
-        val displaySpeed =
-            if (usingXet && networkSpeed > 0L) networkSpeed else speed
-        val status = listOfNotNull(
-            if (displaySpeed > 0L) buildDownloadStatus(displaySpeed, eta) else null,
-            "$mode$file",
-        ).joinToString(" • ")
+        val status = buildDownloadNotificationStatus(
+            done = done,
+            total = total,
+            bytesPerSecond = speed,
+            etaSeconds = eta,
+        )
 
-        // UI state above can update frequently, but hammering SystemUI / Super Island
-        // hundreds of times per minute is wasteful. Reuse the single foreground
-        // notification ID and refresh it at most once per second.
+        // App UI updates at 200 ms. SystemUI / Super Island only needs a 1 Hz
+        // refresh; it is still the same foreground notification ID, never a duplicate.
         val now = SystemClock.elapsedRealtime()
         if (lastSystemNotificationUpdateMs == 0L || now - lastSystemNotificationUpdateMs >= 1_000L) {
             lastSystemNotificationUpdateMs = now
-            updateNotification(modelName, progress, statusText = status)
+            updateNotification(
+                modelName = modelName,
+                progress = progress,
+                statusText = status,
+                downloadedBytes = done,
+                totalBytes = total,
+                speedBytesPerSecond = speed,
+                etaSeconds = eta,
+            )
         }
     }
 
@@ -1097,6 +1142,34 @@ class ModelDownloadService : Service() {
                 entry = zis.nextEntry
             }
         }
+    }
+
+    private fun buildDownloadNotificationStatus(
+        done: Long,
+        total: Long,
+        bytesPerSecond: Long,
+        etaSeconds: Long?,
+    ): String {
+        val amount = if (total > 0L) {
+            "${formatBytesShort(done)} / ${formatBytesShort(total)}"
+        } else {
+            formatBytesShort(done)
+        }
+        val speed = if (bytesPerSecond > 0L) {
+            String.format(Locale.US, "%.1f MB/s", bytesPerSecond / (1024.0 * 1024.0))
+        } else {
+            null
+        }
+        val eta = etaSeconds?.takeIf { it > 0L }?.let { "${formatEta(it)} left" }
+        return listOfNotNull(amount, speed, eta).joinToString(" • ")
+    }
+
+    private fun formatBytesShort(bytes: Long): String = when {
+        bytes < 1024L -> "$bytes B"
+        bytes < 1024L * 1024L -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
+        bytes < 1024L * 1024L * 1024L ->
+            String.format(Locale.US, "%.0f MB", bytes / (1024.0 * 1024.0))
+        else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
     }
 
     private fun buildDownloadStatus(bytesPerSecond: Long, etaSeconds: Long?): String? {
@@ -1144,7 +1217,12 @@ class ModelDownloadService : Service() {
         activeRequest?.let {
             notificationManager.notify(
                 NOTIFICATION_ID,
-                createPausedNotification(it.modelName, state.progress),
+                createPausedNotification(
+                    it.modelName,
+                    state.progress,
+                    state.downloadedBytes,
+                    state.totalBytes,
+                ),
             )
         }
     }
@@ -1213,6 +1291,10 @@ class ModelDownloadService : Service() {
         progress: Float,
         isExtracting: Boolean = false,
         statusText: String? = null,
+        downloadedBytes: Long = 0L,
+        totalBytes: Long = 0L,
+        speedBytesPerSecond: Long = 0L,
+        etaSeconds: Long? = null,
     ): android.app.Notification {
         val title = if (isExtracting) getString(R.string.extracting) else getString(R.string.downloading_model, modelName)
         val openAppIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
@@ -1264,10 +1346,11 @@ class ModelDownloadService : Service() {
             capability = hyperOsFocusCapability,
             modelName = modelName,
             progress = progress,
-            statusText = statusText,
+            downloadedBytes = downloadedBytes,
+            totalBytes = totalBytes,
+            speedBytesPerSecond = speedBytesPerSecond,
+            etaSeconds = etaSeconds,
             paused = false,
-            pauseResumeIntent = pausePendingIntent,
-            cancelIntent = cancelPendingIntent,
         )
         return notification
     }
@@ -1275,6 +1358,8 @@ class ModelDownloadService : Service() {
     private fun createPausedNotification(
         modelName: String,
         progress: Float,
+        downloadedBytes: Long,
+        totalBytes: Long,
     ): android.app.Notification {
         val openAppIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
@@ -1320,10 +1405,11 @@ class ModelDownloadService : Service() {
             capability = hyperOsFocusCapability,
             modelName = modelName,
             progress = progress,
-            statusText = getString(R.string.download_paused),
+            downloadedBytes = downloadedBytes,
+            totalBytes = totalBytes,
+            speedBytesPerSecond = 0L,
+            etaSeconds = null,
             paused = true,
-            pauseResumeIntent = resumePendingIntent,
-            cancelIntent = cancelPendingIntent,
         )
         return notification
     }
@@ -1335,6 +1421,10 @@ class ModelDownloadService : Service() {
         error: String? = null,
         isExtracting: Boolean = false,
         statusText: String? = null,
+        downloadedBytes: Long = 0L,
+        totalBytes: Long = 0L,
+        speedBytesPerSecond: Long = 0L,
+        etaSeconds: Long? = null,
     ) {
         val notification = when {
             success -> NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
@@ -1351,7 +1441,16 @@ class ModelDownloadService : Service() {
                 .setOngoing(false)
                 .build()
 
-            else -> createNotification(modelName, progress, isExtracting, statusText)
+            else -> createNotification(
+                modelName = modelName,
+                progress = progress,
+                isExtracting = isExtracting,
+                statusText = statusText,
+                downloadedBytes = downloadedBytes,
+                totalBytes = totalBytes,
+                speedBytesPerSecond = speedBytesPerSecond,
+                etaSeconds = etaSeconds,
+            )
         }
         notificationManager.notify(NOTIFICATION_ID, notification)
     }

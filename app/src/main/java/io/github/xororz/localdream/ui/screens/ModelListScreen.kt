@@ -2385,11 +2385,18 @@ private fun DownloadDetailsSheet(
                 style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
             )
             if (totalBytes > 0L) {
-                Text(
-                    text = "${formatBytes(shownBytes)} / ${formatBytes(totalBytes)}",
-                    style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "${formatBytes(shownBytes)} / ${formatBytes(totalBytes)}",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "${formatBytes((totalBytes - shownBytes).coerceAtLeast(0L))} left",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 

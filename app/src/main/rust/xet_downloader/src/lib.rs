@@ -1,8 +1,10 @@
-use std::fs::{create_dir_all, OpenOptions};
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::fs::{create_dir_all, remove_file, write as write_file, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use http::HeaderMap;
 use jni::objects::{JClass, JString};
@@ -99,6 +101,48 @@ fn configure_mobile_runtime(memory_budget_bytes: u64) {
     std::env::set_var("HF_XET_RECONSTRUCTION_MAX_RECONSTRUCTION_FETCH_SIZE", bytes_as_mib_env(max_fetch));
     std::env::set_var("HF_XET_TELEMETRY_ENABLED", "0");
 }
+fn persist_resume_frontier(path: &PathBuf, frontier: u64) {
+    let _ = write_file(path, frontier.to_string());
+}
+
+fn fold_contiguous_frontier(
+    pending: &mut BTreeMap<u64, u64>,
+    mut frontier: u64,
+    start: u64,
+    end: u64,
+) -> u64 {
+    if end <= frontier {
+        return frontier;
+    }
+
+    if start <= frontier {
+        frontier = frontier.max(end);
+    } else {
+        pending
+            .entry(start)
+            .and_modify(|existing| *existing = (*existing).max(end))
+            .or_insert(end);
+    }
+
+    loop {
+        let next = pending
+            .range(..=frontier)
+            .next_back()
+            .map(|(&range_start, &range_end)| (range_start, range_end));
+        match next {
+            Some((range_start, range_end)) if range_end > frontier => {
+                pending.remove(&range_start);
+                frontier = range_end;
+            }
+            Some((range_start, _)) => {
+                pending.remove(&range_start);
+            }
+            None => break,
+        }
+    }
+    frontier
+}
+
 fn run_download(
     hash: String,
     size: u64,
@@ -138,55 +182,116 @@ fn run_download(
         .build_blocking()
         .map_err(|e| format!("Xet authentication failed: {e}"))?;
 
-    // Use the streaming reconstruction path for both fresh and resumed downloads.
-    // This is the low-latency path that previously delivered the best throughput on
-    // Android; the file-download-group path introduced a large throughput regression.
+    // Completion-order streaming is explicitly intended by xet-core for consumers
+    // that can handle out-of-order writes. It avoids the ordered stream sitting
+    // behind one slow reconstruction term, so exact logical progress arrives in
+    // small, frequent updates instead of 30-130 MB bursts.
     let mut stream = group
-        .download_stream_blocking(file_info, Some(offset..size))
-        .map_err(|e| format!("Xet stream creation failed: {e}"))?;
+        .download_unordered_stream_blocking(file_info, Some(offset..size))
+        .map_err(|e| format!("Xet unordered stream creation failed: {e}"))?;
 
     let mut file = OpenOptions::new()
         .create(true)
+        .read(true)
         .write(true)
         .open(&dest_path)
         .map_err(|e| format!("Cannot open partial file: {e}"))?;
 
     file.set_len(offset)
         .map_err(|e| format!("Cannot truncate partial file: {e}"))?;
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|e| format!("Cannot seek partial file: {e}"))?;
 
-    let mut written = offset;
+    // If Android kills the process during random-access reconstruction, the file
+    // may have a sparse tail. This tiny sidecar stores the last contiguous prefix.
+    // Kotlin recovers to it before the next attempt. On normal/cancel/error exits
+    // we truncate back to a safe prefix and remove the sidecar.
+    let resume_state_path = PathBuf::from(format!("{dest_path}.xetresume"));
+    persist_resume_frontier(&resume_state_path, offset);
+
+    let mut completed = offset;
+    let mut contiguous_frontier = offset;
+    let mut pending_ranges = BTreeMap::<u64, u64>::new();
+    let mut last_frontier_persist = Instant::now();
+
+    let cleanup_partial = |file: &mut std::fs::File, frontier: u64| {
+        let _ = file.flush();
+        let _ = file.set_len(frontier);
+        let _ = remove_file(&resume_state_path);
+        ACTIVE_PROGRESS_BYTES.store(frontier, Ordering::Release);
+    };
+
     let result = (|| -> Result<i32, String> {
         loop {
             if CANCEL_REQUESTED.load(Ordering::Acquire) {
                 stream.cancel();
                 let _ = group.abort();
+                cleanup_partial(&mut file, contiguous_frontier);
                 return Ok(1);
             }
 
             match stream.blocking_next() {
-                Ok(Some(bytes)) => {
+                Ok(Some((chunk_offset, bytes))) => {
+                    let chunk_len = bytes.len() as u64;
+                    let chunk_end = chunk_offset
+                        .checked_add(chunk_len)
+                        .ok_or_else(|| "Xet chunk offset overflow".to_string())?;
+                    if chunk_offset < offset || chunk_end > size {
+                        cleanup_partial(&mut file, contiguous_frontier);
+                        return Err(format!(
+                            "Xet returned invalid chunk range {chunk_offset}..{chunk_end} for {offset}..{size}"
+                        ));
+                    }
+
+                    file.seek(SeekFrom::Start(chunk_offset))
+                        .map_err(|e| format!("Seeking Xet output failed: {e}"))?;
                     file.write_all(&bytes)
                         .map_err(|e| format!("Writing Xet data failed: {e}"))?;
-                    written = written.saturating_add(bytes.len() as u64).min(size);
-                    ACTIVE_PROGRESS_BYTES.store(written, Ordering::Release);
+
+                    completed = completed.saturating_add(chunk_len).min(size);
+                    contiguous_frontier = fold_contiguous_frontier(
+                        &mut pending_ranges,
+                        contiguous_frontier,
+                        chunk_offset,
+                        chunk_end,
+                    );
+
+                    ACTIVE_PROGRESS_BYTES.store(completed, Ordering::Release);
                     ACTIVE_PROGRESS_TOTAL.store(size, Ordering::Release);
+
+                    if last_frontier_persist.elapsed() >= Duration::from_secs(1) {
+                        persist_resume_frontier(&resume_state_path, contiguous_frontier);
+                        last_frontier_persist = Instant::now();
+                    }
                 }
-                Ok(None) => break,
-                Err(e) => {
+                Ok(None) => {
                     if CANCEL_REQUESTED.load(Ordering::Acquire) {
+                        cleanup_partial(&mut file, contiguous_frontier);
                         return Ok(1);
                     }
+                    break;
+                }
+                Err(e) => {
+                    if CANCEL_REQUESTED.load(Ordering::Acquire) {
+                        cleanup_partial(&mut file, contiguous_frontier);
+                        return Ok(1);
+                    }
+                    cleanup_partial(&mut file, contiguous_frontier);
                     return Err(format!("Xet download failed: {e}"));
                 }
             }
+        }
+
+        if completed != size {
+            cleanup_partial(&mut file, contiguous_frontier);
+            return Err(format!(
+                "Xet stream ended before all bytes were reconstructed: {completed}/{size}"
+            ));
         }
 
         file.flush()
             .map_err(|e| format!("Flushing Xet data failed: {e}"))?;
         file.set_len(size)
             .map_err(|e| format!("Finalizing Xet file failed: {e}"))?;
+        let _ = remove_file(&resume_state_path);
         ACTIVE_PROGRESS_BYTES.store(size, Ordering::Release);
         Ok(0)
     })();
