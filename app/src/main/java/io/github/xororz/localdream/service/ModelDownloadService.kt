@@ -951,7 +951,7 @@ class ModelDownloadService : Service() {
 
         fun currentUidRxBytes(): Long? {
             val value = TrafficStats.getUidRxBytes(applicationInfo.uid)
-            return value.takeIf { it != TrafficStats.UNSUPPORTED && it >= 0L }
+            return value.takeIf { it != TrafficStats.UNSUPPORTED.toLong() && it >= 0L }
         }
 
         val xetRuntimeDir = File(cacheDir, "hf_xet_runtime").apply { mkdirs() }
