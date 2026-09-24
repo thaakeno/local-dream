@@ -24,8 +24,17 @@ internal object XetNative {
         destPath: String,
         cacheDir: String,
         offset: Long,
-        profile: Int,
+        memoryBudgetBytes: Long,
+        minConcurrency: Int,
+        initialConcurrency: Int,
+        maxConcurrency: Int,
     ): Int
+
+    external fun nativeProgressBytes(): Long
+
+    external fun nativeProgressTotalBytes(): Long
+
+    external fun nativeProgressBytesPerSecond(): Long
 
     external fun nativeCancel()
 
