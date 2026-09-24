@@ -573,7 +573,7 @@ class BackendService : Service() {
             // SDXL and Anima are the large NPU formats that benefit from
             // per-stage load/release. They share the same backend --lowram flag
             // but keep separate UI toggles so each can opt in independently.
-            if ((backendType == "sdxl" || backendType == "sdxlmnn") && preferences.getBoolean("sdxl_lowram", true)) {
+            if ((backendType == "sdxl" || backendType == "sdxlmnn") && preferences.getBoolean("sdxl_lowram", false)) {
                 command += "--lowram"
             }
             if (backendType == "anima" && preferences.getBoolean("anima_lowram", true)) {
