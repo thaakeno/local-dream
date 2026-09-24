@@ -1102,6 +1102,7 @@ class ModelRepository private constructor(private val context: Context) {
             "absoluterealitycpu", "chilloutmixcpu",
             // DiT
             "z_image_turbo", "flux2_klein_4b", "qwen_image_2_1",
+            "qwen_image_2_1_viggle_turbo",
         )
 
         fun isReservedModelId(id: String): Boolean = id in RESERVED_MODEL_IDS
