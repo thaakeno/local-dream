@@ -473,7 +473,7 @@
     <string name="copy_logs">Copy all</string>
     <string name="clear_logs">Clear</string>
     <string name="logs_copied">Download logs copied</string>
-    <string name="close">Close</string>
+    <string name="refresh">Refresh</string>
 
     <!-- Device link (remote control between two devices) -->
     <string name="remote_link">Device link</string>
