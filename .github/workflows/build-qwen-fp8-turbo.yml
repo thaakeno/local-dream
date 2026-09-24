@@ -250,7 +250,15 @@ jobs:
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
 
-      - name: Create CI signing key
+      - name: Restore persistent CI signing key
+        id: signing-key-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/localdream-ci.jks
+          key: localdream-ci-signing-v1
+
+      - name: Create CI signing key once
+        if: steps.signing-key-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -263,6 +271,13 @@ jobs:
             -keysize 2048 \
             -validity 10000 \
             -dname "CN=Local Dream Qwen FP8 CI,O=thaakeno,C=DE"
+
+      - name: Save persistent CI signing key
+        if: steps.signing-key-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/localdream-ci.jks
+          key: localdream-ci-signing-v1
 
       - name: Build APK
         shell: bash

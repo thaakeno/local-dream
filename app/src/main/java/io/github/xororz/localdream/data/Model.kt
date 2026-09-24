@@ -131,6 +131,10 @@ data class Model(
     // their parts are pulled straight from the repositories that publish them
     // instead of being rehosted.
     val packageFiles: List<String> = emptyList(),
+    // Optional runtime recipe installed beside the model. Distilled models
+    // can own their adapter/sampler schedule without native filename/version
+    // checks or hardcoded dimensions.
+    val inferenceProfile: String? = null,
 ) {
     val isDit: Boolean get() = ditKind.isNotEmpty()
 
@@ -181,6 +185,12 @@ data class Model(
                 // Written only after every file lands, so a partial download
                 // is never picked up as an installed model.
                 putExtra(ModelDownloadService.EXTRA_MARKER_FILE, markerFileName(ditKind))
+                if (!inferenceProfile.isNullOrBlank()) {
+                    putExtra(
+                        ModelDownloadService.EXTRA_INFERENCE_PROFILE,
+                        inferenceProfile,
+                    )
+                }
             } else {
                 putExtra(
                     ModelDownloadService.EXTRA_FILE_URL,
@@ -314,16 +324,27 @@ data class Model(
                 "qwen_image_2.1_vae_bf16.safetensors|vae.safetensors",
         )
 
-        // Viggle Turbo is a DMD-distilled rank-64 LoRA over the same FP8 Qwen base.
-        // Keep it separate on disk so install/delete remains transactional:
-        // turbo_lora.safetensors is detected by libdit_engine and applied at
-        // runtime while the base transformer remains on the Hexagon FP8 path.
+        // Current Viggle v0.2.1 adapter. Keep it separate on disk and apply it
+        // at runtime so the learned update is not destroyed by FP8/BF16 merging.
         val QWEN_IMAGE_2_1_VIGGLE_TURBO_PACKAGE_FILES =
             QWEN_IMAGE_2_1_FP8_PACKAGE_FILES + listOf(
                 "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
-                    "Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors|" +
+                    "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors|" +
                     "turbo_lora.safetensors",
             )
+
+        // The values are the raw nodes published by Viggle. The engine applies
+        // Qwen/FlowMatch's resolution-dependent shift at runtime and appends the
+        // terminal zero, yielding six actual Euler transformer passes.
+        val QWEN_IMAGE_2_1_VIGGLE_TURBO_PROFILE = """
+            version=1
+            adapter=turbo_lora.safetensors
+            sample_method=euler
+            cfg=1.0
+            no_negative_prompt=true
+            raw_sigmas=1.0,0.9375,0.875,0.75,0.5,0.25
+            flow_shift=flux
+        """.trimIndent()
 
         fun isDeviceSupported(): Boolean {
             val soc = getDeviceSoc()
@@ -799,13 +820,13 @@ class ModelRepository private constructor(private val context: Context) {
         return Model(
             id = id,
             name = "Qwen Image 2.1 Turbo (Viggle)",
-            description = "Viggle DMD Turbo over Qwen Image 2.1 FP8 • 4-step preset",
+            description = "Viggle Turbo v0.2.1 over Qwen Image 2.1 FP8 • exact 6-pass recipe",
             baseUrl = baseUrl,
             packageFiles = Model.QWEN_IMAGE_2_1_VIGGLE_TURBO_PACKAGE_FILES,
+            inferenceProfile = Model.QWEN_IMAGE_2_1_VIGGLE_TURBO_PROFILE,
             generationSize = 1024,
-            // Full independent package: the ~13.75 GB FP8 Qwen stack plus
-            // Viggle's ~340 MB rank-64 Turbo LoRA.
-            approximateSize = "14.09GB",
+            // FP8 Qwen stack plus Viggle's ~1.3 GB rank-256 runtime adapter.
+            approximateSize = "15.1GB",
             isDownloaded = Model.isDitPackageDownloaded(
                 context,
                 id,
@@ -815,8 +836,8 @@ class ModelRepository private constructor(private val context: Context) {
             codeDefaults = ModelConfig(
                 prompt = "a lovely cat holding a sign that says 'Qwen Turbo',",
                 negativePrompt = "",
-                // The published Viggle student is distilled for four sampling passes.
-                steps = 4f,
+                // v0.2.1 is sampled with six transformer passes.
+                steps = 6f,
                 cfg = 1f,
                 scheduler = "euler",
                 denoiseStrength = 1f,

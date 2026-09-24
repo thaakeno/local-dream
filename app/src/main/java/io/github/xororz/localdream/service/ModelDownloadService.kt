@@ -58,6 +58,7 @@ class ModelDownloadService : Service() {
         val modelType: String,
         val fileNames: List<String>,
         val markerFile: String?,
+        val inferenceProfile: String?,
     )
 
     private data class RemoteInfo(
@@ -131,6 +132,7 @@ class ModelDownloadService : Service() {
         const val TYPE_MULTI_FILE = "multi_file"
         const val EXTRA_FILE_NAMES = "file_names"
         const val EXTRA_MARKER_FILE = "marker_file"
+        const val EXTRA_INFERENCE_PROFILE = "inference_profile"
     }
 
     sealed class DownloadState {
@@ -189,6 +191,7 @@ class ModelDownloadService : Service() {
                     modelType = intent.getStringExtra(EXTRA_MODEL_TYPE) ?: TYPE_SD,
                     fileNames = intent.getStringArrayListExtra(EXTRA_FILE_NAMES).orEmpty(),
                     markerFile = intent.getStringExtra(EXTRA_MARKER_FILE),
+                    inferenceProfile = intent.getStringExtra(EXTRA_INFERENCE_PROFILE),
                 )
                 activeRequest = request
                 pauseRequested = false
@@ -251,6 +254,7 @@ class ModelDownloadService : Service() {
                         baseUrl = request.fileUrl,
                         fileNames = request.fileNames,
                         markerFile = request.markerFile,
+                        inferenceProfile = request.inferenceProfile,
                         preferXet = xetEnabled,
                     )
                     completeDownload(request.modelId, request.modelName)
@@ -396,6 +400,7 @@ class ModelDownloadService : Service() {
         baseUrl: String,
         fileNames: List<String>,
         markerFile: String?,
+        inferenceProfile: String?,
         preferXet: Boolean,
     ) = withContext(Dispatchers.IO) {
         require(fileNames.isNotEmpty()) { "empty package file list" }
@@ -520,6 +525,14 @@ class ModelDownloadService : Service() {
             )
         }
 
+        if (!inferenceProfile.isNullOrBlank()) {
+            val profileFile = File(modelDir, "inference_profile.conf")
+            profileFile.writeText(inferenceProfile.trim() + "\n")
+            DownloadDiagnostics.info(
+                this@ModelDownloadService,
+                "Installed inference profile model=$modelId bytes=${profileFile.length()}",
+            )
+        }
         if (!markerFile.isNullOrEmpty()) File(modelDir, markerFile).createNewFile()
     }
 

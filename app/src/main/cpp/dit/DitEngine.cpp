@@ -7,11 +7,14 @@
 #include "DitEngine.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -75,6 +78,97 @@ void image_to_rgb(const sd_image_t &image, size_t pixel_count, uint8_t *rgb) {
   }
 }
 
+struct InferenceProfile {
+  std::string adapter_file;
+  std::string sample_method;
+  std::string flow_shift;
+  std::vector<float> raw_sigmas;
+  float cfg_scale = NAN;
+  bool no_negative_prompt = false;
+};
+
+std::string trim_copy(std::string value) {
+  const auto first = value.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return {};
+  const auto last = value.find_last_not_of(" \t\r\n");
+  return value.substr(first, last - first + 1);
+}
+
+bool parse_profile_bool(const std::string &value) {
+  const std::string v = trim_copy(value);
+  return v == "1" || v == "true" || v == "yes" || v == "on";
+}
+
+InferenceProfile load_inference_profile(const std::filesystem::path &path) {
+  InferenceProfile profile;
+  std::ifstream in(path);
+  if (!in) return profile;
+
+  std::string line;
+  while (std::getline(in, line)) {
+    line = trim_copy(line);
+    if (line.empty() || line[0] == '#') continue;
+    const auto sep = line.find('=');
+    if (sep == std::string::npos) continue;
+    const std::string key = trim_copy(line.substr(0, sep));
+    const std::string value = trim_copy(line.substr(sep + 1));
+
+    if (key == "adapter") {
+      profile.adapter_file = value;
+    } else if (key == "sample_method") {
+      profile.sample_method = value;
+    } else if (key == "flow_shift") {
+      profile.flow_shift = value;
+    } else if (key == "cfg") {
+      try {
+        profile.cfg_scale = std::stof(value);
+      } catch (...) {
+      }
+    } else if (key == "no_negative_prompt") {
+      profile.no_negative_prompt = parse_profile_bool(value);
+    } else if (key == "raw_sigmas") {
+      std::stringstream ss(value);
+      std::string token;
+      while (std::getline(ss, token, ',')) {
+        try {
+          const float sigma = std::stof(trim_copy(token));
+          if (std::isfinite(sigma) && sigma > 0.0f && sigma <= 1.0f)
+            profile.raw_sigmas.push_back(sigma);
+        } catch (...) {
+        }
+      }
+    }
+  }
+  return profile;
+}
+
+std::vector<float> shifted_flow_sigmas(const std::vector<float> &raw,
+                                       int width, int height) {
+  // Match the Flux/Qwen FlowMatchEulerDiscreteScheduler resolution shift.
+  const int seq_w = std::max(1, width / 16);
+  const int seq_h = std::max(1, height / 16);
+  const float seq_len = static_cast<float>(seq_w * seq_h);
+  constexpr float base_anchor = 256.0f;
+  constexpr float max_anchor = 4096.0f;
+  constexpr float base_shift = 0.5f;
+  constexpr float max_shift = 1.15f;
+  const float slope = (max_shift - base_shift) / (max_anchor - base_anchor);
+  const float mu = seq_len * slope + (base_shift - slope * base_anchor);
+  const float exp_mu = std::exp(mu);
+
+  std::vector<float> sigmas;
+  sigmas.reserve(raw.size() + 1);
+  for (const float t : raw) {
+    if (t >= 1.0f) {
+      sigmas.push_back(1.0f);
+    } else {
+      sigmas.push_back(exp_mu / (exp_mu + (1.0f / t - 1.0f)));
+    }
+  }
+  sigmas.push_back(0.0f);
+  return sigmas;
+}
+
 }  // namespace
 
 struct dit_ctx {
@@ -82,6 +176,7 @@ struct dit_ctx {
   dit_model_kind kind = DIT_MODEL_Z_IMAGE;
   std::string last_error;
   std::string turbo_lora_path;
+  InferenceProfile inference_profile;
   int preview_interval = 0;
 };
 
@@ -148,8 +243,13 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   }
 
   const std::filesystem::path diffusion_path(params->diffusion_model_path);
-  const std::filesystem::path turbo_lora =
-      diffusion_path.parent_path() / "turbo_lora.safetensors";
+  const std::filesystem::path model_dir = diffusion_path.parent_path();
+  const InferenceProfile inference_profile =
+      load_inference_profile(model_dir / "inference_profile.conf");
+  const std::string adapter_name = inference_profile.adapter_file.empty()
+                                       ? "turbo_lora.safetensors"
+                                       : inference_profile.adapter_file;
+  const std::filesystem::path turbo_lora = model_dir / adapter_name;
   const bool has_turbo_lora =
       params->kind == DIT_MODEL_QWEN_IMAGE_2_1 &&
       std::filesystem::is_regular_file(turbo_lora);
@@ -171,14 +271,13 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   if (params->backend && params->backend[0]) sd_params.backend = params->backend;
   if (params->params_backend && params->params_backend[0])
     sd_params.params_backend = params->params_backend;
-  // Viggle ships as a rank-64 LoRA over Qwen Image 2.1. Keep the base
-  // transformer in F8_E4M3 and apply the adapter at runtime rather than
-  // destructively merging into the FP8 file. Runtime mode is the supported
-  // path for quantized weights and preserves the native Hexagon FP8 storage.
+  // Distilled adapters stay unmerged: runtime application preserves the exact
+  // learned update even when the base transformer is stored as FP8.
   if (has_turbo_lora) sd_params.lora_apply_mode = LORA_APPLY_AT_RUNTIME;
 
   auto *ctx = new dit_ctx();
   ctx->kind = params->kind;
+  ctx->inference_profile = inference_profile;
   if (has_turbo_lora) ctx->turbo_lora_path = turbo_lora.string();
   ctx->sd = new_sd_ctx(&sd_params);
   if (!ctx->sd) {
@@ -206,29 +305,53 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   sd_img_gen_params_t gen;
   sd_img_gen_params_init(&gen);
   gen.prompt = params->prompt ? params->prompt : "";
-  gen.negative_prompt = params->negative_prompt ? params->negative_prompt : "";
+  gen.negative_prompt =
+      ctx->inference_profile.no_negative_prompt
+          ? ""
+          : (params->negative_prompt ? params->negative_prompt : "");
   gen.width = params->width;
   gen.height = params->height;
   gen.seed = params->seed;
   gen.batch_count = 1;
   gen.sample_params.sample_steps = params->steps;
-  gen.sample_params.guidance.txt_cfg = params->cfg_scale;
+  gen.sample_params.guidance.txt_cfg =
+      std::isfinite(ctx->inference_profile.cfg_scale)
+          ? ctx->inference_profile.cfg_scale
+          : params->cfg_scale;
   gen.sample_params.guidance.distilled_guidance = params->guidance;
-  if (params->sample_method && params->sample_method[0])
-    gen.sample_params.sample_method = str_to_sample_method(params->sample_method);
+  const char *sample_method =
+      ctx->inference_profile.sample_method.empty()
+          ? params->sample_method
+          : ctx->inference_profile.sample_method.c_str();
+  if (sample_method && sample_method[0])
+    gen.sample_params.sample_method = str_to_sample_method(sample_method);
 
-  // Base Qwen Image 2.1 uses the normal resolution-dependent flow schedule
-  // and stretches its final non-zero sigma to 0.02. Viggle's published
-  // 4-step student uses the same dynamic shift but deliberately disables that
-  // terminal stretch via its scheduler config.
+  // Base Qwen uses terminal stretching. A distilled profile can instead own
+  // exact raw nodes; those are shifted below and intentionally do not stretch
+  // to Qwen's 0.02 terminal.
   if (ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1 &&
       ctx->turbo_lora_path.empty()) {
     gen.sample_params.extra_sample_args = "shift_terminal=0.02";
   }
 
+  std::vector<float> profile_sigmas;
+  const auto &raw_sigmas = ctx->inference_profile.raw_sigmas;
+  if (!raw_sigmas.empty() &&
+      static_cast<int>(raw_sigmas.size()) == params->steps) {
+    if (ctx->inference_profile.flow_shift == "flux") {
+      profile_sigmas =
+          shifted_flow_sigmas(raw_sigmas, params->width, params->height);
+    } else {
+      profile_sigmas.assign(raw_sigmas.begin(), raw_sigmas.end());
+      profile_sigmas.push_back(0.0f);
+    }
+    gen.sample_params.custom_sigmas = profile_sigmas.data();
+    gen.sample_params.custom_sigmas_count =
+        static_cast<int>(profile_sigmas.size());
+  }
+
   sd_lora_t turbo_lora{};
   if (!ctx->turbo_lora_path.empty()) {
-    gen.sample_params.sample_steps = 4;
     turbo_lora.is_high_noise = false;
     turbo_lora.multiplier = 1.0f;
     turbo_lora.path = ctx->turbo_lora_path.c_str();
