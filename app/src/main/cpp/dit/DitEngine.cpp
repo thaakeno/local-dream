@@ -210,6 +210,16 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   if (params->sample_method && params->sample_method[0])
     gen.sample_params.sample_method = str_to_sample_method(params->sample_method);
 
+  // Experimental only: six-pass Turbo leaves little redundancy, so caching is
+  // opt-in until fixed-seed device A/B tests prove it is visually harmless.
+  // This wires the upstream Cache-DiT implementation without changing the
+  // quality-first default path.
+  const char *cache_dit = std::getenv("LOCALDREAM_QWEN_CACHE_DIT");
+  if (ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1 && cache_dit &&
+      std::strcmp(cache_dit, "1") == 0) {
+    gen.cache.mode = SD_CACHE_CACHE_DIT;
+  }
+
   // Keep quantized base weights immutable. stable-diffusion.cpp's runtime LoRA
   // path evaluates W*x + scale*B*A*x and therefore avoids the quality loss from
   // merging the tiny Viggle update into Q4/Q5 weights.
