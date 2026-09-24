@@ -288,7 +288,7 @@ data class Model(
 
         val QWEN_IMAGE_2_1_PACKAGE_FILES = listOf(
             "leejet/Qwen-Image-2.1-GGUF/resolve/main/" +
-                "qwen_image_2.1-Q4_0.gguf|dit.gguf",
+                "qwen_image_2.1-Q4_K.gguf|dit.gguf",
             "bartowski/Qwen_Qwen3-VL-8B-Instruct-GGUF/resolve/main/" +
                 "Qwen_Qwen3-VL-8B-Instruct-Q4_0.gguf|llm.gguf",
             "bartowski/Qwen_Qwen3-VL-8B-Instruct-GGUF/resolve/main/" +
@@ -296,6 +296,8 @@ data class Model(
             "Qwen/Qwen3-VL-8B-Instruct/resolve/main/tokenizer.json|tokenizer.json",
             "Comfy-Org/Qwen-Image-2.1/resolve/main/vae/" +
                 "qwen_image_2.1_vae_bf16.safetensors|vae.safetensors",
+            "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
+                "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors|viggle_turbo.safetensors",
         )
 
         fun isDeviceSupported(): Boolean {
@@ -706,15 +708,15 @@ class ModelRepository private constructor(private val context: Context) {
     }
 
     private fun createQwenImage21Model(): Model {
-        val id = "qwen_image_2_1"
+        val id = "qwen_image_2_1_viggle_turbo"
         return Model(
             id = id,
-            name = "Qwen Image 2.1",
+            name = "Qwen Image 2.1 Turbo (Viggle)",
             description = context.getString(R.string.qwen_image_2_1_description),
             baseUrl = baseUrl,
             packageFiles = Model.QWEN_IMAGE_2_1_PACKAGE_FILES,
             generationSize = 1024,
-            approximateSize = "10.8GB",
+            approximateSize = "11.5GB",
             isDownloaded = Model.isDitPackageDownloaded(
                 context,
                 id,
@@ -724,7 +726,7 @@ class ModelRepository private constructor(private val context: Context) {
             codeDefaults = ModelConfig(
                 prompt = "a lovely cat holding a sign that says 'Qwen Image 2.1',",
                 negativePrompt = "",
-                steps = 20f,
+                steps = 6f,
                 cfg = 1f,
                 scheduler = "euler",
                 denoiseStrength = 1f,
