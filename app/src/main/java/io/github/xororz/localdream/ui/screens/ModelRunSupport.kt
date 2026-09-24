@@ -94,7 +94,7 @@ internal suspend fun checkBackendHealth(
     servingModelId: StateFlow<String?>,
     expectedModelId: String,
     onHealthy: () -> Unit,
-    onUnhealthy: () -> Unit,
+    onUnhealthy: (String?) -> Unit,
 ) = withContext(Dispatchers.IO) {
     try {
         val startTime = System.currentTimeMillis()
@@ -110,10 +110,11 @@ internal suspend fun checkBackendHealth(
             // Only an error for this model (or a model-agnostic one) is ours; an
             // error left over from a different model's process still alive in the
             // stop grace window is not.
-            val ownError = state is BackendService.BackendState.Error &&
-                (state.modelId == null || state.modelId == expectedModelId)
+            val ownError = (state as? BackendService.BackendState.Error)?.takeIf {
+                it.modelId == null || it.modelId == expectedModelId
+            }
 
-            if (ownError) {
+            if (ownError != null) {
                 // Require it to persist across a poll interval before failing: a
                 // stale error from a previous run is superseded within ms by the
                 // start this screen just issued (Starting/Running) and won't
@@ -121,7 +122,7 @@ internal suspend fun checkBackendHealth(
                 ownErrorStreak++
                 if (ownErrorStreak >= 2) {
                     withContext(Dispatchers.Main) {
-                        onUnhealthy()
+                        onUnhealthy(ownError.message)
                     }
                     break
                 }
@@ -130,7 +131,7 @@ internal suspend fun checkBackendHealth(
 
                 if (System.currentTimeMillis() - startTime > timeoutDuration) {
                     withContext(Dispatchers.Main) {
-                        onUnhealthy()
+                        onUnhealthy(null)
                     }
                     break
                 }
@@ -152,7 +153,7 @@ internal suspend fun checkBackendHealth(
                         }
                         break
                     }
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     // Backend not up yet; retry after the current delay.
                 }
             }
@@ -160,9 +161,9 @@ internal suspend fun checkBackendHealth(
             delay(pollDelayMs)
             pollDelayMs = (pollDelayMs * 2).coerceAtMost(500L)
         }
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         withContext(Dispatchers.Main) {
-            onUnhealthy()
+            onUnhealthy(null)
         }
     }
 }
@@ -181,7 +182,7 @@ internal suspend fun checkRemoteBackendHealth(
     expectedWidth: Int,
     expectedHeight: Int,
     onHealthy: () -> Unit,
-    onUnhealthy: () -> Unit,
+    onUnhealthy: (String?) -> Unit,
 ) = withContext(Dispatchers.IO) {
     val startTime = System.currentTimeMillis()
     val timeoutDuration = 120_000L
@@ -189,7 +190,7 @@ internal suspend fun checkRemoteBackendHealth(
 
     while (currentCoroutineContext().isActive) {
         if (System.currentTimeMillis() - startTime > timeoutDuration) {
-            withContext(Dispatchers.Main) { onUnhealthy() }
+            withContext(Dispatchers.Main) { onUnhealthy(null) }
             break
         }
 
@@ -198,7 +199,7 @@ internal suspend fun checkRemoteBackendHealth(
             val ownError = status.state == RemoteProtocol.STATE_ERROR &&
                 (status.errorModelId == null || status.errorModelId == expectedModelId)
             if (ownError) {
-                withContext(Dispatchers.Main) { onUnhealthy() }
+                withContext(Dispatchers.Main) { onUnhealthy(status.message) }
                 break
             }
             if (status.servingModelId == expectedModelId &&

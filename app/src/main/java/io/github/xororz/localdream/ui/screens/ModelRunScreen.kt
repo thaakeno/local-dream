@@ -1765,6 +1765,7 @@ fun ModelRunScreen(
                         // select is safe.
                         isCheckingBackend = true
                         backendReady = false
+                        errorMessage = null
                         scope.launch {
                             val ok = remoteClient?.selectModel(
                                 modelId,
@@ -1790,6 +1791,7 @@ fun ModelRunScreen(
                             context.startForegroundService(serviceIntent)
                             isCheckingBackend = true
                             backendReady = false
+                            errorMessage = null
                             backendRestartTrigger++
                         }
                     }
@@ -1874,9 +1876,10 @@ fun ModelRunScreen(
                     isCheckingBackend = false
                     backendReady = true
                 },
-                onUnhealthy = {
+                onUnhealthy = { detail ->
                     isCheckingBackend = false
-                    errorMessage = msgBackendFailed
+                    backendReady = false
+                    errorMessage = detail?.takeIf { it.isNotBlank() } ?: msgBackendFailed
                 },
             )
         } else {
@@ -1888,9 +1891,10 @@ fun ModelRunScreen(
                     isCheckingBackend = false
                     backendReady = true
                 },
-                onUnhealthy = {
+                onUnhealthy = { detail ->
                     isCheckingBackend = false
-                    errorMessage = msgBackendFailed
+                    backendReady = false
+                    errorMessage = detail?.takeIf { it.isNotBlank() } ?: msgBackendFailed
                 },
             )
         }
@@ -1909,6 +1913,30 @@ fun ModelRunScreen(
         if (backendRestartTrigger > 0) {
             delay(500)
             awaitBackendReady()
+        }
+    }
+
+    // Once a backend has been confirmed healthy, keep the UI synchronized with
+    // later native-process failures. Initial startup errors stay with the
+    // debounced health check above so a stale error from the previous model
+    // cannot flash on screen during a fast model switch.
+    LaunchedEffect(backendState, isRemote, modelId) {
+        if (!isRemote && backendReady) {
+            when (val state = backendState) {
+                is BackendService.BackendState.Error -> {
+                    if (state.modelId == null || state.modelId == modelId) {
+                        backendReady = false
+                        isCheckingBackend = false
+                        errorMessage = state.message.takeIf { it.isNotBlank() } ?: msgBackendFailed
+                    }
+                }
+
+                is BackendService.BackendState.Idle -> {
+                    backendReady = false
+                }
+
+                else -> {}
+            }
         }
     }
 
@@ -2356,7 +2384,8 @@ fun ModelRunScreen(
                                     )
                                 }
                             },
-                            enabled = serviceState !is GenerationState.Progress &&
+                            enabled = backendReady && !isCheckingBackend &&
+                                serviceState !is GenerationState.Progress &&
                                 !isRunning && !isUpscaling && !isUltrafixPreparing &&
                                 (selectedImageUri == null || base64EncodeDone),
                             modifier = Modifier.fillMaxWidth(),

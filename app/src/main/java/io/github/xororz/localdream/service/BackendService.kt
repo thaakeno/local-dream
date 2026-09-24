@@ -72,6 +72,7 @@ class BackendService : Service() {
         // (single-threaded, no cross-instance start/stop race). Affects only
         // reuse/latency, never correctness: a slower re-entry just starts fresh.
         private const val IDLE_GRACE_MS = 1500L
+        private const val MAX_BACKEND_ERROR_CHARS = 700
 
         const val ACTION_STOP = "io.github.xororz.localdream.STOP_GENERATION"
         const val ACTION_RESTART = "io.github.xororz.localdream.RESTART_BACKEND"
@@ -130,6 +131,33 @@ class BackendService : Service() {
         val servingModelId: StateFlow<String?> = StateHolder._servingModelId
 
         val servingResolution: StateFlow<Pair<Int, Int>?> = StateHolder._servingResolution
+
+        private fun extractBackendError(line: String): String? {
+            val trimmed = line.trim()
+            val errorMarker = "[ ERROR ]"
+            val message = when {
+                errorMarker in trimmed -> {
+                    val payload = trimmed.substringAfter(errorMarker).trim()
+                    val detailMarker = " - "
+                    if (detailMarker in payload) {
+                        payload.substringAfter(detailMarker).trim()
+                    } else {
+                        payload
+                    }
+                }
+
+                trimmed.startsWith("ERROR:", ignoreCase = true) ->
+                    trimmed.substringAfter(':').trim()
+
+                else -> return null
+            }
+            if (message.isBlank()) return null
+            return if (message.length <= MAX_BACKEND_ERROR_CHARS) {
+                message
+            } else {
+                message.take(MAX_BACKEND_ERROR_CHARS - 1) + "…"
+            }
+        }
 
         private fun updateState(state: BackendState) {
             StateHolder._backendState.value = state
@@ -301,7 +329,12 @@ class BackendService : Service() {
         } else {
             serving = null
             updateServing(null)
-            updateState(BackendState.Error("Backend start failed", want.modelId))
+            // startBackend() publishes a specific Error when it knows the
+            // cause. Preserve that instead of replacing it with a generic
+            // startup failure.
+            if (backendState.value !is BackendState.Error) {
+                updateState(BackendState.Error("Backend start failed", want.modelId))
+            }
         }
     }
 
@@ -481,6 +514,7 @@ class BackendService : Service() {
 
             if (!executableFile.exists()) {
                 Log.e(TAG, "error: executable does not exist: ${executableFile.absolutePath}")
+                updateState(BackendState.Error("Backend executable is missing", config.modelId))
                 return false
             }
 
@@ -520,7 +554,12 @@ class BackendService : Service() {
             if (ditEngineDir != null) {
                 if (!DitEngine.isInstalled(this)) {
                     Log.e(TAG, "DiT engine missing at $ditEngineDir")
-                    updateState(BackendState.Error(getString(R.string.dit_engine_missing)))
+                    updateState(
+                        BackendState.Error(
+                            getString(R.string.dit_engine_missing),
+                            config.modelId,
+                        ),
+                    )
                     return false
                 }
                 command += listOf("--lib_dir", ditEngineDir.absolutePath)
@@ -668,18 +707,32 @@ class BackendService : Service() {
 
     private fun startMonitorThread(proc: Process) {
         Thread {
+            var firstBackendError: String? = null
+            var backendErrorCount = 0
             val exitCode = try {
                 proc.inputStream.bufferedReader().use { reader ->
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
-                        Log.i(TAG, "Backend: $line")
+                        val backendLine = line ?: continue
+                        extractBackendError(backendLine)?.let { detail ->
+                            backendErrorCount++
+                            if (firstBackendError == null) {
+                                firstBackendError = detail
+                            }
+                        }
+                        Log.i(TAG, "Backend: $backendLine")
                     }
                 }
                 proc.waitFor()
             } catch (e: Exception) {
                 Log.e(TAG, "monitor error", e)
                 if (isLiveCrash(proc)) {
-                    updateState(BackendState.Error("monitor error: ${e.message}", servingModelId.value))
+                    updateState(
+                        BackendState.Error(
+                            "Backend monitor failed: ${e.message ?: e.javaClass.simpleName}",
+                            servingModelId.value,
+                        ),
+                    )
                 }
                 return@Thread
             }
@@ -688,9 +741,17 @@ class BackendService : Service() {
             // we didn't intentionally stop it; a torn-down or superseded process
             // exiting is expected and must not poison the shared backendState.
             if (isLiveCrash(proc)) {
+                val detail = firstBackendError?.let { first ->
+                    if (backendErrorCount > 1) {
+                        "$first (+${backendErrorCount - 1} more backend errors)"
+                    } else {
+                        first
+                    }
+                }
                 updateState(
                     BackendState.Error(
-                        "Backend process exited with code: $exitCode",
+                        detail?.let { "Backend failed (code $exitCode): $it" }
+                            ?: "Backend process exited with code: $exitCode",
                         servingModelId.value,
                     ),
                 )
