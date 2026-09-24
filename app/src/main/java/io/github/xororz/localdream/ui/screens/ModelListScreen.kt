@@ -477,8 +477,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     currentEtaSeconds = null
                     currentDownloadFile = null
                     currentDownloadUsesXet = false
-                    currentXetTransferBytes = 0L
-                    currentXetTransferTotalBytes = 0L
                     downloadPaused = false
                     // Fire-and-forget so the snackbar's display time does not
                     // block this collector from seeing further states.
@@ -492,8 +490,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     currentEtaSeconds = null
                     currentDownloadFile = null
                     currentDownloadUsesXet = false
-                    currentXetTransferBytes = 0L
-                    currentXetTransferTotalBytes = 0L
                     downloadPaused = false
                     downloadError = state.message
                 }
