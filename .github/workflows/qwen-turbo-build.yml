@@ -176,11 +176,25 @@ jobs:
           export QNN_SDK_ROOT=/qnn
           export HEXAGON_SDK_ROOT="$hexagon_root"
 
+          # tokenizers-cpp builds Rust code for Android and also executes host
+          # build scripts/proc-macros. The Snapdragon image only guarantees the
+          # Android toolchain, so make both sides explicit and reproducible.
           if ! command -v cc >/dev/null 2>&1; then
             apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates
             rm -rf /var/lib/apt/lists/*
           fi
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+              sh -s -- -y --profile minimal --default-toolchain 1.88.0
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+          rustup target add --toolchain 1.88.0 aarch64-linux-android
+          command -v cc
+          cargo --version
+          rustc --version
 
           cd /workspace/app/src/main/cpp
           bash build.sh
