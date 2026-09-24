@@ -466,6 +466,14 @@
     <string name="download_current_file">%1$s</string>
     <string name="download_mode_xet">Xet accelerated</string>
     <string name="download_mode_http">Normal HTTP</string>
+    <string name="download_logs">Download logs</string>
+    <string name="download_logs_hint">Transfer diagnostics only. Tokens, signed storage URLs, prompts, and images are not logged.</string>
+    <string name="download_logs_settings_hint">See Xet decisions, HTTP resume details, file sizes, fallbacks, and download errors.</string>
+    <string name="view_logs">View</string>
+    <string name="copy_logs">Copy all</string>
+    <string name="clear_logs">Clear</string>
+    <string name="logs_copied">Download logs copied</string>
+    <string name="close">Close</string>
 
     <!-- Device link (remote control between two devices) -->
     <string name="remote_link">Device link</string>

@@ -1,5 +1,7 @@
 package io.github.xororz.localdream.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -72,6 +74,7 @@ import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
@@ -93,6 +96,7 @@ import io.github.xororz.localdream.ui.theme.LocalThemeController
 import io.github.xororz.localdream.ui.theme.Motion
 import io.github.xororz.localdream.ui.theme.ThemePreset
 import io.github.xororz.localdream.ui.theme.scheme
+import io.github.xororz.localdream.utils.DownloadDiagnostics
 import io.github.xororz.localdream.utils.LogCapture
 import io.github.xororz.localdream.utils.TempCleaner
 import java.io.BufferedOutputStream
@@ -122,6 +126,85 @@ private fun getCleanFileName(uri: Uri): String {
     } else {
         fileName
     }
+}
+
+@Composable
+private fun DownloadLogsDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var refreshKey by remember { mutableIntStateOf(0) }
+    val logs = remember(refreshKey) { DownloadDiagnostics.read(context) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.download_logs)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = stringResource(R.string.download_logs_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 180.dp, max = 420.dp),
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                ) {
+                    Text(
+                        text = logs,
+                        modifier = Modifier
+                            .verticalScroll(rememberScrollState())
+                            .padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    TextButton(
+                        onClick = {
+                            DownloadDiagnostics.clear(context)
+                            refreshKey++
+                        },
+                    ) {
+                        Text(stringResource(R.string.clear_logs))
+                    }
+                    TextButton(onClick = { refreshKey++ }) {
+                        Text(stringResource(R.string.refresh))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val clipboard =
+                        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText("Local Dream download logs", logs),
+                    )
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.logs_copied),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                },
+            ) {
+                Icon(Icons.Default.ContentCopy, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.copy_logs))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.close))
+            }
+        },
+    )
 }
 
 @Composable
@@ -1456,6 +1539,46 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                         },
                                         enabled = selectedSource == "huggingface",
                                     )
+                                }
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            var showDownloadLogs by remember { mutableStateOf(false) }
+                            if (showDownloadLogs) {
+                                DownloadLogsDialog(onDismiss = { showDownloadLogs = false })
+                            }
+
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                ),
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.BugReport,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = stringResource(R.string.download_logs),
+                                            style = MaterialTheme.typography.bodyLarge,
+                                        )
+                                        Text(
+                                            text = stringResource(R.string.download_logs_settings_hint),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    OutlinedButton(onClick = { showDownloadLogs = true }) {
+                                        Text(stringResource(R.string.view_logs))
+                                    }
                                 }
                             }
                         }

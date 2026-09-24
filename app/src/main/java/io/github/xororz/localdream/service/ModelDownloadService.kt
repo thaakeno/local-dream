@@ -10,9 +10,11 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import io.github.xororz.localdream.BuildConfig
 import io.github.xororz.localdream.R
 import io.github.xororz.localdream.data.GenerationPreferences
 import io.github.xororz.localdream.data.Model
+import io.github.xororz.localdream.utils.DownloadDiagnostics
 import io.github.xororz.localdream.utils.Http
 import java.io.File
 import java.io.FileOutputStream
@@ -131,6 +133,11 @@ class ModelDownloadService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        DownloadDiagnostics.info(
+            this,
+            "Download service started • app=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) • " +
+                "xetNative=${XetNative.available}",
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -188,10 +195,18 @@ class ModelDownloadService : Service() {
                 val tempDir = File(filesDir, "temp_downloads").apply { mkdirs() }
 
                 if (request.modelType == TYPE_MULTI_FILE) {
-                    val xetEnabled = GenerationPreferences(this@ModelDownloadService)
-                        .getXetAcceleratedDownloads() &&
-                        request.fileUrl.startsWith("https://huggingface.co", ignoreCase = true) &&
-                        XetNative.available
+                    val xetSetting = GenerationPreferences(this@ModelDownloadService)
+                        .getXetAcceleratedDownloads()
+                    val isOfficialHub =
+                        request.fileUrl.startsWith("https://huggingface.co", ignoreCase = true)
+                    val xetEnabled = xetSetting && isOfficialHub && XetNative.available
+
+                    DownloadDiagnostics.info(
+                        this@ModelDownloadService,
+                        "Package start model=${request.modelId} files=${request.fileNames.size} " +
+                            "xetSetting=$xetSetting officialHub=$isOfficialHub " +
+                            "xetNative=${XetNative.available} xetEnabled=$xetEnabled",
+                    )
 
                     downloadPackageFiles(
                         modelId = request.modelId,
@@ -212,7 +227,7 @@ class ModelDownloadService : Service() {
                     destFile = tempFile,
                     modelId = request.modelId,
                     modelName = request.modelName,
-                    expectedSize = remoteSize(request.fileUrl),
+                    expectedSize = -1L,
                 )
 
                 when (request.modelType) {
@@ -260,6 +275,11 @@ class ModelDownloadService : Service() {
                     handleInterrupted(request)
                 } else {
                     Log.e(TAG, "Download failed", e)
+                    DownloadDiagnostics.error(
+                        this@ModelDownloadService,
+                        "Download failed model=${request.modelId}: ${e.message}",
+                        e,
+                    )
                     tempFile?.takeIf { request.modelType != TYPE_MULTI_FILE }?.delete()
                     extractTempDir?.deleteRecursively()
 
@@ -350,8 +370,15 @@ class ModelDownloadService : Service() {
             val url = "$base/$remote"
             remote to probeRemote(url, preferXet)
         }
-        val totalBytes = remoteInfo.values.sumOf { it.size.coerceAtLeast(0L) }
+        val allSizesKnown = remoteInfo.values.all { it.size > 0L }
+        val totalBytes = if (allSizesKnown) remoteInfo.values.sumOf { it.size } else 0L
         var completedBytes = 0L
+
+        DownloadDiagnostics.info(
+            this@ModelDownloadService,
+            "Metadata complete model=$modelId total=" +
+                if (totalBytes > 0) totalBytes.toString() else "unknown",
+        )
 
         for ((remote, local) in parts) {
             val dest = File(modelDir, local)
@@ -360,12 +387,23 @@ class ModelDownloadService : Service() {
             val expected = info.size
             val url = "$base/$remote"
 
-            if (dest.exists() && expected > 0 && dest.length() == expected) {
-                completedBytes += expected
+            if (dest.exists() && dest.length() > 0L &&
+                (expected <= 0L || dest.length() == expected)
+            ) {
+                completedBytes += dest.length()
+                DownloadDiagnostics.info(
+                    this@ModelDownloadService,
+                    "Keeping completed file $local bytes=${dest.length()}",
+                )
                 continue
             }
 
             if (expected > 0 && part.exists() && part.length() > expected) {
+                DownloadDiagnostics.warn(
+                    this@ModelDownloadService,
+                    "Partial file $local is larger than trusted Hub size " +
+                        "(${part.length()} > $expected); restarting that file",
+                )
                 part.delete()
             }
 
@@ -373,6 +411,14 @@ class ModelDownloadService : Service() {
                 expected > 0 &&
                 info.xetHash != null &&
                 info.xetRefreshUrl != null
+
+            DownloadDiagnostics.info(
+                this@ModelDownloadService,
+                "File $local expected=" +
+                    if (expected > 0) expected.toString() else "unknown" +
+                    " partial=${if (part.exists()) part.length() else 0L} " +
+                    "xetEligible=$canXet",
+            )
 
             if (canXet) {
                 try {
@@ -389,6 +435,11 @@ class ModelDownloadService : Service() {
                     )
                 } catch (e: XetDownloadException) {
                     Log.w(TAG, "Xet failed for $local, falling back to resumable HTTP: ${e.message}")
+                    DownloadDiagnostics.warn(
+                        this@ModelDownloadService,
+                        "Xet failed file=$local; preserving partial and falling back to HTTP: ${e.message}",
+                        e,
+                    )
                     downloadFileHttp(
                         url = url,
                         destFile = part,
@@ -418,87 +469,120 @@ class ModelDownloadService : Service() {
             }
             if (dest.exists()) dest.delete()
             if (!part.renameTo(dest)) throw IOException("Failed to install $local")
-            completedBytes += if (expected > 0) expected else dest.length()
+            completedBytes += dest.length()
+            DownloadDiagnostics.info(
+                this@ModelDownloadService,
+                "File complete $local bytes=${dest.length()}",
+            )
         }
 
         if (!markerFile.isNullOrEmpty()) File(modelDir, markerFile).createNewFile()
     }
 
     private fun probeRemote(url: String, wantXet: Boolean): RemoteInfo {
-        if (!wantXet) return RemoteInfo(remoteSize(url))
+        val parsed = runCatching { Request.Builder().url(url).build().url }.getOrNull()
+            ?: return RemoteInfo(-1L)
+
+        if (!isHuggingFaceHubHost(parsed.host)) {
+            return RemoteInfo(remoteSize(url))
+        }
 
         return runCatching {
-            // Hugging Face's Xet protocol exposes X-Xet-* metadata on the
-            // resolve response. A /resolve/main/... URL can first redirect to
-            // another Hub URL (/api/resolve-cache/...) before the Xet/LFS
-            // redirect. Do NOT follow the final storage/CDN redirect, otherwise
-            // the request drops onto the legacy HTTP download path.
-            //
-            // Use GET here, matching the Xet file-id protocol. Response bodies
-            // are never consumed; redirects are handled manually.
+            // Match huggingface_hub's metadata behavior:
+            // HEAD /resolve, Accept-Encoding: identity, follow redirects only while
+            // they stay on the Hub, and stop before CDN/object storage. On a
+            // redirect, Content-Length describes the redirect response itself and
+            // MUST NOT be treated as the model file size.
             var currentUrl = url
-            var bestSize = -1L
 
             for (hop in 0 until 8) {
+                var resolved: RemoteInfo? = null
                 var nextHubUrl: String? = null
+
                 val request = Request.Builder()
                     .url(currentUrl)
-                    .get()
+                    .head()
+                    .header("Accept-Encoding", "identity")
                     .header("X-HF-Download-Counter", "1")
                     .build()
 
-                val resolved = metadataClient.newCall(request).execute().use { response ->
-                    val size = response.header("X-Linked-Size")?.toLongOrNull()
-                        ?: response.header("Content-Range")
-                            ?.substringAfterLast('/')
-                            ?.toLongOrNull()
-                        ?: response.header("Content-Length")?.toLongOrNull()
-                        ?: -1L
-                    if (size > 0) bestSize = size
+                metadataClient.newCall(request).execute().use { response ->
+                    val location = response.header("Location")
+                    val isRedirect = response.code in 300..399 && !location.isNullOrBlank()
+
+                    if (!response.isSuccessful && !isRedirect) {
+                        throw IOException("Hub metadata HTTP ${response.code}")
+                    }
+
+                    val trustedSize = response.header("X-Linked-Size")?.toLongOrNull()
+                        ?: if (!isRedirect) {
+                            response.header("Content-Length")?.toLongOrNull()
+                        } else {
+                            null
+                        }
 
                     val hash = response.header("X-Xet-Hash")
-                    if (!hash.isNullOrBlank()) {
-                        val refresh = extractXetRefreshUrl(response, url)
-                            ?: deriveXetRefreshUrl(url)
+                    val refresh = extractXetRefreshUrl(response)
 
-                        if (!refresh.isNullOrBlank()) {
-                            Log.i(TAG, "Xet metadata resolved for $url (hop=$hop, size=$bestSize)")
-                            return@use RemoteInfo(
-                                size = if (bestSize > 0) bestSize else remoteSize(url),
-                                xetHash = hash,
-                                xetRefreshUrl = refresh,
-                            )
-                        }
+                    DownloadDiagnostics.info(
+                        this@ModelDownloadService,
+                        "HF metadata hop=$hop code=${response.code} host=${response.request.url.host} " +
+                            "size=${trustedSize ?: "unknown"} xetHash=${!hash.isNullOrBlank()} " +
+                            "xetAuth=${!refresh.isNullOrBlank()} redirect=$isRedirect",
+                    )
 
-                        Log.w(TAG, "Xet hash found but no refresh route could be resolved for $url")
-                    }
-
-                    val location = response.header("Location")
-                    if (response.code in 300..399 && !location.isNullOrBlank()) {
-                        val next = response.request.url.resolve(location)
-                        if (next != null && isHuggingFaceHubHost(next.host)) {
+                    if (wantXet && !hash.isNullOrBlank() && !refresh.isNullOrBlank()) {
+                        resolved = RemoteInfo(
+                            size = trustedSize ?: -1L,
+                            xetHash = hash,
+                            xetRefreshUrl = refresh,
+                        )
+                    } else if (isRedirect) {
+                        val next = response.request.url.resolve(location!!)
+                        if (next != null && isSameOrHubHost(response.request.url.host, next.host)) {
                             nextHubUrl = next.toString()
+                        } else {
+                            // This is the final CDN/storage redirect. Its metadata
+                            // belongs to the real file only through X-Linked-Size.
+                            resolved = RemoteInfo(trustedSize ?: -1L)
                         }
+                    } else {
+                        resolved = RemoteInfo(trustedSize ?: -1L)
                     }
-                    null
                 }
 
-                if (resolved != null) return@runCatching resolved
+                if (resolved != null) {
+                    if (wantXet && (resolved!!.xetHash == null || resolved!!.xetRefreshUrl == null)) {
+                        DownloadDiagnostics.warn(
+                            this@ModelDownloadService,
+                            "Xet metadata unavailable for Hub file; using resumable HTTP",
+                        )
+                    }
+                    return@runCatching resolved!!
+                }
+
                 if (nextHubUrl == null) break
                 currentUrl = nextHubUrl!!
             }
 
-            Log.w(TAG, "Xet metadata not found for $url; falling back to HTTP")
-            RemoteInfo(if (bestSize > 0) bestSize else remoteSize(url))
+            DownloadDiagnostics.warn(
+                this@ModelDownloadService,
+                "Hub metadata exceeded redirect resolution without usable metadata",
+            )
+            RemoteInfo(-1L)
         }.getOrElse {
-            Log.w(TAG, "Xet metadata probe failed; using HTTP", it)
-            RemoteInfo(remoteSize(url))
+            DownloadDiagnostics.warn(
+                this@ModelDownloadService,
+                "Hub metadata probe failed; HTTP fallback will discover size from GET: ${it.message}",
+                it,
+            )
+            RemoteInfo(-1L)
         }
     }
 
-    private fun extractXetRefreshUrl(response: okhttp3.Response, originalUrl: String): String? {
-        val refreshHeader = response.header("X-Xet-Refresh-Route")
-        val refreshLink = response.header("Link")
+    private fun extractXetRefreshUrl(response: okhttp3.Response): String? {
+        val linkValue = response.header("Link")
+        val linkRoute = linkValue
             ?.split(',')
             ?.firstOrNull { part ->
                 part.contains("rel=\"xet-auth\"", ignoreCase = true) ||
@@ -509,49 +593,58 @@ class ModelDownloadService : Service() {
             ?.removePrefix("<")
             ?.removeSuffix(">")
 
-        val raw = refreshLink ?: refreshHeader ?: return null
-        return when {
-            raw.startsWith("https://") || raw.startsWith("http://") -> raw
-            raw.startsWith("/") -> {
-                val base = Request.Builder().url(originalUrl).build().url
-                "${base.scheme}://${base.host}$raw"
-            }
-            else -> "https://huggingface.co/$raw"
-        }
+        val raw = linkRoute ?: response.header("X-Xet-Refresh-Route") ?: return null
+        return response.request.url.resolve(raw)?.toString()
+            ?: raw.takeIf { it.startsWith("https://") || it.startsWith("http://") }
     }
 
-    private fun deriveXetRefreshUrl(url: String): String? {
-        val parsed = runCatching { Request.Builder().url(url).build().url }.getOrNull()
-            ?: return null
-        if (!isHuggingFaceHubHost(parsed.host)) return null
-
-        val segments = parsed.pathSegments
-        val resolveIndex = segments.indexOf("resolve")
-        if (resolveIndex < 2 || resolveIndex + 1 >= segments.size) return null
-
-        val repoId = segments.take(resolveIndex).joinToString("/")
-        val revision = segments[resolveIndex + 1]
-        return "${parsed.scheme}://${parsed.host}/api/models/$repoId/xet-read-token/$revision"
-    }
+    private fun isSameOrHubHost(sourceHost: String, targetHost: String): Boolean =
+        sourceHost.equals(targetHost, ignoreCase = true) || isHuggingFaceHubHost(targetHost)
 
     private fun isHuggingFaceHubHost(host: String): Boolean {
         val normalized = host.lowercase(Locale.US)
-        return normalized == "huggingface.co" || normalized.endsWith(".huggingface.co")
+        return normalized == "huggingface.co" ||
+            normalized == "hf.co" ||
+            normalized == "hub-ci.huggingface.co"
     }
 
     private fun remoteSize(url: String): Long {
-        val request = Request.Builder().url(url).head().build()
+        val parsed = runCatching { Request.Builder().url(url).build().url }.getOrNull()
+            ?: return -1L
+
+        if (isHuggingFaceHubHost(parsed.host)) {
+            return probeRemote(url, wantXet = false).size
+        }
+
+        val request = Request.Builder()
+            .url(url)
+            .head()
+            .header("Accept-Encoding", "identity")
+            .build()
         return runCatching {
             client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    response.header("X-Linked-Size")?.toLongOrNull()
+                if (!response.isSuccessful) {
+                    -1L
+                } else {
+                    parseContentRangeTotal(response.header("Content-Range"))
                         ?: response.header("Content-Length")?.toLongOrNull()
                         ?: -1L
-                } else {
-                    -1L
                 }
             }
         }.getOrDefault(-1L)
+    }
+
+    private fun parseContentRangeTotal(value: String?): Long? {
+        if (value.isNullOrBlank()) return null
+        val total = value.substringAfterLast('/', missingDelimiterValue = "").trim()
+        return total.takeIf { it != "*" }?.toLongOrNull()
+    }
+
+    private fun parseContentRangeStart(value: String?): Long? {
+        if (value.isNullOrBlank()) return null
+        val range = value.substringAfter("bytes ", missingDelimiterValue = "")
+            .substringBefore('/')
+        return range.substringBefore('-').toLongOrNull()
     }
 
     private suspend fun downloadFileHttp(
@@ -565,44 +658,103 @@ class ModelDownloadService : Service() {
         packageTotal: Long = 0L,
     ) = withContext(Dispatchers.IO) {
         var existing = if (destFile.exists()) destFile.length() else 0L
-        if (expectedSize > 0 && existing > expectedSize) {
-            destFile.delete()
-            existing = 0L
-        }
-        if (expectedSize > 0 && existing == expectedSize) {
+        val trustedMetadataSize = expectedSize.takeIf { it > 0L }
+
+        if (trustedMetadataSize != null && existing == trustedMetadataSize) {
+            val total = if (packageTotal > 0) packageTotal else packageOffset + trustedMetadataSize
             emitProgress(
-                modelId, modelName, packageOffset + existing,
-                if (packageTotal > 0) packageTotal else expectedSize,
-                0L, null, currentFileName, false,
+                modelId, modelName, packageOffset + existing, total,
+                0L, 0L, currentFileName, false,
             )
             return@withContext
         }
 
-        val builder = Request.Builder().url(url)
+        if (trustedMetadataSize != null && existing > trustedMetadataSize) {
+            DownloadDiagnostics.warn(
+                this@ModelDownloadService,
+                "HTTP partial exceeds trusted metadata for ${currentFileName ?: modelId}: " +
+                    "$existing > $trustedMetadataSize; restarting file",
+            )
+            destFile.delete()
+            existing = 0L
+        }
+
+        val builder = Request.Builder()
+            .url(url)
+            .header("Accept-Encoding", "identity")
         if (existing > 0L) builder.header("Range", "bytes=$existing-")
 
         val call = client.newCall(builder.build())
         activeCall = call
 
         call.execute().use { response ->
-            if (existing > 0L && response.code == 416 && expectedSize == existing) return@use
+            if (response.code == 416) {
+                val serverTotal = parseContentRangeTotal(response.header("Content-Range"))
+                if (serverTotal != null && existing == serverTotal) {
+                    DownloadDiagnostics.info(
+                        this@ModelDownloadService,
+                        "HTTP resume already complete file=${currentFileName ?: modelId} bytes=$existing",
+                    )
+                    return@use
+                }
+                throw IOException(
+                    "Server rejected resume range for ${currentFileName ?: modelId} " +
+                        "(local=$existing server=${serverTotal ?: "unknown"})",
+                )
+            }
+
             if (!response.isSuccessful) {
                 throw IOException(getString(R.string.error_download_failed, response.code.toString()))
             }
 
             var append = existing > 0L && response.code == 206
+            if (append) {
+                val rangeStart = parseContentRangeStart(response.header("Content-Range"))
+                if (rangeStart != null && rangeStart != existing) {
+                    throw IOException(
+                        "Resume range mismatch for ${currentFileName ?: modelId}: " +
+                            "requested=$existing received=$rangeStart",
+                    )
+                }
+            }
+
             if (existing > 0L && response.code == 200) {
+                // Server ignored Range. Restart this file cleanly rather than
+                // appending duplicate bytes.
+                DownloadDiagnostics.warn(
+                    this@ModelDownloadService,
+                    "Server ignored Range for ${currentFileName ?: modelId}; restarting file from byte 0",
+                )
                 existing = 0L
                 append = false
             }
 
             val body = response.body ?: throw IOException("Response body is null")
-            val responseBytes = body.contentLength()
-            val totalFileBytes = when {
-                expectedSize > 0 -> expectedSize
-                append && responseBytes > 0 -> existing + responseBytes
-                else -> responseBytes
+            val responseBytes = body.contentLength().takeIf { it > 0L }
+            val rangeTotal = parseContentRangeTotal(response.header("Content-Range"))
+
+            // Prefer totals learned from the actual GET response. Metadata size
+            // is only a fallback when the body is chunked and carries no total.
+            val responseDerivedTotal = rangeTotal ?: when {
+                !append && responseBytes != null -> responseBytes
+                append && responseBytes != null -> existing + responseBytes
+                else -> null
             }
+            val totalFileBytes = responseDerivedTotal ?: trustedMetadataSize ?: -1L
+            val effectivePackageTotal = if (packageTotal > 0L) {
+                packageTotal
+            } else if (totalFileBytes > 0L) {
+                packageOffset + totalFileBytes
+            } else {
+                0L
+            }
+
+            DownloadDiagnostics.info(
+                this@ModelDownloadService,
+                "HTTP start file=${currentFileName ?: modelId} code=${response.code} " +
+                    "resume=$existing total=" +
+                    if (totalFileBytes > 0) totalFileBytes.toString() else "unknown",
+            )
 
             var downloadedThisRequest = 0L
             var lastUpdateTime = System.currentTimeMillis()
@@ -633,15 +785,14 @@ class ModelDownloadService : Service() {
 
                             val fileDone = existing + downloadedThisRequest
                             val reportedDone = packageOffset + fileDone
-                            val reportedTotal = if (packageTotal > 0) packageTotal else totalFileBytes
                             val speed = smoothedBytesPerSecond.toLong().coerceAtLeast(0L)
-                            val eta = if (reportedTotal > reportedDone && speed > 0) {
-                                (reportedTotal - reportedDone) / speed
+                            val eta = if (effectivePackageTotal > reportedDone && speed > 0) {
+                                (effectivePackageTotal - reportedDone) / speed
                             } else {
                                 null
                             }
                             emitProgress(
-                                modelId, modelName, reportedDone, reportedTotal,
+                                modelId, modelName, reportedDone, effectivePackageTotal,
                                 speed, eta, currentFileName, false,
                             )
                         }
@@ -650,13 +801,38 @@ class ModelDownloadService : Service() {
             }
 
             val finalSize = destFile.length()
-            if (totalFileBytes > 0 && finalSize != totalFileBytes) {
-                throw IOException("Incomplete HTTP download: $finalSize/$totalFileBytes")
+            val authoritativeTotal = responseDerivedTotal
+            if (authoritativeTotal != null && finalSize != authoritativeTotal) {
+                throw IOException(
+                    "Incomplete HTTP download for ${currentFileName ?: modelId}: " +
+                        "$finalSize/$authoritativeTotal",
+                )
             }
 
-            val total = if (packageTotal > 0) packageTotal else totalFileBytes
+            // If the GET was chunked, a trusted Hub X-Linked-Size remains useful
+            // as an integrity check. Never use redirect Content-Length here.
+            if (authoritativeTotal == null &&
+                trustedMetadataSize != null &&
+                finalSize != trustedMetadataSize
+            ) {
+                throw IOException(
+                    "Incomplete HTTP download for ${currentFileName ?: modelId}: " +
+                        "$finalSize/$trustedMetadataSize",
+                )
+            }
+
+            DownloadDiagnostics.info(
+                this@ModelDownloadService,
+                "HTTP complete file=${currentFileName ?: modelId} bytes=$finalSize",
+            )
+
+            val finalTotal = if (packageTotal > 0) {
+                packageTotal
+            } else {
+                packageOffset + finalSize
+            }
             emitProgress(
-                modelId, modelName, packageOffset + finalSize, total,
+                modelId, modelName, packageOffset + finalSize, finalTotal,
                 smoothedBytesPerSecond.toLong(), 0L, currentFileName, false,
             )
         }
@@ -675,6 +851,17 @@ class ModelDownloadService : Service() {
         packageTotal: Long,
     ) = coroutineScope {
         var profile = currentXetProfile()
+        val effectivePackageTotal = if (packageTotal > 0L) {
+            packageTotal
+        } else {
+            packageOffset + expectedSize
+        }
+
+        DownloadDiagnostics.info(
+            this@ModelDownloadService,
+            "Xet start file=$currentFileName size=$expectedSize " +
+                "resume=${destFile.length()} profile=$profile",
+        )
 
         while (destFile.length() < expectedSize) {
             val offset = destFile.length()
@@ -708,13 +895,13 @@ class ModelDownloadService : Service() {
 
                 val reportedDone = packageOffset + nowBytes
                 val speed = smoothedSpeed.toLong().coerceAtLeast(0L)
-                val eta = if (packageTotal > reportedDone && speed > 0) {
-                    (packageTotal - reportedDone) / speed
+                val eta = if (effectivePackageTotal > reportedDone && speed > 0) {
+                    (effectivePackageTotal - reportedDone) / speed
                 } else {
                     null
                 }
                 emitProgress(
-                    modelId, modelName, reportedDone, packageTotal,
+                    modelId, modelName, reportedDone, effectivePackageTotal,
                     speed, eta, currentFileName, true,
                 )
 
@@ -728,6 +915,10 @@ class ModelDownloadService : Service() {
                     profile = saferProfile
                     requestedThermalRestart = true
                     Log.i(TAG, "Thermal pressure: restarting Xet at mobile profile $profile")
+                    DownloadDiagnostics.info(
+                        this@ModelDownloadService,
+                        "Thermal pressure: restarting Xet file=$currentFileName profile=$profile",
+                    )
                     XetNative.nativeCancel()
                     break
                 }
@@ -742,15 +933,24 @@ class ModelDownloadService : Service() {
             if (result == 1 && requestedThermalRestart) continue
             if (result == 1) throw CancellationException("Xet cancelled")
 
-            throw XetDownloadException(XetNative.nativeLastError() ?: "unknown Xet error")
+            val nativeError = XetNative.nativeLastError() ?: "unknown Xet error"
+            DownloadDiagnostics.warn(
+                this@ModelDownloadService,
+                "Xet native error file=$currentFileName result=$result error=$nativeError",
+            )
+            throw XetDownloadException(nativeError)
         }
 
         if (destFile.length() != expectedSize) {
             throw XetDownloadException("Incomplete Xet download: ${destFile.length()}/$expectedSize")
         }
 
+        DownloadDiagnostics.info(
+            this@ModelDownloadService,
+            "Xet complete file=$currentFileName bytes=$expectedSize",
+        )
         emitProgress(
-            modelId, modelName, packageOffset + expectedSize, packageTotal,
+            modelId, modelName, packageOffset + expectedSize, effectivePackageTotal,
             0L, 0L, currentFileName, true,
         )
     }
@@ -850,6 +1050,10 @@ class ModelDownloadService : Service() {
 
         pauseRequested = true
         cancelRequested = false
+        DownloadDiagnostics.info(
+            this,
+            "Pause requested model=${state.modelId} bytes=${state.downloadedBytes}",
+        )
         _downloadState.value = DownloadState.Paused(
             modelId = state.modelId,
             progress = state.progress,
@@ -877,6 +1081,7 @@ class ModelDownloadService : Service() {
 
         pauseRequested = false
         cancelRequested = false
+        DownloadDiagnostics.info(this, "Resume requested model=${request.modelId}")
         notificationManager.notify(
             NOTIFICATION_ID,
             createNotification(request.modelName, (_downloadState.value as DownloadState.Paused).progress),
@@ -888,6 +1093,7 @@ class ModelDownloadService : Service() {
         val request = activeRequest
         pauseRequested = false
         cancelRequested = true
+        DownloadDiagnostics.info(this, "Cancel requested model=${request?.modelId ?: "unknown"}")
         activeCall?.cancel()
         if (XetNative.available) runCatching { XetNative.nativeCancel() }
 
@@ -1049,6 +1255,7 @@ class ModelDownloadService : Service() {
 
     private fun handleTimeout(fgsType: Int) {
         Log.e(TAG, "Foreground service timeout (fgsType=$fgsType)")
+        DownloadDiagnostics.error(this, "Foreground service timeout fgsType=$fgsType")
         activeCall?.cancel()
         if (XetNative.available) runCatching { XetNative.nativeCancel() }
         downloadJob?.cancel()

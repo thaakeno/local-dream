@@ -48,7 +48,9 @@ object DownloadDiagnostics {
 
     private fun append(context: Context, level: String, message: String, throwable: Throwable?) {
         val safeMessage = message
-            .replace(Regex("""(?i)(authorization|token|access[-_ ]?token)=[^&\s]+"""), "$1=<redacted>")
+            .replace(Regex("""(?i)(authorization|token|access[-_ ]?token)=[^&\s]+""")) { match ->
+                "${match.groupValues[1]}=<redacted>"
+            }
             .take(8_000)
         val line = buildString {
             append(formatter.format(Date()))

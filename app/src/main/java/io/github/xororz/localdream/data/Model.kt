@@ -768,8 +768,7 @@ class ModelRepository private constructor(private val context: Context) {
         return Model(
             id = id,
             name = "Qwen Image 2.1 FP8",
-            description = context.getString(R.string.qwen_image_2_1_description) +
-                " • Native Hexagon FP8",
+            description = "FP8 DiT with Qwen3-VL-8B, 20 steps. • Native Hexagon FP8",
             baseUrl = baseUrl,
             packageFiles = Model.QWEN_IMAGE_2_1_FP8_PACKAGE_FILES,
             generationSize = 1024,
