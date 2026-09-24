@@ -3,6 +3,8 @@ name: Qwen turbo branch build
 on:
   push:
     branches: [qwen-gguf-turbo-overhaul]
+  pull_request:
+    branches: [master]
   workflow_dispatch:
 
 jobs:
