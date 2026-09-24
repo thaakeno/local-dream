@@ -71,30 +71,17 @@ fn configure_mobile_runtime(memory_budget_bytes: u64) {
 
     let budget = memory_budget_bytes.max(1);
 
-    // Xet already has adaptive concurrency. Start from a device-derived amount of
-    // parallelism so a flagship phone does not spend the first part of a download
-    // stuck at one connection, then let Xet continuously adapt from there.
-    let cpu_count = std::thread::available_parallelism()
-        .map(|n| n.get() as u64)
-        .unwrap_or(1)
-        .max(1);
-    let initial_download_concurrency = (cpu_count as f64).sqrt().ceil() as u64;
-    let max_download_concurrency = cpu_count
-        .saturating_mul(2)
-        .max(initial_download_concurrency);
-
+    // Do not second-guess xet-core's adaptive controller. The upstream client
+    // continuously measures the real transfer path and scales download concurrency
+    // itself. In particular, do not cap it from Android's CPU count or link-speed
+    // estimate: those are not network capacity measurements and were throttling fast
+    // connections. Keep only the memory bounds below.
     std::env::set_var("HF_XET_CLIENT_ENABLE_ADAPTIVE_CONCURRENCY", "1");
     std::env::remove_var("HF_XET_FIXED_DOWNLOAD_CONCURRENCY");
-    std::env::set_var("HF_XET_CLIENT_AC_MIN_DOWNLOAD_CONCURRENCY", "1");
-    std::env::set_var(
-        "HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY",
-        initial_download_concurrency.to_string(),
-    );
-    std::env::set_var(
-        "HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY",
-        max_download_concurrency.to_string(),
-    );
-    std::env::set_var("HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS", "1");
+    std::env::remove_var("HF_XET_CLIENT_AC_MIN_DOWNLOAD_CONCURRENCY");
+    std::env::remove_var("HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY");
+    std::env::remove_var("HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY");
+    std::env::remove_var("HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS");
 
     // Size reconstruction buffers only from the current Android memory budget.
     // This keeps the fast stream path fed without using the multi-gigabyte desktop defaults.

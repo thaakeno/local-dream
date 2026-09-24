@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.net.TrafficStats
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
@@ -88,6 +89,68 @@ class ModelDownloadService : Service() {
         }
     }
 
+    /**
+     * Xet reconstructs ordered output in fairly large chunks even while network
+     * traffic is flowing continuously. This keeps the UI live between confirmed
+     * reconstruction chunks by calibrating network bytes against confirmed model
+     * bytes. It never affects the file or resume offset; it is display-only.
+     */
+    private class LiveXetProgressEstimator(
+        initialConfirmedBytes: Long,
+        initialRxBytes: Long?,
+    ) {
+        private var confirmedBytes = initialConfirmedBytes
+        private var rxAtConfirmed = initialRxBytes
+        private var observedLogicalBytes = 0L
+        private var observedNetworkBytes = 0L
+        private var displayedBytes = initialConfirmedBytes
+
+        fun update(confirmed: Long, rxBytes: Long?, totalBytes: Long): Long {
+            val safeConfirmed = confirmed.coerceIn(0L, totalBytes)
+
+            if (safeConfirmed > confirmedBytes) {
+                val baselineRx = rxAtConfirmed
+                if (rxBytes != null && baselineRx != null) {
+                    val networkDelta = (rxBytes - baselineRx).coerceAtLeast(0L)
+                    val logicalDelta = safeConfirmed - confirmedBytes
+                    if (networkDelta > 0L && logicalDelta > 0L) {
+                        observedNetworkBytes += networkDelta
+                        observedLogicalBytes += logicalDelta
+                    }
+                }
+                confirmedBytes = safeConfirmed
+                rxAtConfirmed = rxBytes
+            }
+
+            displayedBytes = maxOf(displayedBytes, safeConfirmed)
+
+            val baselineRx = rxAtConfirmed
+            if (rxBytes != null && baselineRx != null && safeConfirmed < totalBytes) {
+                val pendingNetworkBytes = (rxBytes - baselineRx).coerceAtLeast(0L)
+                // Before the first reconstruction chunk arrives, use a neutral 1:1
+                // estimate. As soon as Xet confirms bytes, this becomes a measured,
+                // cumulative logical/network ratio for this exact transfer.
+                val ratio = efficiencyRatio() ?: 1.0
+                val estimated = confirmedBytes +
+                    (pendingNetworkBytes.toDouble() * ratio).toLong()
+                val preCompletionCap = (totalBytes - 1L).coerceAtLeast(0L)
+                displayedBytes = maxOf(
+                    displayedBytes,
+                    estimated.coerceAtMost(preCompletionCap),
+                )
+            }
+
+            return displayedBytes.coerceIn(0L, totalBytes)
+        }
+
+        fun efficiencyRatio(): Double? =
+            if (observedNetworkBytes > 0L) {
+                observedLogicalBytes.toDouble() / observedNetworkBytes.toDouble()
+            } else {
+                null
+            }
+    }
+
     private val notificationManager by lazy {
         getSystemService(NOTIFICATION_SERVICE) as NotificationManager
     }
@@ -136,6 +199,7 @@ class ModelDownloadService : Service() {
             val downloadedBytes: Long,
             val totalBytes: Long,
             val bytesPerSecond: Long,
+            val networkBytesPerSecond: Long = 0L,
             val etaSeconds: Long?,
             val currentFileName: String? = null,
             val usingXet: Boolean = false,
@@ -885,18 +949,28 @@ class ModelDownloadService : Service() {
             packageOffset + expectedSize
         }
 
+        fun currentUidRxBytes(): Long? {
+            val value = TrafficStats.getUidRxBytes(applicationInfo.uid)
+            return value.takeIf { it != TrafficStats.UNSUPPORTED && it >= 0L }
+        }
+
         val xetRuntimeDir = File(cacheDir, "hf_xet_runtime").apply { mkdirs() }
         DownloadDiagnostics.info(
             this@ModelDownloadService,
             "Xet start file=$currentFileName size=$expectedSize " +
-                "resume=${destFile.length()} stream=true speedSource=written-bytes " +
+                "resume=${destFile.length()} stream=true " +
+                "progress=100ms-live speed=effective+uid-rx " +
                 "cacheWritable=${xetRuntimeDir.canWrite()} cacheFree=${xetRuntimeDir.usableSpace} " +
                 tuning.summary(),
         )
 
         while (destFile.length() < expectedSize) {
             val offset = destFile.length()
-            val estimator = RollingThroughputEstimator(windowMs = 10_000L)
+            val effectiveSpeedEstimator = RollingThroughputEstimator(windowMs = 4_000L)
+            val etaSpeedEstimator = RollingThroughputEstimator(windowMs = 10_000L)
+            val networkSpeedEstimator = RollingThroughputEstimator(windowMs = 2_000L)
+            val initialRx = currentUidRxBytes()
+            val liveProgress = LiveXetProgressEstimator(offset, initialRx)
             var lastDiagnosticAt = SystemClock.elapsedRealtime()
 
             val nativeJob = async(Dispatchers.IO) {
@@ -912,43 +986,62 @@ class ModelDownloadService : Service() {
             }
 
             while (!nativeJob.isCompleted) {
-                delay(250L)
+                delay(100L)
 
-                // Effective Xet throughput = final model bytes reconstructed and delivered
-                // by the ordered stream. This is what the user cares about and does not
-                // expose Xet's changing internal CAS/prefetch accounting.
                 val nativeProgress =
                     runCatching { XetNative.nativeProgressBytes() }
                         .getOrDefault(offset)
                         .coerceIn(offset, expectedSize)
                 val fileProgress = destFile.length().coerceIn(offset, expectedSize)
-                val nowBytes = maxOf(nativeProgress, fileProgress)
+                val confirmedBytes = maxOf(nativeProgress, fileProgress)
                 val now = SystemClock.elapsedRealtime()
-                val speed = estimator.sample(now, nowBytes).coerceAtLeast(0L)
+                val rxBytes = currentUidRxBytes()
+                val liveBytes = liveProgress.update(
+                    confirmed = confirmedBytes,
+                    rxBytes = rxBytes,
+                    totalBytes = expectedSize,
+                )
 
-                val reportedDone = packageOffset + nowBytes
-                val eta = if (effectivePackageTotal > reportedDone && speed > 0L) {
-                    (effectivePackageTotal - reportedDone) / speed
+                val effectiveSpeed =
+                    effectiveSpeedEstimator.sample(now, liveBytes).coerceAtLeast(0L)
+                val etaSpeed =
+                    etaSpeedEstimator.sample(now, liveBytes).coerceAtLeast(0L)
+                val networkSpeed =
+                    if (rxBytes != null) {
+                        networkSpeedEstimator.sample(now, rxBytes).coerceAtLeast(0L)
+                    } else {
+                        0L
+                    }
+
+                val reportedDone = packageOffset + liveBytes
+                val eta = if (effectivePackageTotal > reportedDone && etaSpeed > 0L) {
+                    (effectivePackageTotal - reportedDone) / etaSpeed
                 } else {
                     null
                 }
 
                 emitProgress(
-                    modelId,
-                    modelName,
-                    reportedDone,
-                    effectivePackageTotal,
-                    speed,
-                    eta,
-                    currentFileName,
-                    true,
+                    modelId = modelId,
+                    modelName = modelName,
+                    done = reportedDone,
+                    total = effectivePackageTotal,
+                    speed = effectiveSpeed,
+                    eta = eta,
+                    currentFileName = currentFileName,
+                    usingXet = true,
+                    networkSpeed = networkSpeed,
                 )
 
                 if (now - lastDiagnosticAt >= 10_000L) {
+                    val ratio = liveProgress.efficiencyRatio()
                     DownloadDiagnostics.info(
                         this@ModelDownloadService,
-                        "Xet progress file=$currentFileName done=$nowBytes/$expectedSize " +
-                            "effectiveBps=$speed",
+                        "Xet progress file=$currentFileName " +
+                            "confirmed=$confirmedBytes/$expectedSize live=$liveBytes " +
+                            "effectiveBps=$effectiveSpeed networkBps=$networkSpeed " +
+                            "ratio=" + (ratio?.let {
+                                String.format(Locale.US, "%.3f", it)
+                            } ?: "calibrating"),
                     )
                     lastDiagnosticAt = now
                 }
@@ -987,14 +1080,15 @@ class ModelDownloadService : Service() {
             "Xet complete file=$currentFileName bytes=$expectedSize",
         )
         emitProgress(
-            modelId,
-            modelName,
-            packageOffset + expectedSize,
-            effectivePackageTotal,
-            0L,
-            0L,
-            currentFileName,
-            true,
+            modelId = modelId,
+            modelName = modelName,
+            done = packageOffset + expectedSize,
+            total = effectivePackageTotal,
+            speed = 0L,
+            eta = 0L,
+            currentFileName = currentFileName,
+            usingXet = true,
+            networkSpeed = 0L,
         )
     }
 
@@ -1009,6 +1103,7 @@ class ModelDownloadService : Service() {
         usingXet: Boolean,
         xetTransferBytes: Long = 0L,
         xetTransferTotalBytes: Long = 0L,
+        networkSpeed: Long = 0L,
     ) {
         val progress = if (total > 0) {
             (done.toDouble() / total.toDouble()).coerceIn(0.0, 1.0).toFloat()
@@ -1022,6 +1117,7 @@ class ModelDownloadService : Service() {
             downloadedBytes = done,
             totalBytes = total,
             bytesPerSecond = speed,
+            networkBytesPerSecond = networkSpeed,
             etaSeconds = eta,
             currentFileName = currentFileName,
             usingXet = usingXet,

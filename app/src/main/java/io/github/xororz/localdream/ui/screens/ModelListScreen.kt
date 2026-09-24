@@ -354,6 +354,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var downloadingModel by remember { mutableStateOf<Model?>(null) }
     var currentProgress by remember { mutableStateOf<DownloadProgress?>(null) }
     var currentSpeedBytesPerSecond by remember { mutableLongStateOf(0L) }
+    var currentNetworkBytesPerSecond by remember { mutableLongStateOf(0L) }
     var currentEtaSeconds by remember { mutableStateOf<Long?>(null) }
     var currentDownloadFile by remember { mutableStateOf<String?>(null) }
     var currentDownloadUsesXet by remember { mutableStateOf(false) }
@@ -434,6 +435,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             totalBytes = state.totalBytes,
                         )
                         currentSpeedBytesPerSecond = state.bytesPerSecond
+                        currentNetworkBytesPerSecond = state.networkBytesPerSecond
                         currentEtaSeconds = state.etaSeconds
                         currentDownloadFile = state.currentFileName
                         currentDownloadUsesXet = state.usingXet
@@ -451,6 +453,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             totalBytes = state.totalBytes,
                         )
                         currentSpeedBytesPerSecond = 0L
+                        currentNetworkBytesPerSecond = 0L
                         currentEtaSeconds = null
                         currentDownloadFile = state.currentFileName
                         currentDownloadUsesXet = state.usingXet
@@ -474,6 +477,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     downloadingModel = null
                     currentProgress = null
                     currentSpeedBytesPerSecond = 0L
+                    currentNetworkBytesPerSecond = 0L
                     currentEtaSeconds = null
                     currentDownloadFile = null
                     currentDownloadUsesXet = false
@@ -487,6 +491,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     downloadingModel = null
                     currentProgress = null
                     currentSpeedBytesPerSecond = 0L
+                    currentNetworkBytesPerSecond = 0L
                     currentEtaSeconds = null
                     currentDownloadFile = null
                     currentDownloadUsesXet = false
@@ -499,6 +504,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         downloadingModel = null
                         currentProgress = null
                         currentSpeedBytesPerSecond = 0L
+                        currentNetworkBytesPerSecond = 0L
                         currentEtaSeconds = null
                         currentDownloadFile = null
                         currentDownloadUsesXet = false
@@ -1154,6 +1160,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 )
             }
+            AnimatedVisibility(
+                visible = downloadingModel != null && !showDownloadDetails,
+            ) {
             downloadingModel?.let { model ->
                 val progress = currentProgress
                 DownloadMiniCard(
@@ -1168,6 +1177,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     onClick = { showDownloadDetails = true },
                 )
+            }
             }
 
             PrimaryTabRow(
@@ -2134,11 +2144,11 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 downloadedBytes = progress?.downloadedBytes ?: 0L,
                 totalBytes = progress?.totalBytes ?: 0L,
                 bytesPerSecond = currentSpeedBytesPerSecond,
+                networkBytesPerSecond = currentNetworkBytesPerSecond,
                 etaSeconds = currentEtaSeconds,
                 currentFileName = currentDownloadFile,
                 paused = downloadPaused,
                 usingXet = currentDownloadUsesXet,
-                onMinimize = { showDownloadDetails = false },
                 onPauseResume = {
                     context.startService(
                         Intent(context, ModelDownloadService::class.java).apply {
@@ -2177,6 +2187,19 @@ private fun DownloadMiniCard(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 160, easing = LinearEasing),
+        label = "downloadMiniProgress",
+    )
+    val shownBytes = if (totalBytes > 0L) {
+        (animatedProgress.toDouble() * totalBytes.toDouble())
+            .toLong()
+            .coerceIn(0L, totalBytes)
+    } else {
+        downloadedBytes
+    }
+
     ElevatedCard(
         onClick = onClick,
         modifier = modifier.fillMaxWidth(),
@@ -2196,7 +2219,7 @@ private fun DownloadMiniCard(
                 contentAlignment = Alignment.Center,
             ) {
                 CircularProgressIndicator(
-                    progress = { progress.coerceIn(0f, 1f) },
+                    progress = { animatedProgress },
                     modifier = Modifier.fillMaxSize(),
                     strokeWidth = 3.dp,
                 )
@@ -2207,9 +2230,10 @@ private fun DownloadMiniCard(
                     tint = MaterialTheme.colorScheme.primary,
                 )
             }
+
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -2223,44 +2247,55 @@ private fun DownloadMiniCard(
                         modifier = Modifier.weight(1f),
                     )
                     if (usingXet) {
-                        AssistChip(
-                            onClick = onClick,
-                            label = { Text(stringResource(R.string.download_mode_xet)) },
-                        )
-                    }
-                }
-                val status = buildString {
-                    if (paused) {
-                        append(stringResource(R.string.download_paused))
-                    } else if (bytesPerSecond > 0L) {
-                        append(formatDownloadSpeed(bytesPerSecond))
-                        etaSeconds?.let {
-                            append("  •  ")
-                            append(formatDownloadEta(it))
-                            append(" left")
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                        ) {
+                            Text(
+                                text = stringResource(R.string.download_mode_xet_short),
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
                         }
-                    } else {
-                        append(stringResource(R.string.download_starting))
                     }
                 }
+
                 Text(
-                    text = status,
+                    text = when {
+                        paused -> stringResource(R.string.download_paused)
+                        bytesPerSecond > 0L -> buildString {
+                            append(formatDownloadSpeed(bytesPerSecond))
+                            etaSeconds?.let {
+                                append("  •  ")
+                                append(formatDownloadEta(it))
+                                append(" left")
+                            }
+                        }
+                        else -> stringResource(R.string.download_starting)
+                    },
                     style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
+
                 LinearProgressIndicator(
-                    progress = { progress.coerceIn(0f, 1f) },
+                    progress = { animatedProgress },
                     modifier = Modifier.fillMaxWidth(),
                 )
+
                 if (totalBytes > 0L) {
                     Text(
-                        text = "${(progress * 100).toInt()}%  •  ${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}",
-                        style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                        text = "${(animatedProgress * 100).toInt()}%  •  " +
+                            "${formatBytes(shownBytes)} / ${formatBytes(totalBytes)}",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFeatureSettings = "tnum",
+                        ),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
+
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = stringResource(R.string.download_open_details),
@@ -2277,14 +2312,27 @@ private fun DownloadDetailsSheet(
     downloadedBytes: Long,
     totalBytes: Long,
     bytesPerSecond: Long,
+    networkBytesPerSecond: Long,
     etaSeconds: Long?,
     currentFileName: String?,
     paused: Boolean,
     usingXet: Boolean,
-    onMinimize: () -> Unit,
     onPauseResume: () -> Unit,
     onCancel: () -> Unit,
 ) {
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 160, easing = LinearEasing),
+        label = "downloadSheetProgress",
+    )
+    val shownBytes = if (totalBytes > 0L) {
+        (animatedProgress.toDouble() * totalBytes.toDouble())
+            .toLong()
+            .coerceIn(0L, totalBytes)
+    } else {
+        downloadedBytes
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2292,57 +2340,62 @@ private fun DownloadDetailsSheet(
             .padding(bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = stringResource(R.string.downloading_model, modelName),
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                Text(
-                    text = if (paused) {
-                        stringResource(R.string.download_paused)
-                    } else if (usingXet) {
-                        stringResource(R.string.download_mode_xet)
-                    } else {
-                        stringResource(R.string.download_mode_http)
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            TextButton(onClick = onMinimize) {
-                Icon(Icons.Default.KeyboardArrowDown, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text(stringResource(R.string.download_minimize))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = stringResource(R.string.downloading_model, modelName),
+                style = MaterialTheme.typography.titleLarge,
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (usingXet) {
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.download_mode_xet_short),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                    }
+                }
+                if (paused) {
+                    Text(
+                        text = stringResource(R.string.download_paused),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 
         SmoothLinearWavyProgressIndicator(
-            progress = progress.coerceIn(0f, 1f),
+            progress = animatedProgress,
             modifier = Modifier.fillMaxWidth(),
         )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "${(progress * 100).toInt()}%",
+                text = "${(animatedProgress * 100).toInt()}%",
                 style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
             )
             if (totalBytes > 0L) {
                 Text(
-                    text = "${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}",
+                    text = "${formatBytes(shownBytes)} / ${formatBytes(totalBytes)}",
                     style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
 
-        if (!paused && bytesPerSecond > 0L) {
+        if (!paused && (bytesPerSecond > 0L || networkBytesPerSecond > 0L)) {
             ElevatedCard(
                 colors = CardDefaults.elevatedCardColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -2351,24 +2404,51 @@ private fun DownloadDetailsSheet(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Column {
-                        Text(
-                            text = formatDownloadSpeed(bytesPerSecond),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
-                        Text(
-                            text = stringResource(R.string.download_speed),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
+                    if (bytesPerSecond > 0L) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = formatDownloadSpeed(bytesPerSecond),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                            Text(
+                                text = stringResource(
+                                    if (usingXet) {
+                                        R.string.download_effective_speed
+                                    } else {
+                                        R.string.download_speed
+                                    },
+                                ),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
                     }
+
+                    if (usingXet && networkBytesPerSecond > 0L) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = formatDownloadSpeed(networkBytesPerSecond),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                            Text(
+                                text = stringResource(R.string.download_network_speed),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
+                    }
+
                     etaSeconds?.let {
-                        Column(horizontalAlignment = Alignment.End) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            horizontalAlignment = Alignment.End,
+                        ) {
                             Text(
                                 text = formatDownloadEta(it),
                                 style = MaterialTheme.typography.titleMedium,
@@ -2393,13 +2473,7 @@ private fun DownloadDetailsSheet(
                 },
                 headlineContent = { Text(it) },
                 supportingContent = {
-                    Text(
-                        if (usingXet) {
-                            stringResource(R.string.download_mode_xet)
-                        } else {
-                            stringResource(R.string.download_mode_http)
-                        },
-                    )
+                    Text(stringResource(R.string.download_current_file))
                 },
             )
         }
@@ -2417,9 +2491,7 @@ private fun DownloadDetailsSheet(
                     contentDescription = null,
                 )
                 Spacer(Modifier.width(8.dp))
-                Text(
-                    stringResource(if (paused) R.string.resume else R.string.pause),
-                )
+                Text(stringResource(if (paused) R.string.resume else R.string.pause))
             }
             OutlinedButton(
                 onClick = onCancel,
