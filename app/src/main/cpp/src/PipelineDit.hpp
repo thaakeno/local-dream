@@ -188,10 +188,13 @@ class PipelineDit : public Pipeline {
       params.reference_heights = reference_heights.data();
       params.reference_image_count = static_cast<int>(reference_ptrs.size());
     }
-    // Full-frame decode needs latent-sized scratch that grows with the square
-    // of the resolution; tile once past the point where it stops fitting.
+    // Qwen's 1024 target must be boringly reliable on a phone, not a gamble
+    // on one giant VAE scratch allocation. Tile native >=1024 output from the
+    // first attempt. 64 latent pixels corresponds to a 512px image tile; the
+    // overlap is blended by stable-diffusion.cpp. Smaller outputs keep the
+    // cheaper full-frame decode.
     if (vae_tile_size_ > 0 &&
-        static_cast<long>(req.width) * req.height > kTileAbovePixels) {
+        static_cast<long>(req.width) * req.height >= kTileAbovePixels) {
       params.vae_tile_size = vae_tile_size_;
       params.vae_tile_overlap = 0.25f;
     }
@@ -280,8 +283,9 @@ class PipelineDit : public Pipeline {
   // Used by guidance-distilled DiTs; Qwen ignores this field. Qwen's default
   // CFG scale is 1, which keeps sampling conditional-only.
   static constexpr float kDistilledGuidance = 3.5f;
-  // 1536x1536 still decodes whole on the devices this runs on; 2048 does not.
-  static constexpr long kTileAbovePixels = 1536L * 1536L;
+  // Native Qwen/Viggle target. Tiling at this boundary avoids the >800 MiB
+  // full-frame VAE scratch spikes seen on current HTP builds.
+  static constexpr long kTileAbovePixels = 1024L * 1024L;
 
   bool isNativeEditModel() const {
     return kind_ == DIT_MODEL_FLUX2_KLEIN ||
