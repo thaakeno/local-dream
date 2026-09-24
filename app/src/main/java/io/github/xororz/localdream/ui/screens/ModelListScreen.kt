@@ -2328,13 +2328,8 @@ private fun DownloadDetailsSheet(
         animationSpec = tween(durationMillis = 160, easing = LinearEasing),
         label = "downloadSheetProgress",
     )
-    val shownBytes = if (totalBytes > 0L) {
-        (animatedProgress.toDouble() * totalBytes.toDouble())
-            .toLong()
-            .coerceIn(0L, totalBytes)
-    } else {
-        downloadedBytes
-    }
+    val confirmedProgress = progress.coerceIn(0f, 1f)
+    val shownBytes = downloadedBytes.coerceAtLeast(0L)
 
     Column(
         modifier = Modifier
