@@ -13,6 +13,7 @@ use jni::JNIEnv;
 use xet::xet_session::{XetFileInfo, XetSession, XetSessionBuilder};
 
 static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+static DOWNLOAD_LOCK: Mutex<()> = Mutex::new(());
 static ACTIVE_SESSION: Mutex<Option<XetSession>> = Mutex::new(None);
 static ACTIVE_PROGRESS_BYTES: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_PROGRESS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -152,6 +153,13 @@ fn run_download(
     offset: u64,
     memory_budget_bytes: u64,
 ) -> Result<i32, String> {
+    // JNI exposes one global active Xet session/cancel flag. A rapid pause/resume
+    // must never overlap two native runs: the new run would otherwise clear the
+    // old run's cancel flag and both could write the same partial file.
+    let _download_guard = DOWNLOAD_LOCK
+        .lock()
+        .map_err(|_| "Xet download lock poisoned".to_string())?;
+
     if offset > size {
         return Err(format!("resume offset {offset} is larger than file size {size}"));
     }

@@ -81,6 +81,15 @@ internal object HyperOsSuperIsland {
         val speedText = speedBytesPerSecond.takeIf { it > 0L }?.let(::formatSpeed)
         val etaText = etaSeconds?.takeIf { it > 0L }?.let(::formatEta)
 
+        // Island A/B areas are extremely narrow. Keep those values compact and
+        // reserve the full "downloaded / total · speed · ETA · left" line for
+        // the expanded Focus card below.
+        val islandDone = formatBytesCompact(downloadedBytes)
+        val islandLeft = totalBytes.takeIf { it > 0L }?.let {
+            formatBytesCompact(leftBytes)
+        }
+        val islandEta = etaSeconds?.takeIf { it > 0L }?.let(::formatEtaCompact)
+
         val primaryLine = when {
             paused && totalText != null -> "$doneText / $totalText · Paused"
             paused -> "$doneText · Paused"
@@ -127,7 +136,7 @@ internal object HyperOsSuperIsland {
                         JSONObject()
                             .put("frontTitle", "")
                             .put("title", "$percent%")
-                            .put("content", doneText)
+                            .put("content", islandDone)
                             .put("showHighlightColor", false)
                             .put("narrowFont", true),
                     ),
@@ -140,8 +149,8 @@ internal object HyperOsSuperIsland {
                         "textInfo",
                         JSONObject()
                             .put("frontTitle", if (paused) "Paused" else "ETA")
-                            .put("title", etaText ?: "…")
-                            .put("content", leftText?.let { "$it left" } ?: "")
+                            .put("title", islandEta ?: "…")
+                            .put("content", islandLeft?.let { "$it left" } ?: "")
                             .put("showHighlightColor", false)
                             .put("narrowFont", true),
                     ),
@@ -205,6 +214,23 @@ internal object HyperOsSuperIsland {
             PARAM_KEY,
             JSONObject().put("param_v2", params).toString(),
         )
+    }
+
+    private fun formatBytesCompact(bytes: Long): String = when {
+        bytes < 1024L -> "$bytes B"
+        bytes < 1024L * 1024L -> String.format(Locale.US, "%.0fK", bytes / 1024.0)
+        bytes < 1024L * 1024L * 1024L ->
+            String.format(Locale.US, "%.0fM", bytes / (1024.0 * 1024.0))
+        else -> String.format(Locale.US, "%.1fG", bytes / (1024.0 * 1024.0 * 1024.0))
+    }
+
+    private fun formatEtaCompact(seconds: Long): String {
+        val safe = seconds.coerceAtLeast(0L)
+        return when {
+            safe >= 3600L -> String.format(Locale.US, "%.1fh", safe / 3600.0)
+            safe >= 60L -> "${safe / 60L}m"
+            else -> "${safe}s"
+        }
     }
 
     private fun formatSpeed(bytesPerSecond: Long): String =
