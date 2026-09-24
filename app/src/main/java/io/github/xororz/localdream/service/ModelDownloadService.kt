@@ -7,7 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import io.github.xororz.localdream.BuildConfig
@@ -62,6 +62,31 @@ class ModelDownloadService : Service() {
     )
 
     private class XetDownloadException(message: String) : IOException(message)
+
+    private data class ThroughputSample(
+        val timeMs: Long,
+        val bytes: Long,
+    )
+
+    private class RollingThroughputEstimator(
+        private val windowMs: Long,
+    ) {
+        private val samples = ArrayDeque<ThroughputSample>()
+
+        fun sample(timeMs: Long, bytes: Long): Long {
+            samples.addLast(ThroughputSample(timeMs, bytes))
+            while (samples.size > 2 && timeMs - samples.first().timeMs > windowMs) {
+                samples.removeFirst()
+            }
+            if (samples.size < 2) return 0L
+
+            val first = samples.first()
+            val last = samples.last()
+            val elapsedMs = (last.timeMs - first.timeMs).coerceAtLeast(1L)
+            val deltaBytes = (last.bytes - first.bytes).coerceAtLeast(0L)
+            return (deltaBytes * 1000.0 / elapsedMs).toLong().coerceAtLeast(0L)
+        }
+    }
 
     private val notificationManager by lazy {
         getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -851,7 +876,7 @@ class ModelDownloadService : Service() {
         packageOffset: Long,
         packageTotal: Long,
     ) = coroutineScope {
-        var profile = currentXetProfile()
+        var tuning = XetRuntimeTuning.from(this@ModelDownloadService)
         val effectivePackageTotal = if (packageTotal > 0L) {
             packageTotal
         } else {
@@ -862,16 +887,14 @@ class ModelDownloadService : Service() {
         DownloadDiagnostics.info(
             this@ModelDownloadService,
             "Xet start file=$currentFileName size=$expectedSize " +
-                "resume=${destFile.length()} profile=$profile " +
-                "cacheWritable=${xetRuntimeDir.canWrite()} cacheFree=${xetRuntimeDir.usableSpace}",
+                "resume=${destFile.length()} cacheWritable=${xetRuntimeDir.canWrite()} " +
+                "cacheFree=${xetRuntimeDir.usableSpace} ${tuning.summary()}",
         )
 
         while (destFile.length() < expectedSize) {
             val offset = destFile.length()
-            var requestedThermalRestart = false
-            var lastBytes = offset
-            var lastTime = System.currentTimeMillis()
-            var smoothedSpeed = 0.0
+            var requestedConstraintRestart = false
+            val estimator = RollingThroughputEstimator(windowMs = 10_000L)
 
             val nativeJob = async(Dispatchers.IO) {
                 XetNative.nativeDownload(
@@ -881,32 +904,45 @@ class ModelDownloadService : Service() {
                     destPath = destFile.absolutePath,
                     cacheDir = xetRuntimeDir.absolutePath,
                     offset = offset,
-                    profile = profile,
+                    memoryBudgetBytes = tuning.memoryBudgetBytes,
+                    minConcurrency = tuning.minConcurrency,
+                    initialConcurrency = tuning.initialConcurrency,
+                    maxConcurrency = tuning.maxConcurrency,
                 )
             }
 
             while (!nativeJob.isCompleted) {
-                delay(500)
-                val nowBytes = destFile.length()
-                val now = System.currentTimeMillis()
-                val elapsed = (now - lastTime).coerceAtLeast(1L)
-                val instant = (nowBytes - lastBytes).coerceAtLeast(0L) * 1000.0 / elapsed
-                if (instant > 0) {
-                    smoothedSpeed = if (smoothedSpeed <= 0) instant else smoothedSpeed * 0.75 + instant * 0.25
-                }
-                lastBytes = nowBytes
-                lastTime = now
+                delay(250L)
+
+                val nativeProgress =
+                    runCatching { XetNative.nativeProgressBytes() }
+                        .getOrDefault(0L)
+                        .coerceIn(offset, expectedSize)
+                val fileProgress = destFile.length().coerceIn(offset, expectedSize)
+                val nowBytes = maxOf(nativeProgress, fileProgress)
+                val nativeSpeed =
+                    runCatching { XetNative.nativeProgressBytesPerSecond() }
+                        .getOrDefault(0L)
+                        .coerceAtLeast(0L)
+                val rollingSpeed =
+                    estimator.sample(SystemClock.elapsedRealtime(), nowBytes)
+                val speed = if (nativeSpeed > 0L) nativeSpeed else rollingSpeed
 
                 val reportedDone = packageOffset + nowBytes
-                val speed = smoothedSpeed.toLong().coerceAtLeast(0L)
-                val eta = if (effectivePackageTotal > reportedDone && speed > 0) {
+                val eta = if (effectivePackageTotal > reportedDone && speed > 0L) {
                     (effectivePackageTotal - reportedDone) / speed
                 } else {
                     null
                 }
                 emitProgress(
-                    modelId, modelName, reportedDone, effectivePackageTotal,
-                    speed, eta, currentFileName, true,
+                    modelId,
+                    modelName,
+                    reportedDone,
+                    effectivePackageTotal,
+                    speed,
+                    eta,
+                    currentFileName,
+                    true,
                 )
 
                 if (pauseRequested || cancelRequested) {
@@ -914,14 +950,18 @@ class ModelDownloadService : Service() {
                     break
                 }
 
-                val saferProfile = currentXetProfile()
-                if (saferProfile < profile) {
-                    profile = saferProfile
-                    requestedThermalRestart = true
-                    Log.i(TAG, "Thermal pressure: restarting Xet at mobile profile $profile")
+                val currentTuning = XetRuntimeTuning.from(this@ModelDownloadService)
+                if (currentTuning.isMoreConstrainedThan(tuning)) {
+                    tuning = currentTuning
+                    requestedConstraintRestart = true
+                    Log.i(
+                        TAG,
+                        "Runtime pressure changed: restarting Xet with ${tuning.summary()}",
+                    )
                     DownloadDiagnostics.info(
                         this@ModelDownloadService,
-                        "Thermal pressure: restarting Xet file=$currentFileName profile=$profile",
+                        "Runtime pressure changed: restarting Xet file=$currentFileName " +
+                            tuning.summary(),
                     )
                     XetNative.nativeCancel()
                     break
@@ -934,7 +974,7 @@ class ModelDownloadService : Service() {
                 throw CancellationException("download interrupted")
             }
             if (result == 0) break
-            if (result == 1 && requestedThermalRestart) continue
+            if (result == 1 && requestedConstraintRestart) continue
             if (result == 1) throw CancellationException("Xet cancelled")
 
             val nativeError = XetNative.nativeLastError() ?: "unknown Xet error"
@@ -946,7 +986,9 @@ class ModelDownloadService : Service() {
         }
 
         if (destFile.length() != expectedSize) {
-            throw XetDownloadException("Incomplete Xet download: ${destFile.length()}/$expectedSize")
+            throw XetDownloadException(
+                "Incomplete Xet download: ${destFile.length()}/$expectedSize",
+            )
         }
 
         DownloadDiagnostics.info(
@@ -954,23 +996,15 @@ class ModelDownloadService : Service() {
             "Xet complete file=$currentFileName bytes=$expectedSize",
         )
         emitProgress(
-            modelId, modelName, packageOffset + expectedSize, effectivePackageTotal,
-            0L, 0L, currentFileName, true,
+            modelId,
+            modelName,
+            packageOffset + expectedSize,
+            effectivePackageTotal,
+            0L,
+            0L,
+            currentFileName,
+            true,
         )
-    }
-
-    private fun currentXetProfile(): Int {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 2
-        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-        return when (powerManager.currentThermalStatus) {
-            PowerManager.THERMAL_STATUS_SEVERE,
-            PowerManager.THERMAL_STATUS_CRITICAL,
-            PowerManager.THERMAL_STATUS_EMERGENCY,
-            PowerManager.THERMAL_STATUS_SHUTDOWN -> 1
-
-            PowerManager.THERMAL_STATUS_MODERATE -> 2
-            else -> 3
-        }
     }
 
     private fun emitProgress(
