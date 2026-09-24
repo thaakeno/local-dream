@@ -357,6 +357,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var currentEtaSeconds by remember { mutableStateOf<Long?>(null) }
     var currentDownloadFile by remember { mutableStateOf<String?>(null) }
     var currentDownloadUsesXet by remember { mutableStateOf(false) }
+    var currentXetTransferBytes by remember { mutableLongStateOf(0L) }
+    var currentXetTransferTotalBytes by remember { mutableLongStateOf(0L) }
     var downloadPaused by remember { mutableStateOf(false) }
     var downloadError by remember { mutableStateOf<String?>(null) }
     var showDownloadConfirm by remember { mutableStateOf<Model?>(null) }
@@ -426,6 +428,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         currentEtaSeconds = state.etaSeconds
                         currentDownloadFile = state.currentFileName
                         currentDownloadUsesXet = state.usingXet
+                        currentXetTransferBytes = state.xetTransferBytes
+                        currentXetTransferTotalBytes = state.xetTransferTotalBytes
                         downloadPaused = false
                     }
                 }
@@ -443,6 +447,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         currentEtaSeconds = null
                         currentDownloadFile = state.currentFileName
                         currentDownloadUsesXet = state.usingXet
+                        currentXetTransferBytes = 0L
+                        currentXetTransferTotalBytes = 0L
                         downloadPaused = true
                     }
                 }
@@ -454,6 +460,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         currentProgress = null
                         currentDownloadFile = null
                         currentDownloadUsesXet = false
+                        currentXetTransferBytes = 0L
+                        currentXetTransferTotalBytes = 0L
                         downloadPaused = false
                     }
                 }
@@ -466,6 +474,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     currentEtaSeconds = null
                     currentDownloadFile = null
                     currentDownloadUsesXet = false
+                    currentXetTransferBytes = 0L
+                    currentXetTransferTotalBytes = 0L
                     downloadPaused = false
                     // Fire-and-forget so the snackbar's display time does not
                     // block this collector from seeing further states.
@@ -479,6 +489,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     currentEtaSeconds = null
                     currentDownloadFile = null
                     currentDownloadUsesXet = false
+                    currentXetTransferBytes = 0L
+                    currentXetTransferTotalBytes = 0L
                     downloadPaused = false
                     downloadError = state.message
                 }
@@ -491,6 +503,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         currentEtaSeconds = null
                         currentDownloadFile = null
                         currentDownloadUsesXet = false
+                        currentXetTransferBytes = 0L
+                        currentXetTransferTotalBytes = 0L
                         downloadPaused = false
                     }
                 }
@@ -1586,8 +1600,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     }
                     // Appearance (theme) section
                     item { AppearanceSection() }
-                    // Build/source information
-                    item { AboutSection() }
                     // Feature settings section
                     item {
                         Column {
@@ -2060,6 +2072,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
+
+                    // Build/source information belongs at the very bottom of Settings.
+                    item { AboutSection() }
                 }
             }
         }
@@ -2155,6 +2170,24 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             fontFeatureSettings = "tnum",
                         ),
                         color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+
+                if (currentDownloadUsesXet && currentXetTransferBytes > 0L) {
+                    Text(
+                        text = buildString {
+                            append(stringResource(R.string.xet_network_transfer))
+                            append(": ")
+                            append(formatBytes(currentXetTransferBytes))
+                            if (currentXetTransferTotalBytes > 0L) {
+                                append(" / ")
+                                append(formatBytes(currentXetTransferTotalBytes))
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
 

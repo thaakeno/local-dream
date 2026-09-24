@@ -18,15 +18,22 @@ internal data class XetRuntimeTuning(
     val thermalStatus: Int,
     val meteredNetwork: Boolean,
     val downstreamKbps: Int,
+    val lowMemory: Boolean,
 ) {
-    fun isMoreConstrainedThan(other: XetRuntimeTuning): Boolean =
+    /**
+     * Xet already adapts concurrency to network conditions internally, so a noisy Android
+     * bandwidth estimate must never restart an in-flight transfer. Restart only when the
+     * device enters a genuinely stricter operating condition.
+     */
+    fun requiresRestartComparedTo(other: XetRuntimeTuning): Boolean =
         thermalStatus > other.thermalStatus ||
-            maxConcurrency < other.maxConcurrency ||
-            memoryBudgetBytes * 4L < other.memoryBudgetBytes * 3L
+            (lowMemory && !other.lowMemory) ||
+            (meteredNetwork && !other.meteredNetwork)
 
     fun summary(): String =
         "budget=$memoryBudgetBytes concurrency=$minConcurrency/$initialConcurrency/$maxConcurrency " +
-            "thermal=$thermalStatus metered=$meteredNetwork downstreamKbps=$downstreamKbps"
+            "thermal=$thermalStatus lowMemory=$lowMemory metered=$meteredNetwork " +
+            "downstreamKbps=$downstreamKbps"
 
     companion object {
         fun from(context: Context): XetRuntimeTuning {
@@ -100,6 +107,7 @@ internal data class XetRuntimeTuning(
                 thermalStatus = thermalStatus,
                 meteredNetwork = meteredNetwork,
                 downstreamKbps = downstreamKbps,
+                lowMemory = memoryInfo.lowMemory,
             )
         }
     }

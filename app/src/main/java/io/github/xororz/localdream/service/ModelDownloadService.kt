@@ -139,6 +139,8 @@ class ModelDownloadService : Service() {
             val etaSeconds: Long?,
             val currentFileName: String? = null,
             val usingXet: Boolean = false,
+            val xetTransferBytes: Long = 0L,
+            val xetTransferTotalBytes: Long = 0L,
         ) : DownloadState()
 
         data class Paused(
@@ -920,17 +922,36 @@ class ModelDownloadService : Service() {
                         .coerceIn(offset, expectedSize)
                 val fileProgress = destFile.length().coerceIn(offset, expectedSize)
                 val nowBytes = maxOf(nativeProgress, fileProgress)
-                val nativeSpeed =
+
+                val nativeLogicalSpeed =
                     runCatching { XetNative.nativeProgressBytesPerSecond() }
                         .getOrDefault(0L)
                         .coerceAtLeast(0L)
-                val rollingSpeed =
+                val transferBytes =
+                    runCatching { XetNative.nativeTransferBytes() }
+                        .getOrDefault(0L)
+                        .coerceAtLeast(0L)
+                val transferTotal =
+                    runCatching { XetNative.nativeTransferTotalBytes() }
+                        .getOrDefault(0L)
+                        .coerceAtLeast(0L)
+                val transferSpeed =
+                    runCatching { XetNative.nativeTransferBytesPerSecond() }
+                        .getOrDefault(0L)
+                        .coerceAtLeast(0L)
+
+                val rollingLogicalSpeed =
                     estimator.sample(SystemClock.elapsedRealtime(), nowBytes)
-                val speed = if (nativeSpeed > 0L) nativeSpeed else rollingSpeed
+                val logicalSpeed = when {
+                    nativeLogicalSpeed > 0L -> nativeLogicalSpeed
+                    rollingLogicalSpeed > 0L -> rollingLogicalSpeed
+                    else -> 0L
+                }
+                val displayedSpeed = if (logicalSpeed > 0L) logicalSpeed else transferSpeed
 
                 val reportedDone = packageOffset + nowBytes
-                val eta = if (effectivePackageTotal > reportedDone && speed > 0L) {
-                    (effectivePackageTotal - reportedDone) / speed
+                val eta = if (effectivePackageTotal > reportedDone && logicalSpeed > 0L) {
+                    (effectivePackageTotal - reportedDone) / logicalSpeed
                 } else {
                     null
                 }
@@ -939,10 +960,12 @@ class ModelDownloadService : Service() {
                     modelName,
                     reportedDone,
                     effectivePackageTotal,
-                    speed,
+                    displayedSpeed,
                     eta,
                     currentFileName,
                     true,
+                    transferBytes,
+                    transferTotal,
                 )
 
                 if (pauseRequested || cancelRequested) {
@@ -951,16 +974,16 @@ class ModelDownloadService : Service() {
                 }
 
                 val currentTuning = XetRuntimeTuning.from(this@ModelDownloadService)
-                if (currentTuning.isMoreConstrainedThan(tuning)) {
+                if (currentTuning.requiresRestartComparedTo(tuning)) {
                     tuning = currentTuning
                     requestedConstraintRestart = true
                     Log.i(
                         TAG,
-                        "Runtime pressure changed: restarting Xet with ${tuning.summary()}",
+                        "Device constraint changed: restarting Xet with ${tuning.summary()}",
                     )
                     DownloadDiagnostics.info(
                         this@ModelDownloadService,
-                        "Runtime pressure changed: restarting Xet file=$currentFileName " +
+                        "Device constraint changed: restarting Xet file=$currentFileName " +
                             tuning.summary(),
                     )
                     XetNative.nativeCancel()
@@ -974,15 +997,26 @@ class ModelDownloadService : Service() {
                 throw CancellationException("download interrupted")
             }
             if (result == 0) break
-            if (result == 1 && requestedConstraintRestart) continue
+
+            val nativeError = XetNative.nativeLastError().orEmpty()
+            val controlledCancellation =
+                result == 1 || nativeError.contains("cancel", ignoreCase = true)
+            if (requestedConstraintRestart && controlledCancellation) {
+                DownloadDiagnostics.info(
+                    this@ModelDownloadService,
+                    "Xet controlled restart file=$currentFileName result=$result " +
+                        "resume=${destFile.length()}",
+                )
+                continue
+            }
             if (result == 1) throw CancellationException("Xet cancelled")
 
-            val nativeError = XetNative.nativeLastError() ?: "unknown Xet error"
+            val message = nativeError.ifBlank { "unknown Xet error" }
             DownloadDiagnostics.warn(
                 this@ModelDownloadService,
-                "Xet native error file=$currentFileName result=$result error=$nativeError",
+                "Xet native error file=$currentFileName result=$result error=$message",
             )
-            throw XetDownloadException(nativeError)
+            throw XetDownloadException(message)
         }
 
         if (destFile.length() != expectedSize) {
@@ -1016,6 +1050,8 @@ class ModelDownloadService : Service() {
         eta: Long?,
         currentFileName: String?,
         usingXet: Boolean,
+        xetTransferBytes: Long = 0L,
+        xetTransferTotalBytes: Long = 0L,
     ) {
         val progress = if (total > 0) {
             (done.toDouble() / total.toDouble()).coerceIn(0.0, 1.0).toFloat()
@@ -1032,6 +1068,8 @@ class ModelDownloadService : Service() {
             etaSeconds = eta,
             currentFileName = currentFileName,
             usingXet = usingXet,
+            xetTransferBytes = xetTransferBytes,
+            xetTransferTotalBytes = xetTransferTotalBytes,
         )
 
         val mode = if (usingXet) getString(R.string.download_mode_xet) else getString(R.string.download_mode_http)

@@ -17,6 +17,9 @@ static ACTIVE_SESSION: Mutex<Option<XetSession>> = Mutex::new(None);
 static ACTIVE_PROGRESS_BYTES: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_PROGRESS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_PROGRESS_SPEED_BPS: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_TRANSFER_BYTES: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_TRANSFER_TOTAL: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_TRANSFER_SPEED_BPS: AtomicU64 = AtomicU64::new(0);
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 
 fn set_error(message: impl Into<String>) {
@@ -78,15 +81,21 @@ fn configure_mobile_runtime(
     std::env::remove_var("HF_XET_HP");
 
     let budget = memory_budget_bytes.max(1);
-    let base_buffer = (budget / 2).max(1);
-    let per_file_buffer = (budget / 4).max(1);
-    let prefetch_buffer = (budget / 2).max(1);
-    let min_fetch = (budget / 8).max(1);
-    let max_fetch = budget.saturating_mul(2).max(min_fetch);
 
     let min_c = min_concurrency.max(1);
     let max_c = max_concurrency.max(min_c);
     let initial_c = initial_concurrency.clamp(min_c, max_c);
+
+    // Keep all sizes derived from the live Android memory/concurrency budget. A single
+    // reconstruction lane should not need to fill hundreds of MB before progress becomes
+    // observable, especially on normal phone Wi-Fi.
+    let lanes = (max_c as u64).max(1);
+    let per_lane = (budget / lanes).max(1);
+    let base_buffer = (budget / 2).max(per_lane);
+    let per_file_buffer = (budget / 4).max(per_lane);
+    let prefetch_buffer = per_lane;
+    let min_fetch = (per_lane / 8).max(1);
+    let max_fetch = per_lane.saturating_mul(2).max(min_fetch);
 
     std::env::set_var("HF_XET_CLIENT_ENABLE_ADAPTIVE_CONCURRENCY", "1");
     std::env::set_var("HF_XET_CLIENT_AC_MIN_DOWNLOAD_CONCURRENCY", min_c.to_string());
@@ -132,6 +141,9 @@ fn run_download(
     ACTIVE_PROGRESS_BYTES.store(offset, Ordering::Release);
     ACTIVE_PROGRESS_TOTAL.store(size, Ordering::Release);
     ACTIVE_PROGRESS_SPEED_BPS.store(0, Ordering::Release);
+    ACTIVE_TRANSFER_BYTES.store(0, Ordering::Release);
+    ACTIVE_TRANSFER_TOTAL.store(0, Ordering::Release);
+    ACTIVE_TRANSFER_SPEED_BPS.store(0, Ordering::Release);
     set_error("");
 
     let session = XetSessionBuilder::new()
@@ -162,6 +174,18 @@ fn run_download(
                 ACTIVE_PROGRESS_TOTAL.store(progress.total_bytes, Ordering::Release);
                 ACTIVE_PROGRESS_SPEED_BPS.store(
                     progress.total_bytes_completion_rate.unwrap_or(0.0).max(0.0) as u64,
+                    Ordering::Release,
+                );
+                ACTIVE_TRANSFER_BYTES.store(
+                    progress.total_transfer_bytes_completed,
+                    Ordering::Release,
+                );
+                ACTIVE_TRANSFER_TOTAL.store(progress.total_transfer_bytes, Ordering::Release);
+                ACTIVE_TRANSFER_SPEED_BPS.store(
+                    progress
+                        .total_transfer_bytes_completion_rate
+                        .unwrap_or(0.0)
+                        .max(0.0) as u64,
                     Ordering::Release,
                 );
                 thread::sleep(Duration::from_millis(200));
@@ -321,6 +345,30 @@ pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_native
     _class: JClass,
 ) -> jlong {
     ACTIVE_PROGRESS_SPEED_BPS.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_nativeTransferBytes(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    ACTIVE_TRANSFER_BYTES.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_nativeTransferTotalBytes(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    ACTIVE_TRANSFER_TOTAL.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_xororz_localdream_service_XetNative_nativeTransferBytesPerSecond(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    ACTIVE_TRANSFER_SPEED_BPS.load(Ordering::Acquire).min(i64::MAX as u64) as jlong
 }
 
 #[no_mangle]
