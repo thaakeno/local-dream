@@ -1,42 +1,259 @@
 name: Qwen turbo branch build
 
 on:
-  push:
-    branches: [qwen-gguf-turbo-overhaul]
-  pull_request:
-    branches: [master]
   workflow_dispatch:
+  push:
+    branches:
+      - qwen-gguf-turbo-overhaul
+    paths:
+      - 'app/**'
+      - '.gitmodules'
+      - '.github/workflows/qwen-turbo-build.yml'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  QNN_VERSION: '2.50.0.260828'
+  QNN_URL: 'https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip'
+
+concurrency:
+  group: qwen-gguf-overhaul-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  debug-apk:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v6
         with:
-          submodules: recursive
+          submodules: false
           fetch-depth: 1
-      - uses: actions/setup-java@v4
+
+      - name: Initialize required submodules
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git submodule update --init --depth 1 \
+            app/src/main/cpp/3rdparty/MNN \
+            app/src/main/cpp/3rdparty/cpp-httplib \
+            app/src/main/cpp/3rdparty/json \
+            app/src/main/cpp/3rdparty/stable-diffusion.cpp \
+            app/src/main/cpp/3rdparty/stb \
+            app/src/main/cpp/3rdparty/tokenizers-cpp \
+            app/src/main/cpp/3rdparty/xsimd \
+            app/src/main/cpp/3rdparty/xtensor \
+            app/src/main/cpp/3rdparty/xtensor-blas \
+            app/src/main/cpp/3rdparty/xtl \
+            app/src/main/cpp/3rdparty/zstd
+          git -C app/src/main/cpp/3rdparty/stable-diffusion.cpp submodule update --init --depth 1 ggml
+          git -C app/src/main/cpp/3rdparty/tokenizers-cpp submodule update --init --depth 1 msgpack sentencepiece
+
+      - name: Compute native cache key
+        id: native-key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          native_key="$(
+            {
+              git rev-parse HEAD:app/src/main/cpp
+              git submodule status --recursive app/src/main/cpp
+              printf '%s\n' "qnn=$QNN_VERSION" "toolchain=arm64-android-v0.7"
+            } | sha256sum | awk '{print $1}'
+          )"
+          echo "key=localdream-overhaul-native-$native_key" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
-      # The hosted runner already contains the Android SDK. Do not invoke
-      # sdkmanager/setup-android here: this APK build does not need an emulator
-      # or Google-TV system images, and the project deliberately keeps native
-      # backend compilation outside Gradle.
-      - name: Verify Android SDK
+
+      - name: Verify hosted Android SDK
+        shell: bash
         run: |
+          set -euxo pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          test -d "$ANDROID_SDK_ROOT"
-      - name: Make Gradle executable
-        run: chmod +x gradlew
-      - name: Build debug APK
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
-      - name: Upload APK
-        if: always()
-        uses: actions/upload-artifact@v4
+          test -d "${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+
+      - name: Kotlin compile preflight
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:compileBasicDebugKotlin
+
+      - name: Cache QAIRT SDK
+        id: qnn-cache
+        uses: actions/cache@v4
         with:
-          name: local-dream-qwen-turbo-debug
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
+          path: ${{ runner.temp }}/qnn-sdk-${{ env.QNN_VERSION }}
+          key: qairt-${{ env.QNN_VERSION }}-linux-v1
+
+      - name: Download QAIRT SDK
+        if: steps.qnn-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          install_dir="${RUNNER_TEMP}/qnn-sdk-${QNN_VERSION}"
+          zip_path="${RUNNER_TEMP}/qnn-sdk.zip"
+          mkdir -p "$install_dir"
+          curl -fL --retry 5 --retry-delay 2 "$QNN_URL" -o "$zip_path"
+          unzip -q "$zip_path" -d "$install_dir"
+          rm -f "$zip_path"
+
+      - name: Locate QAIRT SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          install_dir="${RUNNER_TEMP}/qnn-sdk-${QNN_VERSION}"
+          sdk_root=""
+          for c in "$install_dir" "$install_dir/qairt" "$install_dir/qairt/$QNN_VERSION"; do
+            if [ -d "$c/include/QNN" ] && [ -d "$c/lib/aarch64-android" ]; then
+              sdk_root="$(cd "$c" && pwd)"
+              break
+            fi
+          done
+          if [ -z "$sdk_root" ]; then
+            while IFS= read -r d; do
+              if [ -d "$d/include/QNN" ] && [ -d "$d/lib/aarch64-android" ]; then
+                sdk_root="$d"
+                break
+              fi
+            done < <(find "$install_dir" -mindepth 1 -maxdepth 3 -type d)
+          fi
+          test -n "$sdk_root"
+          test -f "$sdk_root/lib/aarch64-android/libQnnHtp.so"
+          test -f "$sdk_root/lib/aarch64-android/libQnnHtpV81Stub.so"
+          echo "QNN_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+
+      - name: Restore native artifacts
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a
+            app/src/main/assets/ditlibs
+            app/src/main/assets/qnnlibs
+            app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
+          key: ${{ steps.native-key.outputs.key }}
+
+      - name: Build Android core and Hexagon DiT engine
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker pull ghcr.io/snapdragon-toolchain/arm64-android:v0.7
+          docker run --rm -i --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$QNN_SDK_ROOT:/qnn:ro" \
+            ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
+            bash -s <<'CONTAINER_SCRIPT'
+          set -euxo pipefail
+
+          toolchain_file="$(find /opt /usr/local -path "*/build/cmake/android.toolchain.cmake" -print -quit)"
+          test -n "$toolchain_file"
+          ndk_root="${toolchain_file%/build/cmake/android.toolchain.cmake}"
+          test -d "$ndk_root"
+
+          ninja_bin="$(command -v ninja || true)"
+          if [ -z "$ninja_bin" ]; then
+            ninja_bin="$(find /opt /usr/local /usr -type f -name ninja -perm -u+x -print -quit)"
+          fi
+          test -x "$ninja_bin"
+          export PATH="$(dirname "$ninja_bin"):$PATH"
+
+          hexagon_root="$(find /opt/hexagon -maxdepth 2 -type d -name "6.6*" -print -quit)"
+          test -d "$hexagon_root"
+
+          mkdir -p /data
+          rm -rf /data/android-ndk-r28
+          ln -s "$ndk_root" /data/android-ndk-r28
+
+          export ANDROID_NDK_ROOT="$ndk_root"
+          export QNN_SDK_ROOT=/qnn
+          export HEXAGON_SDK_ROOT="$hexagon_root"
+
+          if ! command -v cc >/dev/null 2>&1; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config
+            rm -rf /var/lib/apt/lists/*
+          fi
+
+          cd /workspace/app/src/main/cpp
+          bash build.sh
+          bash dit/build.sh
+          CONTAINER_SCRIPT
+
+      - name: Verify staged native artifacts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
+          test -s app/src/main/jniLibs/arm64-v8a/libdit_engine.so
+          test -s app/src/main/assets/ditlibs/libggml-htp-v79.so
+          test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
+          test -s app/src/main/assets/qnnlibs/libQnnHtp.so
+          find app/src/main/jniLibs/arm64-v8a app/src/main/assets/ditlibs -maxdepth 1 -type f -ls
+
+      - name: Save native artifacts cache
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a
+            app/src/main/assets/ditlibs
+            app/src/main/assets/qnnlibs
+            app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
+          key: ${{ steps.native-key.outputs.key }}
+
+      - name: Restore persistent signing key
+        id: signing-key-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/localdream-overhaul-ci.jks
+          key: localdream-overhaul-signing-v1
+
+      - name: Create signing key once
+        if: steps.signing-key-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/localdream-overhaul-ci.jks" \
+            -storepass android \
+            -keypass android \
+            -alias localdream \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Local Dream Qwen GGUF CI,O=thaakeno,C=DE"
+
+      - name: Save persistent signing key
+        if: steps.signing-key-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/localdream-overhaul-ci.jks
+          key: localdream-overhaul-signing-v1
+
+      - name: Build Basic APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleBasicDebug \
+            -PRELEASE_STORE_FILE="$RUNNER_TEMP/localdream-overhaul-ci.jks" \
+            -PRELEASE_STORE_PASSWORD=android \
+            -PRELEASE_KEY_ALIAS=localdream \
+            -PRELEASE_KEY_PASSWORD=android
+          find app/build/outputs/apk -type f -name '*.apk' -ls
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: LocalDream-Qwen-GGUF-Turbo-Overhaul
+          path: app/build/outputs/apk/basic/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

@@ -288,7 +288,7 @@ data class Model(
 
         val QWEN_IMAGE_2_1_PACKAGE_FILES = listOf(
             "leejet/Qwen-Image-2.1-GGUF/resolve/main/" +
-                "qwen_image_2.1-Q4_K.gguf|dit.gguf",
+                "qwen_image_2.1-Q4_0.gguf|dit.gguf",
             "bartowski/Qwen_Qwen3-VL-8B-Instruct-GGUF/resolve/main/" +
                 "Qwen_Qwen3-VL-8B-Instruct-Q4_0.gguf|llm.gguf",
             "bartowski/Qwen_Qwen3-VL-8B-Instruct-GGUF/resolve/main/" +

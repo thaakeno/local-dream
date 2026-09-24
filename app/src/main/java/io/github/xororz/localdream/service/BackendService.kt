@@ -631,16 +631,13 @@ class BackendService : Service() {
                     "/system/lib64",
                 ).joinToString(":")
                 // Two virtual sessions on the same physical HTP give Qwen's
-                // split transformer two independent VA windows.
+                // split transformer independent VA windows.
                 env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
-                env["GGML_HEXAGON_OPPOLL"] = "1"
-                // Basic per-op timing is cheap enough for this profiling
-                // branch and gives us hard evidence for CPU fallbacks and HTP
-                // hotspots. Verbose placement is intentionally enabled here;
-                // release can gate it after the device profile is clean.
-                env["GGML_HEXAGON_VERBOSE"] = "1"
-                env["GGML_HEXAGON_PROFILE"] = "1"
-                env["GGML_HEXAGON_MM_SELECT"] = "3"
+                // Do NOT force OPPOLL/profiling in normal generation. OPPOLL
+                // turns DSP queue waits into a host-side busy loop and the
+                // verbose/profile modes generate substantial logging traffic.
+                // Hexagon already defaults to the HMX-first MM selector, so
+                // leaving these unset is both faster and much kinder to the UI/CPU.
                 // ggml-hexagon asks FastRPC for its skel by bare name, so both
                 // the runtime directory holding the skels and the platform
                 // defaults have to be on the DSP search path; dropping the
