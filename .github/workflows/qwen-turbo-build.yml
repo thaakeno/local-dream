@@ -1,0 +1,33 @@
+name: Qwen turbo branch build
+
+on:
+  push:
+    branches: [qwen-gguf-turbo-overhaul]
+  workflow_dispatch:
+
+jobs:
+  debug-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - name: Make Gradle executable
+        run: chmod +x gradlew
+      - name: Build debug APK
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+      - name: Upload APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-dream-qwen-turbo-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
