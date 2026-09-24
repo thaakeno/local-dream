@@ -21,7 +21,13 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
-      - uses: android-actions/setup-android@v3
+      # GitHub's ubuntu Android image already provides ANDROID_SDK_ROOT,
+      # sdkmanager, platform-tools and the NDK. setup-android currently hangs
+      # on legacy Google-TV licenses in non-interactive Actions runners.
+      - name: Show Android SDK
+        run: |
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          sdkmanager --version
       - name: Make Gradle executable
         run: chmod +x gradlew
       - name: Build debug APK
