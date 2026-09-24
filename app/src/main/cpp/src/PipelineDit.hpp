@@ -25,15 +25,18 @@ class PipelineDit : public Pipeline {
   PipelineDit(TextEncoder &text_encoder, const std::string &model_dir,
               std::string engine_path, std::string diffusion_model_path,
               std::string llm_path, std::string llm_vision_path,
-              std::string vae_path, dit_model_kind kind, std::string backend,
-              std::string params_backend, int n_threads, int vae_tile_size,
-              bool img2img_enabled)
+              std::string vae_path, std::string lora_path,
+              bool viggle_turbo_schedule, dit_model_kind kind,
+              std::string backend, std::string params_backend, int n_threads,
+              int vae_tile_size, bool img2img_enabled)
       : Pipeline(text_encoder, model_dir, /*sdxl=*/false, /*use_v_pred=*/false),
         engine_path_(std::move(engine_path)),
         diffusion_model_path_(std::move(diffusion_model_path)),
         llm_path_(std::move(llm_path)),
         llm_vision_path_(std::move(llm_vision_path)),
         vae_path_(std::move(vae_path)),
+        lora_path_(std::move(lora_path)),
+        viggle_turbo_schedule_(viggle_turbo_schedule),
         kind_(kind),
         backend_(std::move(backend)),
         params_backend_(std::move(params_backend)),
@@ -72,6 +75,9 @@ class PipelineDit : public Pipeline {
     params.llm_vision_path =
         llm_vision_path_.empty() ? nullptr : llm_vision_path_.c_str();
     params.vae_path = vae_path_.c_str();
+    params.lora_path = lora_path_.empty() ? nullptr : lora_path_.c_str();
+    params.lora_multiplier = 1.0f;
+    params.viggle_turbo_schedule = viggle_turbo_schedule_;
     params.backend = backend_.c_str();
     params.params_backend = params_backend_.c_str();
     params.n_threads = n_threads_;
@@ -454,6 +460,8 @@ class PipelineDit : public Pipeline {
   const std::string llm_path_;
   const std::string llm_vision_path_;
   const std::string vae_path_;
+  const std::string lora_path_;
+  const bool viggle_turbo_schedule_;
   const dit_model_kind kind_;
   const std::string backend_;
   const std::string params_backend_;
