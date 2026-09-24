@@ -85,11 +85,15 @@ struct ServerOptions {
   bool convert_mode = false;
   // Run all three DiT modules on the Hexagon NPU. The Android catalog only
   // exposes these models on the SM8750-and-newer devices validated upstream.
-  std::string dit_backend = "diffusion=HTP0,te=HTP0,vae=HTP0";
-  // Load a component lazily and discard its parameters at runner_end(). This
-  // keeps TE, DiT and VAE weights from remaining co-resident between stages;
-  // intra-component segment prefetch remains enabled for throughput.
-  std::string dit_params_backend = "all=disk";
+  // v75+ Hexagon can expose multiple virtual sessions on one physical HTP.
+  // Splitting transformer blocks across two sessions gives each block range a
+  // separate ~3.5 GiB VA window instead of constantly map/unmapping a >4 GiB
+  // Qwen diffusion model through one session.
+  std::string dit_backend =
+      "diffusion=HTP0:0&HTP0:1,te=HTP0:0&HTP0:1,vae=HTP0:0";
+  // Keep the repeatedly-used diffusion weights resident. Text encoder and VAE
+  // remain stage-local so they do not compete with the six denoising passes.
+  std::string dit_params_backend = "te=disk,vae=disk";
   int dit_threads = 4;
   int dit_vae_tile_size = 64;
   bool convert_clip_skip_2 = false;
@@ -360,6 +364,11 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
             ? (dir / "llm_vision.gguf").string()
             : "";
     std::string vae_path = (dir / "vae.safetensors").string();
+    const std::string lora_path =
+        (dir / "viggle_turbo.safetensors").string();
+    const bool viggle_turbo =
+        opts.type == ServerOptions::ModelType::kQwenImage21 &&
+        std::filesystem::exists(lora_path);
     for (const auto &p : {dit_path, llm_path, vae_path}) {
       if (!std::filesystem::exists(p)) showHelpAndExit("File not found: " + p);
     }
@@ -378,8 +387,8 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
                   : DIT_MODEL_QWEN_IMAGE_2_1;
     return std::make_unique<PipelineDit>(
         text_encoder, opts.model_dir, engine_path, dit_path, llm_path,
-        llm_vision_path, vae_path, kind, opts.dit_backend,
-        opts.dit_params_backend,
+        llm_vision_path, vae_path, viggle_turbo ? lora_path : "",
+        viggle_turbo, kind, opts.dit_backend, opts.dit_params_backend,
         opts.dit_threads, opts.dit_vae_tile_size, !opts.no_img2img);
   }
 

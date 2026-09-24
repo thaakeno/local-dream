@@ -7,6 +7,7 @@
 #include "DitEngine.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -80,6 +81,9 @@ struct dit_ctx {
   sd_ctx_t *sd = nullptr;
   dit_model_kind kind = DIT_MODEL_Z_IMAGE;
   std::string last_error;
+  std::string lora_path;
+  float lora_multiplier = 1.0f;
+  bool viggle_turbo_schedule = false;
   int preview_interval = 0;
 };
 
@@ -165,6 +169,10 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
 
   auto *ctx = new dit_ctx();
   ctx->kind = params->kind;
+  if (params->lora_path) ctx->lora_path = params->lora_path;
+  ctx->lora_multiplier =
+      params->lora_multiplier == 0.0f ? 1.0f : params->lora_multiplier;
+  ctx->viggle_turbo_schedule = params->viggle_turbo_schedule;
   ctx->sd = new_sd_ctx(&sd_params);
   if (!ctx->sd) {
     g_create_error = "new_sd_ctx failed";
@@ -197,10 +205,67 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   gen.seed = params->seed;
   gen.batch_count = 1;
   gen.sample_params.sample_steps = params->steps;
-  gen.sample_params.guidance.txt_cfg = params->cfg_scale;
+  gen.sample_params.guidance.txt_cfg =
+      ctx->viggle_turbo_schedule ? 1.0f : params->cfg_scale;
   gen.sample_params.guidance.distilled_guidance = params->guidance;
-  if (params->sample_method && params->sample_method[0])
+  if (ctx->viggle_turbo_schedule) {
+    // Viggle v0.2.1 is trained/evaluated with Euler and CFG 1. Keep those
+    // invariants at the native boundary so a stale UI preference cannot
+    // silently change the distilled recipe.
+    gen.sample_params.sample_method = str_to_sample_method("euler");
+    gen.negative_prompt = "";
+  } else if (params->sample_method && params->sample_method[0]) {
     gen.sample_params.sample_method = str_to_sample_method(params->sample_method);
+  }
+
+  // Experimental only: six-pass Turbo leaves little redundancy, so caching is
+  // opt-in until fixed-seed device A/B tests prove it is visually harmless.
+  // This wires the upstream Cache-DiT implementation without changing the
+  // quality-first default path.
+  const char *cache_dit = std::getenv("LOCALDREAM_QWEN_CACHE_DIT");
+  if (ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1 && cache_dit &&
+      std::strcmp(cache_dit, "1") == 0) {
+    gen.cache.mode = SD_CACHE_CACHE_DIT;
+  }
+
+  // Keep quantized base weights immutable. stable-diffusion.cpp's runtime LoRA
+  // path evaluates W*x + scale*B*A*x and therefore avoids the quality loss from
+  // merging the tiny Viggle update into Q4/Q5 weights.
+  sd_lora_t runtime_lora{};
+  if (!ctx->lora_path.empty()) {
+    runtime_lora.is_high_noise = false;
+    runtime_lora.multiplier = ctx->lora_multiplier;
+    runtime_lora.path = ctx->lora_path.c_str();
+    gen.loras = &runtime_lora;
+    gen.lora_count = 1;
+  }
+
+  // Viggle v0.2.1 is not a generic "Euler, six evenly spaced steps" LoRA.
+  // Reproduce its published FlowMatch schedule exactly: shift the six raw
+  // student nodes as a function of Qwen latent token count and append terminal
+  // zero. This fixes the washed-out/ghosted results produced by the old generic
+  // schedule while preserving the six transformer passes.
+  std::vector<float> turbo_sigmas;
+  if (ctx->viggle_turbo_schedule) {
+    static constexpr float kNodes[] = {
+        1.0f, 0.9375f, 0.875f, 0.75f, 0.5f, 0.25f};
+    const double tokens =
+        (static_cast<double>(params->width) / 16.0) *
+        (static_cast<double>(params->height) / 16.0);
+    const double mu =
+        0.5 + (0.9 - 0.5) * (tokens - 256.0) / (8192.0 - 256.0);
+    const double emu = std::exp(mu);
+    turbo_sigmas.reserve(7);
+    for (float t : kNodes) {
+      const double shifted = emu / (emu + (1.0 / static_cast<double>(t) - 1.0));
+      turbo_sigmas.push_back(static_cast<float>(shifted));
+    }
+    turbo_sigmas.push_back(0.0f);
+    gen.sample_params.sample_steps = 6;
+    gen.sample_params.custom_sigmas = turbo_sigmas.data();
+    gen.sample_params.custom_sigmas_count =
+        static_cast<int>(turbo_sigmas.size());
+  }
 
   if (params->init_image_rgb && params->init_width > 0 && params->init_height > 0) {
     gen.init_image.width = static_cast<uint32_t>(params->init_width);
@@ -258,11 +323,14 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
     gen.vae_tiling_params.target_overlap = params->vae_tile_overlap;
   }
 
-  int sampling_steps = std::max(1, params->steps);
+  const int recipe_steps = ctx->viggle_turbo_schedule
+                               ? 6
+                               : std::max(1, params->steps);
+  int sampling_steps = recipe_steps;
   if (gen.init_image.data && gen.strength < 1.0f) {
     // stable-diffusion.cpp retains t_enc + 1 intervals after trimming.
-    const int t_enc = static_cast<int>(params->steps * gen.strength);
-    sampling_steps = std::clamp(t_enc + 1, 1, std::max(1, params->steps));
+    const int t_enc = static_cast<int>(recipe_steps * gen.strength);
+    sampling_steps = std::clamp(t_enc + 1, 1, recipe_steps);
   }
   g_active = ActiveGeneration{progress, preview, user_data, ctx, false, false,
                               sampling_steps};

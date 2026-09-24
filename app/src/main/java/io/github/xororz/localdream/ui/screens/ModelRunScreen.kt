@@ -2456,9 +2456,47 @@ fun ModelRunScreen(
                             progress = progress,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        val effectiveSteps = steps.toInt().coerceAtLeast(1)
+                        val currentStep = if (progress <= 0f) {
+                            0
+                        } else {
+                            kotlin.math.ceil(progress * effectiveSteps).toInt()
+                                .coerceIn(1, effectiveSteps)
+                        }
+                        val elapsedSeconds = generationStartTime?.let {
+                            ((System.currentTimeMillis() - it) / 1000L).coerceAtLeast(0L)
+                        } ?: 0L
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                "Step $currentStep/$effectiveSteps · ${(progress * 100).toInt()}%",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "${elapsedSeconds}s",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Text(
-                            "${(progress * 100).toInt()}%",
-                            style = MaterialTheme.typography.bodyMedium,
+                            "${currentWidth}×${currentHeight} · " +
+                                (if (model?.runOnCpu == true) "CPU" else "NPU · HTP") +
+                                " · $scheduler · CFG ${String.format(Locale.US, "%.1f", cfg)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            if (model?.ditKind == "qwen21") {
+                                "Qwen 2.1 · GGUF · Viggle runtime LoRA · 6-pass quality path"
+                            } else if (model?.isSdxl == true) {
+                                "SDXL · persistent QNN fast path"
+                            } else {
+                                model?.name ?: ""
+                            },
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         intermediateBitmap?.let { bitmap ->

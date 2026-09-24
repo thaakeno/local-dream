@@ -71,7 +71,7 @@ class BackendService : Service() {
         // the live process and model switches stay on one Service instance
         // (single-threaded, no cross-instance start/stop race). Affects only
         // reuse/latency, never correctness: a slower re-entry just starts fresh.
-        private const val IDLE_GRACE_MS = 1500L
+        private const val IDLE_GRACE_MS = 90_000L
 
         const val ACTION_STOP = "io.github.xororz.localdream.STOP_GENERATION"
         const val ACTION_RESTART = "io.github.xororz.localdream.RESTART_BACKEND"
@@ -573,7 +573,7 @@ class BackendService : Service() {
             // SDXL and Anima are the large NPU formats that benefit from
             // per-stage load/release. They share the same backend --lowram flag
             // but keep separate UI toggles so each can opt in independently.
-            if ((backendType == "sdxl" || backendType == "sdxlmnn") && preferences.getBoolean("sdxl_lowram", true)) {
+            if ((backendType == "sdxl" || backendType == "sdxlmnn") && preferences.getBoolean("sdxl_lowram", false)) {
                 command += "--lowram"
             }
             if (backendType == "anima" && preferences.getBoolean("anima_lowram", true)) {
@@ -622,6 +622,22 @@ class BackendService : Service() {
             env["LD_LIBRARY_PATH"] = systemLibPathsStr
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
             if (ditEngineDir != null) {
+                // On current SM8850/v81 Android stacks, putting /vendor/lib64
+                // on LD_LIBRARY_PATH can make libcdsprpc bypass the vendor DSP
+                // HAL path and fail FastRPC capability/session setup. The DiT
+                // engine only needs our packaged libs plus normal system libs.
+                env["LD_LIBRARY_PATH"] = listOf(
+                    runtimeDir.absolutePath,
+                    "/system/lib64",
+                ).joinToString(":")
+                // Two virtual sessions on the same physical HTP give Qwen's
+                // split transformer independent VA windows.
+                env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
+                // Do NOT force OPPOLL/profiling in normal generation. OPPOLL
+                // turns DSP queue waits into a host-side busy loop and the
+                // verbose/profile modes generate substantial logging traffic.
+                // Hexagon already defaults to the HMX-first MM selector, so
+                // leaving these unset is both faster and much kinder to the UI/CPU.
                 // ggml-hexagon asks FastRPC for its skel by bare name, so both
                 // the runtime directory holding the skels and the platform
                 // defaults have to be on the DSP search path; dropping the

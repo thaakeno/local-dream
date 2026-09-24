@@ -25,15 +25,18 @@ class PipelineDit : public Pipeline {
   PipelineDit(TextEncoder &text_encoder, const std::string &model_dir,
               std::string engine_path, std::string diffusion_model_path,
               std::string llm_path, std::string llm_vision_path,
-              std::string vae_path, dit_model_kind kind, std::string backend,
-              std::string params_backend, int n_threads, int vae_tile_size,
-              bool img2img_enabled)
+              std::string vae_path, std::string lora_path,
+              bool viggle_turbo_schedule, dit_model_kind kind,
+              std::string backend, std::string params_backend, int n_threads,
+              int vae_tile_size, bool img2img_enabled)
       : Pipeline(text_encoder, model_dir, /*sdxl=*/false, /*use_v_pred=*/false),
         engine_path_(std::move(engine_path)),
         diffusion_model_path_(std::move(diffusion_model_path)),
         llm_path_(std::move(llm_path)),
         llm_vision_path_(std::move(llm_vision_path)),
         vae_path_(std::move(vae_path)),
+        lora_path_(std::move(lora_path)),
+        viggle_turbo_schedule_(viggle_turbo_schedule),
         kind_(kind),
         backend_(std::move(backend)),
         params_backend_(std::move(params_backend)),
@@ -42,6 +45,7 @@ class PipelineDit : public Pipeline {
         img2img_enabled_(img2img_enabled) {}
 
   ~PipelineDit() override {
+    if (edit_ctx_ && api_) api_->destroy(edit_ctx_);
     if (ctx_ && api_) api_->destroy(ctx_);
     if (handle_) dlclose(handle_);
   }
@@ -65,28 +69,12 @@ class PipelineDit : public Pipeline {
     }
     api_->set_log_callback(&PipelineDit::forwardLog, nullptr);
 
-    dit_ctx_params params{};
-    params.kind = kind_;
-    params.diffusion_model_path = diffusion_model_path_.c_str();
-    params.llm_path = llm_path_.c_str();
-    params.llm_vision_path =
-        llm_vision_path_.empty() ? nullptr : llm_vision_path_.c_str();
-    params.vae_path = vae_path_.c_str();
-    params.backend = backend_.c_str();
-    params.params_backend = params_backend_.c_str();
-    params.n_threads = n_threads_;
-    params.flash_attn = true;
-    // Required, not just an optimization: the Hexagon backend repacks every
-    // F16 1x1/3x3 conv weight into the HMX tile layout on upload, and only the
-    // direct-conv kernel reads that layout. Without it every VAE conv falls
-    // back to im2col + mul_mat over the repacked weights.
-    params.vae_conv_direct = true;
-
-    ctx_ = api_->create(&params);
-    if (!ctx_) {
-      QNN_ERROR("engine create failed: %s", api_->last_error(nullptr));
-      return false;
-    }
+    // T2I is by far the hot path. Do not load Qwen3-VL's vision/mmproj
+    // weights into that context: they are only needed when a request actually
+    // contains image references. The edit context is created lazily on first
+    // use and then retained for subsequent edits.
+    ctx_ = createEngineContext(/*with_vision=*/false);
+    if (!ctx_) return false;
     QNN_INFO("DiT engine loaded from %s", engine_path_.c_str());
     return true;
   }
@@ -116,8 +104,19 @@ class PipelineDit : public Pipeline {
       throw std::invalid_argument(
           "native reference editing is not supported by this DiT model");
 
+    dit_ctx *run_ctx = ctx_;
+    if (nativeEditRequest(req) && !llm_vision_path_.empty()) {
+      if (!edit_ctx_) {
+        QNN_INFO("Creating lazy Qwen edit context with vision weights");
+        edit_ctx_ = createEngineContext(/*with_vision=*/true);
+        if (!edit_ctx_)
+          throw std::runtime_error("Failed to initialize Qwen vision/edit context");
+      }
+      run_ctx = edit_ctx_;
+    }
+
     api_->set_preview_interval(
-        ctx_, req.show_diffusion_process ? req.show_diffusion_stride : 0);
+        run_ctx, req.show_diffusion_process ? req.show_diffusion_stride : 0);
 
     // img2img/inpaint arrives as planar float CHW in [-1,1]; the engine takes
     // packed RGB8, the same layout it hands back.
@@ -189,10 +188,13 @@ class PipelineDit : public Pipeline {
       params.reference_heights = reference_heights.data();
       params.reference_image_count = static_cast<int>(reference_ptrs.size());
     }
-    // Full-frame decode needs latent-sized scratch that grows with the square
-    // of the resolution; tile once past the point where it stops fitting.
+    // Qwen's 1024 target must be boringly reliable on a phone, not a gamble
+    // on one giant VAE scratch allocation. Tile native >=1024 output from the
+    // first attempt. 64 latent pixels corresponds to a 512px image tile; the
+    // overlap is blended by stable-diffusion.cpp. Smaller outputs keep the
+    // cheaper full-frame decode.
     if (vae_tile_size_ > 0 &&
-        static_cast<long>(req.width) * req.height > kTileAbovePixels) {
+        static_cast<long>(req.width) * req.height >= kTileAbovePixels) {
       params.vae_tile_size = vae_tile_size_;
       params.vae_tile_overlap = 0.25f;
     }
@@ -211,7 +213,7 @@ class PipelineDit : public Pipeline {
     int out_width = 0;
     int out_height = 0;
     int out_channels = 0;
-    const bool ok = api_->generate(ctx_, &params, &PipelineDit::forwardProgress,
+    const bool ok = api_->generate(run_ctx, &params, &PipelineDit::forwardProgress,
                                    &PipelineDit::forwardPreview, &callbacks,
                                    &out_pixels, &out_width, &out_height,
                                    &out_channels);
@@ -221,7 +223,7 @@ class PipelineDit : public Pipeline {
       // with the real reason.
       if (callbacks.pending) std::rethrow_exception(callbacks.pending);
       throw std::runtime_error(std::string("DiT generation failed: ") +
-                               api_->last_error(ctx_));
+                               api_->last_error(run_ctx));
     }
 
     const auto total = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -281,12 +283,42 @@ class PipelineDit : public Pipeline {
   // Used by guidance-distilled DiTs; Qwen ignores this field. Qwen's default
   // CFG scale is 1, which keeps sampling conditional-only.
   static constexpr float kDistilledGuidance = 3.5f;
-  // 1536x1536 still decodes whole on the devices this runs on; 2048 does not.
-  static constexpr long kTileAbovePixels = 1536L * 1536L;
+  // Native Qwen/Viggle target. Tiling at this boundary avoids the >800 MiB
+  // full-frame VAE scratch spikes seen on current HTP builds.
+  static constexpr long kTileAbovePixels = 1024L * 1024L;
 
   bool isNativeEditModel() const {
     return kind_ == DIT_MODEL_FLUX2_KLEIN ||
            kind_ == DIT_MODEL_QWEN_IMAGE_2_1;
+  }
+
+  bool nativeEditRequest(const GenerationRequest &req) const {
+    return isNativeEditModel() &&
+           (req.img2img || !req.reference_images.empty());
+  }
+
+  dit_ctx *createEngineContext(bool with_vision) {
+    dit_ctx_params params{};
+    params.kind = kind_;
+    params.diffusion_model_path = diffusion_model_path_.c_str();
+    params.llm_path = llm_path_.c_str();
+    params.llm_vision_path =
+        with_vision && !llm_vision_path_.empty() ? llm_vision_path_.c_str()
+                                                 : nullptr;
+    params.vae_path = vae_path_.c_str();
+    params.lora_path = lora_path_.empty() ? nullptr : lora_path_.c_str();
+    params.lora_multiplier = 1.0f;
+    params.viggle_turbo_schedule = viggle_turbo_schedule_;
+    params.backend = backend_.c_str();
+    params.params_backend = params_backend_.c_str();
+    params.n_threads = n_threads_;
+    params.flash_attn = true;
+    params.vae_conv_direct = true;
+    dit_ctx *created = api_->create(&params);
+    if (!created)
+      QNN_ERROR("engine create failed (vision=%d): %s", with_vision ? 1 : 0,
+                api_->last_error(nullptr));
+    return created;
   }
 
   struct Callbacks {
@@ -454,6 +486,8 @@ class PipelineDit : public Pipeline {
   const std::string llm_path_;
   const std::string llm_vision_path_;
   const std::string vae_path_;
+  const std::string lora_path_;
+  const bool viggle_turbo_schedule_;
   const dit_model_kind kind_;
   const std::string backend_;
   const std::string params_backend_;
@@ -464,6 +498,7 @@ class PipelineDit : public Pipeline {
   void *handle_ = nullptr;
   const dit_engine_api *api_ = nullptr;
   dit_ctx *ctx_ = nullptr;
+  dit_ctx *edit_ctx_ = nullptr;
 };
 
 #endif  // PIPELINEDIT_HPP
