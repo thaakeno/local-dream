@@ -192,7 +192,7 @@ class PipelineDit : public Pipeline {
     // Full-frame decode needs latent-sized scratch that grows with the square
     // of the resolution; tile once past the point where it stops fitting.
     if (vae_tile_size_ > 0 &&
-        static_cast<long>(req.width) * req.height > kTileAbovePixels) {
+        static_cast<long>(req.width) * req.height >= kTileAbovePixels) {
       params.vae_tile_size = vae_tile_size_;
       params.vae_tile_overlap = 0.25f;
     }
@@ -281,8 +281,10 @@ class PipelineDit : public Pipeline {
   // Used by guidance-distilled DiTs; Qwen ignores this field. Qwen's default
   // CFG scale is 1, which keeps sampling conditional-only.
   static constexpr float kDistilledGuidance = 3.5f;
-  // 1536x1536 still decodes whole on the devices this runs on; 2048 does not.
-  static constexpr long kTileAbovePixels = 1536L * 1536L;
+  // Qwen's 1024 decode can create a large transient VAE workspace while its
+  // FP8 DiT remains resident. Tile at 1024+ to cap peak memory; 512/768 keep
+  // the faster full-frame decode path.
+  static constexpr long kTileAbovePixels = 1024L * 1024L;
 
   bool isNativeEditModel() const {
     return kind_ == DIT_MODEL_FLUX2_KLEIN ||

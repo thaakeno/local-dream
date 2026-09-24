@@ -29,11 +29,6 @@ object LogCapture {
             stopInternalLocked()
             buffer.clear()
             try {
-                Runtime.getRuntime().exec(arrayOf("logcat", "-c")).waitFor()
-            } catch (e: Exception) {
-                Log.w(TAG, "logcat -c failed", e)
-            }
-            try {
                 val pid = android.os.Process.myPid()
                 val proc = Runtime.getRuntime().exec(
                     arrayOf("logcat", "--pid=$pid", "-v", "threadtime"),
@@ -81,6 +76,8 @@ object LogCapture {
     fun consume() {
         lastCapturedLogs.value = null
     }
+
+    fun snapshot(): String = synchronized(lock) { buffer.toString() }
 
     private fun stopInternalLocked() {
         try {

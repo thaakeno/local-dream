@@ -1,5 +1,7 @@
 package io.github.xororz.localdream.service
 
+import io.github.xororz.localdream.utils.CrashDiagnostics
+
 import android.app.*
 import android.content.Intent
 import android.os.IBinder
@@ -721,6 +723,7 @@ class BackendService : Service() {
                             }
                         }
                         Log.i(TAG, "Backend: $backendLine")
+                        CrashDiagnostics.recordBackendLine(this@BackendService, backendLine)
                     }
                 }
                 proc.waitFor()
@@ -737,6 +740,11 @@ class BackendService : Service() {
                 return@Thread
             }
             Log.i(TAG, "Backend process exited with code: $exitCode")
+            CrashDiagnostics.record(
+                this@BackendService,
+                "BACKEND_EXIT",
+                "process exited code=$exitCode model=${servingModelId.value}",
+            )
             // Only surface as an error when this is still the active process and
             // we didn't intentionally stop it; a torn-down or superseded process
             // exiting is expected and must not poison the shared backendState.

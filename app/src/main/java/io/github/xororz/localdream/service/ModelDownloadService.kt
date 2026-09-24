@@ -59,6 +59,7 @@ class ModelDownloadService : Service() {
         val fileNames: List<String>,
         val markerFile: String?,
         val inferenceProfile: String?,
+        val targetFileName: String?,
     )
 
     private data class RemoteInfo(
@@ -133,6 +134,7 @@ class ModelDownloadService : Service() {
         const val EXTRA_FILE_NAMES = "file_names"
         const val EXTRA_MARKER_FILE = "marker_file"
         const val EXTRA_INFERENCE_PROFILE = "inference_profile"
+        const val EXTRA_TARGET_FILE_NAME = "target_file_name"
     }
 
     sealed class DownloadState {
@@ -192,6 +194,7 @@ class ModelDownloadService : Service() {
                     fileNames = intent.getStringArrayListExtra(EXTRA_FILE_NAMES).orEmpty(),
                     markerFile = intent.getStringExtra(EXTRA_MARKER_FILE),
                     inferenceProfile = intent.getStringExtra(EXTRA_INFERENCE_PROFILE),
+                    targetFileName = intent.getStringExtra(EXTRA_TARGET_FILE_NAME),
                 )
                 activeRequest = request
                 pauseRequested = false
@@ -261,28 +264,70 @@ class ModelDownloadService : Service() {
                     return@launch
                 }
 
-                // Stable name makes ordinary single-file downloads resumable too.
+                // Single files use the same Hub metadata/Xet path as package
+                // files, so pasted HF resolve URLs get native Xet acceleration,
+                // correct byte progress and resumable HTTP fallback.
                 tempFile = File(tempDir, "${request.modelId}.part")
-                downloadFileHttp(
-                    url = request.fileUrl,
-                    destFile = tempFile,
-                    modelId = request.modelId,
-                    modelName = request.modelName,
-                    expectedSize = -1L,
-                )
+                val xetSetting = GenerationPreferences(this@ModelDownloadService)
+                    .getXetAcceleratedDownloads()
+                val preferXet =
+                    xetSetting && isHuggingFaceHubUrl(request.fileUrl) && XetNative.available
+                val remote = probeRemote(request.fileUrl, preferXet)
+                val canXet =
+                    preferXet &&
+                        remote.xetHash != null &&
+                        remote.xetRefreshUrl != null &&
+                        remote.size > 0L
+
+                if (canXet) {
+                    try {
+                        downloadFileXet(
+                            hash = remote.xetHash!!,
+                            refreshUrl = remote.xetRefreshUrl!!,
+                            destFile = tempFile,
+                            modelId = request.modelId,
+                            modelName = request.modelName,
+                            currentFileName = request.targetFileName,
+                            expectedSize = remote.size,
+                            packageOffset = 0L,
+                            packageTotal = remote.size,
+                        )
+                    } catch (e: XetDownloadException) {
+                        DownloadDiagnostics.warn(
+                            this@ModelDownloadService,
+                            "Direct Xet failed; falling back to resumable HTTP: ${e.message}",
+                            e,
+                        )
+                        downloadFileHttp(
+                            url = request.fileUrl,
+                            destFile = tempFile,
+                            modelId = request.modelId,
+                            modelName = request.modelName,
+                            currentFileName = request.targetFileName,
+                            expectedSize = remote.size,
+                        )
+                    }
+                } else {
+                    downloadFileHttp(
+                        url = request.fileUrl,
+                        destFile = tempFile,
+                        modelId = request.modelId,
+                        modelName = request.modelName,
+                        currentFileName = request.targetFileName,
+                        expectedSize = remote.size,
+                    )
+                }
 
                 when (request.modelType) {
                     TYPE_SD -> {
+                        val modelDir = File(getModelsDir(), request.modelId)
                         if (request.isZip) {
-                            val modelDir = File(getModelsDir(), request.modelId)
                             if (modelDir.exists()) modelDir.deleteRecursively()
                             modelDir.mkdirs()
-
                             extractTempDir = File(tempDir, "${request.modelId}_extract").apply {
                                 deleteRecursively()
                                 mkdirs()
                             }
-
                             _downloadState.value = DownloadState.Extracting(request.modelId)
                             updateNotification(request.modelName, 0f, isExtracting = true)
                             unzipFile(tempFile, extractTempDir)
@@ -291,6 +336,25 @@ class ModelDownloadService : Service() {
                             }
                             extractTempDir.delete()
                             extractTempDir = null
+                        } else {
+                            modelDir.mkdirs()
+                            val sourceName = request.targetFileName
+                                ?.substringAfterLast('/')
+                                ?.takeIf { it.isNotBlank() }
+                                ?: request.fileUrl.substringBefore('?').substringAfterLast('/')
+                                    .takeIf { it.isNotBlank() }
+                                ?: "model.bin"
+                            val safeName = sourceName.replace(
+                                Regex("""[^A-Za-z0-9._-]+"""),
+                                "_",
+                            )
+                            val target = File(modelDir, safeName)
+                            if (target.exists()) target.delete()
+                            if (!tempFile.renameTo(target)) {
+                                tempFile.copyTo(target, overwrite = true)
+                                tempFile.delete()
+                            }
+                            tempFile = null
                         }
                     }
 
@@ -306,7 +370,7 @@ class ModelDownloadService : Service() {
                     }
                 }
 
-                tempFile.delete()
+                tempFile?.delete()
                 tempFile = null
                 completeDownload(request.modelId, request.modelName)
             } catch (e: CancellationException) {
@@ -561,6 +625,12 @@ class ModelDownloadService : Service() {
         }
         sidecar.delete()
     }
+
+    private fun isHuggingFaceHubUrl(url: String): Boolean =
+        runCatching {
+            val parsed = Request.Builder().url(url).build().url
+            isHuggingFaceHubHost(parsed.host)
+        }.getOrDefault(false)
 
     private fun probeRemote(url: String, wantXet: Boolean): RemoteInfo {
         val parsed = runCatching { Request.Builder().url(url).build().url }.getOrNull()

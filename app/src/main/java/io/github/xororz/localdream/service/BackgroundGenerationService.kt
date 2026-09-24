@@ -1,5 +1,7 @@
 package io.github.xororz.localdream.service
 
+import io.github.xororz.localdream.utils.CrashDiagnostics
+
 import android.app.*
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -96,9 +98,18 @@ class BackgroundGenerationService : Service() {
 
     sealed class GenerationState {
         object Idle : GenerationState()
-        data class Progress(val progress: Float, val intermediateImage: Bitmap? = null) : GenerationState()
+        data class Progress(
+            val progress: Float,
+            val step: Int = 0,
+            val totalSteps: Int = 0,
+            val intermediateImage: Bitmap? = null,
+        ) : GenerationState()
 
-        data class Complete(val bitmap: Bitmap, val seed: Long?) : GenerationState()
+        data class Complete(
+            val bitmap: Bitmap,
+            val seed: Long?,
+            val effectiveSteps: Int? = null,
+        ) : GenerationState()
         data class Error(val message: String) : GenerationState()
     }
 
@@ -281,7 +292,12 @@ class BackgroundGenerationService : Service() {
         // racing the service shutdown after that point is not an error.
         var completed = false
         try {
-            updateState(GenerationState.Progress(0f))
+            updateState(GenerationState.Progress(0f, 0, steps))
+            CrashDiagnostics.record(
+                this@BackgroundGenerationService,
+                "GENERATION",
+                "start steps=$steps cfg=$cfg size=${width}x${height} scheduler=$scheduler host=$backendHost",
+            )
 
             val preferences =
                 applicationContext.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
@@ -406,7 +422,14 @@ class BackgroundGenerationService : Service() {
                                         }
                                     }
 
-                                    updateState(GenerationState.Progress(progress, bitmap))
+                                    updateState(
+                                        GenerationState.Progress(
+                                            progress = progress,
+                                            step = step,
+                                            totalSteps = totalSteps,
+                                            intermediateImage = bitmap,
+                                        ),
+                                    )
                                     updateNotification(progress)
                                 }
 
@@ -501,8 +524,9 @@ class BackgroundGenerationService : Service() {
 
                                     updateState(
                                         GenerationState.Complete(
-                                            bitmap,
-                                            returnedSeed,
+                                            bitmap = bitmap,
+                                            seed = returnedSeed,
+                                            effectiveSteps = steps,
                                         ),
                                     )
 
@@ -562,6 +586,12 @@ class BackgroundGenerationService : Service() {
                 updateState(GenerationState.Idle)
             } else {
                 Log.e("GenerationService", "generation error", e)
+                CrashDiagnostics.record(
+                    this@BackgroundGenerationService,
+                    "GENERATION_ERROR",
+                    "generation failed",
+                    e,
+                )
                 updateState(
                     GenerationState.Error(
                         e.message ?: this@BackgroundGenerationService.getString(R.string.unknown_error),
@@ -620,12 +650,24 @@ class BackgroundGenerationService : Service() {
             PendingIntent.FLAG_IMMUTABLE,
         )
 
+        val cancelIntent = PendingIntent.getService(
+            this,
+            91,
+            Intent(this, BackgroundGenerationService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(this.getString(R.string.generating_notify))
             .setContentText("Progress: ${(progress * 100).toInt()}%")
             .setProgress(100, (progress * 100).toInt(), false)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentIntent(pendingIntent)
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                getString(R.string.cancel),
+                cancelIntent,
+            )
+            .setOnlyAlertOnce(true)
             .setOngoing(true)
             .build()
     }

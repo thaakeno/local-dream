@@ -1,26 +1,25 @@
 package io.github.xororz.localdream.service
 
 import android.app.Notification
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import io.github.xororz.localdream.R
 import java.util.Locale
+import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Xiaomi HyperOS 3 Super Island integration for model downloads.
- *
- * The island augments the same foreground-service notification. No second
- * notification is posted. The expanded focus card follows Xiaomi's documented
- * download shape: IM image/text + app icon + simple progress component.
- */
 internal object HyperOsSuperIsland {
     private const val PARAM_KEY = "miui.focus.param"
     private const val PICS_KEY = "miui.focus.pics"
+    private const val ACTIONS_KEY = "miui.focus.actions"
     private const val ICON_KEY = "miui.focus.pic_localdream"
+    private const val TOGGLE_ACTION_KEY = "miui.focus.action_toggle"
+    private const val CANCEL_ACTION_KEY = "miui.focus.action_cancel"
 
     data class Capability(
         val protocolVersion: Int,
@@ -41,9 +40,7 @@ internal object HyperOsSuperIsland {
 
         val permission = if (protocol > 0) {
             runCatching {
-                val extras = Bundle().apply {
-                    putString("package", context.packageName)
-                }
+                val extras = Bundle().apply { putString("package", context.packageName) }
                 context.contentResolver.call(
                     Uri.parse("content://miui.statusbar.notification.public"),
                     "canShowFocus",
@@ -54,7 +51,6 @@ internal object HyperOsSuperIsland {
         } else {
             false
         }
-
         return Capability(protocol, permission)
     }
 
@@ -73,53 +69,73 @@ internal object HyperOsSuperIsland {
         if (!capability.supportsSuperIsland) return
 
         val percent = (progress.coerceIn(0f, 1f) * 100f).toInt()
-        val compactName = modelName.take(40)
-        val doneText = formatBytes(downloadedBytes)
-        val totalText = totalBytes.takeIf { it > 0L }?.let(::formatBytes)
-        val leftBytes = if (totalBytes > downloadedBytes) totalBytes - downloadedBytes else 0L
-        val leftText = totalBytes.takeIf { it > 0L }?.let { formatBytes(leftBytes) }
-        val speedText = speedBytesPerSecond.takeIf { it > 0L }?.let(::formatSpeed)
-        val etaText = etaSeconds?.takeIf { it > 0L }?.let(::formatEta)
-
-        // Island A/B areas are extremely narrow. Keep those values compact and
-        // reserve the full "downloaded / total · speed · ETA · left" line for
-        // the expanded Focus card below.
-        val islandDone = formatBytesCompact(downloadedBytes)
-        val islandLeft = totalBytes.takeIf { it > 0L }?.let {
-            formatBytesCompact(leftBytes)
-        }
-        val islandEta = etaSeconds?.takeIf { it > 0L }?.let(::formatEtaCompact)
-
-        val primaryLine = when {
-            paused && totalText != null -> "$doneText / $totalText · Paused"
-            paused -> "$doneText · Paused"
-            totalText != null -> "$doneText / $totalText"
-            else -> doneText
-        }
-        val secondaryLine = listOfNotNull(
-            speedText,
-            etaText?.let { "$it left" },
-            leftText?.let { "$it left" },
-        ).joinToString(" · ").take(72)
-
-        val accent = "#9DB7FF"
-        val track = "#33415F"
+        val compactName = modelName.take(28)
+        val done = formatBytesCompact(downloadedBytes)
+        val total = totalBytes.takeIf { it > 0L }?.let(::formatBytesCompact)
+        val speed = speedBytesPerSecond.takeIf { it > 0L }?.let(::formatSpeedCompact)
+        val eta = etaSeconds?.takeIf { it >= 0L }?.let(::formatEtaCompact)
 
         notification.extras.putBundle(
             PICS_KEY,
             Bundle().apply {
+                putParcelable(ICON_KEY, Icon.createWithResource(context, R.mipmap.ic_launcher))
+            },
+        )
+
+        val toggleIntent = PendingIntent.getService(
+            context,
+            72,
+            Intent(context, ModelDownloadService::class.java).apply {
+                action = if (paused) {
+                    ModelDownloadService.ACTION_RESUME_DOWNLOAD
+                } else {
+                    ModelDownloadService.ACTION_PAUSE_DOWNLOAD
+                }
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val cancelIntent = PendingIntent.getService(
+            context,
+            73,
+            Intent(context, ModelDownloadService::class.java).apply {
+                action = ModelDownloadService.ACTION_CANCEL_DOWNLOAD
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        notification.extras.putBundle(
+            ACTIONS_KEY,
+            Bundle().apply {
                 putParcelable(
-                    ICON_KEY,
-                    Icon.createWithResource(context, R.mipmap.ic_launcher),
+                    TOGGLE_ACTION_KEY,
+                    Notification.Action.Builder(
+                        Icon.createWithResource(
+                            context,
+                            if (paused) android.R.drawable.ic_media_play
+                            else android.R.drawable.ic_media_pause,
+                        ),
+                        if (paused) "Resume" else "Pause",
+                        toggleIntent,
+                    ).build(),
+                )
+                putParcelable(
+                    CANCEL_ACTION_KEY,
+                    Notification.Action.Builder(
+                        Icon.createWithResource(
+                            context,
+                            android.R.drawable.ic_menu_close_clear_cancel,
+                        ),
+                        "Cancel",
+                        cancelIntent,
+                    ).build(),
                 )
             },
         )
 
-        val iconInfo = JSONObject()
-            .put("type", 1)
-            .put("pic", ICON_KEY)
-
-        val ringProgress = JSONObject()
+        val accent = "#9DB7FF"
+        val track = "#33415F"
+        val iconInfo = JSONObject().put("type", 1).put("pic", ICON_KEY)
+        val ring = JSONObject()
             .put("progress", percent)
             .put("colorReach", accent)
             .put("colorUnReach", track)
@@ -136,7 +152,7 @@ internal object HyperOsSuperIsland {
                         JSONObject()
                             .put("frontTitle", "")
                             .put("title", "$percent%")
-                            .put("content", islandDone)
+                            .put("content", if (total != null) "$done/$total" else done)
                             .put("showHighlightColor", false)
                             .put("narrowFont", true),
                     ),
@@ -144,20 +160,20 @@ internal object HyperOsSuperIsland {
             .put(
                 "progressTextInfo",
                 JSONObject()
-                    .put("progressInfo", ringProgress)
+                    .put("progressInfo", ring)
                     .put(
                         "textInfo",
                         JSONObject()
-                            .put("frontTitle", if (paused) "Paused" else "ETA")
-                            .put("title", islandEta ?: "…")
-                            .put("content", islandLeft?.let { "$it left" } ?: "")
+                            .put("frontTitle", if (paused) "Paused" else "")
+                            .put("title", eta ?: speed ?: "")
+                            .put("content", if (eta != null && speed != null) speed else "")
                             .put("showHighlightColor", false)
                             .put("narrowFont", true),
                     ),
             )
 
         val island = JSONObject()
-            .put("islandProperty", 2)
+            .put("islandProperty", 1)
             .put("islandOrder", false)
             .put("dismissIsland", false)
             .put("needCloseAnimation", true)
@@ -167,9 +183,7 @@ internal object HyperOsSuperIsland {
                 "smallIslandArea",
                 JSONObject().put(
                     "combinePicInfo",
-                    JSONObject()
-                        .put("picInfo", iconInfo)
-                        .put("progressInfo", ringProgress),
+                    JSONObject().put("picInfo", iconInfo).put("progressInfo", ring),
                 ),
             )
 
@@ -177,36 +191,27 @@ internal object HyperOsSuperIsland {
             .put("protocol", 1)
             .put("business", "download")
             .put("updatable", true)
-            .put("reopen", "reopen")
             .put("enableFloat", false)
             .put("islandFirstFloat", false)
             .put("filterWhenNoPermission", false)
             .put("ticker", "$percent% · $compactName")
             .put("aodTitle", "$percent% · $compactName")
-            // Xiaomi template 7 / 20: download-focused IM component + clean
-            // horizontal progress, without the unrelated base/hint/action
-            // components that made the previous island oversized.
             .put(
-                "chatInfo",
+                "baseInfo",
                 JSONObject()
-                    .put("picProfile", ICON_KEY)
-                    .put("appiconPkg", context.packageName)
+                    .put("type", 2)
                     .put("title", compactName)
                     .put(
                         "content",
-                        listOf(primaryLine, secondaryLine)
-                            .filter { it.isNotBlank() }
-                            .joinToString(" · ")
-                            .take(96),
+                        if (paused) "Paused"
+                        else listOfNotNull(speed, eta).joinToString(" · "),
                     ),
             )
-            .put("picInfo", JSONObject().put("type", 1))
             .put(
-                "progressInfo",
-                JSONObject()
-                    .put("progress", percent)
-                    .put("colorProgress", accent)
-                    .put("colorProgressEnd", accent),
+                "actions",
+                JSONArray()
+                    .put(JSONObject().put("action", TOGGLE_ACTION_KEY))
+                    .put(JSONObject().put("action", CANCEL_ACTION_KEY)),
             )
             .put("param_island", island)
 
@@ -233,26 +238,6 @@ internal object HyperOsSuperIsland {
         }
     }
 
-    private fun formatSpeed(bytesPerSecond: Long): String =
-        String.format(Locale.US, "%.1f MB/s", bytesPerSecond / (1024.0 * 1024.0))
-
-    private fun formatBytes(bytes: Long): String = when {
-        bytes < 1024L -> "$bytes B"
-        bytes < 1024L * 1024L -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
-        bytes < 1024L * 1024L * 1024L ->
-            String.format(Locale.US, "%.0f MB", bytes / (1024.0 * 1024.0))
-        else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
-    }
-
-    private fun formatEta(seconds: Long): String {
-        val safe = seconds.coerceAtLeast(0L)
-        val hours = safe / 3600L
-        val minutes = (safe % 3600L) / 60L
-        val secs = safe % 60L
-        return when {
-            hours > 0L -> String.format(Locale.US, "%dh %02dm", hours, minutes)
-            minutes > 0L -> String.format(Locale.US, "%dm %02ds", minutes, secs)
-            else -> String.format(Locale.US, "%ds", secs)
-        }
-    }
+    private fun formatSpeedCompact(bytesPerSecond: Long): String =
+        String.format(Locale.US, "%.1fM/s", bytesPerSecond / (1024.0 * 1024.0))
 }

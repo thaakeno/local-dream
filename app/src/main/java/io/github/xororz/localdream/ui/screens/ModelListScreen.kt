@@ -97,6 +97,7 @@ import io.github.xororz.localdream.ui.theme.LocalThemeController
 import io.github.xororz.localdream.ui.theme.Motion
 import io.github.xororz.localdream.ui.theme.ThemePreset
 import io.github.xororz.localdream.ui.theme.scheme
+import io.github.xororz.localdream.utils.CrashDiagnostics
 import io.github.xororz.localdream.utils.DownloadDiagnostics
 import io.github.xororz.localdream.utils.LogCapture
 import io.github.xororz.localdream.utils.TempCleaner
@@ -377,6 +378,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
         TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
 
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var showDirectDownloadDialog by remember { mutableStateOf(false) }
     var showFileManagerDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
     var showCleanTempDialog by remember { mutableStateOf(false) }
@@ -420,7 +422,13 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
         ModelDownloadService.downloadState.collect { state ->
             when (state) {
                 is ModelDownloadService.DownloadState.Downloading -> {
-                    val model = modelRepository.models.find { it.id == state.modelId }
+                    val model = modelRepository.models.find { it.id == state.modelId } ?: Model(
+                        id = state.modelId,
+                        name = state.modelId,
+                        description = "Direct download",
+                        baseUrl = "",
+                        isCustom = true,
+                    )
                     if (model != null) {
                         // If the Activity attaches to a download that was already running,
                         // show the full sheet once. After the user minimizes it, ordinary
@@ -444,7 +452,13 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 }
 
                 is ModelDownloadService.DownloadState.Paused -> {
-                    val model = modelRepository.models.find { it.id == state.modelId }
+                    val model = modelRepository.models.find { it.id == state.modelId } ?: Model(
+                        id = state.modelId,
+                        name = state.modelId,
+                        description = "Direct download",
+                        baseUrl = "",
+                        isCustom = true,
+                    )
                     if (model != null) {
                         downloadingModel = model
                         currentProgress = DownloadProgress(
@@ -462,7 +476,13 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 }
 
                 is ModelDownloadService.DownloadState.Extracting -> {
-                    val model = modelRepository.models.find { it.id == state.modelId }
+                    val model = modelRepository.models.find { it.id == state.modelId } ?: Model(
+                        id = state.modelId,
+                        name = state.modelId,
+                        description = "Direct download",
+                        baseUrl = "",
+                        isCustom = true,
+                    )
                     if (model != null) {
                         downloadingModel = model
                         currentProgress = null
@@ -581,6 +601,10 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             }
         }
     }
+    if (showDirectDownloadDialog) {
+        DirectDownloadDialog(onDismiss = { showDirectDownloadDialog = false })
+    }
+
     if (showHelpDialog) {
         AlertDialog(
             onDismissRequest = { },
@@ -1616,9 +1640,68 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
-                                    OutlinedButton(onClick = { showDownloadLogs = true }) {
-                                        Text(stringResource(R.string.view_logs))
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        OutlinedButton(onClick = { showDownloadLogs = true }) {
+                                            Text(stringResource(R.string.view_logs))
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                val report = CrashDiagnostics.fullReport(context)
+                                                context.getSystemService(ClipboardManager::class.java)
+                                                    ?.setPrimaryClip(
+                                                        ClipData.newPlainText(
+                                                            "Local Dream diagnostics",
+                                                            report,
+                                                        ),
+                                                    )
+                                                Toast.makeText(
+                                                    context,
+                                                    "Full diagnostics copied",
+                                                    Toast.LENGTH_SHORT,
+                                                ).show()
+                                            },
+                                        ) {
+                                            Text("Copy full")
+                                        }
                                     }
+                                }
+                            }
+                        }
+                    }
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            ),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "Download from URL",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                    )
+                                    Text(
+                                        "Paste a Hugging Face file URL. Xet is used automatically when available.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                OutlinedButton(onClick = { showDirectDownloadDialog = true }) {
+                                    Text("Open")
                                 }
                             }
                         }
@@ -1677,6 +1760,11 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 var captureLogs by remember {
                                     mutableStateOf(
                                         preferences.getBoolean("enable_log_capture", false),
+                                    )
+                                }
+                                var showGenerationStats by remember {
+                                    mutableStateOf(
+                                        preferences.getBoolean("show_generation_stats", false),
                                     )
                                 }
                                 var listenOnAllAddresses by remember {
@@ -1853,6 +1941,20 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                         captureLogs = it
                                         preferences.edit {
                                             putBoolean("enable_log_capture", it)
+                                        }
+                                    },
+                                )
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(horizontal = 16.dp),
+                                )
+                                SwitchSettingRow(
+                                    title = "Generation stats",
+                                    description = "Show live step, app RAM, free RAM, battery temperature/current and thermal state.",
+                                    checked = showGenerationStats,
+                                    onCheckedChange = {
+                                        showGenerationStats = it
+                                        preferences.edit {
+                                            putBoolean("show_generation_stats", it)
                                         }
                                     },
                                 )

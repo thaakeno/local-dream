@@ -92,7 +92,7 @@ struct ServerOptions {
   // intra-component segment prefetch remains enabled for throughput.
   std::string dit_params_backend = "all=disk";
   int dit_threads = 4;
-  int dit_vae_tile_size = 64;
+  int dit_vae_tile_size = 128;
   bool convert_clip_skip_2 = false;
 
   bool isSdxl() const { return type == ModelType::kSdxl || type == ModelType::kSdxlMnn; }

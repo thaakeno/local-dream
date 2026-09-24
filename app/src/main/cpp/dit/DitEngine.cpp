@@ -268,6 +268,10 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   // the next graph segment with HTP execution. Component-level residency is
   // controlled separately by params_backend=all=disk.
   sd_params.disable_prefetch = false;
+  // Fit segmented HTP buffers against live free memory instead of assuming a
+  // desktop-sized static budget. Fast residency is preserved when it fits,
+  // while larger resolutions avoid a hard allocation cliff.
+  sd_params.auto_fit = true;
   if (params->backend && params->backend[0]) sd_params.backend = params->backend;
   if (params->params_backend && params->params_backend[0])
     sd_params.params_backend = params->params_backend;

@@ -366,6 +366,8 @@ fun ModelRunScreen(
     var returnedSeed by remember { mutableStateOf<Long?>(null) }
     var isRunning by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
+    var generationStep by remember { mutableIntStateOf(0) }
+    var generationTotalSteps by remember { mutableIntStateOf(0) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isCheckingBackend by remember { mutableStateOf(true) }
 
@@ -431,6 +433,9 @@ fun ModelRunScreen(
     var isPreviewMode by remember { mutableStateOf(false) }
     val preferences = remember {
         context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+    }
+    val showGenerationStats = remember {
+        preferences.getBoolean("show_generation_stats", false)
     }
     // Both settings can only change on the model list screen, so a snapshot
     // taken once per screen entry is enough; re-reading on every recomposition
@@ -1350,6 +1355,8 @@ fun ModelRunScreen(
         pendingUltrafix = false
         isRunning = false
         progress = 0f
+        generationStep = 0
+        generationTotalSteps = 0
         currentBatchIndex = 0
         generationStartTime = null
         Toast.makeText(
@@ -1539,6 +1546,8 @@ fun ModelRunScreen(
                     generationStartTime = System.currentTimeMillis()
                 }
                 progress = state.progress
+                generationStep = state.step
+                generationTotalSteps = state.totalSteps
                 isRunning = true
                 state.intermediateImage?.let { intermediateBitmap = it }
             }
@@ -1584,7 +1593,7 @@ fun ModelRunScreen(
                     }
 
                     val newParams = GenerationParameters(
-                        steps = generationParamsTmp.steps,
+                        steps = state.effectiveSteps ?: generationParamsTmp.steps,
                         cfg = generationParamsTmp.cfg,
                         seed = returnedSeed,
                         prompt = generationParamsTmp.prompt,
@@ -1669,6 +1678,8 @@ fun ModelRunScreen(
                 errorMessage = state.message
                 isRunning = false
                 progress = 0f
+                generationStep = 0
+                generationTotalSteps = 0
                 generationStartTime = null
                 pendingUltrafix = false
             }
@@ -2454,62 +2465,18 @@ fun ModelRunScreen(
                     }
                 }
             }
-            AnimatedVisibility(
+            GenerationProgressCard(
                 visible = isRunning,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut(),
-            ) {
-                ElevatedCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.large,
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            text = if (currentBatchIndex > 0) {
-                                "${
-                                    stringResource(
-                                        R.string.generating,
-                                    )
-                                } ($currentBatchIndex/$batchCounts)…"
-                            } else {
-                                stringResource(
-                                    R.string.generating,
-                                )
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        SmoothLinearWavyProgressIndicator(
-                            progress = progress,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Text(
-                            "${(progress * 100).toInt()}%",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        intermediateBitmap?.let { bitmap ->
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Card(
-                                shape = MaterialTheme.shapes.small,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(1f),
-                            ) {
-                                Image(
-                                    bitmap = bitmap.asImageBitmap(),
-                                    contentDescription = "Generation Preview",
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Fit,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
+                progress = progress,
+                step = generationStep,
+                totalSteps = generationTotalSteps,
+                batchIndex = currentBatchIndex,
+                batchCount = batchCounts,
+                startedAtMillis = generationStartTime,
+                showStats = showGenerationStats,
+                intermediateBitmap = intermediateBitmap,
+                onCancel = { interruptGeneration() },
+            )
             AnimatedVisibility(
                 visible = (selectedImageUri != null && base64EncodeDone) ||
                     editReferenceImages.isNotEmpty() || editReferencesLoading,
