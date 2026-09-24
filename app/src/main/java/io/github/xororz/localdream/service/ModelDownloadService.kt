@@ -272,6 +272,12 @@ class ModelDownloadService : Service() {
                     .getXetAcceleratedDownloads()
                 val preferXet =
                     xetSetting && isHuggingFaceHubUrl(request.fileUrl) && XetNative.available
+                val directFileName = request.targetFileName
+                    ?.substringAfterLast('/')
+                    ?.takeIf { it.isNotBlank() }
+                    ?: request.fileUrl.substringBefore('?').substringAfterLast('/')
+                        .takeIf { it.isNotBlank() }
+                    ?: "${request.modelId}.bin"
                 val remote = probeRemote(request.fileUrl, preferXet)
                 val canXet =
                     preferXet &&
@@ -287,7 +293,7 @@ class ModelDownloadService : Service() {
                             destFile = tempFile,
                             modelId = request.modelId,
                             modelName = request.modelName,
-                            currentFileName = request.targetFileName,
+                            currentFileName = directFileName,
                             expectedSize = remote.size,
                             packageOffset = 0L,
                             packageTotal = remote.size,
@@ -303,7 +309,7 @@ class ModelDownloadService : Service() {
                             destFile = tempFile,
                             modelId = request.modelId,
                             modelName = request.modelName,
-                            currentFileName = request.targetFileName,
+                            currentFileName = directFileName,
                             expectedSize = remote.size,
                         )
                     }
@@ -313,7 +319,7 @@ class ModelDownloadService : Service() {
                         destFile = tempFile,
                         modelId = request.modelId,
                         modelName = request.modelName,
-                        currentFileName = request.targetFileName,
+                        currentFileName = directFileName,
                         expectedSize = remote.size,
                     )
                 }
@@ -338,13 +344,7 @@ class ModelDownloadService : Service() {
                             extractTempDir = null
                         } else {
                             modelDir.mkdirs()
-                            val sourceName = request.targetFileName
-                                ?.substringAfterLast('/')
-                                ?.takeIf { it.isNotBlank() }
-                                ?: request.fileUrl.substringBefore('?').substringAfterLast('/')
-                                    .takeIf { it.isNotBlank() }
-                                ?: "model.bin"
-                            val safeName = sourceName.replace(
+                            val safeName = directFileName.replace(
                                 Regex("""[^A-Za-z0-9._-]+"""),
                                 "_",
                             )
