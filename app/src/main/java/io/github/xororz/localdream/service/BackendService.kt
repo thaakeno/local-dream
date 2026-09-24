@@ -664,14 +664,12 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
             if (ditEngineDir != null) {
                 if (backendType == "qwen21") {
-                    // Avoid vendor-library-path ambiguity on recent v81 stacks,
-                    // and expose two virtual sessions for Qwen's split HTP
-                    // transformer. Do not enable OPPOLL or per-op profiling in
-                    // normal generation: both create needless host/UI load.
-                    env["LD_LIBRARY_PATH"] = listOf(
-                        runtimeDir.absolutePath,
-                        "/system/lib64",
-                    ).joinToString(":")
+                    // Keep the full platform/vendor host-library search path.
+                    // libcdsprpc.so is provided by Qualcomm under /vendor/lib64
+                    // on the target devices, so replacing LD_LIBRARY_PATH with
+                    // runtimeDir:/system/lib64 makes the Hexagon backend unable
+                    // to create HTP0. Only add Qwen's dual virtual HTP sessions
+                    // here; retain systemLibPathsStr above unchanged.
                     env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
                 }
                 // ggml-hexagon asks FastRPC for its skel by bare name, so both
