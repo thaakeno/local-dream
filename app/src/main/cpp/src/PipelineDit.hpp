@@ -456,10 +456,10 @@ class PipelineDit : public Pipeline {
         cb->first_step_ms = static_cast<int>(step_seconds * 1000.0f);
     }
 
-    // img2img/inpaint first encodes the source image, so reserve one slot
-    // before sampling. Every mode reserves the last slot for VAE decode. Most
-    // importantly, use the *effective* step count reported by the engine:
-    // denoise strength trims a 4-step Klein request to only 1-3 sampling steps.
+    // Phase events already tell the UI when we're encoding or decoding, so the
+    // progress counters should describe denoising only. Mixing prompt/latent
+    // work and VAE decode into the denominator made a 6-step Qwen run appear as
+    // 0/7..6/7 and, after the phase rewrite, could hide the step counter entirely.
     const int expected_steps =
         cb->full_sampling_schedule || !cb->req->img2img ||
                 cb->req->denoise_strength >= 1.0f
@@ -471,14 +471,10 @@ class PipelineDit : public Pipeline {
                   1, std::max(1, cb->req->steps));
     const int sample_steps =
         cb->sample_steps > 0 ? cb->sample_steps : expected_steps;
-    const int pre_sample = cb->pre_sample_steps;
-    const int scale = pre_sample + sample_steps + 1;
-    const int reported = cb->sampling_started
-                             ? pre_sample + cb->sampled_steps
-                             : 0;
+    const int reported = cb->sampling_started ? cb->sampled_steps : 0;
 
     try {
-      (*cb->progress)(reported, scale, cb->preview_b64);
+      (*cb->progress)(reported, sample_steps, cb->preview_b64);
       cb->preview_b64.clear();
       return true;
     } catch (...) {
