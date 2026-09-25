@@ -455,9 +455,9 @@ internal fun AdvancedSettingsDialog(
                         }
                         Text(
                             if (htpMode == "dual") {
-                                "Dual uses strict cross-session barriers for stability."
+                                "Dual is experimental. Strict split barriers are enabled, but output can still differ from Single."
                             } else {
-                                "Auto currently uses one HTP session for stable Qwen output."
+                                "Auto uses one HTP session for correctness. Use Dual only for A/B performance testing."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
