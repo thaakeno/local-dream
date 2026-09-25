@@ -144,14 +144,18 @@ InferenceProfile load_inference_profile(const std::filesystem::path &path) {
 
 std::vector<float> shifted_flow_sigmas(const std::vector<float> &raw,
                                        int width, int height) {
-  // Match the Flux/Qwen FlowMatchEulerDiscreteScheduler resolution shift.
+  // Match Viggle's shipped Qwen-Image-2.1 Comfy/Diffusers schedule exactly.
+  // Qwen 2.1 consumes one transformer token per 16x16 output tile. Viggle's
+  // custom node uses 256..8192 sequence anchors and a 0.5..0.9 dynamic shift;
+  // using the older 4096/1.15 Flux-style values keeps far too much noise in
+  // the final Turbo passes and produces the washed/noisy images we observed.
   const int seq_w = std::max(1, width / 16);
   const int seq_h = std::max(1, height / 16);
   const float seq_len = static_cast<float>(seq_w * seq_h);
   constexpr float base_anchor = 256.0f;
-  constexpr float max_anchor = 4096.0f;
+  constexpr float max_anchor = 8192.0f;
   constexpr float base_shift = 0.5f;
-  constexpr float max_shift = 1.15f;
+  constexpr float max_shift = 0.9f;
   const float slope = (max_shift - base_shift) / (max_anchor - base_anchor);
   const float mu = seq_len * slope + (base_shift - slope * base_anchor);
   const float exp_mu = std::exp(mu);

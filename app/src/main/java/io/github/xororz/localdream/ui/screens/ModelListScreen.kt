@@ -91,6 +91,11 @@ import io.github.xororz.localdream.navigation.Screen
 import io.github.xororz.localdream.service.ModelDownloadService
 import io.github.xororz.localdream.ui.components.AboutSection
 import io.github.xororz.localdream.ui.components.BlockingProgressOverlay
+import io.github.xororz.localdream.ui.components.CatalogFilterMode
+import io.github.xororz.localdream.ui.components.CatalogSortMode
+import io.github.xororz.localdream.ui.components.ModelCatalogControls
+import io.github.xororz.localdream.ui.components.QwenFamilyCard
+import io.github.xororz.localdream.ui.components.filterAndSortCatalog
 import io.github.xororz.localdream.ui.components.SmoothCircularWavyProgressIndicator
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
 import io.github.xororz.localdream.ui.theme.LocalThemeController
@@ -372,6 +377,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     // once and kept in sync as the user pins/unpins/renames.
     var pinnedIds by remember { mutableStateOf(PinnedModels.get(context)) }
     var renameTarget by remember { mutableStateOf<Model?>(null) }
+    var catalogQuery by remember { mutableStateOf("") }
+    var catalogSort by remember { mutableStateOf(CatalogSortMode.Smart) }
+    var catalogFilter by remember { mutableStateOf(CatalogFilterMode.All) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollBehavior =
@@ -1027,14 +1035,25 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
 
     Scaffold(
         topBar = {
-            LargeTopAppBar(
+            MediumTopAppBar(
                 title = {
                     Column {
-                        Text(
-                            text = "Local Dream✨",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = "Local Dream",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Icon(
+                                Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
                         Text(
                             text = if (isSelectionMode) {
                                 pluralStringResource(
@@ -1252,13 +1271,49 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 state = pagerState,
                 modifier = Modifier.weight(1f),
             ) { page ->
-                val models = if (page == 0) cpuModels else npuModels
+                val rawModels = if (page == 0) cpuModels else npuModels
+                val qwenVariants = if (page == 1 && !remoteActive) {
+                    rawModels.filter { it.catalogFamily == "qwen21" }
+                } else {
+                    emptyList()
+                }
+                val standalone = if (qwenVariants.isNotEmpty()) {
+                    rawModels.filter { it.catalogFamily != "qwen21" }
+                } else {
+                    rawModels
+                }
+                val models = filterAndSortCatalog(
+                    models = standalone,
+                    query = catalogQuery,
+                    filter = catalogFilter,
+                    sort = catalogSort,
+                )
+                val qwenNeedle = catalogQuery.trim().lowercase(Locale.US)
+                val qwenVisible = qwenVariants.isNotEmpty() &&
+                    (qwenNeedle.isBlank() ||
+                        "qwen image 2.1 q4 q8 fp8 gguf turbo viggle".contains(qwenNeedle)) &&
+                    when (catalogFilter) {
+                        CatalogFilterMode.All, CatalogFilterMode.Dit -> true
+                        CatalogFilterMode.Installed -> qwenVariants.any { it.isDownloaded }
+                        CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
+                    }
 
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    item(key = "catalog-controls") {
+                        ModelCatalogControls(
+                            query = catalogQuery,
+                            onQueryChange = { catalogQuery = it },
+                            filter = catalogFilter,
+                            onFilterChange = { catalogFilter = it },
+                            sort = catalogSort,
+                            onSortChange = { catalogSort = it },
+                        )
+                    }
+
                     if (page == 0 && !remoteActive) {
                         item {
                             AddCustomModelButton(
@@ -1275,6 +1330,25 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 accent = true,
                                 onClick = { showCustomNpuModelDialog = true },
                                 modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+
+                    if (qwenVisible) {
+                        item(key = "qwen-family") {
+                            QwenFamilyCard(
+                                variants = qwenVariants,
+                                onOpen = { model ->
+                                    navController.navigate(Screen.ModelRun.createRoute(model.id))
+                                },
+                                onDownload = { model ->
+                                    showDownloadConfirm = model
+                                },
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = tween(Motion.DurationMedium),
+                                    fadeOutSpec = tween(Motion.DurationMedium),
+                                    placementSpec = Motion.springExpressiveSpatial(),
+                                ),
                             )
                         }
                     }
@@ -1347,7 +1421,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         )
                     }
 
-                    if (models.isEmpty() && modelRepository.isLoaded) {
+                    if (models.isEmpty() && !qwenVisible && modelRepository.isLoaded) {
                         item {
                             var visible by remember { mutableStateOf(false) }
                             LaunchedEffect(Unit) { visible = true }
@@ -1385,17 +1459,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 }
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 16.dp),
-                horizontalArrangement = Arrangement.Center,
-            ) {
-                TabPageIndicator(
-                    pageCount = 2,
-                    currentPage = pagerState.currentPage,
-                )
-            }
         }
     }
 

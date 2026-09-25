@@ -95,29 +95,29 @@ class PipelineSdxl : public PipelineQnn {
       return false;
     }
 
-    // Fast mode keeps UNet + VAE decoder resident. The VAE encoder is loaded
-    // only for img2img/aspect encoding and released before denoising, because
-    // holding an otherwise-idle third QNN context through sampling can exhaust
-    // native allocator headroom even on 16 GB devices. This is not low-RAM
-    // mode: the hot UNet, decoder and CLIP sessions remain resident. UNet is the
-    // spill/fill group head; on-demand VAEs join that same group.
-    const uint64_t sf_bytes = spillFillGroupBytes();
+    // Fast mode still keeps UNet + VAE decoder resident, but by default
+    // each QNN context owns the exact spill/fill allocation requested by its
+    // binary. The previous fixed 1.5 GiB shared map could fail FastRPC/SMMU
+    // buffer mapping (8003) even on devices with plenty of system RAM.
+    //
+    // Advanced users can opt back into sharing by setting an exact measured
+    // LOCALDREAM_SDXL_SPILL_FILL_BYTES value; there is no guessed default.
+    const uint64_t sf_bytes = configuredSpillFillGroupBytes();
     Qnn_ContextHandle_t group_head = nullptr;
-    if (sf_bytes)
-      QNN_INFO("[spill-fill] SDXL context group sharing enabled: %llu bytes",
+    if (sf_bytes) {
+      QNN_INFO("[spill-fill] explicit SDXL group size: %llu bytes",
                (unsigned long long)sf_bytes);
+      unet_->setSpillFillGroup(sf_bytes, nullptr);
+    } else {
+      QNN_INFO("[spill-fill] SDXL adaptive mode: independent QNN context allocations");
+    }
 
-    unet_->setSpillFillGroup(sf_bytes, nullptr);
     if (qnn_runtime::initializeApp("UNET", unet_) != EXIT_SUCCESS) return false;
-    // Record the context length this binary already carries: fixed-chunk
-    // packages ship one max_chunks-wide context, patched ones ship 77 and grow
-    // via .patch. Without it the first generate() on a fixed-chunk package sees
-    // a token mismatch and tears the whole group down to reload the same UNet.
     unet_tokens_ = preloadedContextLength();
     if (sf_bytes) group_head = unet_->getContextHandle();
     logSpillFill("UNET", unet_);
 
-    vae_decoder_->setSpillFillGroup(sf_bytes, group_head);
+    if (sf_bytes) vae_decoder_->setSpillFillGroup(sf_bytes, group_head);
     if (qnn_runtime::initializeApp("VAEDecoder", vae_decoder_) != EXIT_SUCCESS)
       return false;
     logSpillFill("VAEDecoder", vae_decoder_);
@@ -205,7 +205,10 @@ class PipelineSdxl : public PipelineQnn {
     // with the same token count and executed on empty graph info.
     auto unet = qnn_runtime::createModel(unet_path_, "unet");
     if (!unet) throw std::runtime_error("Failed create QNN UNET");
-    if (!lowram_) unet->setSpillFillGroup(spillFillGroupBytes(), nullptr);
+    if (!lowram_) {
+      const uint64_t sf_bytes = configuredSpillFillGroupBytes();
+      if (sf_bytes) unet->setSpillFillGroup(sf_bytes, nullptr);
+    }
     std::unique_ptr<qnn_runtime::PatchedModelBuffer> patched;
     if (tokens > 77 && !text_encoder_.fixed_chunks_) {
       patched = qnn_runtime::applyZstdPatchToBuffer(
@@ -289,21 +292,23 @@ class PipelineSdxl : public PipelineQnn {
                                           const std::string &name) {
     auto model = qnn_runtime::createModel(path, name);
     if (!model) throw std::runtime_error("Failed create QNN model: " + name);
-    if (!lowram_ && unet_)
-      model->setSpillFillGroup(spillFillGroupBytes(), unet_->getContextHandle());
+    if (!lowram_ && unet_) {
+      const uint64_t sf_bytes = configuredSpillFillGroupBytes();
+      if (sf_bytes)
+        model->setSpillFillGroup(sf_bytes, unet_->getContextHandle());
+    }
     if (qnn_runtime::initializeApp(name, model) != EXIT_SUCCESS)
       throw std::runtime_error("Failed init QNN model: " + name);
     return model;
   }
 
-  // Different custom SDXL QNN binaries can require very different scratch
-  // sizes even at the same resolution. 920 MiB was too small for some valid
-  // custom VAEs, so leave conservative compatibility headroom while still
-  // sharing one spill/fill allocation across the resident contexts.
-  static uint64_t spillFillGroupBytes() {
+  // No guessed default. Different custom SDXL binaries have different HTP
+  // scratch requirements and FastRPC virtual-address limits. With no override,
+  // QNN allocates each context's required spill/fill buffer independently.
+  static uint64_t configuredSpillFillGroupBytes() {
     const char *e = getenv("LOCALDREAM_SDXL_SPILL_FILL_BYTES");
-    if (e && *e) return strtoull(e, nullptr, 10);
-    return 1610612736ULL;  // 1.5 GiB; env override still supported
+    if (!e || !*e) return 0;
+    return strtoull(e, nullptr, 10);
   }
 
   // Diagnostic: log a model's real HTP spill-fill requirement so the right

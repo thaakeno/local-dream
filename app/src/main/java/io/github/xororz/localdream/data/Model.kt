@@ -135,6 +135,16 @@ data class Model(
     // can own their adapter/sampler schedule without native filename/version
     // checks or hardcoded dimensions.
     val inferenceProfile: String? = null,
+    // Optional catalog metadata. Variants sharing a family are rendered as one
+    // configurable card instead of flooding the model list with near-duplicates.
+    val catalogFamily: String = "",
+    val variantPrecision: String = "",
+    val variantFormat: String = "",
+    val variantAdapter: String = "",
+    val modelBytes: Long = 0L,
+    val adapterBytes: Long = 0L,
+    val downloadBytesEstimate: Long = 0L,
+    val recommendedVariant: Boolean = false,
 ) {
     val isDit: Boolean get() = ditKind.isNotEmpty()
 
@@ -296,55 +306,63 @@ data class Model(
             "Qwen/Qwen3-4B/resolve/main/tokenizer.json|tokenizer.json",
         )
 
+        // Qwen Image 2.1 uses one common Qwen3-VL/VAE stack and lets
+        // the visual transformer precision vary. The catalog groups these
+        // combinations into one Qwen card while keeping independent on-disk
+        // packages for backward compatibility with already-downloaded builds.
+        val QWEN_IMAGE_2_1_COMMON_FILES = listOf(
+            "bartowski/Qwen_Qwen3-VL-8B-Instruct-GGUF/resolve/main/" +
+                "Qwen_Qwen3-VL-8B-Instruct-Q4_0.gguf|llm.gguf",
+            "bartowski/Qwen_Qwen3-VL-8B-Instruct-GGUF/resolve/main/" +
+                "mmproj-Qwen_Qwen3-VL-8B-Instruct-f16.gguf|llm_vision.gguf",
+            "Qwen/Qwen3-VL-8B-Instruct/resolve/main/tokenizer.json|tokenizer.json",
+            "Comfy-Org/Qwen-Image-2.1/resolve/main/vae/" +
+                "qwen_image_2.1_vae_bf16.safetensors|vae.safetensors",
+        )
+
         val QWEN_IMAGE_2_1_PACKAGE_FILES = listOf(
             "leejet/Qwen-Image-2.1-GGUF/resolve/main/" +
                 "qwen_image_2.1-Q4_0.gguf|dit.gguf",
-            "bartowski/Qwen_Qwen3-VL-8B-Instruct-GGUF/resolve/main/" +
-                "Qwen_Qwen3-VL-8B-Instruct-Q4_0.gguf|llm.gguf",
-            "bartowski/Qwen_Qwen3-VL-8B-Instruct-GGUF/resolve/main/" +
-                "mmproj-Qwen_Qwen3-VL-8B-Instruct-f16.gguf|llm_vision.gguf",
-            "Qwen/Qwen3-VL-8B-Instruct/resolve/main/tokenizer.json|tokenizer.json",
-            "Comfy-Org/Qwen-Image-2.1/resolve/main/vae/" +
-                "qwen_image_2.1_vae_bf16.safetensors|vae.safetensors",
-        )
+        ) + QWEN_IMAGE_2_1_COMMON_FILES
 
-        // Same Qwen Image 2.1 stack, but keep the diffusion transformer in
-        // native F8_E4M3 safetensors so the Hexagon backend can use its fast
-        // FP8 path directly. The rest intentionally matches the validated Q4
-        // package: Qwen3-VL-8B encoder, F16 vision projector and BF16 VAE.
+        val QWEN_IMAGE_2_1_Q8_PACKAGE_FILES = listOf(
+            "leejet/Qwen-Image-2.1-GGUF/resolve/main/" +
+                "qwen_image_2.1-Q8_0.gguf|dit.gguf",
+        ) + QWEN_IMAGE_2_1_COMMON_FILES
+
+        // Native F8_E4M3 safetensors path for Hexagon's FP8 kernels.
         val QWEN_IMAGE_2_1_FP8_PACKAGE_FILES = listOf(
             "unsloth/Qwen-Image-2.1-FP8/resolve/main/" +
                 "Qwen-Image-2.1-FP8.safetensors|dit.safetensors",
-            "bartowski/Qwen_Qwen3-VL-8B-Instruct-GGUF/resolve/main/" +
-                "Qwen_Qwen3-VL-8B-Instruct-Q4_0.gguf|llm.gguf",
-            "bartowski/Qwen_Qwen3-VL-8B-Instruct-GGUF/resolve/main/" +
-                "mmproj-Qwen_Qwen3-VL-8B-Instruct-f16.gguf|llm_vision.gguf",
-            "Qwen/Qwen3-VL-8B-Instruct/resolve/main/tokenizer.json|tokenizer.json",
-            "Comfy-Org/Qwen-Image-2.1/resolve/main/vae/" +
-                "qwen_image_2.1_vae_bf16.safetensors|vae.safetensors",
-        )
+        ) + QWEN_IMAGE_2_1_COMMON_FILES
 
-        // Full-quality mobile Turbo path: native FP8 base + Viggle v0.2.1 r256.
-        // Keep the adapter unmerged so the tiny learned update is never lost to
-        // base-weight quantization.
+        private const val VIGGLE_R128 =
+            "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
+                "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors|" +
+                "turbo_lora.safetensors"
+        private const val VIGGLE_R256 =
+            "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
+                "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors|" +
+                "turbo_lora.safetensors"
+
+        val QWEN_IMAGE_2_1_Q4_VIGGLE_R128_FILES =
+            QWEN_IMAGE_2_1_PACKAGE_FILES + VIGGLE_R128
+        val QWEN_IMAGE_2_1_Q4_VIGGLE_R256_FILES =
+            QWEN_IMAGE_2_1_PACKAGE_FILES + VIGGLE_R256
+        val QWEN_IMAGE_2_1_Q8_VIGGLE_R128_FILES =
+            QWEN_IMAGE_2_1_Q8_PACKAGE_FILES + VIGGLE_R128
+        val QWEN_IMAGE_2_1_Q8_VIGGLE_R256_FILES =
+            QWEN_IMAGE_2_1_Q8_PACKAGE_FILES + VIGGLE_R256
+        val QWEN_IMAGE_2_1_FP8_VIGGLE_R128_FILES =
+            QWEN_IMAGE_2_1_FP8_PACKAGE_FILES + VIGGLE_R128
+        val QWEN_IMAGE_2_1_FP8_VIGGLE_R256_FILES =
+            QWEN_IMAGE_2_1_FP8_PACKAGE_FILES + VIGGLE_R256
+
+        // Backward-compatible aliases used by existing installs/ids.
         val QWEN_IMAGE_2_1_VIGGLE_TURBO_PACKAGE_FILES =
-            QWEN_IMAGE_2_1_FP8_PACKAGE_FILES + listOf(
-                "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
-                    "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors|" +
-                    "turbo_lora.safetensors",
-            )
-
-        // Smaller GGUF Turbo alternative. Q4_0 is intentionally used instead
-        // of Q4_K: the pinned Hexagon backend accelerates Q4_0 matmuls on HTP
-        // while Q4_K is not a supported native matmul type. The r128 adapter is
-        // the official SVD-truncated v0.2.1 LoRA and cuts LoRA compute/storage
-        // roughly in half while staying close to r256.
+            QWEN_IMAGE_2_1_FP8_VIGGLE_R256_FILES
         val QWEN_IMAGE_2_1_GGUF_VIGGLE_TURBO_PACKAGE_FILES =
-            QWEN_IMAGE_2_1_PACKAGE_FILES + listOf(
-                "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
-                    "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors|" +
-                    "turbo_lora.safetensors",
-            )
+            QWEN_IMAGE_2_1_Q4_VIGGLE_R128_FILES
 
         // The values are the raw nodes published by Viggle. The engine applies
         // Qwen/FlowMatch's resolution-dependent shift at runtime and appends the
@@ -675,9 +693,14 @@ class ModelRepository private constructor(private val context: Context) {
                 add(createZImageTurboModel())
                 add(createFlux2KleinModel())
                 add(createQwenImage21Model())
-                add(createQwenImage21Fp8Model())
-                add(createQwenImage21ViggleTurboModel())
                 add(createQwenImage21GgufViggleTurboModel())
+                add(createQwenImage21Q4ViggleR256Model())
+                add(createQwenImage21Q8Model())
+                add(createQwenImage21Q8ViggleR128Model())
+                add(createQwenImage21Q8ViggleR256Model())
+                add(createQwenImage21Fp8Model())
+                add(createQwenImage21Fp8ViggleR128Model())
+                add(createQwenImage21ViggleTurboModel())
             }
             if (isSdxlCapableSoc(getDeviceSoc())) {
                 add(createIllustriousV16Model())
@@ -769,128 +792,184 @@ class ModelRepository private constructor(private val context: Context) {
         )
     }
 
-    private fun createQwenImage21Model(): Model {
-        val id = "qwen_image_2_1"
+    private fun createQwenVariant(
+        id: String,
+        precision: String,
+        format: String,
+        packageFiles: List<String>,
+        totalSize: String,
+        modelBytes: Long,
+        adapter: String = "",
+        adapterBytes: Long = 0L,
+        recommended: Boolean = false,
+    ): Model {
+        val turbo = adapter.isNotEmpty()
+        val adapterLabel = when (adapter) {
+            "r128" -> "Viggle v0.2.1 r128"
+            "r256" -> "Viggle v0.2.1 r256"
+            else -> "None"
+        }
+        val titleSuffix = buildString {
+            append(precision)
+            if (turbo) append(" + Turbo ").append(adapter)
+        }
         return Model(
             id = id,
-            name = "Qwen Image 2.1",
-            description = context.getString(R.string.qwen_image_2_1_description),
+            name = "Qwen Image 2.1 · $titleSuffix",
+            description = if (turbo) {
+                "$precision $format • $adapterLabel runtime LoRA • exact 6-pass recipe"
+            } else {
+                "$precision $format • base Qwen Image 2.1 • 20-step default"
+            },
             baseUrl = baseUrl,
+            packageFiles = packageFiles,
+            inferenceProfile = if (turbo) Model.QWEN_IMAGE_2_1_VIGGLE_TURBO_PROFILE else null,
+            generationSize = 1024,
+            approximateSize = totalSize,
+            isDownloaded = Model.isDitPackageDownloaded(
+                context,
+                id,
+                "qwen21",
+                packageFiles,
+            ),
+            codeDefaults = ModelConfig(
+                prompt = if (turbo) {
+                    "a lovely cat holding a sign that says 'Qwen Turbo',"
+                } else {
+                    "a lovely cat holding a sign that says 'Qwen Image 2.1',"
+                },
+                negativePrompt = "",
+                steps = if (turbo) 6f else 20f,
+                cfg = 1f,
+                scheduler = "euler",
+                denoiseStrength = 1f,
+            ),
+            runOnCpu = false,
+            ditKind = "qwen21",
+            catalogFamily = "qwen21",
+            variantPrecision = precision,
+            variantFormat = format,
+            variantAdapter = adapter,
+            modelBytes = modelBytes,
+            adapterBytes = adapterBytes,
+            downloadBytesEstimate = when (totalSize) {
+                "10.8GB" -> 10_800_000_000L
+                "11.5GB" -> 11_480_000_000L
+                "12.2GB" -> 12_160_000_000L
+                "13.75GB" -> 13_750_000_000L
+                "14.3GB" -> 14_290_000_000L
+                "14.43GB" -> 14_430_000_000L
+                "15.0GB" -> 14_970_000_000L
+                "15.1GB" -> 15_110_000_000L
+                "15.65GB" -> 15_650_000_000L
+                else -> 0L
+            },
+            recommendedVariant = recommended,
+        )
+    }
+
+    private fun createQwenImage21Model(): Model =
+        createQwenVariant(
+            id = "qwen_image_2_1",
+            precision = "Q4_0",
+            format = "GGUF",
             packageFiles = Model.QWEN_IMAGE_2_1_PACKAGE_FILES,
-            generationSize = 1024,
-            approximateSize = "10.8GB",
-            isDownloaded = Model.isDitPackageDownloaded(
-                context,
-                id,
-                "qwen21",
-                Model.QWEN_IMAGE_2_1_PACKAGE_FILES,
-            ),
-            codeDefaults = ModelConfig(
-                prompt = "a lovely cat holding a sign that says 'Qwen Image 2.1',",
-                negativePrompt = "",
-                steps = 20f,
-                cfg = 1f,
-                scheduler = "euler",
-                denoiseStrength = 1f,
-            ),
-            runOnCpu = false,
-            ditKind = "qwen21",
+            totalSize = "10.8GB",
+            modelBytes = 4_200_000_000L,
         )
-    }
 
-    private fun createQwenImage21Fp8Model(): Model {
-        val id = "qwen_image_2_1_fp8"
-        return Model(
-            id = id,
-            name = "Qwen Image 2.1 FP8",
-            description = "FP8 DiT with Qwen3-VL-8B, 20 steps. • Native Hexagon FP8",
-            baseUrl = baseUrl,
+    private fun createQwenImage21GgufViggleTurboModel(): Model =
+        createQwenVariant(
+            id = "qwen_image_2_1_viggle_turbo_gguf",
+            precision = "Q4_0",
+            format = "GGUF",
+            packageFiles = Model.QWEN_IMAGE_2_1_Q4_VIGGLE_R128_FILES,
+            totalSize = "11.5GB",
+            modelBytes = 4_200_000_000L,
+            adapter = "r128",
+            adapterBytes = 680_000_000L,
+        )
+
+    private fun createQwenImage21Q4ViggleR256Model(): Model =
+        createQwenVariant(
+            id = "qwen_image_2_1_q4_viggle_r256",
+            precision = "Q4_0",
+            format = "GGUF",
+            packageFiles = Model.QWEN_IMAGE_2_1_Q4_VIGGLE_R256_FILES,
+            totalSize = "12.2GB",
+            modelBytes = 4_200_000_000L,
+            adapter = "r256",
+            adapterBytes = 1_360_000_000L,
+        )
+
+    private fun createQwenImage21Q8Model(): Model =
+        createQwenVariant(
+            id = "qwen_image_2_1_q8",
+            precision = "Q8_0",
+            format = "GGUF",
+            packageFiles = Model.QWEN_IMAGE_2_1_Q8_PACKAGE_FILES,
+            totalSize = "14.3GB",
+            modelBytes = 7_690_000_000L,
+        )
+
+    private fun createQwenImage21Q8ViggleR128Model(): Model =
+        createQwenVariant(
+            id = "qwen_image_2_1_q8_viggle_r128",
+            precision = "Q8_0",
+            format = "GGUF",
+            packageFiles = Model.QWEN_IMAGE_2_1_Q8_VIGGLE_R128_FILES,
+            totalSize = "15.0GB",
+            modelBytes = 7_690_000_000L,
+            adapter = "r128",
+            adapterBytes = 680_000_000L,
+            recommended = true,
+        )
+
+    private fun createQwenImage21Q8ViggleR256Model(): Model =
+        createQwenVariant(
+            id = "qwen_image_2_1_q8_viggle_r256",
+            precision = "Q8_0",
+            format = "GGUF",
+            packageFiles = Model.QWEN_IMAGE_2_1_Q8_VIGGLE_R256_FILES,
+            totalSize = "15.65GB",
+            modelBytes = 7_690_000_000L,
+            adapter = "r256",
+            adapterBytes = 1_360_000_000L,
+        )
+
+    private fun createQwenImage21Fp8Model(): Model =
+        createQwenVariant(
+            id = "qwen_image_2_1_fp8",
+            precision = "FP8",
+            format = "safetensors",
             packageFiles = Model.QWEN_IMAGE_2_1_FP8_PACKAGE_FILES,
-            generationSize = 1024,
-            // Full download: FP8 DiT + Q4 text encoder + F16 projector + VAE +
-            // tokenizer. Do not advertise only the 7.12 GB transformer.
-            approximateSize = "13.75GB",
-            isDownloaded = Model.isDitPackageDownloaded(
-                context,
-                id,
-                "qwen21",
-                Model.QWEN_IMAGE_2_1_FP8_PACKAGE_FILES,
-            ),
-            codeDefaults = ModelConfig(
-                prompt = "a lovely cat holding a sign that says 'Qwen Image 2.1 FP8',",
-                negativePrompt = "",
-                steps = 20f,
-                cfg = 1f,
-                scheduler = "euler",
-                denoiseStrength = 1f,
-            ),
-            runOnCpu = false,
-            ditKind = "qwen21",
+            totalSize = "13.75GB",
+            modelBytes = 7_120_000_000L,
         )
-    }
 
-    private fun createQwenImage21ViggleTurboModel(): Model {
-        val id = "qwen_image_2_1_viggle_turbo"
-        return Model(
-            id = id,
-            name = "Qwen Image 2.1 Turbo FP8 (Viggle)",
-            description = "Viggle v0.2.1 r256 over the FP8 DiT • exact 6-pass schedule at the 6-step default",
-            baseUrl = baseUrl,
-            packageFiles = Model.QWEN_IMAGE_2_1_VIGGLE_TURBO_PACKAGE_FILES,
-            inferenceProfile = Model.QWEN_IMAGE_2_1_VIGGLE_TURBO_PROFILE,
-            generationSize = 1024,
-            approximateSize = "15.1GB",
-            isDownloaded = Model.isDitPackageDownloaded(
-                context,
-                id,
-                "qwen21",
-                Model.QWEN_IMAGE_2_1_VIGGLE_TURBO_PACKAGE_FILES,
-            ),
-            codeDefaults = ModelConfig(
-                prompt = "a lovely cat holding a sign that says 'Qwen Turbo',",
-                negativePrompt = "",
-                // Six uses Viggle's exact shipped nodes. If the user selects a
-                // different count, the engine really runs that count rather
-                // than silently forcing six.
-                steps = 6f,
-                cfg = 1f,
-                scheduler = "euler",
-                denoiseStrength = 1f,
-            ),
-            runOnCpu = false,
-            ditKind = "qwen21",
+    private fun createQwenImage21Fp8ViggleR128Model(): Model =
+        createQwenVariant(
+            id = "qwen_image_2_1_fp8_viggle_r128",
+            precision = "FP8",
+            format = "safetensors",
+            packageFiles = Model.QWEN_IMAGE_2_1_FP8_VIGGLE_R128_FILES,
+            totalSize = "14.43GB",
+            modelBytes = 7_120_000_000L,
+            adapter = "r128",
+            adapterBytes = 680_000_000L,
         )
-    }
 
-    private fun createQwenImage21GgufViggleTurboModel(): Model {
-        val id = "qwen_image_2_1_viggle_turbo_gguf"
-        return Model(
-            id = id,
-            name = "Qwen Image 2.1 Turbo GGUF (Viggle)",
-            description = "Q4_0 GGUF + Viggle v0.2.1 r128 runtime LoRA • 6-pass default",
-            baseUrl = baseUrl,
-            packageFiles = Model.QWEN_IMAGE_2_1_GGUF_VIGGLE_TURBO_PACKAGE_FILES,
-            inferenceProfile = Model.QWEN_IMAGE_2_1_VIGGLE_TURBO_PROFILE,
-            generationSize = 1024,
-            approximateSize = "11.5GB",
-            isDownloaded = Model.isDitPackageDownloaded(
-                context,
-                id,
-                "qwen21",
-                Model.QWEN_IMAGE_2_1_GGUF_VIGGLE_TURBO_PACKAGE_FILES,
-            ),
-            codeDefaults = ModelConfig(
-                prompt = "a lovely cat holding a sign that says 'Qwen Turbo',",
-                negativePrompt = "",
-                steps = 6f,
-                cfg = 1f,
-                scheduler = "euler",
-                denoiseStrength = 1f,
-            ),
-            runOnCpu = false,
-            ditKind = "qwen21",
+    private fun createQwenImage21ViggleTurboModel(): Model =
+        createQwenVariant(
+            id = "qwen_image_2_1_viggle_turbo",
+            precision = "FP8",
+            format = "safetensors",
+            packageFiles = Model.QWEN_IMAGE_2_1_FP8_VIGGLE_R256_FILES,
+            totalSize = "15.1GB",
+            modelBytes = 7_120_000_000L,
+            adapter = "r256",
+            adapterBytes = 1_360_000_000L,
         )
-    }
 
     private fun isSdxlCapableSoc(soc: String): Boolean = soc in setOf("SM8750", "SM8750P", "SM8850", "SM8850P", "SM8845", "SM8650")
 
@@ -1260,6 +1339,9 @@ class ModelRepository private constructor(private val context: Context) {
             "z_image_turbo", "flux2_klein_4b", "qwen_image_2_1",
             "qwen_image_2_1_fp8", "qwen_image_2_1_viggle_turbo",
             "qwen_image_2_1_viggle_turbo_gguf",
+            "qwen_image_2_1_q4_viggle_r256",
+            "qwen_image_2_1_q8", "qwen_image_2_1_q8_viggle_r128",
+            "qwen_image_2_1_q8_viggle_r256", "qwen_image_2_1_fp8_viggle_r128",
         )
 
         fun isReservedModelId(id: String): Boolean = id in RESERVED_MODEL_IDS
