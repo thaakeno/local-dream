@@ -102,6 +102,7 @@ class BackgroundGenerationService : Service() {
             val progress: Float,
             val step: Int = 0,
             val totalSteps: Int = 0,
+            val phase: String = "preparing",
             val intermediateImage: Bitmap? = null,
         ) : GenerationState()
 
@@ -359,6 +360,11 @@ class BackgroundGenerationService : Service() {
 
                     val reader = BufferedReader(InputStreamReader(responseBody.byteStream()))
                     var messageCount = 0
+                    var currentPhase = "preparing"
+                    var currentStep = 0
+                    var currentTotalSteps = 0
+                    var currentProgress = 0f
+                    var currentPreview: Bitmap? = null
                     // Reused across progress previews: with the diffusion
                     // process shown every step would otherwise allocate a
                     // fresh width*height IntArray (4 MB at 1024x1024).
@@ -380,10 +386,27 @@ class BackgroundGenerationService : Service() {
                             messageCount++
 
                             when (message.optString("type")) {
+                                "phase" -> {
+                                    currentPhase = message.optString("phase", "preparing")
+                                    updateState(
+                                        GenerationState.Progress(
+                                            progress = currentProgress,
+                                            step = currentStep,
+                                            totalSteps = currentTotalSteps,
+                                            phase = currentPhase,
+                                            intermediateImage = currentPreview,
+                                        ),
+                                    )
+                                }
+
                                 "progress" -> {
                                     val step = message.optInt("step")
                                     val totalSteps = message.optInt("total_steps")
-                                    val progress = step.toFloat() / totalSteps
+                                    val progress = if (totalSteps > 0) {
+                                        (step.toFloat() / totalSteps).coerceIn(0f, 1f)
+                                    } else {
+                                        currentProgress
+                                    }
 
                                     val b64Img = message.optString("image")
                                     var bitmap: Bitmap? = null
@@ -422,15 +445,20 @@ class BackgroundGenerationService : Service() {
                                         }
                                     }
 
+                                    currentStep = step
+                                    currentTotalSteps = totalSteps
+                                    currentProgress = progress
+                                    if (bitmap != null) currentPreview = bitmap
                                     updateState(
                                         GenerationState.Progress(
-                                            progress = progress,
-                                            step = step,
-                                            totalSteps = totalSteps,
-                                            intermediateImage = bitmap,
+                                            progress = currentProgress,
+                                            step = currentStep,
+                                            totalSteps = currentTotalSteps,
+                                            phase = currentPhase,
+                                            intermediateImage = currentPreview,
                                         ),
                                     )
-                                    updateNotification(progress)
+                                    updateNotification(currentProgress)
                                 }
 
                                 "complete" -> {

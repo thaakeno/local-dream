@@ -39,6 +39,7 @@ internal fun GenerationProgressCard(
     progress: Float,
     step: Int,
     totalSteps: Int,
+    phase: String,
     batchIndex: Int,
     batchCount: Int,
     startedAtMillis: Long?,
@@ -73,12 +74,20 @@ internal fun GenerationProgressCard(
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
+                        val phaseLabel = when (phase) {
+                            "encoding_input" -> "Encoding input"
+                            "encoding_prompt" -> "Encoding prompt"
+                            "denoising" -> "Denoising"
+                            "decoding" -> "Decoding"
+                            "finalizing" -> "Finalizing"
+                            else -> "Preparing runtime"
+                        }
                         Text(
-                            text = if (totalSteps > 0) {
-                                "Step ${step.coerceAtLeast(0)}/$totalSteps · " +
+                            text = if (phase == "denoising" && totalSteps > 0) {
+                                "$phaseLabel · Step ${step.coerceAtLeast(0)}/$totalSteps · " +
                                     "${(progress * 100).toInt()}%"
                             } else {
-                                "${(progress * 100).toInt()}%"
+                                phaseLabel
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

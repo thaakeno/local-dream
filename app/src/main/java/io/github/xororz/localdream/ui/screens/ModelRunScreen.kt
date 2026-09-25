@@ -368,6 +368,7 @@ fun ModelRunScreen(
     var progress by remember { mutableFloatStateOf(0f) }
     var generationStep by remember { mutableIntStateOf(0) }
     var generationTotalSteps by remember { mutableIntStateOf(0) }
+    var generationPhase by remember { mutableStateOf("preparing") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isCheckingBackend by remember { mutableStateOf(true) }
 
@@ -1548,6 +1549,7 @@ fun ModelRunScreen(
                 progress = state.progress
                 generationStep = state.step
                 generationTotalSteps = state.totalSteps
+                generationPhase = state.phase
                 isRunning = true
                 state.intermediateImage?.let { intermediateBitmap = it }
             }
@@ -2470,6 +2472,7 @@ fun ModelRunScreen(
                 progress = progress,
                 step = generationStep,
                 totalSteps = generationTotalSteps,
+                phase = generationPhase,
                 batchIndex = currentBatchIndex,
                 batchCount = batchCounts,
                 startedAtMillis = generationStartTime,
