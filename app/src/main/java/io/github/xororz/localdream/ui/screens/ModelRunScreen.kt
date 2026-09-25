@@ -2478,6 +2478,11 @@ fun ModelRunScreen(
                 startedAtMillis = generationStartTime,
                 showStats = showGenerationStats,
                 intermediateBitmap = intermediateBitmap,
+                acceleratorLabel = if (model?.ditKind == "qwen21") {
+                    "NPU · HTP0:0 + HTP0:1"
+                } else {
+                    "NPU · HTP0"
+                },
                 onCancel = { interruptGeneration() },
             )
             AnimatedVisibility(
