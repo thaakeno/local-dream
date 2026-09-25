@@ -25,6 +25,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import io.github.xororz.localdream.data.MigrationState
 import io.github.xororz.localdream.navigation.Screen
+import io.github.xororz.localdream.ui.components.CrashRecoveryDialog
 import io.github.xororz.localdream.ui.screens.HistoryScreen
 import io.github.xororz.localdream.ui.screens.MigrationScreen
 import io.github.xororz.localdream.ui.screens.ModelListScreen
@@ -133,12 +134,13 @@ class MainActivity : ComponentActivity() {
             val themeController = rememberThemeController()
             CompositionLocalProvider(LocalThemeController provides themeController) {
                 LocalDreamTheme(themeController.state) {
+                    val migrationState by app.migrationState.collectAsState()
+                    val crashRecoveryReport by app.crashRecoveryReport.collectAsState()
+
                     Surface(
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.surface,
                     ) {
-                        val migrationState by app.migrationState.collectAsState()
-
                         when (migrationState) {
                             is MigrationState.Done,
                             is MigrationState.NotNeeded,
@@ -153,6 +155,13 @@ class MainActivity : ComponentActivity() {
                                 onSkip = { app.skipMigration() },
                             )
                         }
+                    }
+
+                    crashRecoveryReport?.let { report ->
+                        CrashRecoveryDialog(
+                            report = report,
+                            onDismiss = { app.dismissCrashRecoveryReport() },
+                        )
                     }
                 }
             }

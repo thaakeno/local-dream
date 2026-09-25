@@ -21,6 +21,9 @@ class LocalDreamApplication : Application() {
     private val _migrationState = MutableStateFlow<MigrationState>(MigrationState.Idle)
     val migrationState: StateFlow<MigrationState> = _migrationState.asStateFlow()
 
+    private val _crashRecoveryReport = MutableStateFlow<String?>(null)
+    val crashRecoveryReport: StateFlow<String?> = _crashRecoveryReport.asStateFlow()
+
     private var migrationJob: Job? = null
 
     override fun onCreate() {
@@ -28,6 +31,10 @@ class LocalDreamApplication : Application() {
         CrashDiagnostics.install(this)
         appScope.launch {
             CrashDiagnostics.recordPreviousExits(this@LocalDreamApplication)
+            if (CrashDiagnostics.hasPendingCrashReport(this@LocalDreamApplication)) {
+                _crashRecoveryReport.value =
+                    CrashDiagnostics.recoveryReport(this@LocalDreamApplication)
+            }
         }
         startMigration()
     }
@@ -49,6 +56,11 @@ class LocalDreamApplication : Application() {
                 _migrationState.value = MigrationState.Failed(e)
             }
         }
+    }
+
+    fun dismissCrashRecoveryReport() {
+        CrashDiagnostics.acknowledgeCrashReport(this)
+        _crashRecoveryReport.value = null
     }
 
     fun retryMigration() {

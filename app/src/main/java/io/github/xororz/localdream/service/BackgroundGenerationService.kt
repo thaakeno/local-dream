@@ -21,6 +21,7 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStreamReader
 import java.util.Base64
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -299,6 +300,18 @@ class BackgroundGenerationService : Service() {
                 "GENERATION",
                 "start steps=$steps cfg=$cfg size=${width}x${height} scheduler=$scheduler host=$backendHost",
             )
+            CrashDiagnostics.recordGeneration(
+                this@BackgroundGenerationService,
+                "START",
+                "prompt=${prompt.take(1200)} | negative=${negativePrompt.take(600)} | " +
+                    "steps=$steps cfg=$cfg seed=${seed ?: "random"} size=${width}x${height} " +
+                    "scheduler=$scheduler denoise=$denoiseStrength aspect=$aspectRatio " +
+                    "img2img=${image != null} mask=${mask != null} refs=${referenceImages?.length() ?: 0}",
+            )
+            CrashDiagnostics.recordGenerationTelemetry(
+                this@BackgroundGenerationService,
+                "generation-start",
+            )
 
             val preferences =
                 applicationContext.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
@@ -388,6 +401,15 @@ class BackgroundGenerationService : Service() {
                             when (message.optString("type")) {
                                 "phase" -> {
                                     currentPhase = message.optString("phase", "preparing")
+                                    CrashDiagnostics.recordGeneration(
+                                        this@BackgroundGenerationService,
+                                        "PHASE",
+                                        currentPhase,
+                                    )
+                                    CrashDiagnostics.recordGenerationTelemetry(
+                                        this@BackgroundGenerationService,
+                                        "phase=$currentPhase",
+                                    )
                                     updateState(
                                         GenerationState.Progress(
                                             progress = currentProgress,
@@ -448,6 +470,11 @@ class BackgroundGenerationService : Service() {
                                     currentStep = step
                                     currentTotalSteps = totalSteps
                                     currentProgress = progress
+                                    CrashDiagnostics.recordGeneration(
+                                        this@BackgroundGenerationService,
+                                        "STEP",
+                                        "$step/$totalSteps progress=${String.format(Locale.US, "%.3f", progress)}",
+                                    )
                                     if (bitmap != null) currentPreview = bitmap
                                     updateState(
                                         GenerationState.Progress(
@@ -557,6 +584,17 @@ class BackgroundGenerationService : Service() {
                                             effectiveSteps = steps,
                                         ),
                                     )
+                                    CrashDiagnostics.recordGeneration(
+                                        this@BackgroundGenerationService,
+                                        "COMPLETE",
+                                        "seed=${returnedSeed ?: seed ?: -1L} size=${resultWidth}x${resultHeight} " +
+                                            "channels=$resultChannels generationMs=${message.optLong("generation_time_ms", -1L)} " +
+                                            "firstStepMs=${message.optLong("first_step_time_ms", -1L)}",
+                                    )
+                                    CrashDiagnostics.recordGenerationTelemetry(
+                                        this@BackgroundGenerationService,
+                                        "generation-complete",
+                                    )
 
                                     Log.d(
                                         "BgGenService",
@@ -611,9 +649,24 @@ class BackgroundGenerationService : Service() {
                 // User interrupted: the cancelled call throws on its blocked
                 // read; this is the expected exit, not an error.
                 Log.d("GenerationService", "generation cancelled")
+                CrashDiagnostics.recordGeneration(
+                    this@BackgroundGenerationService,
+                    "CANCELLED",
+                    "generation cancelled by user",
+                )
                 updateState(GenerationState.Idle)
             } else {
                 Log.e("GenerationService", "generation error", e)
+                CrashDiagnostics.recordGeneration(
+                    this@BackgroundGenerationService,
+                    "ERROR",
+                    "generation failed",
+                    e,
+                )
+                CrashDiagnostics.recordGenerationTelemetry(
+                    this@BackgroundGenerationService,
+                    "generation-error",
+                )
                 CrashDiagnostics.record(
                     this@BackgroundGenerationService,
                     "GENERATION_ERROR",

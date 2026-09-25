@@ -262,6 +262,10 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   sd_params.flash_attn = params->flash_attn;
   sd_params.diffusion_flash_attn = params->flash_attn;
   sd_params.vae_conv_direct = params->vae_conv_direct;
+  // Model files are several GB on mobile. Read-only mmap lets Android page
+  // cache/reclaim them naturally and the loader can upload mapped pages
+  // directly to HTP without a second tensor-sized heap copy.
+  sd_params.enable_mmap = true;
   // Keep the upstream segment prefetch enabled: it overlaps loading/repacking
   // the next graph segment with HTP execution. Component-level residency is
   // controlled separately by params_backend=all=disk.

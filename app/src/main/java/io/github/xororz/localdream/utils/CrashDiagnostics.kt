@@ -20,11 +20,16 @@ import java.util.Locale
 object CrashDiagnostics {
     private const val TAG = "CrashDiagnostics"
     private const val FILE_NAME = "runtime-diagnostics.log"
+    private const val GENERATION_FILE_NAME = "generation-diagnostics.log"
     private const val TRACE_FILE_NAME = "last-exit-trace.bin"
     private const val MAX_BYTES = 4L * 1024L * 1024L
+    private const val GENERATION_MAX_BYTES = 6L * 1024L * 1024L
     private const val KEEP_CHARS = 2 * 1024 * 1024
+    private const val GENERATION_KEEP_CHARS = 3 * 1024 * 1024
     private const val PREFS = "diagnostic_state"
     private const val LAST_EXIT_TS = "last_exit_timestamp"
+    private const val PENDING_CRASH = "pending_crash_report"
+    private const val PENDING_CRASH_TS = "pending_crash_timestamp"
 
     private val lock = Any()
     private val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
@@ -39,6 +44,7 @@ object CrashDiagnostics {
             val previous = Thread.getDefaultUncaughtExceptionHandler()
             Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
                 runCatching {
+                    markCrashPending(app, System.currentTimeMillis())
                     record(
                         app,
                         "JAVA_CRASH",
@@ -89,7 +95,93 @@ object CrashDiagnostics {
     }
 
     fun recordBackendLine(context: Context, line: String) {
-        record(context, "BACKEND", line)
+        // Backend output is the detailed generation trace. Keep it in its own
+        // rolling file so crash diagnostics stay readable while every HTP
+        // allocation, graph split and stage transition is still preserved.
+        recordGeneration(context, "BACKEND", line)
+    }
+
+    fun recordGeneration(
+        context: Context,
+        source: String,
+        message: String,
+        throwable: Throwable? = null,
+    ) {
+        val entry = buildString {
+            append(formatter.format(Date()))
+            append(" [")
+            append(source)
+            append("] ")
+            append(message.take(24_000))
+            if (throwable != null) {
+                append('\n')
+                val sw = StringWriter()
+                throwable.printStackTrace(PrintWriter(sw))
+                append(sw.toString().take(96_000))
+            }
+            if (!endsWith("\n")) append('\n')
+        }
+        synchronized(lock) {
+            val f = generationFile(context)
+            runCatching {
+                f.parentFile?.mkdirs()
+                f.appendText(entry)
+                trimIfNeeded(f, GENERATION_MAX_BYTES, GENERATION_KEEP_CHARS)
+            }.onFailure { Log.w(TAG, "Could not persist generation diagnostics", it) }
+        }
+    }
+
+    fun recordGenerationTelemetry(context: Context, label: String) {
+        runCatching {
+            val snapshot = GenerationTelemetry.sample(context)
+            recordGeneration(
+                context,
+                "TELEMETRY",
+                buildString {
+                    append(label)
+                    append(" pss=")
+                    append(GenerationTelemetry.formatBytes(snapshot.processRamBytes))
+                    append(" ramAvail=")
+                    append(GenerationTelemetry.formatBytes(snapshot.availableRamBytes))
+                    append("/")
+                    append(GenerationTelemetry.formatBytes(snapshot.totalRamBytes))
+                    append(" battery=")
+                    append(snapshot.batteryPercent)
+                    append("% temp=")
+                    append(snapshot.batteryTempC?.let { String.format(Locale.US, "%.1fC", it) } ?: "unknown")
+                    append(" thermal=")
+                    append(snapshot.thermalStatus)
+                },
+            )
+        }
+    }
+
+    fun readGeneration(context: Context): String = synchronized(lock) {
+        val f = generationFile(context)
+        if (!f.isFile) {
+            "No generation diagnostics yet."
+        } else {
+            runCatching { f.readText() }
+                .getOrElse { "Could not read generation diagnostics: ${it.message}" }
+        }
+    }
+
+    fun hasPendingCrashReport(context: Context): Boolean =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(PENDING_CRASH, false)
+
+    fun recoveryReport(context: Context): String = buildString {
+        appendLine("===== Local Dream crash recovery =====")
+        appendLine("A previous Local Dream process ended abnormally.")
+        appendLine()
+        append(fullReport(context))
+    }
+
+    fun acknowledgeCrashReport(context: Context) {
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(PENDING_CRASH, false)
+            .apply()
     }
 
     fun recordPreviousExits(context: Context) {
@@ -110,6 +202,9 @@ object CrashDiagnostics {
             if (info.timestamp <= lastSeen) return@forEach
             newest = maxOf(newest, info.timestamp)
             record(app, "EXIT", formatExitInfo(info))
+            if (isCrashLikeExit(info.reason)) {
+                markCrashPending(app, info.timestamp)
+            }
             runCatching {
                 info.traceInputStream?.use { input ->
                     val trace = File(app.filesDir, TRACE_FILE_NAME)
@@ -157,6 +252,9 @@ object CrashDiagnostics {
             appendLine("===== Persistent runtime / crash log =====")
             appendLine(read(app))
             appendLine()
+            appendLine("===== Last generation / backend log =====")
+            appendLine(readGeneration(app))
+            appendLine()
             appendLine("===== Download diagnostics =====")
             appendLine(DownloadDiagnostics.read(app))
             appendLine()
@@ -189,8 +287,30 @@ object CrashDiagnostics {
     fun clear(context: Context) {
         synchronized(lock) {
             runCatching { file(context).delete() }
+            runCatching { generationFile(context).delete() }
             runCatching { File(context.applicationContext.filesDir, TRACE_FILE_NAME).delete() }
         }
+    }
+
+    private fun isCrashLikeExit(reason: Int): Boolean = when (reason) {
+        ApplicationExitInfo.REASON_SIGNALED,
+        ApplicationExitInfo.REASON_LOW_MEMORY,
+        ApplicationExitInfo.REASON_CRASH,
+        ApplicationExitInfo.REASON_CRASH_NATIVE,
+        ApplicationExitInfo.REASON_ANR,
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE,
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED,
+        -> true
+        else -> false
+    }
+
+    private fun markCrashPending(context: Context, timestamp: Long) {
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(PENDING_CRASH, true)
+            .putLong(PENDING_CRASH_TS, timestamp)
+            .commit()
     }
 
     private fun formatExitInfo(info: ApplicationExitInfo): String = buildString {
@@ -231,15 +351,22 @@ object CrashDiagnostics {
         BufferedReader(InputStreamReader(proc.inputStream)).use { it.readText() }
     }.getOrElse { "logcat snapshot unavailable: ${it.message}" }
 
-    private fun trimIfNeeded(f: File) {
-        if (f.length() <= MAX_BYTES) return
-        val tail = f.readText().takeLast(KEEP_CHARS)
+    private fun trimIfNeeded(
+        f: File,
+        maxBytes: Long = MAX_BYTES,
+        keepChars: Int = KEEP_CHARS,
+    ) {
+        if (f.length() <= maxBytes) return
+        val tail = f.readText().takeLast(keepChars)
         val newline = tail.indexOf('\n')
         f.writeText(if (newline >= 0) tail.substring(newline + 1) else tail)
     }
 
     private fun file(context: Context): File =
         File(context.applicationContext.filesDir, FILE_NAME)
+
+    private fun generationFile(context: Context): File =
+        File(context.applicationContext.filesDir, GENERATION_FILE_NAME)
 
     private fun formatBytes(bytes: Long): String {
         if (bytes <= 0L) return "0 B"
