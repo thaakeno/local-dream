@@ -45,6 +45,7 @@ internal fun GenerationProgressCard(
     startedAtMillis: Long?,
     showStats: Boolean,
     intermediateBitmap: Bitmap?,
+    acceleratorLabel: String = "NPU · HTP",
     onCancel: () -> Unit,
 ) {
     AnimatedVisibility(
@@ -155,7 +156,7 @@ private fun GenerationTelemetryPanel(startedAtMillis: Long?) {
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text(
-                "NPU · HTP0",
+                acceleratorLabel,
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
             )
