@@ -103,7 +103,7 @@ internal fun GenerationProgressCard(
                 )
 
                 if (showStats) {
-                    GenerationTelemetryPanel(startedAtMillis)
+                    GenerationTelemetryPanel(startedAtMillis, acceleratorLabel)
                 }
 
                 intermediateBitmap?.let { bitmap ->
@@ -125,7 +125,7 @@ internal fun GenerationProgressCard(
 }
 
 @Composable
-private fun GenerationTelemetryPanel(startedAtMillis: Long?) {
+private fun GenerationTelemetryPanel(startedAtMillis: Long?, acceleratorLabel: String) {
     val context = LocalContext.current
     val telemetry by produceState<GenerationTelemetrySnapshot?>(
         initialValue = null,
