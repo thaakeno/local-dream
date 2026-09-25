@@ -735,7 +735,9 @@ class BackendService : Service() {
                         CrashDiagnostics.recordBackendLine(this@BackendService, backendLine)
                     }
                 }
-                proc.waitFor()
+                val code = proc.waitFor()
+                CrashDiagnostics.flushGeneration(this@BackendService)
+                code
             } catch (e: Exception) {
                 Log.e(TAG, "monitor error", e)
                 if (isLiveCrash(proc)) {
