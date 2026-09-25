@@ -26,6 +26,7 @@ object CrashDiagnostics {
     private const val GENERATION_MAX_BYTES = 6L * 1024L * 1024L
     private const val KEEP_CHARS = 2 * 1024 * 1024
     private const val GENERATION_KEEP_CHARS = 3 * 1024 * 1024
+    private const val GENERATION_FLUSH_CHARS = 64 * 1024
     private const val PREFS = "diagnostic_state"
     private const val LAST_EXIT_TS = "last_exit_timestamp"
     private const val PENDING_CRASH = "pending_crash_report"
@@ -34,6 +35,11 @@ object CrashDiagnostics {
     private val lock = Any()
     private val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
     @Volatile private var installed = false
+    // Backend stdout can produce thousands of lines while HTP weights are being
+    // loaded. Writing every line with File.appendText() competes with model I/O
+    // and makes the phone jank, so batch those writes in memory and flush at
+    // phase/error boundaries or once the batch reaches a modest size.
+    private val generationPending = StringBuilder()
 
     fun install(context: Context) {
         if (installed) return
@@ -122,12 +128,23 @@ object CrashDiagnostics {
             if (!endsWith("\n")) append('\n')
         }
         synchronized(lock) {
-            val f = generationFile(context)
-            runCatching {
-                f.parentFile?.mkdirs()
-                f.appendText(entry)
-                trimIfNeeded(f, GENERATION_MAX_BYTES, GENERATION_KEEP_CHARS)
-            }.onFailure { Log.w(TAG, "Could not persist generation diagnostics", it) }
+            generationPending.append(entry)
+            val flushNow = throwable != null ||
+                source == "PHASE" ||
+                source == "COMPLETE" ||
+                source == "ERROR" ||
+                source == "CANCELLED" ||
+                source == "BACKEND_EXIT" ||
+                generationPending.length >= GENERATION_FLUSH_CHARS
+            if (flushNow) {
+                flushGenerationLocked(context)
+            }
+        }
+    }
+
+    fun flushGeneration(context: Context) {
+        synchronized(lock) {
+            flushGenerationLocked(context)
         }
     }
 
@@ -157,6 +174,7 @@ object CrashDiagnostics {
     }
 
     fun readGeneration(context: Context): String = synchronized(lock) {
+        flushGenerationLocked(context)
         val f = generationFile(context)
         if (!f.isFile) {
             "No generation diagnostics yet."
@@ -286,6 +304,7 @@ object CrashDiagnostics {
 
     fun clear(context: Context) {
         synchronized(lock) {
+            generationPending.clear()
             runCatching { file(context).delete() }
             runCatching { generationFile(context).delete() }
             runCatching { File(context.applicationContext.filesDir, TRACE_FILE_NAME).delete() }
@@ -360,6 +379,23 @@ object CrashDiagnostics {
         val tail = f.readText().takeLast(keepChars)
         val newline = tail.indexOf('\n')
         f.writeText(if (newline >= 0) tail.substring(newline + 1) else tail)
+    }
+
+    private fun flushGenerationLocked(context: Context) {
+        if (generationPending.isEmpty()) return
+        val pending = generationPending.toString()
+        generationPending.clear()
+        val f = generationFile(context)
+        runCatching {
+            f.parentFile?.mkdirs()
+            f.appendText(pending)
+            trimIfNeeded(f, GENERATION_MAX_BYTES, GENERATION_KEEP_CHARS)
+        }.onFailure {
+            // Preserve the newest diagnostics for the next flush if storage is
+            // temporarily unavailable, but never let the RAM buffer grow without bound.
+            generationPending.append(pending.takeLast(GENERATION_FLUSH_CHARS * 2))
+            Log.w(TAG, "Could not persist generation diagnostics", it)
+        }
     }
 
     private fun file(context: Context): File =
