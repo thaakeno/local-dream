@@ -186,22 +186,26 @@ void forward_phase(enum sd_generation_phase_t phase, void *) {
   if (g_active.phase) g_active.phase(g_active.current_phase, g_active.user_data);
 }
 
-void forward_progress(int step, int steps, float time, void *) {
+void forward_progress_event(enum sd_progress_kind_t kind, int step, int steps,
+                            float time, void *) {
   if (!g_active.progress) return;
-  // A zero total marks non-sampling work. Still forward it so a disconnected
-  // client can cancel a long VAE encode/decode or lazy parameter load, but do
-  // not let those unrelated counters drive the UI progress bar.
-  // During denoising the native sampler is authoritative about the effective
-  // step count. Do not require it to equal the frontend estimate: img2img
-  // trimming/custom schedules can legitimately change it, and that old equality
-  // check turned every progress event into 0/0 in the UI.
-  const int routed_steps =
-      g_active.current_phase == DIT_PHASE_DENOISING && steps > 0 ? steps : 0;
+
+  // Model loading also reports progress (for example 265/265 tensors), but it
+  // must never masquerade as sampler progress just because lazy DiT loading
+  // happens after the denoising phase has been entered.
+  const bool sampler_progress =
+      kind == SD_PROGRESS_SAMPLING &&
+      g_active.current_phase == DIT_PHASE_DENOISING &&
+      steps > 0;
+  const int routed_steps = sampler_progress ? steps : 0;
+
+  // Non-sampler events are still forwarded with total=0 so a disconnected
+  // client can cancel long loading/decoding work without corrupting the
+  // denoising step counter.
   if (!g_active.progress(step, routed_steps, time, g_active.user_data)) {
-    // The callback asked to stop. sd_cancel_generation only takes effect at
-    // the next step boundary, so record it for the generate() return path.
     g_active.cancelled = true;
-    if (g_active.ctx && g_active.ctx->sd) sd_cancel_generation(g_active.ctx->sd, SD_CANCEL_ALL);
+    if (g_active.ctx && g_active.ctx->sd)
+      sd_cancel_generation(g_active.ctx->sd, SD_CANCEL_ALL);
   }
 }
 
@@ -455,7 +459,10 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   }
   g_active = ActiveGeneration{progress, phase, preview, user_data, ctx, false,
                               DIT_PHASE_PREPARING, sampling_steps};
-  sd_set_progress_callback(progress ? forward_progress : nullptr, nullptr);
+  // Use typed progress so model-loading counters and sampler steps cannot be
+  // confused with one another.
+  sd_set_progress_callback(nullptr, nullptr);
+  sd_set_progress_event_callback(progress ? forward_progress_event : nullptr, nullptr);
   sd_set_phase_callback(phase ? forward_phase : nullptr, nullptr);
   if (preview && ctx->preview_interval > 0) {
     sd_set_preview_callback(forward_preview, PREVIEW_PROJ, ctx->preview_interval,
@@ -468,6 +475,7 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   int image_count = 0;
   const bool ok = generate_image(ctx->sd, &gen, &images, &image_count);
 
+  sd_set_progress_event_callback(nullptr, nullptr);
   sd_set_progress_callback(nullptr, nullptr);
   sd_set_phase_callback(nullptr, nullptr);
   sd_set_preview_callback(nullptr, PREVIEW_NONE, 0, false, false, nullptr);

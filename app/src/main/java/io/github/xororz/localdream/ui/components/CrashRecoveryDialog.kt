@@ -1,8 +1,5 @@
 package io.github.xororz.localdream.ui.components
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -28,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import io.github.xororz.localdream.utils.SafeClipboard
 
 @Composable
 fun CrashRecoveryDialog(
@@ -55,7 +53,8 @@ fun CrashRecoveryDialog(
     }
 
     // Rendering several MB of log text itself can make a recovering app jank.
-    // Show a useful tail here; copy/save always use the complete report.
+    // Show a useful tail here. Save always keeps the complete report; Copy uses
+    // a Binder-safe payload and falls back to a bounded tail for huge reports.
     val preview = if (report.length > 160_000) {
         "… preview trimmed; Copy/Save contains the full report …\n\n" +
             report.takeLast(160_000)
@@ -70,7 +69,7 @@ fun CrashRecoveryDialog(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     "The full runtime/crash report and last generation/backend log were recovered. " +
-                        "You can copy or save the complete report before closing this.",
+                        "Save keeps the complete report. Copy keeps it whole when safe and uses a bounded tail when it is too large for Android's clipboard.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Surface(
@@ -96,15 +95,17 @@ fun CrashRecoveryDialog(
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(
                     onClick = {
-                        context.getSystemService(ClipboardManager::class.java)
-                            ?.setPrimaryClip(
-                                ClipData.newPlainText("Local Dream crash report", report),
-                            )
-                        Toast.makeText(
+                        val result = SafeClipboard.copyText(
                             context,
-                            "Full crash + generation report copied",
-                            Toast.LENGTH_SHORT,
-                        ).show()
+                            "Local Dream crash report",
+                            report,
+                        )
+                        val message = when {
+                            !result.copied -> "Could not copy crash report; use Save"
+                            result.truncated -> "Report is huge; copied a safe tail. Save for the full report"
+                            else -> "Crash + generation report copied"
+                        }
+                        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                     },
                 ) {
                     Icon(Icons.Default.ContentCopy, contentDescription = null)

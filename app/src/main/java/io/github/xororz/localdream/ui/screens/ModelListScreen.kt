@@ -105,6 +105,7 @@ import io.github.xororz.localdream.ui.theme.scheme
 import io.github.xororz.localdream.utils.CrashDiagnostics
 import io.github.xororz.localdream.utils.DownloadDiagnostics
 import io.github.xororz.localdream.utils.LogCapture
+import io.github.xororz.localdream.utils.SafeClipboard
 import io.github.xororz.localdream.utils.TempCleaner
 import java.io.BufferedOutputStream
 import java.io.File
@@ -738,6 +739,12 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
 
     val capturedLogs = LogCapture.lastCapturedLogs.value
     if (capturedLogs != null) {
+        val capturedLogsPreview = if (capturedLogs.length > 160_000) {
+            "… preview trimmed; Save contains the full log …\n\n" +
+                capturedLogs.takeLast(160_000)
+        } else {
+            capturedLogs
+        }
         AlertDialog(
             onDismissRequest = { LogCapture.consume() },
             title = { Text(stringResource(R.string.captured_logs_title)) },
@@ -756,7 +763,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             .padding(8.dp),
                     ) {
                         Text(
-                            text = capturedLogs,
+                            text = capturedLogsPreview,
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -770,16 +777,17 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     TextButton(
                         enabled = capturedLogs.isNotBlank(),
                         onClick = {
-                            val clipboard =
-                                context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(
-                                ClipData.newPlainText("Local Dream captured logs", capturedLogs),
-                            )
-                            Toast.makeText(
+                            val result = SafeClipboard.copyText(
                                 context,
-                                context.getString(R.string.logs_copied),
-                                Toast.LENGTH_SHORT,
-                            ).show()
+                                "Local Dream captured logs",
+                                capturedLogs,
+                            )
+                            val message = when {
+                                !result.copied -> "Could not copy logs; use Save"
+                                result.truncated -> "Log is huge; copied a safe tail. Save for the full log"
+                                else -> context.getString(R.string.logs_copied)
+                            }
+                            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                         },
                     ) {
                         Icon(Icons.Default.ContentCopy, contentDescription = null)
@@ -1733,16 +1741,19 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                         OutlinedButton(
                                             onClick = {
                                                 val report = CrashDiagnostics.fullReport(context)
-                                                context.getSystemService(ClipboardManager::class.java)
-                                                    ?.setPrimaryClip(
-                                                        ClipData.newPlainText(
-                                                            "Local Dream diagnostics",
-                                                            report,
-                                                        ),
-                                                    )
+                                                val result = SafeClipboard.copyText(
+                                                    context,
+                                                    "Local Dream diagnostics",
+                                                    report,
+                                                )
+                                                val message = when {
+                                                    !result.copied -> "Could not copy diagnostics; save the log instead"
+                                                    result.truncated -> "Diagnostics are huge; copied a safe tail"
+                                                    else -> "Full diagnostics copied"
+                                                }
                                                 Toast.makeText(
                                                     context,
-                                                    "Full diagnostics copied",
+                                                    message,
                                                     Toast.LENGTH_SHORT,
                                                 ).show()
                                             },
