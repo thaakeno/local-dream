@@ -2241,7 +2241,7 @@ fun ModelRunScreen(
                                     label = stringResource(R.string.image_prompt),
                                     count = promptField.tokenCount,
                                     max = promptField.tokenMax,
-                                    showCount = promptField.text.isNotEmpty(),
+                                    showCount = promptField.text.isNotEmpty() && promptField.tokenInfoReady,
                                 )
                             },
                         )
@@ -2255,7 +2255,7 @@ fun ModelRunScreen(
                                     label = stringResource(R.string.negative_prompt),
                                     count = negativePromptField.tokenCount,
                                     max = negativePromptField.tokenMax,
-                                    showCount = negativePromptField.text.isNotEmpty(),
+                                    showCount = negativePromptField.text.isNotEmpty() && negativePromptField.tokenInfoReady,
                                 )
                             },
                         )

@@ -386,13 +386,18 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
     // the diffusion transformer resident across denoising steps. The old
     // all=disk behavior repeatedly evicted the expensive part we want hot.
     const bool qwen = opts.type == ServerOptions::ModelType::kQwenImage21;
-    // Qwen is large enough to benefit from two virtual HTP sessions: its
-    // transformer blocks are split across independent VA windows while the
-    // repeatedly-used diffusion weights stay resident. TE and VAE are
-    // stage-local so they relinquish memory before/after denoising.
+    // BackendService exposes only the HTP sessions selected in generation
+    // settings. Keep the native backend spec in lockstep with that selection:
+    // asking stable-diffusion.cpp for HTP0:1 while GGML_HEXAGON_DEVICES exposes
+    // only HTP0:0 makes context creation fail before generation even starts.
+    const char *htp_mode_env = std::getenv("LOCAL_DREAM_HTP_MODE");
+    const bool qwen_dual_htp =
+        htp_mode_env != nullptr && std::string(htp_mode_env) == "dual";
     const std::string runtime_backend =
         qwen
-            ? "diffusion=HTP0:0&HTP0:1,te=HTP0:0&HTP0:1,vae=HTP0:0"
+            ? (qwen_dual_htp
+                   ? "diffusion=HTP0:0&HTP0:1,te=HTP0:0&HTP0:1,vae=HTP0:0"
+                   : "diffusion=HTP0:0,te=HTP0:0,vae=HTP0:0")
             : opts.dit_backend;
     const std::string params_backend =
         qwen ? "te=disk,vae=disk" : opts.dit_params_backend;

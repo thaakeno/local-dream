@@ -68,8 +68,9 @@ internal class PromptFieldController(
     val undoEnabled: Boolean get() = undoStack.isNotEmpty()
     val redoEnabled: Boolean get() = redoStack.isNotEmpty()
 
-    var tokenCount by mutableIntStateOf(2)
-    var tokenMax by mutableIntStateOf(77)
+    var tokenCount by mutableIntStateOf(0)
+    var tokenMax by mutableIntStateOf(0)
+    var tokenInfoReady by mutableStateOf(false)
 
     // UTF-16 index from which the text exceeds the token limit, or -1 when it
     // fits. Drives the greyed-out overflow hint in the field.
@@ -104,6 +105,7 @@ internal class PromptFieldController(
         }
         fieldValue = value
         if (textChanged) {
+            tokenInfoReady = false
             onTextCommitted()
         }
         if (!autocompleteAvailable || !isFocused) {
@@ -195,6 +197,7 @@ internal class PromptFieldController(
      */
     fun replaceText(newText: String) {
         fieldValue = TextFieldValue(newText, TextRange(newText.length))
+        tokenInfoReady = false
         suggestions = emptyList()
     }
 
@@ -232,12 +235,14 @@ internal fun PromptTokenCountEffect(
     backendHost: String,
 ) {
     LaunchedEffect(controller.text, backendReady, backendHost) {
+        controller.tokenInfoReady = false
         if (!backendReady) return@LaunchedEffect
         delay(400)
         val result = tokenizePromptRequest(controller.text, backendHost) ?: return@LaunchedEffect
         controller.tokenCount = result.count
         controller.tokenMax = result.maxLength
         controller.overflowOffset = result.overflowOffset
+        controller.tokenInfoReady = true
     }
 }
 
