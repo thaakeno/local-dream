@@ -154,54 +154,6 @@ std::vector<float> qwen_raw_sigmas(int steps) {
   return raw;
 }
 
-std::vector<float> shifted_flow_sigmas(const std::vector<float> &raw,
-                                       int width, int height,
-                                       float shift_terminal = -1.0f) {
-  // Match Qwen-Image-2.1's shipped FlowMatchEulerDiscreteScheduler:
-  // image_seq_len 256..8192, dynamic shift 0.5..0.9. Viggle uses the same
-  // resolution shift but leaves shift_terminal unset; base Qwen stretches the
-  // last non-zero sigma to 0.02.
-  const int seq_w = std::max(1, width / 16);
-  const int seq_h = std::max(1, height / 16);
-  const float seq_len = static_cast<float>(seq_w * seq_h);
-  constexpr float base_anchor = 256.0f;
-  constexpr float max_anchor = 8192.0f;
-  constexpr float base_shift = 0.5f;
-  constexpr float max_shift = 0.9f;
-  const float slope = (max_shift - base_shift) / (max_anchor - base_anchor);
-  const float mu = seq_len * slope + (base_shift - slope * base_anchor);
-  const float exp_mu = std::exp(mu);
-
-  std::vector<float> sigmas;
-  sigmas.reserve(raw.size() + 1);
-  for (const float t : raw) {
-    if (t >= 1.0f) {
-      sigmas.push_back(1.0f);
-    } else if (t <= 0.0f) {
-      sigmas.push_back(0.0f);
-    } else {
-      sigmas.push_back(exp_mu / (exp_mu + (1.0f / t - 1.0f)));
-    }
-  }
-
-  // Diffusers' shift_terminal stretching is applied after dynamic shifting.
-  // Base Qwen 2.1 uses 0.02. Viggle explicitly leaves it unset.
-  if (shift_terminal >= 0.0f && shift_terminal < 1.0f &&
-      sigmas.size() > 1) {
-    const float one_minus_last = 1.0f - sigmas.back();
-    const float scale_factor =
-        one_minus_last / (1.0f - shift_terminal);
-    if (scale_factor > 1e-8f) {
-      for (float &sigma : sigmas) {
-        sigma = 1.0f - (1.0f - sigma) / scale_factor;
-      }
-    }
-  }
-
-  sigmas.push_back(0.0f);
-  return sigmas;
-}
-
 }  // namespace
 
 struct dit_ctx {
@@ -294,6 +246,9 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   sd_params.llm_vision_path = params->llm_vision_path;
   sd_params.vae_path = params->vae_path;
   sd_params.n_threads = params->n_threads > 0 ? params->n_threads : 4;
+  // Small exact LRU on host memory: repeated prompts skip the multi-GB
+  // Qwen3-VL encode while model/adapter changes invalidate the key.
+  sd_params.conditioning_cache_size = 4;
   sd_params.flash_attn = params->flash_attn;
   sd_params.diffusion_flash_attn = params->flash_attn;
   sd_params.vae_conv_direct = params->vae_conv_direct;
@@ -372,50 +327,36 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   }
 
   std::vector<float> profile_sigmas;
+  std::string scheduler_args;
   const auto &raw_sigmas = ctx->inference_profile.raw_sigmas;
   const bool is_qwen = ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1;
   const bool has_turbo = !ctx->turbo_lora_path.empty();
 
-  if (is_qwen && has_turbo && !raw_sigmas.empty() &&
-      static_cast<int>(raw_sigmas.size()) == params->steps) {
-    // Official Viggle path: exact published raw nodes, Qwen 2.1 dynamic shift,
-    // no terminal stretching.
+  if (is_qwen && has_turbo) {
+    // Viggle publishes scheduler-domain nodes. Pass those raw nodes to the
+    // Qwen scheduler itself; the runtime owns the 256..8192 / 0.5..0.9
+    // resolution shift. Distillation intentionally disables terminal stretch.
     profile_sigmas =
-        ctx->inference_profile.flow_shift == "flux"
-            ? shifted_flow_sigmas(raw_sigmas, params->width, params->height)
-            : std::vector<float>(raw_sigmas.begin(), raw_sigmas.end());
-    if (ctx->inference_profile.flow_shift != "flux")
-      profile_sigmas.push_back(0.0f);
-    if (g_log_cb) {
-      g_log_cb(
-          static_cast<int>(SD_LOG_INFO),
-          "Viggle profile: exact six-node Qwen 2.1 schedule active",
-          g_log_user_data);
-    }
-  } else if (is_qwen && has_turbo) {
-    // Advanced step override: really run the requested count, but keep Qwen
-    // 2.1's correct 256..8192 / 0.5..0.9 dynamic shift. This is not Viggle's
-    // validated six-node rollout, so it is deliberately logged as such.
-    profile_sigmas = shifted_flow_sigmas(
-        qwen_raw_sigmas(params->steps), params->width, params->height);
+        (!raw_sigmas.empty() && static_cast<int>(raw_sigmas.size()) == params->steps)
+            ? raw_sigmas
+            : qwen_raw_sigmas(params->steps);
+    profile_sigmas.push_back(0.0f);
+    gen.sample_params.custom_sigmas_are_raw = true;
+    scheduler_args = "shift_terminal=-1";
+    gen.sample_params.extra_sample_args = scheduler_args.c_str();
     if (g_log_cb) {
       const std::string message =
-          "Viggle profile: user requested " + std::to_string(params->steps) +
-          " steps; using Qwen 2.1 dynamic shift without terminal stretching";
+          (!raw_sigmas.empty() && static_cast<int>(raw_sigmas.size()) == params->steps)
+              ? "Viggle profile: exact published raw sigma nodes; native Qwen FlowMatch transform"
+              : "Viggle profile: custom step count; native Qwen FlowMatch transform without terminal stretch";
       g_log_cb(static_cast<int>(SD_LOG_INFO), message.c_str(), g_log_user_data);
     }
-  } else if (is_qwen) {
-    // Base Qwen 2.1 uses the same dynamic shift plus shift_terminal=0.02.
-    // Supplying the final sigmas directly avoids the generic Flux scheduler's
-    // older 4096/1.15 anchors.
-    profile_sigmas = shifted_flow_sigmas(
-        qwen_raw_sigmas(params->steps), params->width, params->height, 0.02f);
-    if (g_log_cb) {
-      g_log_cb(
-          static_cast<int>(SD_LOG_INFO),
-          "Qwen 2.1: official 256..8192 dynamic shift + terminal 0.02 active",
-          g_log_user_data);
-    }
+  } else if (is_qwen && g_log_cb) {
+    // Base Qwen needs no frontend schedule at all. The native Qwen scheduler
+    // owns both dynamic shifting and its 0.02 terminal stretch.
+    g_log_cb(static_cast<int>(SD_LOG_INFO),
+             "Qwen 2.1: native FlowMatch scheduler active",
+             g_log_user_data);
   }
 
   if (!profile_sigmas.empty()) {
