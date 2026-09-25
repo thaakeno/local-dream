@@ -142,13 +142,25 @@ InferenceProfile load_inference_profile(const std::filesystem::path &path) {
   return profile;
 }
 
+std::vector<float> qwen_raw_sigmas(int steps) {
+  steps = std::max(1, steps);
+  std::vector<float> raw;
+  raw.reserve(static_cast<size_t>(steps));
+  for (int i = 0; i < steps; ++i) {
+    // Diffusers QwenImage21Pipeline:
+    // np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+    raw.push_back(1.0f - static_cast<float>(i) / static_cast<float>(steps));
+  }
+  return raw;
+}
+
 std::vector<float> shifted_flow_sigmas(const std::vector<float> &raw,
-                                       int width, int height) {
-  // Match Viggle's shipped Qwen-Image-2.1 Comfy/Diffusers schedule exactly.
-  // Qwen 2.1 consumes one transformer token per 16x16 output tile. Viggle's
-  // custom node uses 256..8192 sequence anchors and a 0.5..0.9 dynamic shift;
-  // using the older 4096/1.15 Flux-style values keeps far too much noise in
-  // the final Turbo passes and produces the washed/noisy images we observed.
+                                       int width, int height,
+                                       float shift_terminal = -1.0f) {
+  // Match Qwen-Image-2.1's shipped FlowMatchEulerDiscreteScheduler:
+  // image_seq_len 256..8192, dynamic shift 0.5..0.9. Viggle uses the same
+  // resolution shift but leaves shift_terminal unset; base Qwen stretches the
+  // last non-zero sigma to 0.02.
   const int seq_w = std::max(1, width / 16);
   const int seq_h = std::max(1, height / 16);
   const float seq_len = static_cast<float>(seq_w * seq_h);
@@ -165,10 +177,27 @@ std::vector<float> shifted_flow_sigmas(const std::vector<float> &raw,
   for (const float t : raw) {
     if (t >= 1.0f) {
       sigmas.push_back(1.0f);
+    } else if (t <= 0.0f) {
+      sigmas.push_back(0.0f);
     } else {
       sigmas.push_back(exp_mu / (exp_mu + (1.0f / t - 1.0f)));
     }
   }
+
+  // Diffusers' shift_terminal stretching is applied after dynamic shifting.
+  // Base Qwen 2.1 uses 0.02. Viggle explicitly leaves it unset.
+  if (shift_terminal >= 0.0f && shift_terminal < 1.0f &&
+      sigmas.size() > 1) {
+    const float one_minus_last = 1.0f - sigmas.back();
+    const float scale_factor =
+        one_minus_last / (1.0f - shift_terminal);
+    if (scale_factor > 1e-8f) {
+      for (float &sigma : sigmas) {
+        sigma = 1.0f - (1.0f - sigma) / scale_factor;
+      }
+    }
+  }
+
   sigmas.push_back(0.0f);
   return sigmas;
 }
@@ -342,39 +371,57 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
     gen.cache.mode = SD_CACHE_CACHE_DIT;
   }
 
-  // Base Qwen uses terminal stretching. A distilled profile can instead own
-  // exact raw nodes; those are shifted below and intentionally do not stretch
-  // to Qwen's 0.02 terminal.
-  if (ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1 &&
-      ctx->turbo_lora_path.empty()) {
-    gen.sample_params.extra_sample_args = "shift_terminal=0.02";
-  }
-
   std::vector<float> profile_sigmas;
   const auto &raw_sigmas = ctx->inference_profile.raw_sigmas;
-  if (!raw_sigmas.empty() &&
+  const bool is_qwen = ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1;
+  const bool has_turbo = !ctx->turbo_lora_path.empty();
+
+  if (is_qwen && has_turbo && !raw_sigmas.empty() &&
       static_cast<int>(raw_sigmas.size()) == params->steps) {
-    if (ctx->inference_profile.flow_shift == "flux") {
-      profile_sigmas =
-          shifted_flow_sigmas(raw_sigmas, params->width, params->height);
-    } else {
-      profile_sigmas.assign(raw_sigmas.begin(), raw_sigmas.end());
+    // Official Viggle path: exact published raw nodes, Qwen 2.1 dynamic shift,
+    // no terminal stretching.
+    profile_sigmas =
+        ctx->inference_profile.flow_shift == "flux"
+            ? shifted_flow_sigmas(raw_sigmas, params->width, params->height)
+            : std::vector<float>(raw_sigmas.begin(), raw_sigmas.end());
+    if (ctx->inference_profile.flow_shift != "flux")
       profile_sigmas.push_back(0.0f);
-    }
-    gen.sample_params.custom_sigmas = profile_sigmas.data();
-    gen.sample_params.custom_sigmas_count =
-        static_cast<int>(profile_sigmas.size());
     if (g_log_cb) {
       g_log_cb(
           static_cast<int>(SD_LOG_INFO),
-          "Viggle profile: exact six-node sigma schedule active",
+          "Viggle profile: exact six-node Qwen 2.1 schedule active",
           g_log_user_data);
     }
-  } else if (!raw_sigmas.empty() && g_log_cb) {
-    const std::string message =
-        "Viggle profile: user requested " + std::to_string(params->steps) +
-        " steps; exact 6-step nodes disabled, running the requested count";
-    g_log_cb(static_cast<int>(SD_LOG_INFO), message.c_str(), g_log_user_data);
+  } else if (is_qwen && has_turbo) {
+    // Advanced step override: really run the requested count, but keep Qwen
+    // 2.1's correct 256..8192 / 0.5..0.9 dynamic shift. This is not Viggle's
+    // validated six-node rollout, so it is deliberately logged as such.
+    profile_sigmas = shifted_flow_sigmas(
+        qwen_raw_sigmas(params->steps), params->width, params->height);
+    if (g_log_cb) {
+      const std::string message =
+          "Viggle profile: user requested " + std::to_string(params->steps) +
+          " steps; using Qwen 2.1 dynamic shift without terminal stretching";
+      g_log_cb(static_cast<int>(SD_LOG_INFO), message.c_str(), g_log_user_data);
+    }
+  } else if (is_qwen) {
+    // Base Qwen 2.1 uses the same dynamic shift plus shift_terminal=0.02.
+    // Supplying the final sigmas directly avoids the generic Flux scheduler's
+    // older 4096/1.15 anchors.
+    profile_sigmas = shifted_flow_sigmas(
+        qwen_raw_sigmas(params->steps), params->width, params->height, 0.02f);
+    if (g_log_cb) {
+      g_log_cb(
+          static_cast<int>(SD_LOG_INFO),
+          "Qwen 2.1: official 256..8192 dynamic shift + terminal 0.02 active",
+          g_log_user_data);
+    }
+  }
+
+  if (!profile_sigmas.empty()) {
+    gen.sample_params.custom_sigmas = profile_sigmas.data();
+    gen.sample_params.custom_sigmas_count =
+        static_cast<int>(profile_sigmas.size());
   }
 
   sd_lora_t turbo_lora{};
