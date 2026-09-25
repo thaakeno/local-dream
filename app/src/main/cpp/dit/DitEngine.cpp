@@ -191,11 +191,12 @@ void forward_progress(int step, int steps, float time, void *) {
   // A zero total marks non-sampling work. Still forward it so a disconnected
   // client can cancel a long VAE encode/decode or lazy parameter load, but do
   // not let those unrelated counters drive the UI progress bar.
+  // During denoising the native sampler is authoritative about the effective
+  // step count. Do not require it to equal the frontend estimate: img2img
+  // trimming/custom schedules can legitimately change it, and that old equality
+  // check turned every progress event into 0/0 in the UI.
   const int routed_steps =
-      g_active.current_phase == DIT_PHASE_DENOISING &&
-              steps == g_active.sampling_steps
-          ? steps
-          : 0;
+      g_active.current_phase == DIT_PHASE_DENOISING && steps > 0 ? steps : 0;
   if (!g_active.progress(step, routed_steps, time, g_active.user_data)) {
     // The callback asked to stop. sd_cancel_generation only takes effect at
     // the next step boundary, so record it for the generate() return path.
@@ -255,21 +256,21 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   // Small exact LRU on host memory: repeated prompts skip the multi-GB
   // Qwen3-VL encode while model/adapter changes invalidate the key.
   sd_params.conditioning_cache_size = 4;
-  // Keep Qwen3-VL warm between generations. The runtime residency manager can
-  // still reclaim its workspace/weights automatically when the DiT needs the
-  // HTP address space, so this is a fast path rather than a hard reservation.
-  sd_params.keep_conditioner_resident = params->kind == DIT_MODEL_QWEN_IMAGE_2_1;
+  // Keep only encoded conditioning in the small host LRU. Qwen3-VL itself must
+  // leave HTP after prompt encoding so the DiT and VAE get a clean address
+  // space instead of competing with a multi-GB idle text encoder.
+  sd_params.keep_conditioner_resident = false;
   sd_params.flash_attn = params->flash_attn;
   sd_params.diffusion_flash_attn = params->flash_attn;
   sd_params.vae_conv_direct = params->vae_conv_direct;
-  // Model files are several GB on mobile. Read-only mmap lets Android page
-  // cache/reclaim them naturally and the loader can upload mapped pages
-  // directly to HTP without a second tensor-sized heap copy.
-  sd_params.enable_mmap = true;
-  // Keep the upstream segment prefetch enabled: it overlaps loading/repacking
-  // the next graph segment with HTP execution. Component-level residency is
-  // controlled separately by params_backend=all=disk.
-  sd_params.disable_prefetch = false;
+  // Qwen's HTP path repacks quantized/FP8 weights while uploading them. Feeding
+  // those uploads straight from multi-GB mmap pages caused page-fault storms and
+  // UI stalls on Android, so Qwen uses ordered buffered reads instead.
+  sd_params.enable_mmap = params->kind != DIT_MODEL_QWEN_IMAGE_2_1;
+  // Hexagon currently exposes the async backend capability, but weight
+  // set_tensor_async still performs the repack synchronously. Running a second
+  // "prefetch" copy only raises peak mapped memory without hiding the transfer.
+  sd_params.disable_prefetch = params->kind == DIT_MODEL_QWEN_IMAGE_2_1;
   // Fit segmented HTP buffers against live free memory instead of assuming a
   // desktop-sized static budget. Fast residency is preserved when it fits,
   // while larger resolutions avoid a hard allocation cliff.
