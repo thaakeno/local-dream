@@ -80,8 +80,25 @@ class PipelineDit : public Pipeline {
   }
   bool supportsUltrafix() const override { return false; }
 
+  PromptTokenizeResult tokenizePrompt(const std::string &text) override {
+    if (!ctx_ || !api_) throw std::runtime_error("DiT engine not initialized");
+    dit_tokenize_result result{};
+    if (!api_->tokenize(ctx_, text.c_str(), &result)) {
+      throw std::runtime_error(std::string("DiT tokenize failed: ") +
+                               api_->last_error(ctx_));
+    }
+    return {result.count, result.max_length, result.overflow_offset};
+  }
+
   GenerationResult generate(GenerationRequest &req,
                             const ProgressCallback &progress_callback) override {
+    const GenerationPhaseCallback no_phase = [](const std::string &) {};
+    return generateWithPhase(req, progress_callback, no_phase);
+  }
+
+  GenerationResult generateWithPhase(
+      GenerationRequest &req, const ProgressCallback &progress_callback,
+      const GenerationPhaseCallback &phase_callback) override {
     if (!ctx_ || !api_) throw std::runtime_error("DiT engine not initialized");
     if (req.prompt.empty()) throw std::invalid_argument("Prompt empty");
     if (safety_interpreter_ && !safety_session_)
@@ -194,7 +211,8 @@ class PipelineDit : public Pipeline {
     const int pre_sample_steps =
         static_cast<int>(reference_ptrs.size()) +
         (params.init_image_rgb != nullptr ? 1 : 0);
-    Callbacks callbacks{&req, &progress_callback, nullptr, {}, 0, 0, 0, false,
+    Callbacks callbacks{&req, &progress_callback, &phase_callback, nullptr, {},
+                        0, 0, 0, false,
                         native_edit && params.init_image_rgb == nullptr,
                         pre_sample_steps};
     const auto start = std::chrono::high_resolution_clock::now();
@@ -204,6 +222,7 @@ class PipelineDit : public Pipeline {
     int out_height = 0;
     int out_channels = 0;
     const bool ok = api_->generate(ctx_, &params, &PipelineDit::forwardProgress,
+                                   &PipelineDit::forwardPhase,
                                    &PipelineDit::forwardPreview, &callbacks,
                                    &out_pixels, &out_width, &out_height,
                                    &out_channels);
@@ -314,6 +333,7 @@ class PipelineDit : public Pipeline {
   struct Callbacks {
     GenerationRequest *req;
     const ProgressCallback *progress;
+    const GenerationPhaseCallback *phase;
     std::exception_ptr pending;
     std::string preview_b64;
     int first_step_ms = 0;
@@ -401,6 +421,26 @@ class PipelineDit : public Pipeline {
         pixels[i * 4 + 3] =
             static_cast<uint8_t>(std::clamp(alpha, 0.0f, 255.0f));
       }
+    }
+  }
+
+  static void forwardPhase(dit_generation_phase phase, void *user_data) {
+    auto *cb = static_cast<Callbacks *>(user_data);
+    if (!cb || !cb->phase) return;
+    const char *name = "preparing";
+    switch (phase) {
+      case DIT_PHASE_ENCODING_INPUT: name = "encoding_input"; break;
+      case DIT_PHASE_ENCODING_PROMPT: name = "encoding_prompt"; break;
+      case DIT_PHASE_DENOISING: name = "denoising"; break;
+      case DIT_PHASE_DECODING: name = "decoding"; break;
+      case DIT_PHASE_FINALIZING: name = "finalizing"; break;
+      case DIT_PHASE_PREPARING:
+      default: name = "preparing"; break;
+    }
+    try {
+      (*cb->phase)(name);
+    } catch (...) {
+      cb->pending = std::current_exception();
     }
   }
 

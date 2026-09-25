@@ -106,6 +106,13 @@ struct GenerationRequest {
 
 // step / total_steps / optional base64 preview image.
 using ProgressCallback = std::function<void(int, int, const std::string &)>;
+using GenerationPhaseCallback = std::function<void(const std::string &)>;
+
+struct PromptTokenizeResult {
+  int count = 0;
+  int max_length = 0;
+  int overflow_offset = -1;
+};
 
 // CLIP outputs for the [negative, positive] batch. `hidden` is what the UNet
 // consumes as encoder_hidden_states; `pooled` and `time_ids` only exist for
@@ -190,6 +197,20 @@ class Pipeline {
     return vaeTilingSupported() && supportsImg2Img();
   }
 
+  // Frontend token count must use the same tokenizer semantics as generation.
+  // Legacy pipelines use the in-process TextEncoder; DiT overrides this and
+  // delegates to libdit_engine's exact model-side tokenizer.
+  virtual PromptTokenizeResult tokenizePrompt(const std::string &text) {
+    const int chunks = text_encoder_.max_chunks_ == 0
+                           ? text_encoder_.contextLength(text) / 77
+                           : text_encoder_.max_chunks_;
+    const int max_len = text_encoder_.isAnima() ? anima_text_seq_len
+                                                : chunks * 75 + 2;
+    const TokenizeInfo info = text_encoder_.tokenizeInfo(text, max_len);
+    return {info.count, text_encoder_.max_chunks_ == 0 ? 0 : max_len,
+            info.overflow_offset};
+  }
+
   void setSafetyChecker(MNN::Interpreter *interpreter, MNN::Session *session,
                         float threshold) {
     safety_interpreter_ = interpreter;
@@ -245,6 +266,15 @@ class Pipeline {
   // and so replaces this instead of filling in the stage hooks below.
   virtual GenerationResult generate(GenerationRequest &req,
                                     const ProgressCallback &progress_callback);
+
+  // Default pipelines do not expose native stage boundaries yet, so preserve
+  // their exact behavior. DiT overrides this to surface engine phases.
+  virtual GenerationResult generateWithPhase(
+      GenerationRequest &req, const ProgressCallback &progress_callback,
+      const GenerationPhaseCallback &phase_callback) {
+    (void)phase_callback;
+    return generate(req, progress_callback);
+  }
 
  protected:
   // --- stage hooks -------------------------------------------------------

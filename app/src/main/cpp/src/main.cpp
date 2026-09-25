@@ -527,23 +527,30 @@ static void registerGenerateEndpoint(httplib::Server &svr, Pipeline *pipeline) {
           [pipeline, req](intptr_t, httplib::DataSink &sink) -> bool {
             try {
               std::lock_guard<std::mutex> generation_lock(g_generation_mutex);
-              auto result = pipeline->generate(
-                  *req, [&sink, &req](int s, int t, const std::string &img) {
+              auto write_event = [&sink](const char *event,
+                                          const nlohmann::json &payload) {
+                std::string wire = std::string("event: ") + event +
+                                   "\ndata: " + payload.dump() + "\n\n";
+                if (!sink.is_writable() ||
+                    !sink.write(wire.c_str(), wire.size())) {
+                  throw std::runtime_error(
+                      "Client disconnected, generation aborted");
+                }
+              };
+              auto result = pipeline->generateWithPhase(
+                  *req,
+                  [&write_event, &req](int s, int t, const std::string &img) {
                     nlohmann::json p = {
                         {"type", "progress"}, {"step", s}, {"total_steps", t}};
                     if (!img.empty()) {
                       p["image"] = img;
                       p["format"] = req->preview_format;
                     }
-                    std::string ev =
-                        "event: progress\ndata: " + p.dump() + "\n\n";
-                    // A failed write means the client hung up (cancelled).
-                    // Abort the generation right away instead of burning
-                    // NPU/CPU on a result nobody will receive.
-                    if (!sink.is_writable() ||
-                        !sink.write(ev.c_str(), ev.size()))
-                      throw std::runtime_error(
-                          "Client disconnected, generation aborted");
+                    write_event("progress", p);
+                  },
+                  [&write_event](const std::string &phase) {
+                    write_event("phase",
+                                {{"type", "phase"}, {"phase", phase}});
                   });
               auto enc_start = std::chrono::high_resolution_clock::now();
               std::string enc_img =
@@ -780,23 +787,15 @@ static void registerUpscaleEndpoint(httplib::Server &svr) {
 }
 
 static void registerTokenizeEndpoint(httplib::Server &svr,
-                                     TextEncoder *text_encoder) {
-  svr.Post("/tokenize", [text_encoder](const httplib::Request &req,
-                                       httplib::Response &res) {
+                                     Pipeline *pipeline) {
+  svr.Post("/tokenize", [pipeline](const httplib::Request &req,
+                                   httplib::Response &res) {
     try {
       auto json = nlohmann::json::parse(req.body);
-      std::string text = json.value("prompt", std::string());
-      // Anima counts with the T5 tokenizer against the context length (512),
-      // far longer than CLIP's 77.
-      const int chunks = text_encoder->max_chunks_ == 0
-          ? text_encoder->contextLength(text) / 77 : text_encoder->max_chunks_;
-      const int max_len = text_encoder->isAnima() ? anima_text_seq_len
-          : chunks * 75 + 2;
-
-      TokenizeInfo info = text_encoder->tokenizeInfo(text, max_len);
-
+      const std::string text = json.value("prompt", std::string());
+      const PromptTokenizeResult info = pipeline->tokenizePrompt(text);
       nlohmann::json resp = {{"count", info.count},
-                             {"max_length", text_encoder->max_chunks_ == 0 ? 0 : max_len},
+                             {"max_length", info.max_length},
                              {"overflow_offset", info.overflow_offset}};
       res.status = 200;
       res.set_content(resp.dump(), "application/json");
@@ -934,9 +933,11 @@ int main(int argc, char **argv) {
     res.status = 200;
   });
 
-  if (pipeline) registerGenerateEndpoint(svr, pipeline.get());
+  if (pipeline) {
+    registerGenerateEndpoint(svr, pipeline.get());
+    registerTokenizeEndpoint(svr, pipeline.get());
+  }
   registerUpscaleEndpoint(svr);
-  if (text_encoder) registerTokenizeEndpoint(svr, text_encoder.get());
 
   std::cout << "Server listening on " << opts.listen_address << ":" << opts.port
             << std::endl;
