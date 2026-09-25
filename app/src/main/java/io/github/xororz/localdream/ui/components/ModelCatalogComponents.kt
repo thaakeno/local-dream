@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -103,7 +104,23 @@ fun filterAndSortCatalog(
         CatalogSortMode.Installed ->
             filtered.sortedWith(compareByDescending<Model> { it.isDownloaded }.thenBy { it.name.lowercase() })
         CatalogSortMode.Size ->
-            filtered.sortedByDescending { it.downloadBytesEstimate }
+            filtered.sortedByDescending { model ->
+                if (model.downloadBytesEstimate > 0L) {
+                    model.downloadBytesEstimate
+                } else {
+                    val raw = model.approximateSize.trim().uppercase(Locale.US)
+                    val number = raw
+                        .removeSuffix("GB")
+                        .removeSuffix("MB")
+                        .trim()
+                        .toDoubleOrNull() ?: 0.0
+                    when {
+                        raw.endsWith("GB") -> (number * 1_000_000_000L).toLong()
+                        raw.endsWith("MB") -> (number * 1_000_000L).toLong()
+                        else -> 0L
+                    }
+                }
+            }
         CatalogSortMode.Name ->
             filtered.sortedBy { it.name.lowercase() }
     }
