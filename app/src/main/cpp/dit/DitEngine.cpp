@@ -30,11 +30,12 @@ std::mutex g_gen_mutex;
 
 struct ActiveGeneration {
   dit_progress_cb progress = nullptr;
+  dit_phase_cb phase = nullptr;
   dit_preview_cb preview = nullptr;
   void *user_data = nullptr;
   dit_ctx *ctx = nullptr;
   bool cancelled = false;
-  bool sampling = false;
+  dit_generation_phase current_phase = DIT_PHASE_PREPARING;
   int sampling_steps = 0;
 };
 
@@ -168,19 +169,21 @@ struct dit_ctx {
 namespace {
 
 void forward_log(enum sd_log_level_t level, const char *text, void *) {
-  // stable-diffusion.cpp uses the same global progress callback for model
-  // loading, tiled VAE work and sampling. Its image pipeline emits these
-  // messages immediately around sd->sample(), so use them to preserve the
-  // stage across the otherwise phase-less callback ABI.
-  if (g_active.ctx && text) {
-    if (std::strstr(text, "generating image:")) {
-      g_active.sampling = true;
-    } else if (std::strstr(text, "sampling completed") ||
-               std::strstr(text, "Diffusion model sampling failed")) {
-      g_active.sampling = false;
-    }
-  }
   if (g_log_cb) g_log_cb(static_cast<int>(level), text ? text : "", g_log_user_data);
+}
+
+void forward_phase(enum sd_generation_phase_t phase, void *) {
+  if (!g_active.ctx) return;
+  switch (phase) {
+    case SD_PHASE_ENCODING_INPUT: g_active.current_phase = DIT_PHASE_ENCODING_INPUT; break;
+    case SD_PHASE_ENCODING_PROMPT: g_active.current_phase = DIT_PHASE_ENCODING_PROMPT; break;
+    case SD_PHASE_DENOISING: g_active.current_phase = DIT_PHASE_DENOISING; break;
+    case SD_PHASE_DECODING: g_active.current_phase = DIT_PHASE_DECODING; break;
+    case SD_PHASE_FINALIZING: g_active.current_phase = DIT_PHASE_FINALIZING; break;
+    case SD_PHASE_PREPARING:
+    default: g_active.current_phase = DIT_PHASE_PREPARING; break;
+  }
+  if (g_active.phase) g_active.phase(g_active.current_phase, g_active.user_data);
 }
 
 void forward_progress(int step, int steps, float time, void *) {
@@ -189,7 +192,10 @@ void forward_progress(int step, int steps, float time, void *) {
   // client can cancel a long VAE encode/decode or lazy parameter load, but do
   // not let those unrelated counters drive the UI progress bar.
   const int routed_steps =
-      g_active.sampling && steps == g_active.sampling_steps ? steps : 0;
+      g_active.current_phase == DIT_PHASE_DENOISING &&
+              steps == g_active.sampling_steps
+          ? steps
+          : 0;
   if (!g_active.progress(step, routed_steps, time, g_active.user_data)) {
     // The callback asked to stop. sd_cancel_generation only takes effect at
     // the next step boundary, so record it for the generate() return path.
@@ -249,6 +255,10 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   // Small exact LRU on host memory: repeated prompts skip the multi-GB
   // Qwen3-VL encode while model/adapter changes invalidate the key.
   sd_params.conditioning_cache_size = 4;
+  // Keep Qwen3-VL warm between generations. The runtime residency manager can
+  // still reclaim its workspace/weights automatically when the DiT needs the
+  // HTP address space, so this is a fast path rather than a hard reservation.
+  sd_params.keep_conditioner_resident = params->kind == DIT_MODEL_QWEN_IMAGE_2_1;
   sd_params.flash_attn = params->flash_attn;
   sd_params.diffusion_flash_attn = params->flash_attn;
   sd_params.vae_conv_direct = params->vae_conv_direct;
@@ -287,8 +297,9 @@ void engine_destroy(dit_ctx *ctx) {
 }
 
 bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb progress,
-                     dit_preview_cb preview, void *user_data, uint8_t **out_pixels,
-                     int *out_width, int *out_height, int *out_channels) {
+                     dit_phase_cb phase, dit_preview_cb preview, void *user_data,
+                     uint8_t **out_pixels, int *out_width,
+                     int *out_height, int *out_channels) {
   if (!ctx || !ctx->sd || !params || !out_pixels || !out_channels) return false;
   ctx->last_error.clear();
 
@@ -437,9 +448,10 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
     const int t_enc = static_cast<int>(requested_steps * gen.strength);
     sampling_steps = std::clamp(t_enc + 1, 1, requested_steps);
   }
-  g_active = ActiveGeneration{progress, preview, user_data, ctx, false, false,
-                              sampling_steps};
+  g_active = ActiveGeneration{progress, phase, preview, user_data, ctx, false,
+                              DIT_PHASE_PREPARING, sampling_steps};
   sd_set_progress_callback(progress ? forward_progress : nullptr, nullptr);
+  sd_set_phase_callback(phase ? forward_phase : nullptr, nullptr);
   if (preview && ctx->preview_interval > 0) {
     sd_set_preview_callback(forward_preview, PREVIEW_PROJ, ctx->preview_interval,
                             /*denoised=*/true, /*noisy=*/false, nullptr);
@@ -452,6 +464,7 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   const bool ok = generate_image(ctx->sd, &gen, &images, &image_count);
 
   sd_set_progress_callback(nullptr, nullptr);
+  sd_set_phase_callback(nullptr, nullptr);
   sd_set_preview_callback(nullptr, PREVIEW_NONE, 0, false, false, nullptr);
   const bool cancelled = g_active.cancelled;
   g_active = ActiveGeneration{};
@@ -489,6 +502,16 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
 
 void engine_free_image(uint8_t *pixels) { free(pixels); }
 
+bool engine_tokenize(dit_ctx *ctx, const char *text, dit_tokenize_result *result) {
+  if (!ctx || !ctx->sd || !text || !result) return false;
+  sd_tokenize_result_t native{};
+  if (!sd_tokenize_text(ctx->sd, text, &native)) return false;
+  result->count = native.count;
+  result->max_length = native.max_length;
+  result->overflow_offset = native.overflow_offset;
+  return true;
+}
+
 const char *engine_last_error(const dit_ctx *ctx) {
   if (!ctx) return g_create_error.c_str();
   return ctx->last_error.c_str();
@@ -510,6 +533,7 @@ const dit_engine_api g_api = {
     engine_destroy,
     engine_generate,
     engine_free_image,
+    engine_tokenize,
     engine_last_error,
     engine_set_log_callback,
     engine_set_preview_interval,

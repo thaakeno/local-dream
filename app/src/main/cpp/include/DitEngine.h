@@ -21,7 +21,7 @@
 extern "C" {
 #endif
 
-#define DIT_ENGINE_ABI_VERSION 5
+#define DIT_ENGINE_ABI_VERSION 6
 
 // Name of the single symbol the core resolves after dlopen.
 #define DIT_ENGINE_ENTRY_SYMBOL "dit_engine_get_api"
@@ -94,6 +94,23 @@ typedef struct {
 typedef bool (*dit_progress_cb)(int step, int total_steps, float step_seconds,
                                 void *user_data);
 
+typedef enum {
+  DIT_PHASE_PREPARING = 0,
+  DIT_PHASE_ENCODING_INPUT,
+  DIT_PHASE_ENCODING_PROMPT,
+  DIT_PHASE_DENOISING,
+  DIT_PHASE_DECODING,
+  DIT_PHASE_FINALIZING,
+} dit_generation_phase;
+
+typedef void (*dit_phase_cb)(dit_generation_phase phase, void *user_data);
+
+typedef struct {
+  int count;
+  int max_length;
+  int overflow_offset;
+} dit_tokenize_result;
+
 // Per-step preview, RGB8, only when the engine was asked for previews.
 typedef void (*dit_preview_cb)(int step, const uint8_t *rgb, int width,
                                int height, void *user_data);
@@ -111,10 +128,15 @@ typedef struct {
   // count into *out_channels, owned by the engine until free_image(). Returns
   // false on failure or cancellation.
   bool (*generate)(dit_ctx *ctx, const dit_gen_params *params,
-                   dit_progress_cb progress, dit_preview_cb preview,
-                   void *user_data, uint8_t **out_pixels, int *out_width,
+                   dit_progress_cb progress, dit_phase_cb phase,
+                   dit_preview_cb preview, void *user_data,
+                   uint8_t **out_pixels, int *out_width,
                    int *out_height, int *out_channels);
   void (*free_image)(uint8_t *pixels);
+
+  // Exact model-side tokenizer count. max_length==0 means the engine does not
+  // impose a frontend prompt limit.
+  bool (*tokenize)(dit_ctx *ctx, const char *text, dit_tokenize_result *result);
 
   // Last failure on this context, or the last create() failure when ctx is
   // NULL. Valid until the next call on the same context.
