@@ -351,6 +351,7 @@ fun ModelRunScreen(
     var seed by remember { mutableStateOf(GenerationDefaults.GLOBAL.seed) }
     var denoiseStrength by remember { mutableFloatStateOf(GenerationDefaults.GLOBAL.denoiseStrength) }
     var useOpenCL by remember { mutableStateOf(false) }
+    var htpMode by remember { mutableStateOf("auto") }
     var batchCounts by remember { mutableIntStateOf(GenerationDefaults.GLOBAL.batchCounts) }
     var scheduler by remember { mutableStateOf(GenerationDefaults.GLOBAL.scheduler) }
     var aspectRatio by remember { mutableStateOf(GenerationDefaults.GLOBAL.aspectRatio) }
@@ -643,8 +644,28 @@ fun ModelRunScreen(
                 batchCounts = batchCounts,
                 scheduler = scheduler,
                 aspectRatio = aspectRatio,
+                htpMode = htpMode,
             )
         }
+    }
+
+    fun restartQwenBackendForHtpMode(mode: String) {
+        if (isRemote || model?.ditKind != "qwen21") return
+        backendReady = false
+        isCheckingBackend = true
+        errorMessage = null
+        val intent = Intent(context, BackendService::class.java)
+            .setAction(BackendService.ACTION_RESTART)
+            .apply {
+                putExtra("modelId", model?.id)
+                putExtra("backendType", model?.backendType)
+                putExtra("width", currentWidth)
+                putExtra("height", currentHeight)
+                putExtra("use_opencl", useOpenCL)
+                putExtra("htp_mode", mode)
+            }
+        context.startForegroundService(intent)
+        backendRestartTrigger++
     }
 
     fun saveUltrafixParams() {
@@ -1418,6 +1439,7 @@ fun ModelRunScreen(
             seed = prefs.seed
             denoiseStrength = if (isFirstRun) defaults.denoiseStrength else prefs.denoiseStrength
             useOpenCL = prefs.useOpenCL
+            htpMode = prefs.htpMode
             batchCounts = prefs.batchCounts
             scheduler = if (isFirstRun) defaults.scheduler else prefs.scheduler
             // Without img2img the backend has no VAE encoder, so a stored
@@ -1497,6 +1519,7 @@ fun ModelRunScreen(
                     putExtra("width", currentWidth)
                     putExtra("height", currentHeight)
                     putExtra("use_opencl", useOpenCL)
+                    putExtra("htp_mode", htpMode)
                 }
                 context.startForegroundService(intent)
             }
@@ -1800,6 +1823,7 @@ fun ModelRunScreen(
                                     putExtra("backendType", m.backendType)
                                     putExtra("width", resolution.width)
                                     putExtra("height", resolution.height)
+                                    putExtra("htp_mode", htpMode)
                                 }
                             context.startForegroundService(serviceIntent)
                             isCheckingBackend = true
@@ -1833,6 +1857,7 @@ fun ModelRunScreen(
                 batchCounts = defaults.batchCounts
                 scheduler = defaults.scheduler
                 aspectRatio = defaults.aspectRatio
+                htpMode = "auto"
                 promptField.replaceText(defaults.prompt)
                 negativePromptField.replaceText(defaults.negativePrompt)
                 denoiseStrength = defaults.denoiseStrength
@@ -1859,6 +1884,7 @@ fun ModelRunScreen(
                         batchCounts = defaults.batchCounts,
                         scheduler = defaults.scheduler,
                         aspectRatio = defaults.aspectRatio,
+                        htpMode = "auto",
                     )
                 }
                 showResetConfirmDialog = false
@@ -2095,6 +2121,8 @@ fun ModelRunScreen(
                                     steps = steps,
                                     cfg = cfg,
                                     useOpenCL = useOpenCL,
+                                    isQwen21 = model?.ditKind == "qwen21" && !isRemote,
+                                    htpMode = htpMode,
                                     batchCounts = batchCounts,
                                     denoiseStrength = denoiseStrength,
                                     seed = seed,
@@ -2134,6 +2162,13 @@ fun ModelRunScreen(
                                         saveAllFields()
                                     },
                                     onGpuSelected = { showOpenCLWarningDialog = true },
+                                    onHtpModeChange = { mode ->
+                                        if (!isRunning && htpMode != mode) {
+                                            htpMode = mode
+                                            saveAllFields()
+                                            restartQwenBackendForHtpMode(mode)
+                                        }
+                                    },
                                     onBatchCountsChange = onBatchCountsChange,
                                     onDenoiseStrengthChange = onDenoiseStrengthChange,
                                     onSeedChange = onSeedChange,
@@ -2479,7 +2514,7 @@ fun ModelRunScreen(
                 showStats = showGenerationStats,
                 intermediateBitmap = intermediateBitmap,
                 acceleratorLabel = if (model?.ditKind == "qwen21") {
-                    "NPU · HTP0:0 + HTP0:1"
+                    if (htpMode == "dual") "NPU · HTP0:0 + HTP0:1" else "NPU · HTP0:0"
                 } else {
                     "NPU · HTP0"
                 },

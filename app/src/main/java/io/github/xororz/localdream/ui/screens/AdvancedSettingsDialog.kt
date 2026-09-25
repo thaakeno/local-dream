@@ -65,6 +65,8 @@ internal fun AdvancedSettingsDialog(
     steps: Float,
     cfg: Float,
     useOpenCL: Boolean,
+    isQwen21: Boolean = false,
+    htpMode: String = "auto",
     batchCounts: Int,
     denoiseStrength: Float,
     seed: String,
@@ -80,6 +82,7 @@ internal fun AdvancedSettingsDialog(
     onSizeChange: (Float) -> Unit,
     onCpuSelected: () -> Unit,
     onGpuSelected: () -> Unit,
+    onHtpModeChange: (String) -> Unit = {},
     onBatchCountsChange: (Float) -> Unit,
     onDenoiseStrengthChange: (Float) -> Unit,
     onSeedChange: (String) -> Unit,
@@ -413,6 +416,55 @@ internal fun AdvancedSettingsDialog(
                         }
                     }
                 }
+                if (isQwen21) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            "HTP sessions",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(
+                                ButtonGroupDefaults.ConnectedSpaceBetween,
+                            ),
+                        ) {
+                            listOf(
+                                "auto" to "Auto",
+                                "single" to "Single",
+                                "dual" to "Dual",
+                            ).forEachIndexed { index, (mode, label) ->
+                                ToggleButton(
+                                    checked = htpMode == mode,
+                                    onCheckedChange = { checked ->
+                                        if (checked && !isRunning) onHtpModeChange(mode)
+                                    },
+                                    enabled = !isRunning,
+                                    shapes = when (index) {
+                                        0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                                        2 -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                                        else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(label)
+                                }
+                            }
+                        }
+                        Text(
+                            if (htpMode == "dual") {
+                                "Dual uses strict cross-session barriers for stability."
+                            } else {
+                                "Auto currently uses one HTP session for stable Qwen output."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
                 Column {
                     Text(
                         stringResource(R.string.batch_count, batchCounts),

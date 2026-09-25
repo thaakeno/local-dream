@@ -195,6 +195,7 @@ class BackendService : Service() {
         val width: Int,
         val height: Int,
         val listenOnAll: Boolean,
+        val htpMode: String,
     )
 
     override fun onCreate() {
@@ -262,7 +263,10 @@ class BackendService : Service() {
         val listenOnAll = getSharedPreferences("app_prefs", MODE_PRIVATE)
             .getBoolean("listen_on_all_addresses", false) ||
             RemoteHostService.isRunning.value
-        return BackendConfig(modelId, backendType, width, height, listenOnAll)
+        val requestedHtpMode = intent.getStringExtra("htp_mode")?.lowercase() ?: "auto"
+        val htpMode = requestedHtpMode.takeIf { it == "auto" || it == "single" || it == "dual" }
+            ?: "auto"
+        return BackendConfig(modelId, backendType, width, height, listenOnAll, htpMode)
     }
 
     // Declares the desired backend and converges to it. Cancels any pending
@@ -501,7 +505,10 @@ class BackendService : Service() {
         val backendType = config.backendType
         val width = config.width
         val height = config.height
-        Log.i(TAG, "backend start, model: $modelId, resolution: $width×$height")
+        Log.i(
+            TAG,
+            "backend start, model: $modelId, resolution: $width×$height, htpMode=${config.htpMode}",
+        )
 
         // reconcile() has already stopped any previous process; just re-arm
         // crash reporting for the process we are about to start.
@@ -668,9 +675,21 @@ class BackendService : Service() {
                     // libcdsprpc.so is provided by Qualcomm under /vendor/lib64
                     // on the target devices, so replacing LD_LIBRARY_PATH with
                     // runtimeDir:/system/lib64 makes the Hexagon backend unable
-                    // to create HTP0. Only add Qwen's dual virtual HTP sessions
-                    // here; retain systemLibPathsStr above unchanged.
-                    env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
+                    // to create HTP0.
+                    //
+                    // Multi-session Hexagon execution has an upstream silent
+                    // corruption failure mode on large split graphs. "Auto"
+                    // therefore resolves to one virtual session for correctness.
+                    // "Dual" remains available for testing our strict scheduler
+                    // split barriers without hiding the choice from the user.
+                    val resolvedMode = if (config.htpMode == "dual") "dual" else "single"
+                    env["GGML_HEXAGON_DEVICES"] =
+                        if (resolvedMode == "dual") "HTP0:0,HTP0:1" else "HTP0:0"
+                    env["LOCAL_DREAM_HTP_MODE"] = resolvedMode
+                    Log.i(
+                        TAG,
+                        "Qwen HTP sessions: requested=${config.htpMode}, resolved=$resolvedMode, devices=${env["GGML_HEXAGON_DEVICES"]}",
+                    )
                 }
                 // ggml-hexagon asks FastRPC for its skel by bare name, so both
                 // the runtime directory holding the skels and the platform

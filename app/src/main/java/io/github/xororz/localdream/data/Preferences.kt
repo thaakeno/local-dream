@@ -25,6 +25,7 @@ class GenerationPreferences(private val context: Context) {
     private fun getDenoiseStrengthKey(modelId: String) = floatPreferencesKey("${modelId}_denoise_strength")
 
     private fun getUseOpenCLKey(modelId: String) = booleanPreferencesKey("${modelId}_use_opencl")
+    private fun getHtpModeKey(modelId: String) = stringPreferencesKey("${modelId}_htp_mode")
 
     private fun getBatchCountsKey(modelId: String) = intPreferencesKey("${modelId}_batch_counts")
     private fun getSchedulerKey(modelId: String) = stringPreferencesKey("${modelId}_scheduler")
@@ -147,6 +148,7 @@ class GenerationPreferences(private val context: Context) {
         batchCounts: Int,
         scheduler: String,
         aspectRatio: String = "1:1",
+        htpMode: String = "auto",
     ) {
         context.dataStore.edit { preferences ->
             preferences[getPromptKey(modelId)] = prompt
@@ -158,6 +160,7 @@ class GenerationPreferences(private val context: Context) {
             preferences[getHeightKey(modelId)] = height
             preferences[getDenoiseStrengthKey(modelId)] = denoiseStrength
             preferences[getUseOpenCLKey(modelId)] = useOpenCL
+            preferences[getHtpModeKey(modelId)] = htpMode
             preferences[getBatchCountsKey(modelId)] = batchCounts
             preferences[getSchedulerKey(modelId)] = scheduler
             preferences[getAspectRatioKey(modelId)] = aspectRatio
@@ -192,6 +195,7 @@ class GenerationPreferences(private val context: Context) {
                 height = preferences[getHeightKey(modelId)] ?: -1,
                 denoiseStrength = preferences[getDenoiseStrengthKey(modelId)] ?: global.denoiseStrength,
                 useOpenCL = preferences[getUseOpenCLKey(modelId)] ?: false,
+                htpMode = preferences[getHtpModeKey(modelId)] ?: "auto",
                 batchCounts = preferences[getBatchCountsKey(modelId)] ?: global.batchCounts,
                 scheduler = preferences[getSchedulerKey(modelId)] ?: global.scheduler,
                 aspectRatio = preferences[getAspectRatioKey(modelId)] ?: global.aspectRatio,
@@ -244,6 +248,7 @@ class GenerationPreferences(private val context: Context) {
             preferences.remove(getHeightKey(modelId))
             preferences.remove(getDenoiseStrengthKey(modelId))
             preferences.remove(getUseOpenCLKey(modelId))
+            preferences.remove(getHtpModeKey(modelId))
             preferences.remove(getBatchCountsKey(modelId))
             preferences.remove(getSchedulerKey(modelId))
             preferences.remove(getAspectRatioKey(modelId))
@@ -267,6 +272,7 @@ data class GenerationPrefs(
     val height: Int = -1,
     val denoiseStrength: Float = GenerationDefaults.GLOBAL.denoiseStrength,
     val useOpenCL: Boolean = false,
+    val htpMode: String = "auto",
     val batchCounts: Int = GenerationDefaults.GLOBAL.batchCounts,
     val scheduler: String = GenerationDefaults.GLOBAL.scheduler,
     val aspectRatio: String = GenerationDefaults.GLOBAL.aspectRatio,
