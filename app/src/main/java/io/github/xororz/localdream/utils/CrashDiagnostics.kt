@@ -173,6 +173,18 @@ object CrashDiagnostics {
         }
     }
 
+    fun beginGenerationSession(context: Context, label: String) {
+        synchronized(lock) {
+            generationPending.clear()
+            runCatching { generationFile(context).delete() }
+        }
+        // Each generation/preload gets its own file. This deliberately drops
+        // logs from earlier runs so a YuE2 crash report cannot be polluted by
+        // some unrelated image generation from hours ago.
+        recordGeneration(context, "SESSION", label)
+        flushGeneration(context)
+    }
+
     fun readGeneration(context: Context): String = synchronized(lock) {
         flushGenerationLocked(context)
         val f = generationFile(context)
@@ -188,11 +200,45 @@ object CrashDiagnostics {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(PENDING_CRASH, false)
 
-    fun recoveryReport(context: Context): String = buildString {
-        appendLine("===== Local Dream crash recovery =====")
-        appendLine("A previous Local Dream process ended abnormally.")
-        appendLine()
-        append(fullReport(context))
+    fun recoveryReport(context: Context): String {
+        val app = context.applicationContext
+        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val crashTs = prefs.getLong(PENDING_CRASH_TS, 0L)
+            .takeIf { it > 0L }
+            ?: System.currentTimeMillis()
+        val windowStart = crashTs - 5L * 60L * 1000L
+        val windowEnd = crashTs + 60L * 1000L
+
+        return buildString {
+            appendLine("===== Local Dream crash recovery =====")
+            appendLine("A previous Local Dream process ended abnormally.")
+            appendLine("crashTime=${formatter.format(Date(crashTs))}")
+            appendLine("app=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            appendLine("commit=${BuildConfig.GIT_SHA}")
+            appendLine("device=${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("android=${Build.VERSION.RELEASE} sdk=${Build.VERSION.SDK_INT}")
+            appendLine()
+            appendLine("===== Runtime events around the crash =====")
+            appendLine(
+                readWindow(
+                    file(app),
+                    windowStart,
+                    windowEnd,
+                    "No runtime events recorded near this crash.",
+                ),
+            )
+            appendLine()
+            appendLine("===== Current generation / backend session =====")
+            // beginGenerationSession() rotates this file, so it contains only
+            // the active YuE2/image run rather than the previous six hours.
+            appendLine(readGeneration(app))
+            val trace = File(app.filesDir, TRACE_FILE_NAME)
+            if (trace.isFile) {
+                appendLine()
+                appendLine("===== Previous system trace =====")
+                appendLine("traceBytes=${trace.length()} (preserved in app diagnostics storage)")
+            }
+        }
     }
 
     fun acknowledgeCrashReport(context: Context) {
@@ -360,6 +406,40 @@ object CrashDiagnostics {
         ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
         ApplicationExitInfo.REASON_OTHER -> "OTHER"
         else -> "UNKNOWN"
+    }
+
+    private fun readWindow(
+        source: File,
+        startMs: Long,
+        endMs: Long,
+        emptyMessage: String,
+    ): String {
+        if (!source.isFile) return emptyMessage
+        return runCatching {
+            val result = StringBuilder()
+            var keepCurrent = false
+            val stampLength = 23 // yyyy-MM-dd HH:mm:ss.SSS
+            source.forEachLine { line ->
+                val timestamp = if (line.length >= stampLength) {
+                    runCatching {
+                        formatter.parse(line.substring(0, stampLength))?.time
+                    }.getOrNull()
+                } else {
+                    null
+                }
+                if (timestamp != null) {
+                    keepCurrent = timestamp in startMs..endMs
+                }
+                if (keepCurrent) {
+                    result.appendLine(line)
+                }
+            }
+            result.toString()
+                .takeLast(180_000)
+                .ifBlank { emptyMessage }
+        }.getOrElse {
+            "Could not read scoped diagnostics: ${it.message}"
+        }
     }
 
     private fun currentLogcat(): String = runCatching {
