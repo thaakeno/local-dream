@@ -26,23 +26,26 @@ cmake -S "$YUE2_DIR" -B "$BUILD_DIR" -G Ninja \
     -DGGML_OPENMP=OFF \
     -DGGML_LLAMAFILE=OFF \
     -DGGML_BACKEND_DL=OFF \
+    -DPREBUILT_LIB_DIR=android_aarch64 \
     -DBUILD_SHARED_LIBS=OFF \
     -DBUILD_TESTING=OFF \
     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
 
-# yue-server links the host Hexagon backend. Build the two DSP skels used by
-# modern Snapdragon parts in the same graph, then stage everything into the
-# locations Local Dream already puts on LD/ADSP_LIBRARY_PATH.
-cmake --build "$BUILD_DIR" --target yue-server htp-v79 htp-v81 -j "$(nproc)"
+# yue-server links the Android host-side Hexagon backend. The workflow builds
+# Local Dream's DiT engine immediately before this target, which already builds
+# and stages the exact same v79/v81 DSP skels from the same GGML tree. Reusing
+# those files avoids compiling the Hexagon ExternalProjects twice.
+cmake --build "$BUILD_DIR" --target yue-server -j "$(nproc)"
 
 JNI_DIR="$(cd ../.. && pwd)/jniLibs/arm64-v8a"
 ASSET_DIR="$(cd ../.. && pwd)/assets/ditlibs"
-mkdir -p "$JNI_DIR" "$ASSET_DIR"
+mkdir -p "$JNI_DIR"
 cp "$BUILD_DIR/yue-server" "$JNI_DIR/libyue2_server.so"
-cp "$BUILD_DIR"/ggml/src/ggml-hexagon/libggml-htp-v79.so \
-   "$BUILD_DIR"/ggml/src/ggml-hexagon/libggml-htp-v81.so \
-   "$ASSET_DIR/"
+
+# Fail loudly if the shared HTP runtime was not staged by dit/build.sh.
+test -s "$ASSET_DIR/libggml-htp-v79.so"
+test -s "$ASSET_DIR/libggml-htp-v81.so"
 
 chmod +x "$JNI_DIR/libyue2_server.so"
 ls -lh "$JNI_DIR/libyue2_server.so" "$ASSET_DIR"/libggml-htp-v{79,81}.so
