@@ -88,6 +88,7 @@ fun MusicRunScreen(
     val backendState by BackendService.backendState.collectAsState()
     val servingModelId by BackendService.servingModelId.collectAsState()
     val musicState by MusicGenerationService.state.collectAsState()
+    val residentModelId by MusicGenerationService.residentModelId.collectAsState()
 
     var style by rememberSaveable {
         mutableStateOf("cinematic electronic pop, emotional female vocals, punchy drums, wide synths")
@@ -107,9 +108,16 @@ fun MusicRunScreen(
 
     val backendReady = backendState is BackendService.BackendState.Running &&
         servingModelId == modelId
+    val precision = model?.variantPrecision.orEmpty()
+    val htpAccelerated = precision == "Q8_0" || precision == "BF16"
+    val q8FastPath = precision == "Q8_0"
+    val modelResident = residentModelId == modelId
+    val preloadRunning = musicState is MusicState.Preloading &&
+        (musicState as MusicState.Preloading).modelId == modelId
 
     LaunchedEffect(model?.id) {
         if (model == null || !model.isDownloaded || !model.isMusic) return@LaunchedEffect
+        MusicGenerationService.resetForModel(model.id)
         context.startForegroundService(
             Intent(context, BackendService::class.java).apply {
                 putExtra("modelId", model.id)
@@ -121,8 +129,25 @@ fun MusicRunScreen(
         )
     }
 
+    LaunchedEffect(backendReady, model?.id, q8FastPath, modelResident, musicState) {
+        val current = model ?: return@LaunchedEffect
+        if (!backendReady || !q8FastPath || modelResident) return@LaunchedEffect
+        if (musicState is MusicState.Generating ||
+            musicState is MusicState.Preloading ||
+            musicState is MusicState.Complete
+        ) {
+            return@LaunchedEffect
+        }
+        MusicGenerationService.preload(context, current.id)
+    }
+
     DisposableEffect(Unit) {
         onDispose {
+            // Cancel a live warmup/generation before the native process is
+            // asked to exit. yue-server gets time to unwind its active job,
+            // which avoids the cancel/back crash race.
+            MusicGenerationService.stop(context)
+            MusicGenerationService.clearResident()
             context.startService(
                 Intent(context, BackendService::class.java).setAction(BackendService.ACTION_STOP),
             )
@@ -136,10 +161,17 @@ fun MusicRunScreen(
                     Column {
                         Text("YuE2 · Text to music")
                         Text(
-                            if (backendReady) {
-                                "HTP ready · ${model?.variantPrecision ?: "GGUF"}"
-                            } else {
-                                "Starting native HTP runtime…"
+                            when {
+                                !backendReady -> "Starting native YuE2 runtime…"
+                                !htpAccelerated ->
+                                    "CPU fallback · $precision is not Hexagon-accelerated"
+                                preloadRunning ->
+                                    "Loading $precision into HTP…"
+                                modelResident ->
+                                    "$precision resident · HTP ready"
+                                q8FastPath ->
+                                    "HTP ready · preloading model…"
+                                else -> "HTP ready · $precision"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = if (backendReady) {
@@ -248,7 +280,11 @@ fun MusicRunScreen(
                                     fontWeight = FontWeight.SemiBold,
                                 )
                                 Text(
-                                    "${model?.variantPrecision ?: "GGUF"} · 48 kHz stereo · 320 kbps MP3 · HTP primary",
+                                    buildString {
+                                        append(model?.variantPrecision ?: "GGUF")
+                                        append(" · 48 kHz stereo · 320 kbps MP3 · ")
+                                        append(if (htpAccelerated) "Hexagon HTP" else "CPU compatibility")
+                                    },
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -266,6 +302,7 @@ fun MusicRunScreen(
                                 Intent(context, MusicGenerationService::class.java)
                                     .setAction(MusicGenerationService.ACTION_GENERATE)
                                     .apply {
+                                        putExtra("modelId", modelId)
                                         putExtra("style", style)
                                         putExtra("lyrics", lyrics)
                                         putExtra("cot", planning)
@@ -280,13 +317,49 @@ fun MusicRunScreen(
                         },
                         enabled = backendReady &&
                             style.isNotBlank() &&
-                            musicState !is MusicState.Generating,
+                            musicState !is MusicState.Generating &&
+                            musicState !is MusicState.Preloading &&
+                            (!q8FastPath || modelResident),
                         modifier = Modifier.fillMaxWidth(),
                         shape = MaterialTheme.shapes.large,
                     ) {
                         Icon(Icons.Default.PlayArrow, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text(if (backendReady) "Generate music" else "Loading HTP runtime…")
+                        Text(
+                            when {
+                                !backendReady -> "Starting native runtime…"
+                                preloadRunning -> "Loading model into HTP…"
+                                q8FastPath && !modelResident -> "Preparing Q8_0…"
+                                !htpAccelerated -> "Generate · CPU fallback"
+                                else -> "Generate music"
+                            },
+                        )
+                    }
+                }
+            }
+
+            if (backendReady && !htpAccelerated) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f),
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(
+                            "$precision is a compatibility path",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        Text(
+                            "The current Hexagon backend has no Q5_K/Q6_K matrix kernels. " +
+                                "Large YuE2 matmuls fall back to CPU, which is why loading can take minutes. " +
+                                "Use Q8_0 for the fast HTP path.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
                     }
                 }
             }
@@ -300,9 +373,19 @@ fun MusicRunScreen(
                     .padding(horizontal = 16.dp),
             ) { state ->
                 when (state) {
+                    is MusicState.Preloading -> MusicPreloadCard(
+                        state = state,
+                        precision = precision.ifBlank { "GGUF" },
+                        onCancel = { MusicGenerationService.stop(context) },
+                    )
+                    is MusicState.Ready -> MusicReadyCard(
+                        precision = precision.ifBlank { "GGUF" },
+                        preloadMillis = state.preloadMillis,
+                    )
                     is MusicState.Generating -> MusicProgressCard(
                         state = state,
                         precision = model?.variantPrecision ?: "GGUF",
+                        runtimeLabel = if (htpAccelerated) "HTP0" else "CPU fallback",
                         onCancel = { MusicGenerationService.stop(context) },
                     )
                     is MusicState.Complete -> {
@@ -392,7 +475,11 @@ fun MusicRunScreen(
                                     tint = MaterialTheme.colorScheme.primary,
                                 )
                                 Text(
-                                    "Pipeline: AR score → semantic codes → NAR flow → Oobleck decode",
+                                    if (q8FastPath) {
+                                        "Q8_0 preloads AR + NAR + Oobleck on entry, then generation starts from resident weights."
+                                    } else {
+                                        "Pipeline: AR score → semantic codes → NAR flow → Oobleck decode"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
