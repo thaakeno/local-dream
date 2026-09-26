@@ -554,9 +554,15 @@ static void registerGenerateEndpoint(httplib::Server &svr, Pipeline *pipeline) {
                     }
                     write_event("progress", p);
                   },
-                  [&write_event](const std::string &phase) {
-                    write_event("phase",
-                                {{"type", "phase"}, {"phase", phase}});
+                  [&write_event](const std::string &phase, int step,
+                                 int total_steps) {
+                    nlohmann::json p = {
+                        {"type", "phase"}, {"phase", phase}};
+                    if (total_steps > 0) {
+                      p["step"] = step;
+                      p["total_steps"] = total_steps;
+                    }
+                    write_event("phase", p);
                   });
               auto enc_start = std::chrono::high_resolution_clock::now();
               std::string enc_img =
