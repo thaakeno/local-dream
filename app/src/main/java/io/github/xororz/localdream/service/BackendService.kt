@@ -759,11 +759,24 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (isMusicBackend(backendType)) {
-                // The shared Hexagon backend accelerates Q8_0/BF16 paths. It
-                // does not implement Q5_K_M/Q6_K weight kernels, so those
-                // variants fall back to CPU for their large matmuls.
-                env["GGML_HEXAGON_DEVICES"] = "HTP0"
-                env["GGML_BACKEND"] = "HTP0"
+                // Use one explicit virtual HTP session. This matches the current
+                // ggml Snapdragon launcher and avoids the ambiguity of the
+                // legacy HTP0 device naming.
+                env["GGML_HEXAGON_DEVICES"] = "HTP0:0"
+                env["GGML_BACKEND"] = "HTP0:0"
+                env["GGML_HEXAGON_OPPOLL"] = "1"
+                env["GGML_HEXAGON_HOSTBUF"] = "0"
+                env["GGML_HEXAGON_VERBOSE"] = "1"
+
+                // Important on SM8850/Adreno 840: putting /vendor/lib64 on
+                // LD_LIBRARY_PATH can make libcdsprpc bypass its HAL fallback
+                // and HTP session creation fails. Keep only app/system paths.
+                env["LD_LIBRARY_PATH"] = listOf(
+                    nativeDir,
+                    runtimeDir.absolutePath,
+                    "/system/lib64",
+                ).joinToString(":")
+
                 val dspPath = listOf(
                     runtimeDir.absolutePath,
                     "/vendor/lib/rfsa/adsp",
@@ -772,12 +785,14 @@ class BackendService : Service() {
                 ).joinToString(";")
                 env["ADSP_LIBRARY_PATH"] = dspPath
                 env["DSP_LIBRARY_PATH"] = dspPath
-                Log.i(
-                    TAG,
-                    "YuE2 backend: HTP0 available, model=$modelId, " +
-                        "keepLoaded=${modelId == "yue2_3b_q8"}, max_seq=8192, " +
-                        "ADSP_LIBRARY_PATH=$dspPath",
-                )
+
+                val message =
+                    "YuE2 HTP: device=HTP0:0 model=$modelId max_seq=4096 " +
+                        "keepLoaded=false flashAttention=false " +
+                        "LD_LIBRARY_PATH=${env["LD_LIBRARY_PATH"]} " +
+                        "ADSP_LIBRARY_PATH=$dspPath"
+                Log.i(TAG, message)
+                BackendDiagnostics.append(this, "ENV", message)
             }
 
             if (ditEngineDir != null) {
