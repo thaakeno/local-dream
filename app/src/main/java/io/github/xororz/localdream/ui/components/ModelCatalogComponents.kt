@@ -853,9 +853,10 @@ fun Yue2FamilyCard(
     modifier: Modifier = Modifier,
 ) {
     if (variants.isEmpty()) return
-    val initial = variants.firstOrNull { it.isDownloaded && it.recommendedVariant }
+    // Q8_0 is the actual Hexagon-friendly default. Do not auto-select an
+    // installed Q5/Q6 compatibility quant just because it happens to exist.
+    val initial = variants.firstOrNull { it.recommendedVariant }
         ?: variants.firstOrNull { it.isDownloaded }
-        ?: variants.firstOrNull { it.recommendedVariant }
         ?: variants.first()
     var selectedId by remember(variants) { mutableStateOf(initial.id) }
     var showSheet by remember { mutableStateOf(false) }
@@ -874,7 +875,13 @@ fun Yue2FamilyCard(
             AnimatedFamilyHero(
                 title = "YuE2 3B",
                 subtitle = "Text to music · 48 kHz stereo",
-                badge = if (installed > 0) "$installed ready" else "NPU",
+                badge = if (variants.any { it.variantPrecision == "Q8_0" && it.isDownloaded }) {
+                    "Q8 HTP ready"
+                } else if (installed > 0) {
+                    "$installed installed"
+                } else {
+                    "Q8 HTP"
+                },
                 music = true,
             )
 
@@ -921,10 +928,10 @@ fun Yue2FamilyCard(
                                 installed = variant.isDownloaded,
                                 title = variant.variantPrecision,
                                 subtitle = when (variant.variantPrecision) {
-                                    "Q5_K_M" -> "Compact · 3.15 GB"
-                                    "Q6_K" -> "Balanced · 3.47 GB"
-                                    "Q8_0" -> "Near-lossless · 4.34 GB"
-                                    else -> "BF16 weights · 7.70 GB"
+                                    "Q5_K_M" -> "CPU fallback · 3.15 GB"
+                                    "Q6_K" -> "CPU fallback · 3.47 GB"
+                                    "Q8_0" -> "HTP · near-lossless · 4.34 GB"
+                                    else -> "HTP capable · BF16 · 7.70 GB"
                                 },
                                 icon = when (variant.variantPrecision) {
                                     "Q5_K_M" -> Icons.Default.SdStorage
@@ -960,7 +967,13 @@ fun Yue2FamilyCard(
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                "AR plan → semantic tokens → NAR flow → Oobleck · ≤20s",
+                                if (selected.variantPrecision == "Q5_K_M" ||
+                                    selected.variantPrecision == "Q6_K"
+                                ) {
+                                    "CPU compatibility · AR → semantic → NAR → Oobleck · ≤20s"
+                                } else {
+                                    "Hexagon HTP · AR → semantic → NAR → Oobleck · ≤20s"
+                                },
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1044,10 +1057,10 @@ private fun Yue2VariantSheet(
                             installed = variant.isDownloaded,
                             title = variant.variantPrecision,
                             subtitle = when (variant.variantPrecision) {
-                                "Q5_K_M" -> "Compact · 3.15 GB"
-                                "Q6_K" -> "Balanced · 3.47 GB"
-                                "Q8_0" -> "Near-lossless · 4.34 GB"
-                                else -> "BF16 weights · 7.70 GB"
+                                "Q5_K_M" -> "CPU fallback · 3.15 GB"
+                                "Q6_K" -> "CPU fallback · 3.47 GB"
+                                "Q8_0" -> "HTP · near-lossless · 4.34 GB"
+                                else -> "HTP capable · BF16 · 7.70 GB"
                             },
                             icon = when (variant.variantPrecision) {
                                 "Q5_K_M" -> Icons.Default.SdStorage
@@ -1118,11 +1131,11 @@ private fun Yue2VariantSheet(
                         Text(
                             when (selected.variantPrecision) {
                                 "Q5_K_M" ->
-                                    "Smallest supported upstream quant. YuE2's audio-code LM is not offered below Q5."
+                                    "Smallest upstream YuE2 quant, but the current Local Dream Hexagon backend has no Q5_K matrix kernels. Large transformer matmuls fall back to CPU."
                                 "Q6_K" ->
-                                    "Balanced mobile option with lower memory/bandwidth than Q8."
+                                    "Smaller than Q8, but Q6_K is also unsupported by the current Hexagon matrix kernels and falls back to CPU for the heavy transformer work."
                                 "Q8_0" ->
-                                    "Near-lossless quality-first option and the safest default."
+                                    "Near-lossless upstream default and the recommended Local Dream mobile path because Q8_0 is implemented by the Hexagon backend."
                                 else ->
                                     "Full BF16 backbone stored inside a GGUF container. This is not a 'BF16 quant'; it is the least-compressed reference option."
                             },
