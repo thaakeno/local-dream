@@ -106,7 +106,11 @@ struct GenerationRequest {
 
 // step / total_steps / optional base64 preview image.
 using ProgressCallback = std::function<void(int, int, const std::string &)>;
-using GenerationPhaseCallback = std::function<void(const std::string &)>;
+//
+// Stage/status is deliberately separate from sampler progress. step/total are
+// optional stage-local counters (for example DiT model tensor loading).
+using GenerationPhaseCallback =
+    std::function<void(const std::string &, int, int)>;
 
 struct PromptTokenizeResult {
   int count = 0;
@@ -272,8 +276,7 @@ class Pipeline {
   virtual GenerationResult generateWithPhase(
       GenerationRequest &req, const ProgressCallback &progress_callback,
       const GenerationPhaseCallback &phase_callback) {
-    (void)phase_callback;
-    return generate(req, progress_callback);
+    return generateImpl(req, progress_callback, phase_callback);
   }
 
  protected:
@@ -367,6 +370,9 @@ class Pipeline {
   float nsfw_threshold_ = 0.5f;
 
  private:
+  GenerationResult generateImpl(
+      GenerationRequest &req, const ProgressCallback &progress_callback,
+      const GenerationPhaseCallback &phase_callback);
   Conditioning encodePrompts(const GenerationRequest &req);
   xt::xarray<float> encodeImageToLatent(
       const GenerationRequest &req, const xt::xarray<float> &original_image);
@@ -944,6 +950,14 @@ inline std::string Pipeline::renderPreview(const GenerationRequest &req,
 
 inline GenerationResult Pipeline::generate(
     GenerationRequest &req, const ProgressCallback &progress_callback) {
+  const GenerationPhaseCallback no_phase =
+      [](const std::string &, int, int) {};
+  return generateImpl(req, progress_callback, no_phase);
+}
+
+inline GenerationResult Pipeline::generateImpl(
+    GenerationRequest &req, const ProgressCallback &progress_callback,
+    const GenerationPhaseCallback &phase_callback) {
   if (req.prompt.empty()) throw std::invalid_argument("Prompt empty");
   if (safety_interpreter_ && !safety_session_)
     throw std::runtime_error("SafetyChecker missing");
@@ -973,18 +987,18 @@ inline GenerationResult Pipeline::generate(
   try {
     auto start_time = std::chrono::high_resolution_clock::now();
     int first_step_time_ms = 0;
-    int total_run_steps = req.steps + (req.img2img ? 1 : 0) + 2;
-    int current_step = 0;
     const int batch_size = 2;
 
+    phase_callback("preparing", 0, 0);
+
     // --- CLIP ---
+    phase_callback("encoding_prompt", 0, 0);
     auto clip_start = std::chrono::high_resolution_clock::now();
     Conditioning cond = encodePrompts(req);
     std::cout << "CLIP dur: " << elapsedMs(clip_start) << "ms\n";
-    current_step++;
-    progress_callback(current_step, total_run_steps, "");
 
     // --- Scheduler & Latents ---
+    phase_callback("preparing_latents", 0, 0);
     const char *timestep_spacing = sdxl_ ? "trailing" : "leading";
     std::unique_ptr<Scheduler> scheduler = makeScheduler(req, timestep_spacing);
     if (use_v_pred_) scheduler->set_prediction_type("v_prediction");
@@ -1007,6 +1021,7 @@ inline GenerationResult Pipeline::generate(
 
     // --- Img2Img / VAE Encode ---
     if (req.img2img) {
+      phase_callback("encoding_input", 0, 0);
       auto vae_enc_start = std::chrono::high_resolution_clock::now();
       std::vector<int> img_shape = {1, 3, req.height, req.width};
       original_image = xt::adapt(req.img_data, img_shape);
@@ -1025,7 +1040,6 @@ inline GenerationResult Pipeline::generate(
       // garbage noise that decoded to a random pattern.
       if (start_step >= req.steps) start_step = req.steps - 1;
       if (start_step < 0) start_step = 0;
-      total_run_steps -= start_step;
       scheduler->set_begin_index(start_step);
       xt::xarray<int> t = {(int)(timesteps(start_step))};
 
@@ -1052,13 +1066,12 @@ inline GenerationResult Pipeline::generate(
         // pipelines swap the VAE encoder out for the UNet now (idempotent,
         // called again before the loop).
         beginDenoise(req);
-        total_run_steps +=
-            (int)ultrafixInversionLadder((int)timesteps.size(), start_step)
-                .size();
+        phase_callback("inverting", 0, 0);
         latents_noise = ultrafixInvertNoise(
             req, original_latents, timesteps, start_step, cond, [&]() {
-              current_step++;
-              progress_callback(current_step, total_run_steps, "");
+              // Keep cancellation responsive without counting inversion hops
+              // as diffusion sampling steps.
+              progress_callback(0, 0, "");
             });
         std::cout << "Ultrafix inversion dur: " << elapsedMs(inv_start)
                   << "ms\n";
@@ -1092,8 +1105,6 @@ inline GenerationResult Pipeline::generate(
         mask_full = xt::xarray<float>();
       }
 
-      current_step++;
-      progress_callback(current_step, total_run_steps, "");
     }
 
     // --- UNET Denoising Loop ---
@@ -1110,7 +1121,13 @@ inline GenerationResult Pipeline::generate(
                 << std::endl;
     }
 
+    phase_callback("loading_denoiser", 0, 0);
     beginDenoise(req);
+
+    const int sampling_steps =
+        std::max(0, static_cast<int>(timesteps.size()) - start_step);
+    int sampled_steps = 0;
+    phase_callback("denoising", 0, 0);
 
     // Reuse the host-side UNet IO across every step. The old path allocated
     // two fresh vectors (plus temporary CFG arrays) after every QNN execution;
@@ -1123,10 +1140,10 @@ inline GenerationResult Pipeline::generate(
     for (int i = start_step; i < (int)timesteps.size(); ++i) {
       if (req.show_diffusion_process && previewSupported() &&
           (i - start_step) % req.show_diffusion_stride == 0) {
-        progress_callback(current_step, total_run_steps,
+        progress_callback(sampled_steps, sampling_steps,
                           renderPreview(req, latents));
       } else {
-        progress_callback(current_step, total_run_steps, "");
+        progress_callback(sampled_steps, sampling_steps, "");
       }
 
       auto step_start_time = std::chrono::high_resolution_clock::now();
@@ -1261,17 +1278,16 @@ inline GenerationResult Pipeline::generate(
         latents = xt::eval(orig_noised * (1.0f - mask) + latents * mask);
       }
 
-      current_step++;
+      sampled_steps++;
     }
 
-    // The loop reports progress on entry, so the last denoising step has no
-    // iteration left to report it. Without this the bar sits at the second to
-    // last slot through the whole VAE decode and then jumps straight to done.
-    progress_callback(current_step, total_run_steps, "");
+    // Publish N/N only once the final denoiser pass really completed.
+    progress_callback(sampled_steps, sampling_steps, "");
 
     endDenoise();
 
     // --- VAE Decode ---
+    phase_callback("decoding", 0, 0);
     auto vae_dec_start = std::chrono::high_resolution_clock::now();
 
     if (useTiledVae(req)) {
@@ -1330,11 +1346,10 @@ inline GenerationResult Pipeline::generate(
     int final_width = req.width;
     int final_height = req.height;
 
-    // --- Safety Checker ---
+    // --- Safety Checker / output post-process ---
+    phase_callback("finalizing", 0, 0);
     applySafetyChecker(out_data, final_width, final_height);
 
-    current_step++;
-    progress_callback(current_step, total_run_steps, "");
     auto total_time = elapsedMs(start_time);
 
     // SDXL aspect-ratio padded inpaint: crop the centered target region out
