@@ -190,19 +190,25 @@ void forward_progress_event(enum sd_progress_kind_t kind, int step, int steps,
                             float time, void *) {
   if (!g_active.progress) return;
 
-  // Model loading also reports progress (for example 265/265 tensors), but it
-  // must never masquerade as sampler progress just because lazy DiT loading
-  // happens after the denoising phase has been entered.
+  // Preserve progress kind across the engine ABI. Model loading can now be
+  // rendered as its own determinate stage (for example 123/265 tensors)
+  // without ever entering the sampler denominator.
   const bool sampler_progress =
       kind == SD_PROGRESS_SAMPLING &&
       g_active.current_phase == DIT_PHASE_DENOISING &&
       steps > 0;
-  const int routed_steps = sampler_progress ? steps : 0;
+  const dit_progress_kind routed_kind =
+      sampler_progress
+          ? DIT_PROGRESS_SAMPLING
+          : (kind == SD_PROGRESS_MODEL_LOADING ? DIT_PROGRESS_MODEL_LOADING
+                                               : DIT_PROGRESS_AUXILIARY);
+  const int routed_steps =
+      (sampler_progress || routed_kind == DIT_PROGRESS_MODEL_LOADING)
+          ? std::max(0, steps)
+          : 0;
 
-  // Non-sampler events are still forwarded with total=0 so a disconnected
-  // client can cancel long loading/decoding work without corrupting the
-  // denoising step counter.
-  if (!g_active.progress(step, routed_steps, time, g_active.user_data)) {
+  if (!g_active.progress(routed_kind, step, routed_steps, time,
+                         g_active.user_data)) {
     g_active.cancelled = true;
     if (g_active.ctx && g_active.ctx->sd)
       sd_cancel_generation(g_active.ctx->sd, SD_CANCEL_ALL);
@@ -459,6 +465,8 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   }
   g_active = ActiveGeneration{progress, phase, preview, user_data, ctx, false,
                               DIT_PHASE_PREPARING, sampling_steps};
+  if (g_active.phase)
+    g_active.phase(DIT_PHASE_PREPARING, g_active.user_data);
   // Use typed progress so model-loading counters and sampler steps cannot be
   // confused with one another.
   sd_set_progress_callback(nullptr, nullptr);
