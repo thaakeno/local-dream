@@ -97,11 +97,11 @@ fun MusicRunScreen(
     }
     var duration by rememberSaveable { mutableIntStateOf(20) }
     var planning by rememberSaveable { mutableStateOf("full") }
-    var steps by rememberSaveable { mutableIntStateOf(16) }
+    var steps by rememberSaveable { mutableIntStateOf(32) }
     var seed by rememberSaveable { mutableLongStateOf(-1L) }
     var semanticTemperature by rememberSaveable { mutableFloatStateOf(1f) }
     var semanticTopP by rememberSaveable { mutableFloatStateOf(0.95f) }
-    var cfgScale by rememberSaveable { mutableFloatStateOf(1f) }
+    var cfgScale by rememberSaveable { mutableFloatStateOf(-1f) }
     var showConfig by remember { mutableStateOf(false) }
     var showScore by remember { mutableStateOf(false) }
 
@@ -136,7 +136,11 @@ fun MusicRunScreen(
                     Column {
                         Text("YuE2 · Text to music")
                         Text(
-                            if (backendReady) "HTP ready · Q8_0" else "Starting native HTP runtime…",
+                            if (backendReady) {
+                                "HTP ready · ${model?.variantPrecision ?: "GGUF"}"
+                            } else {
+                                "Starting native HTP runtime…"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = if (backendReady) {
                                 MaterialTheme.colorScheme.primary
@@ -244,7 +248,7 @@ fun MusicRunScreen(
                                     fontWeight = FontWeight.SemiBold,
                                 )
                                 Text(
-                                    "Q8_0 · 48 kHz stereo · 320 kbps MP3 · HTP primary",
+                                    "${model?.variantPrecision ?: "GGUF"} · 48 kHz stereo · 320 kbps MP3 · HTP primary",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -298,6 +302,7 @@ fun MusicRunScreen(
                 when (state) {
                     is MusicState.Generating -> MusicProgressCard(
                         state = state,
+                        precision = model?.variantPrecision ?: "GGUF",
                         onCancel = { MusicGenerationService.stop(context) },
                     )
                     is MusicState.Complete -> {
@@ -424,6 +429,7 @@ fun MusicRunScreen(
 @Composable
 private fun MusicProgressCard(
     state: MusicState.Generating,
+    precision: String,
     onCancel: () -> Unit,
 ) {
     val elapsed by produceState(initialValue = 0L, state.startedAtMillis) {
@@ -491,7 +497,7 @@ private fun MusicProgressCard(
             }
 
             Text(
-                "HTP0 · Q8_0 backbone · ${state.targetSeconds * 25} frame budget · 48 kHz stereo",
+                "HTP0 · $precision backbone · ${state.targetSeconds * 25} frame budget · 48 kHz stereo",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -595,7 +601,7 @@ private fun MusicGenerationConfigSheet(
                                     when (option) {
                                         8 -> "Fast · 8"
                                         16 -> "Balanced · 16"
-                                        else -> "Best · 32"
+                                        else -> "Reference · 32"
                                     },
                                 )
                             },
@@ -616,7 +622,7 @@ private fun MusicGenerationConfigSheet(
                 range = 0.5f..1.5f,
                 steps = 19,
                 onValue = onTemperature,
-                supporting = "Reference default 1.00. Lower is more conservative; higher explores more token choices.",
+                supporting = "YuE2 reference default 1.00. Lower is more conservative; higher explores more token choices.",
             )
             SettingSlider(
                 title = "Top-p",
@@ -627,15 +633,27 @@ private fun MusicGenerationConfigSheet(
                 onValue = onTopP,
                 supporting = "Reference semantic default 0.95. Top-k stays at the official 100.",
             )
-            SettingSlider(
-                title = "Semantic CFG",
-                valueText = String.format(java.util.Locale.US, "%.2f", cfgScale),
-                value = cfgScale,
-                range = 0.9f..1.1f,
-                steps = 19,
-                onValue = onCfgScale,
-                supporting = "1.00 is the reference full/melody setting. Keep this close to 1.",
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Semantic CFG", style = MaterialTheme.typography.titleSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        -1f to "Auto",
+                        1.0f to "1.00",
+                        1.01f to "1.01",
+                    ).forEach { (value, label) ->
+                        FilterChip(
+                            selected = cfgScale == value,
+                            onClick = { onCfgScale(value) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+                Text(
+                    "Auto keeps YuE2's protocol default: 1.00 for full/melody planning and 1.01 for direct mode.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             OutlinedTextField(
                 value = seedText,
