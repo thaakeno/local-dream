@@ -776,7 +776,6 @@ class BackendService : Service() {
                 env["GGML_BACKEND"] = "HTP0:0"
                 env["GGML_HEXAGON_OPPOLL"] = "1"
                 env["GGML_HEXAGON_HOSTBUF"] = "0"
-                env["GGML_HEXAGON_VERBOSE"] = "1"
 
                 // Important on SM8850/Adreno 840: putting /vendor/lib64 on
                 // LD_LIBRARY_PATH can make libcdsprpc bypass its HAL fallback
