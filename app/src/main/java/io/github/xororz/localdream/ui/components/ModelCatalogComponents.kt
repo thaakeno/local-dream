@@ -632,11 +632,17 @@ fun Yue2FamilyCard(
     modifier: Modifier = Modifier,
 ) {
     if (variants.isEmpty()) return
-    val model = variants.firstOrNull { it.recommendedVariant } ?: variants.first()
+
+    val initial = variants.firstOrNull { it.isDownloaded && it.recommendedVariant }
+        ?: variants.firstOrNull { it.isDownloaded }
+        ?: variants.firstOrNull { it.recommendedVariant }
+        ?: variants.first()
+    var selectedId by remember(variants) { mutableStateOf(initial.id) }
     var showSheet by remember { mutableStateOf(false) }
+    val selected = variants.firstOrNull { it.id == selectedId } ?: initial
+    val installed = variants.count { it.isDownloaded }
 
     ElevatedCard(
-        onClick = { showSheet = true },
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(
@@ -669,24 +675,67 @@ fun Yue2FamilyCard(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        "Text to music · native HTP",
+                        "Text to music · Snapdragon HTP · 48 kHz stereo",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 FamilyStatusPill(
-                    if (model.isDownloaded) "Installed" else "NPU",
-                    emphasized = model.isDownloaded,
+                    if (installed > 0) "$installed installed" else "NPU",
+                    emphasized = installed > 0,
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FamilyStatusPill("Q8 near-lossless")
-                FamilyStatusPill("48 kHz stereo")
-                FamilyStatusPill("≤ 20s")
-            }
+            Text(
+                "Backbone quality",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+
+            variants
+                .sortedBy {
+                    when (it.variantPrecision) {
+                        "Q5_K_M" -> 0
+                        "Q6_K" -> 1
+                        "Q8_0" -> 2
+                        else -> 3
+                    }
+                }
+                .chunked(2)
+                .forEach { rowVariants ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        rowVariants.forEach { variant ->
+                            VariantChoiceCard(
+                                selected = selected.id == variant.id,
+                                title = variant.variantPrecision,
+                                subtitle = when (variant.variantPrecision) {
+                                    "Q5_K_M" -> "Compact · 3.15 GB"
+                                    "Q6_K" -> "Balanced · 3.47 GB"
+                                    "Q8_0" -> "Near-lossless · 4.34 GB"
+                                    else -> "Native · 7.70 GB"
+                                } + if (variant.isDownloaded) "\nInstalled" else "\nTap to select",
+                                icon = when (variant.variantPrecision) {
+                                    "Q5_K_M" -> Icons.Default.SdStorage
+                                    "Q6_K" -> Icons.Default.Bolt
+                                    "Q8_0" -> Icons.Default.Memory
+                                    else -> Icons.Default.AutoAwesome
+                                },
+                                onClick = {
+                                    selectedId = variant.id
+                                    showSheet = true
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        if (rowVariants.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
 
             Surface(
+                onClick = { showSheet = true },
                 shape = MaterialTheme.shapes.large,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
             ) {
@@ -698,16 +747,22 @@ fun Yue2FamilyCard(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "AR plan + semantic → flow → Oobleck",
+                            "${selected.variantPrecision} · ${selected.variantAdapter}",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            "One 4.34 GB package · stage-swapped for mobile memory",
+                            "F32 Oobleck VAE · AR → semantic → NAR flow · ≤ 20s",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    Text(
+                        if (selected.isDownloaded) "Create" else "Details",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(6.dp))
                     Icon(Icons.Default.Tune, contentDescription = null)
                 }
             }
@@ -715,42 +770,115 @@ fun Yue2FamilyCard(
     }
 
     if (showSheet) {
-        ModalBottomSheet(onDismissRequest = { showSheet = false }) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 28.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        color = MaterialTheme.colorScheme.tertiaryContainer,
-                    ) {
-                        Icon(
-                            Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.padding(12.dp).size(24.dp),
-                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                        )
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            "YuE2 3B · Q8_0",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            "High-quality local music generation on Snapdragon HTP.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+        Yue2VariantSheet(
+            variants = variants,
+            selectedId = selected.id,
+            onSelect = { selectedId = it.id },
+            onDismiss = { showSheet = false },
+            onOpen = {
+                showSheet = false
+                onOpen(it)
+            },
+            onDownload = {
+                showSheet = false
+                onDownload(it)
+            },
+        )
+    }
+}
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun Yue2VariantSheet(
+    variants: List<Model>,
+    selectedId: String,
+    onSelect: (Model) -> Unit,
+    onDismiss: () -> Unit,
+    onOpen: (Model) -> Unit,
+    onDownload: (Model) -> Unit,
+) {
+    val sorted = variants.sortedBy {
+        when (it.variantPrecision) {
+            "Q5_K_M" -> 0
+            "Q6_K" -> 1
+            "Q8_0" -> 2
+            else -> 3
+        }
+    }
+    val selected = variants.firstOrNull { it.id == selectedId }
+        ?: variants.firstOrNull { it.recommendedVariant }
+        ?: variants.first()
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                ) {
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.padding(12.dp).size(24.dp),
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "YuE2 3B",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Choose the backbone quant. The audio decoder stays F32 for every option.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            sorted.chunked(2).forEach { rowVariants ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    rowVariants.forEach { variant ->
+                        VariantChoiceCard(
+                            selected = selected.id == variant.id,
+                            title = variant.variantPrecision,
+                            subtitle = when (variant.variantPrecision) {
+                                "Q5_K_M" -> "Compact\n3.15 GB"
+                                "Q6_K" -> "Balanced\n3.47 GB"
+                                "Q8_0" -> "Near-lossless\n4.34 GB"
+                                else -> "Native BF16\n7.70 GB"
+                            },
+                            icon = when (variant.variantPrecision) {
+                                "Q5_K_M" -> Icons.Default.SdStorage
+                                "Q6_K" -> Icons.Default.Bolt
+                                "Q8_0" -> Icons.Default.Memory
+                                else -> Icons.Default.AutoAwesome
+                            },
+                            onClick = { onSelect(variant) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (rowVariants.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+
+            AnimatedContent(
+                targetState = selected.id,
+                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
+                label = "yue2VariantDetails",
+            ) {
                 Surface(
                     shape = MaterialTheme.shapes.extraLarge,
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -759,33 +887,52 @@ fun Yue2FamilyCard(
                         modifier = Modifier.padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    selected.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    selected.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (selected.isDownloaded) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            VariantChoiceCard(
-                                selected = true,
-                                title = "Q8_0",
-                                subtitle = "3.81 GB\nnear-lossless",
-                                icon = Icons.Default.Memory,
-                                onClick = {},
-                                modifier = Modifier.weight(1f),
-                            )
-                            VariantChoiceCard(
-                                selected = true,
-                                title = "HTP",
-                                subtitle = "NPU primary\nCPU fallback",
-                                icon = Icons.Default.Bolt,
-                                onClick = {},
-                                modifier = Modifier.weight(1f),
-                            )
+                            FamilyStatusPill("${selected.variantPrecision} GGUF", true)
+                            FamilyStatusPill("F32 VAE")
+                            FamilyStatusPill("HTP")
                         }
+
                         Text(
-                            "Includes the 530 MB F32 Oobleck VAE. The AR and NAR halves " +
-                                "swap by stage instead of staying resident together.",
+                            when (selected.variantPrecision) {
+                                "Q5_K_M" ->
+                                    "Smallest supported upstream quant. There is no Q4 because YuE2's audio-code LM degrades below Q5."
+                                "Q6_K" ->
+                                    "Less memory and bandwidth than Q8 while keeping substantially more precision than Q5."
+                                "Q8_0" ->
+                                    "Upstream's recommended near-lossless quant and the safest quality-first mobile default."
+                                else ->
+                                    "Native BF16 backbone. Largest memory footprint; mainly useful as a quality/reference option."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -795,28 +942,33 @@ fun Yue2FamilyCard(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                model.approximateSize,
+                                selected.approximateSize,
                                 fontWeight = FontWeight.SemiBold,
                             )
                         }
                     }
                 }
+            }
 
-                Button(
-                    onClick = {
-                        showSheet = false
-                        if (model.isDownloaded) onOpen(model) else onDownload(model)
+            Button(
+                onClick = {
+                    if (selected.isDownloaded) onOpen(selected) else onDownload(selected)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.large,
+            ) {
+                Icon(
+                    if (selected.isDownloaded) Icons.Default.PlayArrow else Icons.Default.CloudDownload,
+                    contentDescription = null,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (selected.isDownloaded) {
+                        "Create with ${selected.variantPrecision}"
+                    } else {
+                        "Download ${selected.approximateSize}"
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.large,
-                ) {
-                    Icon(
-                        if (model.isDownloaded) Icons.Default.PlayArrow else Icons.Default.CloudDownload,
-                        contentDescription = null,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (model.isDownloaded) "Create music" else "Download ${model.approximateSize}")
-                }
+                )
             }
         }
     }
