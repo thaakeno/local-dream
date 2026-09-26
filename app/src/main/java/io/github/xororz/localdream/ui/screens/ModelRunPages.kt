@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -49,6 +50,9 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -92,8 +96,12 @@ import androidx.paging.compose.itemKey
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import io.github.xororz.localdream.R
+import io.github.xororz.localdream.data.DeviceFilter
+import io.github.xororz.localdream.data.HistoryCollection
 import io.github.xororz.localdream.data.HistoryFilter
 import io.github.xororz.localdream.data.HistoryItem
+import io.github.xororz.localdream.ui.components.HistoryCollectionBar
+import io.github.xororz.localdream.utils.schedulerDisplayName
 import io.github.xororz.localdream.ui.theme.Motion
 
 /** Result tab of the run screen: latest image, quick actions and recent thumbnails. */
@@ -102,6 +110,7 @@ internal fun ModelRunResultPage(
     currentBitmap: Bitmap?,
     imageVersion: Int,
     generationParams: GenerationParameters?,
+    generationModelId: String,
     // Newest few items only (bounded query); drives the thumbnail strip.
     recentHistory: List<HistoryItem>,
     showReportButton: Boolean,
@@ -117,6 +126,8 @@ internal fun ModelRunResultPage(
     // favorite button).
     isFavorite: Boolean?,
     onFavoriteClick: () -> Unit,
+    onGenerateVariations: () -> Unit,
+    onQuickFilter: (HistoryFilter) -> Unit,
     onReportClick: () -> Unit,
     onUpscaleClick: () -> Unit,
     onUltrafixClick: () -> Unit,
@@ -222,6 +233,17 @@ internal fun ModelRunResultPage(
                                                     Icons.Default.FavoriteBorder
                                                 },
                                                 contentDescription = "toggle favorite",
+                                            )
+                                        }
+                                    }
+
+                                    if (generationParams != null) {
+                                        FilledTonalIconButton(
+                                            onClick = onGenerateVariations,
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Shuffle,
+                                                contentDescription = "Generate variations",
                                             )
                                         }
                                     }
@@ -361,64 +383,157 @@ internal fun ModelRunResultPage(
                             }
                         }
 
-                        Card(
-                            onClick = onShowParameters,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            ),
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                        generationParams?.let { params ->
+                            val device = when {
+                                !params.runOnCpu -> DeviceFilter.NPU
+                                params.useOpenCL -> DeviceFilter.GPU
+                                else -> DeviceFilter.CPU
+                            }
+                            val deviceLabel = when (device) {
+                                DeviceFilter.NPU -> "NPU"
+                                DeviceFilter.GPU -> "GPU"
+                                DeviceFilter.CPU -> "CPU"
+                            }
+                            LazyRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                            ) {
+                                item {
+                                    AssistChip(
+                                        onClick = {
+                                            onQuickFilter(
+                                                HistoryFilter(modelIds = setOf(generationModelId)),
+                                            )
+                                        },
+                                        label = { Text(generationModelId) },
+                                        border = null,
+                                        colors = AssistChipDefaults.assistChipColors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        ),
+                                    )
+                                }
+                                item {
+                                    AssistChip(
+                                        onClick = {
+                                            onQuickFilter(
+                                                HistoryFilter(
+                                                    modelIds = setOf(generationModelId),
+                                                    sizes = setOf("${params.width}x${params.height}"),
+                                                ),
+                                            )
+                                        },
+                                        label = { Text("${params.width}×${params.height}") },
+                                        border = null,
+                                    )
+                                }
+                                item {
+                                    AssistChip(
+                                        onClick = {
+                                            onQuickFilter(
+                                                HistoryFilter(
+                                                    modelIds = setOf(generationModelId),
+                                                    steps = setOf(params.steps),
+                                                ),
+                                            )
+                                        },
+                                        label = { Text("${params.steps} steps") },
+                                        border = null,
+                                    )
+                                }
+                                item {
+                                    AssistChip(
+                                        onClick = {
+                                            onQuickFilter(
+                                                HistoryFilter(
+                                                    modelIds = setOf(generationModelId),
+                                                    cfgValues = setOf(params.cfg),
+                                                ),
+                                            )
+                                        },
+                                        label = { Text("CFG ${"%.1f".format(params.cfg)}") },
+                                        border = null,
+                                    )
+                                }
+                                item {
+                                    AssistChip(
+                                        onClick = {
+                                            onQuickFilter(
+                                                HistoryFilter(
+                                                    modelIds = setOf(generationModelId),
+                                                    schedulers = setOf(params.scheduler),
+                                                ),
+                                            )
+                                        },
+                                        label = { Text(schedulerDisplayName(params.scheduler)) },
+                                        border = null,
+                                    )
+                                }
+                                item {
+                                    AssistChip(
+                                        onClick = {
+                                            onQuickFilter(
+                                                HistoryFilter(
+                                                    modelIds = setOf(generationModelId),
+                                                    devices = setOf(device),
+                                                ),
+                                            )
+                                        },
+                                        label = { Text(deviceLabel) },
+                                        border = null,
+                                    )
+                                }
+                                params.generationTime?.let { time ->
+                                    item {
+                                        AssistChip(
+                                            onClick = {
+                                                onQuickFilter(
+                                                    HistoryFilter(
+                                                        modelIds = setOf(generationModelId),
+                                                        generationTimes = setOf(time),
+                                                    ),
+                                                )
+                                            },
+                                            label = { Text(time) },
+                                            border = null,
+                                        )
+                                    }
+                                }
+                            }
+
+                            Card(
+                                onClick = onShowParameters,
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                ),
                             ) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Text(
-                                        stringResource(R.string.generation_params),
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                    )
+                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                        Text(
+                                            stringResource(R.string.generation_params),
+                                            style = MaterialTheme.typography.labelLarge,
+                                        )
+                                        Text(
+                                            "Seed ${params.seed ?: "random"} · tap for full details",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
                                     Icon(
                                         Icons.Default.Info,
                                         contentDescription = "view details",
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-
-                                generationParams?.let { params ->
-                                    Text(
-                                        stringResource(
-                                            R.string.result_params,
-                                            params.steps,
-                                            params.cfg,
-                                            params.seed.toString(),
-                                        ),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    Text(
-                                        stringResource(
-                                            R.string.result_params_2,
-                                            params.width,
-                                            params.height,
-                                            params.generationTime
-                                                ?: "unknown",
-                                            if (params.runOnCpu) {
-                                                if (params.useOpenCL) "GPU" else "CPU"
-                                            } else {
-                                                "NPU"
-                                            },
-                                        ),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
                             }
                         }
+
                     }
                 }
             }
@@ -437,13 +552,18 @@ internal fun ModelRunHistoryPage(
     isSelectionMode: Boolean,
     selectedIds: Set<Long>,
     isBatchSaving: Boolean,
+    collections: List<HistoryCollection>,
     onFilterChange: (HistoryFilter) -> Unit,
+    onCollectionSelected: (Long?) -> Unit,
+    onCreateCollection: () -> Unit,
+    onManageCollections: () -> Unit,
     onShowFilterSheet: () -> Unit,
     onItemClick: (HistoryItem) -> Unit,
     onItemLongClick: (HistoryItem) -> Unit,
     onExitSelection: () -> Unit,
     onToggleSelectAll: () -> Unit,
     onBatchSave: () -> Unit,
+    onBatchAddToCollection: () -> Unit,
     onBatchDelete: () -> Unit,
 ) {
     val locale = LocalConfiguration.current.locales[0]
@@ -474,6 +594,13 @@ internal fun ModelRunHistoryPage(
                 },
             )
         }
+        HistoryCollectionBar(
+            collections = collections,
+            selectedCollectionIds = historyFilter.collectionIds,
+            onSelectCollection = onCollectionSelected,
+            onCreateCollection = onCreateCollection,
+            onManageCollections = onManageCollections,
+        )
         Box(
             modifier = Modifier
                 .fillMaxSize(),
@@ -697,6 +824,18 @@ internal fun ModelRunHistoryPage(
                                         Icons.Default.CheckCircleOutline
                                     },
                                     contentDescription = if (isAllSelected) "Deselect all" else "Select all",
+                                )
+                            }
+                            IconButton(
+                                onClick = onBatchAddToCollection,
+                                enabled = selectedIds.isNotEmpty() && !isBatchSaving,
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.primary,
+                                ),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CreateNewFolder,
+                                    contentDescription = "Add selected to collection",
                                 )
                             }
                             IconButton(
