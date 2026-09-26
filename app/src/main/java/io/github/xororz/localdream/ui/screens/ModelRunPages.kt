@@ -396,43 +396,53 @@ internal fun ModelRunResultPage(
                                 DeviceFilter.GPU -> "GPU"
                                 DeviceFilter.CPU -> "CPU"
                             }
-                            LazyRow(
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                item {
-                                    AssistChip(
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    ResultMetaCell(
+                                        label = "Model",
+                                        value = generationVariantLabel
+                                            ?.takeIf { it.isNotBlank() }
+                                            ?: generationModelId,
                                         onClick = {
                                             onQuickFilter(
-                                                HistoryFilter(modelIds = setOf(generationModelId)),
+                                                HistoryFilter(
+                                                    modelIds = setOf(generationModelId),
+                                                ),
                                             )
                                         },
-                                        label = { Text(generationModelId) },
-                                        border = null,
-                                        colors = AssistChipDefaults.assistChipColors(
-                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                        ),
+                                        modifier = Modifier.weight(1f),
                                     )
-                                }
-                                generationVariantLabel?.takeIf { it.isNotBlank() }?.let { variant ->
-                                    item {
-                                        AssistChip(
-                                            onClick = {
-                                                // Variant IDs are distinct catalog entries, so
-                                                // filtering this model is the exact variant filter.
+                                    ResultMetaCell(
+                                        label = "Generation time",
+                                        value = params.generationTime ?: "—",
+                                        onClick = {
+                                            params.generationTime?.let { time ->
                                                 onQuickFilter(
                                                     HistoryFilter(
                                                         modelIds = setOf(generationModelId),
+                                                        generationTimes = setOf(time),
                                                     ),
                                                 )
-                                            },
-                                            label = { Text(variant) },
-                                            border = null,
-                                        )
-                                    }
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        emphasized = params.generationTime != null,
+                                    )
                                 }
-                                item {
-                                    AssistChip(
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    ResultMetaCell(
+                                        label = "Resolution",
+                                        value = "${params.width}×${params.height}",
                                         onClick = {
                                             onQuickFilter(
                                                 HistoryFilter(
@@ -441,12 +451,11 @@ internal fun ModelRunResultPage(
                                                 ),
                                             )
                                         },
-                                        label = { Text("${params.width}×${params.height}") },
-                                        border = null,
+                                        modifier = Modifier.weight(1f),
                                     )
-                                }
-                                item {
-                                    AssistChip(
+                                    ResultMetaCell(
+                                        label = "Steps",
+                                        value = params.steps.toString(),
                                         onClick = {
                                             onQuickFilter(
                                                 HistoryFilter(
@@ -455,12 +464,17 @@ internal fun ModelRunResultPage(
                                                 ),
                                             )
                                         },
-                                        label = { Text("${params.steps} steps") },
-                                        border = null,
+                                        modifier = Modifier.weight(1f),
                                     )
                                 }
-                                item {
-                                    AssistChip(
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    ResultMetaCell(
+                                        label = "CFG",
+                                        value = "%.1f".format(params.cfg),
                                         onClick = {
                                             onQuickFilter(
                                                 HistoryFilter(
@@ -469,26 +483,11 @@ internal fun ModelRunResultPage(
                                                 ),
                                             )
                                         },
-                                        label = { Text("CFG ${"%.1f".format(params.cfg)}") },
-                                        border = null,
+                                        modifier = Modifier.weight(1f),
                                     )
-                                }
-                                item {
-                                    AssistChip(
-                                        onClick = {
-                                            onQuickFilter(
-                                                HistoryFilter(
-                                                    modelIds = setOf(generationModelId),
-                                                    schedulers = setOf(params.scheduler),
-                                                ),
-                                            )
-                                        },
-                                        label = { Text(schedulerDisplayName(params.scheduler)) },
-                                        border = null,
-                                    )
-                                }
-                                item {
-                                    AssistChip(
+                                    ResultMetaCell(
+                                        label = "Runtime",
+                                        value = deviceLabel,
                                         onClick = {
                                             onQuickFilter(
                                                 HistoryFilter(
@@ -497,25 +496,8 @@ internal fun ModelRunResultPage(
                                                 ),
                                             )
                                         },
-                                        label = { Text(deviceLabel) },
-                                        border = null,
+                                        modifier = Modifier.weight(1f),
                                     )
-                                }
-                                params.generationTime?.let { time ->
-                                    item {
-                                        AssistChip(
-                                            onClick = {
-                                                onQuickFilter(
-                                                    HistoryFilter(
-                                                        modelIds = setOf(generationModelId),
-                                                        generationTimes = setOf(time),
-                                                    ),
-                                                )
-                                            },
-                                            label = { Text(time) },
-                                            border = null,
-                                        )
-                                    }
                                 }
                             }
 
@@ -539,7 +521,7 @@ internal fun ModelRunResultPage(
                                             style = MaterialTheme.typography.labelLarge,
                                         )
                                         Text(
-                                            "Seed ${params.seed ?: "random"} · tap for full details",
+                                            "Seed ${params.seed ?: "random"} · ${schedulerDisplayName(params.scheduler)}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
@@ -556,6 +538,46 @@ internal fun ModelRunResultPage(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ResultMetaCell(
+    label: String,
+    value: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    emphasized: Boolean = false,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = MaterialTheme.shapes.large,
+        color = if (emphasized) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 13.dp, vertical = 11.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (emphasized) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+            )
         }
     }
 }
