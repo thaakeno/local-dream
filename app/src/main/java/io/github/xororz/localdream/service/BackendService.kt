@@ -446,7 +446,6 @@ class BackendService : Service() {
         val names = listOf(
             "libcdsprpc.so",
             "libvmmem.so",
-            "libdmabufheap.so",
             "vendor.qti.hardware.dsp-V1-ndk.so",
             "vendor.qti.hardware.dsp@1.0.so",
         )
