@@ -79,6 +79,15 @@ class BackendService : Service() {
         private const val IDLE_GRACE_MS = 1500L
         private const val MAX_BACKEND_ERROR_CHARS = 700
 
+        // yue2.cpp's checkpoint-native ABC planner can emit up to 4096
+        // tokens before the semantic stage begins. A 4096 KV cache is therefore
+        // invalid even for a short song: prefix + 4096 + EOS cannot fit.
+        // Upstream explicitly measures --max-seq 8192 as the reduced-memory
+        // profile; with Local Dream's <=20 s semantic budget (<=500 frames),
+        // 8192 keeps the native sampling defaults intact while remaining far
+        // below the full 24576-token checkpoint context.
+        private const val MUSIC_MAX_SEQ = 8192
+
         const val ACTION_STOP = "io.github.xororz.localdream.STOP_GENERATION"
         const val ACTION_RESTART = "io.github.xororz.localdream.RESTART_BACKEND"
 
@@ -717,9 +726,13 @@ class BackendService : Service() {
                     // accelerator memory budget; it keeps AR + NAR + VAE
                     // resident together and is a bad fit for a phone.
                     //
-                    // 20 s output needs only ~500 semantic frames, so a 4096
-                    // token KV cache leaves plenty of headroom while lowering
-                    // resident memory substantially versus the old 8192 setup.
+                    // The ABC planner's native budget is 4096 tokens. The KV
+                    // cache must include the prompt prefix and EOS too, so a
+                    // 4096 context is structurally impossible. Use yue2.cpp's
+                    // documented reduced-memory 8192-token profile; our <=20 s
+                    // semantic stage is then clamped to <=500 frames by
+                    // upstream itself, while the full 4096 ABC budget remains
+                    // available for quality.
                     //
                     // FLASH_ATTN_EXT currently has a documented correctness bug
                     // on Snapdragon Hexagon v75, so use the plain attention path
@@ -737,7 +750,7 @@ class BackendService : Service() {
                         "--max-batch",
                         "1",
                         "--max-seq",
-                        "4096",
+                        MUSIC_MAX_SEQ.toString(),
                         "--vae-core",
                         "256",
                         "--vae-halo",
@@ -909,7 +922,7 @@ class BackendService : Service() {
                 )
 
                 val message =
-                    "YuE2 HTP: device=HTP0:0 model=$modelId max_seq=4096 " +
+                    "YuE2 HTP: device=HTP0:0 model=$modelId max_seq=$MUSIC_MAX_SEQ " +
                         "keepLoaded=false flashAttention=false " +
                         "LD_LIBRARY_PATH=${env["LD_LIBRARY_PATH"]} " +
                         "ADSP_LIBRARY_PATH=$dspPath"
