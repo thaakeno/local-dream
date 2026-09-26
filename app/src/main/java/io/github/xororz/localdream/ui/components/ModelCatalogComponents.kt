@@ -454,6 +454,7 @@ private fun AnimatedMusicMark(modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FamilyVariantTile(
     selected: Boolean,
@@ -462,11 +463,16 @@ private fun FamilyVariantTile(
     subtitle: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     ElevatedCard(
-        onClick = onClick,
-        modifier = modifier,
+        modifier = modifier.combinedClickable(
+            onClick = onClick,
+            onLongClick = {
+                if (installed) onLongClick?.invoke()
+            },
+        ),
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(
             containerColor = if (selected) {
@@ -517,12 +523,22 @@ private fun FamilyVariantTile(
                 maxLines = 2,
             )
             if (installed) {
-                Text(
-                    "On device",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "On device",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (onLongClick != null) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "· hold to remove",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
         }
     }
