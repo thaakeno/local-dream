@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Tune
@@ -33,6 +34,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -87,6 +89,7 @@ fun MusicRunScreen(
     val model = repository.models.firstOrNull { it.id == modelId }
 
     val backendState by BackendService.backendState.collectAsState()
+    val startupStatus by BackendService.startupStatus.collectAsState()
     val servingModelId by BackendService.servingModelId.collectAsState()
     val musicState by MusicGenerationService.state.collectAsState()
 
@@ -111,6 +114,9 @@ fun MusicRunScreen(
     val precision = model?.variantPrecision.orEmpty()
     val htpAccelerated = precision == "Q8_0" || precision == "BF16"
     val q8FastPath = precision == "Q8_0"
+    val startupForModel = startupStatus?.takeIf { it.modelId == modelId }
+    val backendError = (backendState as? BackendService.BackendState.Error)
+        ?.takeIf { it.modelId == null || it.modelId == modelId }
 
     LaunchedEffect(model?.id) {
         if (model == null || !model.isDownloaded || !model.isMusic) return@LaunchedEffect
@@ -147,6 +153,8 @@ fun MusicRunScreen(
                         Text("YuE2 · Text to music")
                         Text(
                             when {
+                                backendError != null -> "Native runtime failed"
+                                !backendReady && startupForModel != null -> startupForModel.detail
                                 !backendReady -> "Starting native YuE2 runtime…"
                                 !htpAccelerated ->
                                     "Compatibility runtime · $precision"
@@ -182,6 +190,31 @@ fun MusicRunScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            if (!backendReady && backendError == null) {
+                NativeRuntimeStartupCard(
+                    status = startupForModel,
+                    modelId = modelId,
+                )
+            }
+
+            if (backendError != null) {
+                NativeRuntimeErrorCard(
+                    message = backendError.message,
+                    onRestart = {
+                        context.startForegroundService(
+                            Intent(context, BackendService::class.java).apply {
+                                action = BackendService.ACTION_RESTART
+                                putExtra("modelId", modelId)
+                                putExtra("backendType", "yue2")
+                                putExtra("width", 512)
+                                putExtra("height", 512)
+                                putExtra("htp_mode", "single")
+                            },
+                        )
+                    },
+                )
+            }
+
             ElevatedCard(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -305,6 +338,9 @@ fun MusicRunScreen(
                         Spacer(Modifier.width(8.dp))
                         Text(
                             when {
+                                backendError != null -> "Runtime unavailable"
+                                !backendReady && startupForModel != null ->
+                                    startupButtonLabel(startupForModel.phase)
                                 !backendReady -> "Starting native runtime…"
                                 !htpAccelerated -> "Generate · compatibility"
                                 else -> "Generate music"
@@ -430,7 +466,7 @@ fun MusicRunScreen(
                                     state.message,
                                     color = MaterialTheme.colorScheme.onErrorContainer,
                                 )
-                                if (q8FastPath && backendReady) {
+                                if (q8FastPath) {
                                     Spacer(Modifier.size(8.dp))
                                     TextButton(
                                         onClick = {
@@ -450,7 +486,7 @@ fun MusicRunScreen(
                         }
                     }
                     MusicState.Idle -> {
-                        Surface(
+                        if (backendReady) Surface(
                             shape = MaterialTheme.shapes.extraLarge,
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                         ) {
@@ -503,6 +539,214 @@ fun MusicRunScreen(
             onDismiss = { showConfig = false },
         )
     }
+}
+
+@Composable
+private fun NativeRuntimeStartupCard(
+    status: BackendService.BackendStartupStatus?,
+    modelId: String,
+) {
+    val startedAt = status?.startedAtMillis ?: remember(modelId) { System.currentTimeMillis() }
+    val elapsed by produceState(initialValue = 0L, startedAt) {
+        while (true) {
+            value = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L) / 1000L
+            delay(250)
+        }
+    }
+
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(11.dp),
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                ) {
+                    Icon(
+                        Icons.Default.Memory,
+                        contentDescription = null,
+                        modifier = Modifier.padding(10.dp).size(21.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Starting YuE2 on Hexagon",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        status?.detail ?: "Launching native process",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    "${elapsed}s",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            NativeStartupStageStrip(status?.phase ?: "launch")
+
+            if (status != null) {
+                SmoothLinearWavyProgressIndicator(
+                    progress = status.progress.coerceIn(0f, 1f),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        startupPhaseLabel(status.phase),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        "${(status.progress * 100).toInt()}% startup",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                SmoothIndeterminateLinearWavyProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            Text(
+                "Live native milestones · FastRPC → HTP v81 → yue-server. " +
+                    "This progress updates from the actual backend log, not a timer.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun NativeRuntimeErrorCard(
+    message: String,
+    onRestart: () -> Unit,
+) {
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                "Native runtime failed",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.20f),
+            )
+            TextButton(onClick = onRestart) {
+                Text("Restart YuE2 runtime")
+            }
+        }
+    }
+}
+
+@Composable
+private fun NativeStartupStageStrip(activePhase: String) {
+    val stages = listOf(
+        "process" to "Process",
+        "model" to "Model",
+        "fastrpc" to "FastRPC",
+        "htp" to "HTP",
+        "server" to "Server",
+    )
+    val index = when (activePhase) {
+        "launch", "process" -> 0
+        "tokenizer", "model" -> 1
+        "fastrpc" -> 2
+        "htp", "session", "backend" -> 3
+        "server", "ready" -> 4
+        else -> 0
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        stages.forEachIndexed { i, (_, label) ->
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = MaterialTheme.shapes.small,
+                color = if (i <= index) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHighest
+                },
+            ) {
+                Text(
+                    label,
+                    modifier = Modifier.padding(vertical = 6.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (i <= index) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+private fun startupPhaseLabel(phase: String): String = when (phase) {
+    "launch" -> "Launching process"
+    "process" -> "Process started"
+    "tokenizer" -> "Tokenizer"
+    "model" -> "Model metadata"
+    "fastrpc" -> "FastRPC transport"
+    "htp" -> "Detecting Hexagon"
+    "session" -> "Opening HTP session"
+    "backend" -> "Selecting HTP backend"
+    "server" -> "Starting yue-server"
+    "ready" -> "Ready"
+    else -> phase.replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
+private fun startupButtonLabel(phase: String): String = when (phase) {
+    "launch", "process" -> "Launching YuE2…"
+    "tokenizer", "model" -> "Reading model…"
+    "fastrpc" -> "Opening FastRPC…"
+    "htp", "session", "backend" -> "Initializing HTP…"
+    "server" -> "Starting server…"
+    else -> "Starting native runtime…"
 }
 
 @Composable
@@ -585,8 +829,7 @@ private fun MusicPreloadCard(
             }
 
             Text(
-                "Real warmup: composer → acoustic renderer → Oobleck decoder. " +
-                    "Q8_0 stays resident after this pass.",
+                "YuE2 native warmup progress.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -617,16 +860,16 @@ private fun MusicReadyCard(
             )
             Column {
                 Text(
-                    "$precision resident · ready",
+                    "$precision · ready",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
                     if (preloadMillis > 0L) {
-                        "AR, NAR and Oobleck warmed in " +
+                        "Native pipeline prepared in " +
                             String.format(java.util.Locale.US, "%.1fs", preloadMillis / 1000f)
                     } else {
-                        "Native YuE2 pipeline is already resident."
+                        "Native YuE2 server is ready."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
