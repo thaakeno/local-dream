@@ -550,6 +550,8 @@ fun QwenFamilyCard(
     variants: List<Model>,
     onOpen: (Model) -> Unit,
     onDownload: (Model) -> Unit,
+    onDeletePrecision: (String) -> Unit,
+    onDeleteAdapter: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (variants.isEmpty()) return
@@ -717,6 +719,8 @@ fun QwenFamilyCard(
     if (showSheet) {
         QwenVariantSheet(
             variants = variants,
+            onDeletePrecision = onDeletePrecision,
+            onDeleteAdapter = onDeleteAdapter,
             onDismiss = { showSheet = false },
             onOpen = {
                 showSheet = false
@@ -734,6 +738,8 @@ fun QwenFamilyCard(
 @Composable
 private fun QwenVariantSheet(
     variants: List<Model>,
+    onDeletePrecision: (String) -> Unit,
+    onDeleteAdapter: (String) -> Unit,
     onDismiss: () -> Unit,
     onOpen: (Model) -> Unit,
     onDownload: (Model) -> Unit,
@@ -804,6 +810,11 @@ private fun QwenVariantSheet(
                                 else -> Icons.Default.Bolt
                             },
                             onClick = { precision = p },
+                            onLongClick = if (precisionReady(p)) {
+                                { onDeletePrecision(p) }
+                            } else {
+                                null
+                            },
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -844,6 +855,11 @@ private fun QwenVariantSheet(
                             },
                             icon = if (a.isEmpty()) Icons.Default.PlayArrow else Icons.Default.Speed,
                             onClick = { adapter = a },
+                            onLongClick = if (a.isNotEmpty() && adapterReady(a)) {
+                                { onDeleteAdapter(a) }
+                            } else {
+                                null
+                            },
                             modifier = Modifier.weight(1f),
                         )
                     }
