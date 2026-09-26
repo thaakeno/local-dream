@@ -644,9 +644,12 @@ class MusicGenerationService : Service() {
         onLine: (String) -> Unit,
     ) {
         var reconnectAttempt = 0
-        var active = false
 
         while (!cancelRequested) {
+            // /logs replays yue-server's ring buffer on every connection.
+            // Re-arm the job filter each time so a reconnect never replays
+            // stale phase lines from an older job into the current UI.
+            var active = false
             val request = Request.Builder().url("$BACKEND/logs").get().build()
             val call = client.newCall(request)
             logCall = call
