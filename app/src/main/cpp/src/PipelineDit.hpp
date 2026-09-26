@@ -93,7 +93,8 @@ class PipelineDit : public Pipeline {
 
   GenerationResult generate(GenerationRequest &req,
                             const ProgressCallback &progress_callback) override {
-    const GenerationPhaseCallback no_phase = [](const std::string &) {};
+    const GenerationPhaseCallback no_phase =
+        [](const std::string &, int, int) {};
     return generateWithPhase(req, progress_callback, no_phase);
   }
 
@@ -490,42 +491,57 @@ class PipelineDit : public Pipeline {
       default: name = "preparing"; break;
     }
     try {
-      (*cb->phase)(name);
+      (*cb->phase)(name, 0, 0);
     } catch (...) {
       cb->pending = std::current_exception();
     }
   }
 
-  static bool forwardProgress(int step, int total_steps, float step_seconds,
+  static bool forwardProgress(dit_progress_kind kind, int step,
+                              int total_steps, float step_seconds,
                               void *user_data) {
     auto *cb = static_cast<Callbacks *>(user_data);
-    if (total_steps > 0) {
+    if (!cb) return false;
+
+    try {
+      if (kind == DIT_PROGRESS_MODEL_LOADING && total_steps > 0) {
+        // Lazy weight residency can dominate the wait before the first sample.
+        // Surface the real tensor counter as stage-local progress without
+        // touching sampler steps.
+        (*cb->phase)("loading_model", std::clamp(step, 0, total_steps),
+                     total_steps);
+        return true;
+      }
+
+      if (kind != DIT_PROGRESS_SAMPLING || total_steps <= 0) {
+        // Auxiliary events are cancellation heartbeats only.
+        (*cb->progress)(0, 0, "");
+        return true;
+      }
+
       cb->sampling_started = true;
       cb->sample_steps = total_steps;
       cb->sampled_steps =
           std::max(cb->sampled_steps, std::clamp(step, 0, total_steps));
       if (step == 1)
         cb->first_step_ms = static_cast<int>(step_seconds * 1000.0f);
-    }
 
-    // Phase events already tell the UI when we're encoding or decoding, so the
-    // progress counters should describe denoising only. Mixing prompt/latent
-    // work and VAE decode into the denominator made a 6-step Qwen run appear as
-    // 0/7..6/7 and, after the phase rewrite, could hide the step counter entirely.
-    const int expected_steps =
-        cb->full_sampling_schedule || !cb->req->img2img ||
-                cb->req->denoise_strength >= 1.0f
-            ? std::max(1, cb->req->steps)
-            : std::clamp(
-                  static_cast<int>(cb->req->steps *
-                                   cb->req->denoise_strength) +
-                      1,
-                  1, std::max(1, cb->req->steps));
-    const int sample_steps =
-        cb->sample_steps > 0 ? cb->sample_steps : expected_steps;
-    const int reported = cb->sampling_started ? cb->sampled_steps : 0;
+      // Sampling is the only source allowed to populate the sampler
+      // denominator. A six-step Qwen run therefore stays 0..6/6 even if
+      // hundreds of tensor uploads occur while entering the denoiser.
+      const int expected_steps =
+          cb->full_sampling_schedule || !cb->req->img2img ||
+                  cb->req->denoise_strength >= 1.0f
+              ? std::max(1, cb->req->steps)
+              : std::clamp(
+                    static_cast<int>(cb->req->steps *
+                                     cb->req->denoise_strength) +
+                        1,
+                    1, std::max(1, cb->req->steps));
+      const int sample_steps =
+          cb->sample_steps > 0 ? cb->sample_steps : expected_steps;
+      const int reported = cb->sampling_started ? cb->sampled_steps : 0;
 
-    try {
       (*cb->progress)(reported, sample_steps, cb->preview_b64);
       cb->preview_b64.clear();
       return true;
@@ -536,7 +552,6 @@ class PipelineDit : public Pipeline {
       return false;
     }
   }
-
   static void forwardPreview(int, const uint8_t *rgb, int width, int height,
                              void *user_data) {
     auto *cb = static_cast<Callbacks *>(user_data);
