@@ -442,6 +442,64 @@ class BackendService : Service() {
             .build()
     }
 
+    private fun stageDeviceFastRpcCompatibilityLibraries() {
+        val names = listOf(
+            "libcdsprpc.so",
+            "libvmmem.so",
+            "libdmabufheap.so",
+            "vendor.qti.hardware.dsp-V1-ndk.so",
+            "vendor.qti.hardware.dsp@1.0.so",
+        )
+        val roots = listOf(
+            File("/vendor/lib64"),
+            File("/system/vendor/lib64"),
+        )
+
+        names.forEach { name ->
+            val target = File(runtimeDir, name)
+
+            // Never keep an OEM transport copied from an older firmware build.
+            // If the current firmware cannot be read we prefer the namespace
+            // fallback in ggml-hexagon rather than shadowing it with stale bytes.
+            if (target.exists()) {
+                runCatching { target.delete() }
+            }
+
+            val source = roots.asSequence()
+                .map { File(it, name) }
+                .firstOrNull { it.isFile }
+
+            if (source == null) {
+                BackendDiagnostics.append(
+                    this,
+                    "FASTRPC",
+                    "$name not present under vendor lib64",
+                )
+                return@forEach
+            }
+
+            try {
+                source.inputStream().use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                target.setReadable(true, true)
+                target.setExecutable(true, true)
+                BackendDiagnostics.append(
+                    this,
+                    "FASTRPC",
+                    "staged device $name (${target.length()}B) from ${source.absolutePath}",
+                )
+            } catch (e: Exception) {
+                runCatching { target.delete() }
+                BackendDiagnostics.append(
+                    this,
+                    "FASTRPC",
+                    "device copy unavailable for $name: ${e.javaClass.simpleName}: ${e.message}",
+                )
+            }
+        }
+    }
+
     private fun prepareRuntimeDir() {
         try {
             runtimeDir = prepareRuntimeDirRoot(filesDir)
@@ -472,6 +530,15 @@ class BackendService : Service() {
                     targetLib.setExecutable(true, true)
                 }
                 Log.i(TAG, "QNN libraries prepared in runtime directory")
+
+                // HyperOS 3 / Android 16 on some SM8850 devices does not expose
+                // libcdsprpc.so to the ordinary app namespace even with
+                // <uses-native-library>. As a second line of defense, stage the
+                // device's *own* FastRPC userspace chain into the app-private
+                // runtime directory when SELinux permits reading it. This is
+                // deliberately device-local: we never ship a mismatched OEM
+                // FastRPC binary in the APK.
+                stageDeviceFastRpcCompatibilityLibraries()
 
                 // The DiT engine's Hexagon skels share this directory: it is
                 // already on the DSP search path, and they are only useful on
@@ -833,6 +900,14 @@ class BackendService : Service() {
                 ).joinToString(";")
                 env["ADSP_LIBRARY_PATH"] = dspPath
                 env["DSP_LIBRARY_PATH"] = dspPath
+
+                val localFastRpc = File(runtimeDir, "libcdsprpc.so")
+                BackendDiagnostics.append(
+                    this,
+                    "FASTRPC",
+                    "localCopy=${localFastRpc.isFile} size=${localFastRpc.length()} " +
+                        "vendorExists=${File("/vendor/lib64/libcdsprpc.so").isFile}",
+                )
 
                 val message =
                     "YuE2 HTP: device=HTP0:0 model=$modelId max_seq=4096 " +
