@@ -44,11 +44,32 @@ if "LOCAL_DREAM_ANDROID_VENDOR_NAMESPACE_FALLBACK" not in s:
     new = r"""// LOCAL_DREAM_ANDROID_VENDOR_NAMESPACE_FALLBACK
 #ifdef __ANDROID__
 using android_get_exported_namespace_fn = android_namespace_t * (*)(const char *);
+using android_load_sphal_library_fn = void * (*)(const char *, int);
 
 static inline dl_handle * dl_load_android_vendor_library(const char * soname) {
-    // android_get_exported_namespace is an internal linker API. Resolve it at
-    // runtime so this remains buildable with the normal NDK and harmless on
-    // Android versions/OEMs that do not expose it.
+    dl_handle * handle = nullptr;
+
+    // First use Android's own vendor-loader helper when it is reachable. AOSP
+    // uses android_load_sphal_library() specifically to load vendor HAL-side
+    // libraries from a non-vendor process while keeping their transitive
+    // dependencies in the correct namespace.
+    void * vndk_support = dlopen("libvndksupport.so", RTLD_NOW | RTLD_LOCAL);
+    if (vndk_support != nullptr) {
+        auto load_sphal = reinterpret_cast<android_load_sphal_library_fn>(
+            dlsym(vndk_support, "android_load_sphal_library"));
+        if (load_sphal != nullptr) {
+            handle = reinterpret_cast<dl_handle *>(
+                load_sphal(soname, RTLD_NOW | RTLD_LOCAL));
+        }
+        dlclose(vndk_support);
+        if (handle != nullptr) {
+            return handle;
+        }
+    }
+
+    // Fallback for Android builds where libvndksupport is not app-visible:
+    // resolve the exported namespace API dynamically, then ask the linker to
+    // load libcdsprpc in sphal/vendor instead of the isolated default namespace.
     auto get_ns = reinterpret_cast<android_get_exported_namespace_fn>(
         dlsym(RTLD_DEFAULT, "android_get_exported_namespace"));
 
@@ -61,11 +82,7 @@ static inline dl_handle * dl_load_android_vendor_library(const char * soname) {
         }
     }
 
-    dl_handle * handle = nullptr;
     if (get_ns != nullptr) {
-        // Qualcomm's FastRPC transport and its HAL dependencies live in the
-        // vendor/sphal namespace on modern Android. Try sphal first because it
-        // owns /vendor/lib64 and its VNDK-SP dependency links.
         for (const char * ns_name : { "sphal", "vendor" }) {
             android_namespace_t * ns = get_ns(ns_name);
             if (ns == nullptr) {
@@ -75,7 +92,8 @@ static inline dl_handle * dl_load_android_vendor_library(const char * soname) {
             android_dlextinfo info{};
             info.flags = ANDROID_DLEXT_USE_NAMESPACE;
             info.library_namespace = ns;
-            handle = android_dlopen_ext(soname, RTLD_NOW | RTLD_LOCAL, &info);
+            handle = reinterpret_cast<dl_handle *>(
+                android_dlopen_ext(soname, RTLD_NOW | RTLD_LOCAL, &info));
             if (handle != nullptr) {
                 break;
             }
@@ -94,6 +112,9 @@ static inline dl_handle * dl_load_library(const fs::path & path) {
 #ifdef __ANDROID__
     if (handle == nullptr && path.filename() == "libcdsprpc.so") {
         handle = dl_load_android_vendor_library("libcdsprpc.so");
+        if (handle != nullptr) {
+            fprintf(stderr, "ggml-hex: loaded libcdsprpc.so through Android vendor namespace fallback\n");
+        }
     }
 #endif
     return handle;
