@@ -184,6 +184,24 @@
     <string name="media_permission_hint">Media permission is needed for img2img generation</string>
     <string name="backend_failed">Backend failed to start. Check the logs for details.</string>
 
+
+    <string name="collections">Collections</string>
+    <string name="collection_all">All</string>
+    <string name="collection_new">New collection</string>
+    <string name="collection_new_name">Collection name</string>
+    <string name="collection_add_to">Add to collection</string>
+    <string name="collection_add_count">Add %1$d selected image(s)</string>
+    <string name="collection_create_and_add">Create and add</string>
+    <string name="collection_manage">Manage collections</string>
+    <string name="collection_rename">Rename collection</string>
+    <string name="collection_items_count">%1$d images</string>
+    <string name="collection_created">Collection created</string>
+    <string name="collection_updated">Collection updated</string>
+    <string name="collection_failed">Could not update collection</string>
+    <string name="variations_title">Generate variations</string>
+    <string name="variations_hint">Keep the generation settings and create new images with fresh random seeds.</string>
+    <string name="generate_variations">Generate variations</string>
+
     <!-- Parameter Settings -->
     <string name="generation_params">Generation Params</string>
     <string name="steps">Steps: %d</string>

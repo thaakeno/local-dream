@@ -180,3 +180,47 @@ internal fun BatchSaveProgressDialog(current: Int, total: Int) {
         confirmButton = {},
     )
 }
+
+@Composable
+internal fun VariationCountDialog(
+    onGenerate: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selected by remember { mutableStateOf(4) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.variations_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    stringResource(R.string.variations_hint),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(2, 4, 8).forEach { count ->
+                        androidx.compose.material3.FilterChip(
+                            selected = selected == count,
+                            onClick = { selected = count },
+                            label = { Text(count.toString()) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onGenerate(selected) }) {
+                Text(stringResource(R.string.generate_variations))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        },
+    )
+}
