@@ -544,7 +544,7 @@ private fun FamilyVariantTile(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun QwenFamilyCard(
     variants: List<Model>,
@@ -611,7 +611,14 @@ fun QwenFamilyCard(
                             } else {
                                 MaterialTheme.colorScheme.surfaceContainerHigh
                             },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .combinedClickable(
+                                    onClick = { showSheet = true },
+                                    onLongClick = {
+                                        if (installed) onDeletePrecision(precision)
+                                    },
+                                ),
                         ) {
                             Column(Modifier.padding(11.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
