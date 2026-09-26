@@ -147,11 +147,11 @@ class MusicGenerationService : Service() {
 
         val cot = intent.getStringExtra("cot")?.takeIf { it in setOf("full", "melody", "off") } ?: "full"
         val duration = intent.getIntExtra("duration", 20).coerceIn(5, 20)
-        val steps = intent.getIntExtra("steps", 16).coerceIn(4, 32)
+        val steps = intent.getIntExtra("steps", 32).coerceIn(1, 64)
         val seed = intent.getLongExtra("seed", -1L)
         val temperature = intent.getFloatExtra("semantic_temperature", 1f).coerceIn(0.5f, 1.5f)
         val topP = intent.getFloatExtra("semantic_top_p", 0.95f).coerceIn(0.5f, 1f)
-        val cfg = intent.getFloatExtra("cfg_scale", -1f)
+        val cfg = intent.getFloatExtra("cfg_scale", -1f).let { value -> if (value < 0f) -1f else value.coerceIn(0.5f, 2f) }
         val started = System.currentTimeMillis()
 
         cancelRequested = false
@@ -181,13 +181,11 @@ class MusicGenerationService : Service() {
                     put(
                         "semantic_sampling",
                         JSONObject().apply {
+                            // Override only the two controls exposed in the UI.
+                            // YuE2 keeps its checkpoint-native top-k=100,
+                            // repetition penalty=1.2, window=50 and token bounds.
                             put("temperature", temperature.toDouble())
                             put("top_p", topP.toDouble())
-                            put("top_k", 100)
-                            put("repetition_penalty", 1.2)
-                            put("penalty_window", 50)
-                            put("min_tokens", minOf(200, duration * 25))
-                            put("max_tokens", duration * 25)
                         },
                     )
                 }
