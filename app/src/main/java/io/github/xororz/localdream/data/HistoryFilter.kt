@@ -40,6 +40,10 @@ data class HistoryFilter(
     val devices: Set<DeviceFilter>? = null,
     val promptSubstring: String? = null,
     val favorites: Set<FavoriteFilter>? = null,
+    val steps: Set<Int>? = null,
+    val cfgValues: Set<Float>? = null,
+    val generationTimes: Set<String>? = null,
+    val collectionIds: Set<Long>? = null,
     val descending: Boolean = true,
 ) {
     // Full rows, newest/oldest first. Used by paged and one-shot list queries.
@@ -114,6 +118,26 @@ data class HistoryFilter(
             if (FavoriteFilter.FAVORITE in favorites) parts += "favorite = 1"
             if (FavoriteFilter.NOT_FAVORITE in favorites) parts += "favorite = 0"
             where += "(${parts.joinToString(" OR ")})"
+        }
+
+        if (!steps.isNullOrEmpty()) {
+            where += "steps IN (${steps.joinToString(",") { "?" }})"
+            args.addAll(steps)
+        }
+        if (!cfgValues.isNullOrEmpty()) {
+            where += "cfg IN (${cfgValues.joinToString(",") { "?" }})"
+            args.addAll(cfgValues)
+        }
+        if (!generationTimes.isNullOrEmpty()) {
+            where += "generationTime IN (${generationTimes.joinToString(",") { "?" }})"
+            args.addAll(generationTimes)
+        }
+        if (!collectionIds.isNullOrEmpty()) {
+            where +=
+                "EXISTS (SELECT 1 FROM history_collection_items hci " +
+                    "WHERE hci.historyId = generation_history.id " +
+                    "AND hci.collectionId IN (${collectionIds.joinToString(",") { "?" }}))"
+            args.addAll(collectionIds)
         }
 
         val whereClause = if (where.isEmpty()) "" else "WHERE ${where.joinToString(" AND ")}"

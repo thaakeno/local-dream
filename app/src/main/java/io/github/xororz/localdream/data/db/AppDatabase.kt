@@ -8,12 +8,13 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [HistoryEntity::class],
-    version = 3,
+    entities = [HistoryEntity::class, HistoryCollectionEntity::class, HistoryCollectionItemEntity::class],
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun historyDao(): HistoryDao
+    abstract fun historyCollectionDao(): HistoryCollectionDao
 
     companion object {
         @Volatile
@@ -80,13 +81,51 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v3 -> v4: first-class History collections/albums. Membership lives
+        // in a normalized cross-reference table so deleting an image or album
+        // cascades cleanly and one image can belong to multiple collections.
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS history_collections (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        name TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_history_collections_name ON history_collections (name)",
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS history_collection_items (
+                        collectionId INTEGER NOT NULL,
+                        historyId INTEGER NOT NULL,
+                        addedAt INTEGER NOT NULL,
+                        PRIMARY KEY(collectionId, historyId),
+                        FOREIGN KEY(collectionId) REFERENCES history_collections(id) ON DELETE CASCADE,
+                        FOREIGN KEY(historyId) REFERENCES generation_history(id) ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_history_collection_items_collectionId ON history_collection_items (collectionId)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_history_collection_items_historyId ON history_collection_items (historyId)",
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
             INSTANCE ?: Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 "local_dream.db",
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 // No destructive fallback: a future schema bump without a
                 // matching migration should fail loudly at open time rather
                 // than silently dropping the user's whole generation history.

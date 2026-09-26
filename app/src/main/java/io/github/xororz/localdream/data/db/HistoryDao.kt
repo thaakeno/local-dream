@@ -8,6 +8,7 @@ import androidx.room.Query
 import androidx.room.RawQuery
 import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
+import io.github.xororz.localdream.data.db.HistoryCollectionItemEntity
 
 @Dao
 interface HistoryDao {
@@ -39,13 +40,13 @@ interface HistoryDao {
     @Query("UPDATE generation_history SET favorite = :favorite WHERE id = :id")
     suspend fun setFavorite(id: Long, favorite: Boolean): Int
 
-    @RawQuery(observedEntities = [HistoryEntity::class])
+    @RawQuery(observedEntities = [HistoryEntity::class, HistoryCollectionItemEntity::class])
     fun query(q: SupportSQLiteQuery): Flow<List<HistoryEntity>>
 
-    @RawQuery(observedEntities = [HistoryEntity::class])
+    @RawQuery(observedEntities = [HistoryEntity::class, HistoryCollectionItemEntity::class])
     fun queryPaged(q: SupportSQLiteQuery): PagingSource<Int, HistoryEntity>
 
-    @RawQuery(observedEntities = [HistoryEntity::class])
+    @RawQuery(observedEntities = [HistoryEntity::class, HistoryCollectionItemEntity::class])
     fun queryCount(q: SupportSQLiteQuery): Flow<Int>
 
     @RawQuery

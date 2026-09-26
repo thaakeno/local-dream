@@ -11,6 +11,9 @@ import androidx.paging.map
 import androidx.room.withTransaction
 import io.github.xororz.localdream.data.db.AppDatabase
 import io.github.xororz.localdream.data.db.HistoryEntity
+import io.github.xororz.localdream.data.db.HistoryCollectionEntity
+import io.github.xororz.localdream.data.db.HistoryCollectionItemEntity
+import io.github.xororz.localdream.data.db.HistoryCollectionSummary
 import io.github.xororz.localdream.ui.screens.GenerationParameters
 import java.io.File
 import java.io.FileOutputStream
@@ -62,6 +65,23 @@ data class HistoryItem(
     }
 }
 
+@Immutable
+data class HistoryCollection(
+    val id: Long,
+    val name: String,
+    val createdAt: Long,
+    val itemCount: Int,
+) {
+    companion object {
+        fun fromSummary(summary: HistoryCollectionSummary) = HistoryCollection(
+            id = summary.id,
+            name = summary.name,
+            createdAt = summary.createdAt,
+            itemCount = summary.itemCount,
+        )
+    }
+}
+
 // Keep id batches under SQLite's host-parameter limit (999 on older API levels).
 private const val SQLITE_IN_CHUNK = 900
 
@@ -69,6 +89,7 @@ class HistoryManager(private val context: Context) {
 
     private val db = AppDatabase.get(context)
     private val dao = db.historyDao()
+    private val collectionDao = db.historyCollectionDao()
     private val filesDir: File = context.filesDir
 
     private fun getHistoryDir(modelId: String): File {
@@ -210,6 +231,84 @@ class HistoryManager(private val context: Context) {
     fun observeKnownModelIds(): Flow<List<String>> = dao.observeKnownModelIds()
     fun observeKnownSchedulers(): Flow<List<String>> = dao.observeKnownSchedulers()
     fun observeKnownSizes(): Flow<List<String>> = dao.observeKnownSizes()
+
+    fun observeCollections(): Flow<List<HistoryCollection>> =
+        collectionDao.observeCollections().map { rows -> rows.map(HistoryCollection::fromSummary) }
+
+    fun observeCollectionIdsForHistory(historyId: Long): Flow<List<Long>> =
+        collectionDao.observeCollectionIdsForHistory(historyId)
+
+    suspend fun createCollection(name: String): HistoryCollection? = withContext(Dispatchers.IO) {
+        val clean = name.trim()
+        if (clean.isBlank()) return@withContext null
+        try {
+            val createdAt = System.currentTimeMillis()
+            val id = collectionDao.insertCollection(
+                HistoryCollectionEntity(name = clean, createdAt = createdAt),
+            )
+            HistoryCollection(id = id, name = clean, createdAt = createdAt, itemCount = 0)
+        } catch (e: Exception) {
+            Log.e("HistoryManager", "Failed to create collection", e)
+            null
+        }
+    }
+
+    suspend fun renameCollection(id: Long, name: String): Boolean = withContext(Dispatchers.IO) {
+        val clean = name.trim()
+        if (clean.isBlank()) return@withContext false
+        try {
+            collectionDao.renameCollection(id, clean) > 0
+        } catch (e: Exception) {
+            Log.e("HistoryManager", "Failed to rename collection", e)
+            false
+        }
+    }
+
+    suspend fun deleteCollection(id: Long): Boolean = withContext(Dispatchers.IO) {
+        try {
+            collectionDao.deleteCollection(id) > 0
+        } catch (e: Exception) {
+            Log.e("HistoryManager", "Failed to delete collection", e)
+            false
+        }
+    }
+
+    suspend fun addToCollection(collectionId: Long, historyIds: Collection<Long>): Boolean =
+        withContext(Dispatchers.IO) {
+            if (historyIds.isEmpty()) return@withContext true
+            try {
+                val now = System.currentTimeMillis()
+                historyIds.distinct().chunked(SQLITE_IN_CHUNK).forEach { chunk ->
+                    collectionDao.addItems(
+                        chunk.map { historyId ->
+                            HistoryCollectionItemEntity(
+                                collectionId = collectionId,
+                                historyId = historyId,
+                                addedAt = now,
+                            )
+                        },
+                    )
+                }
+                true
+            } catch (e: Exception) {
+                Log.e("HistoryManager", "Failed to add history to collection", e)
+                false
+            }
+        }
+
+    suspend fun removeFromCollection(collectionId: Long, historyIds: Collection<Long>): Boolean =
+        withContext(Dispatchers.IO) {
+            if (historyIds.isEmpty()) return@withContext true
+            try {
+                historyIds.distinct().chunked(SQLITE_IN_CHUNK).forEach { chunk ->
+                    collectionDao.removeItems(collectionId, chunk)
+                }
+                true
+            } catch (e: Exception) {
+                Log.e("HistoryManager", "Failed to remove history from collection", e)
+                false
+            }
+        }
 
     suspend fun deleteHistoryItem(item: HistoryItem): Boolean = withContext(Dispatchers.IO) {
         try {
