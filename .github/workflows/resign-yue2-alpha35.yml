@@ -1,11 +1,11 @@
-name: Re-sign YuE2 alpha.35 with existing Local Dream key
+name: Re-sign YuE2 alpha.36 with existing Local Dream key
 
 on:
   push:
     branches:
       - qwen-fp8-turbo
     paths:
-      - '.github/workflows/resign-yue2-alpha35.yml'
+      - '.github/workflows/resign-yue2-alpha36.yml'
 
 permissions:
   contents: read
@@ -30,7 +30,7 @@ jobs:
           test "${{ steps.signing-key-cache.outputs.cache-hit }}" = "true"
           test -s "$RUNNER_TEMP/localdream-ci.jks"
 
-      - name: Download YuE2 alpha.35 and alpha.34 reference
+      - name: Download YuE2 alpha.36 and alpha.34 reference
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -41,7 +41,7 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/10914501323/zip" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/10915044380/zip" \
             -o "$RUNNER_TEMP/yue2.zip"
           curl -fL --retry 5 \
             -H "Authorization: Bearer $GH_TOKEN" \
@@ -66,7 +66,7 @@ jobs:
           test -s "$old_apk"
 
           mkdir -p "$GITHUB_WORKSPACE/out"
-          out_apk="$GITHUB_WORKSPACE/out/LocalDream-YuE2-3.0.0-alpha.35-compatible.apk"
+          out_apk="$GITHUB_WORKSPACE/out/LocalDream-YuE2-3.0.0-alpha.36-compatible.apk"
 
           "$apksigner_bin" sign \
             --ks "$RUNNER_TEMP/localdream-ci.jks" \
@@ -82,7 +82,7 @@ jobs:
           new_cert="$("$apksigner_bin" verify --print-certs "$out_apk" | sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1)"
 
           echo "alpha34 signer: $old_cert"
-          echo "alpha35 signer: $new_cert"
+          echo "alpha36 signer: $new_cert"
           test -n "$old_cert"
           test "$old_cert" = "$new_cert"
 
@@ -91,7 +91,7 @@ jobs:
       - name: Upload compatible APK
         uses: actions/upload-artifact@v6
         with:
-          name: LocalDream-YuE2-alpha35-compatible
-          path: out/LocalDream-YuE2-3.0.0-alpha.35-compatible.apk
+          name: LocalDream-YuE2-alpha36-compatible
+          path: out/LocalDream-YuE2-3.0.0-alpha.36-compatible.apk
           if-no-files-found: error
           retention-days: 14
