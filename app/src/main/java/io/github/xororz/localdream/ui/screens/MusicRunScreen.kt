@@ -89,7 +89,6 @@ fun MusicRunScreen(
     val backendState by BackendService.backendState.collectAsState()
     val servingModelId by BackendService.servingModelId.collectAsState()
     val musicState by MusicGenerationService.state.collectAsState()
-    val residentModelId by MusicGenerationService.residentModelId.collectAsState()
 
     var style by rememberSaveable {
         mutableStateOf("cinematic electronic pop, emotional female vocals, punchy drums, wide synths")
@@ -112,9 +111,6 @@ fun MusicRunScreen(
     val precision = model?.variantPrecision.orEmpty()
     val htpAccelerated = precision == "Q8_0" || precision == "BF16"
     val q8FastPath = precision == "Q8_0"
-    val modelResident = residentModelId == modelId
-    val preloadRunning = musicState is MusicState.Preloading &&
-        (musicState as MusicState.Preloading).modelId == modelId
 
     LaunchedEffect(model?.id) {
         if (model == null || !model.isDownloaded || !model.isMusic) return@LaunchedEffect
@@ -128,19 +124,6 @@ fun MusicRunScreen(
                 putExtra("htp_mode", "single")
             },
         )
-    }
-
-    LaunchedEffect(backendReady, model?.id, q8FastPath, modelResident, musicState) {
-        val current = model ?: return@LaunchedEffect
-        if (!backendReady || !q8FastPath || modelResident) return@LaunchedEffect
-        if (musicState is MusicState.Generating ||
-            musicState is MusicState.Preloading ||
-            musicState is MusicState.Complete ||
-            musicState is MusicState.Error
-        ) {
-            return@LaunchedEffect
-        }
-        MusicGenerationService.preload(context, current.id)
     }
 
     DisposableEffect(Unit) {
@@ -166,14 +149,9 @@ fun MusicRunScreen(
                             when {
                                 !backendReady -> "Starting native YuE2 runtime…"
                                 !htpAccelerated ->
-                                    "CPU fallback · $precision is not Hexagon-accelerated"
-                                preloadRunning ->
-                                    "Loading $precision into HTP…"
-                                modelResident ->
-                                    "$precision resident · HTP ready"
-                                q8FastPath ->
-                                    "HTP ready · preloading model…"
-                                else -> "HTP ready · $precision"
+                                    "Compatibility runtime · $precision"
+                                else ->
+                                    "$precision · HTP runtime ready"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = if (backendReady) {
@@ -319,9 +297,7 @@ fun MusicRunScreen(
                         },
                         enabled = backendReady &&
                             style.isNotBlank() &&
-                            musicState !is MusicState.Generating &&
-                            musicState !is MusicState.Preloading &&
-                            (!q8FastPath || modelResident),
+                            musicState !is MusicState.Generating,
                         modifier = Modifier.fillMaxWidth(),
                         shape = MaterialTheme.shapes.large,
                     ) {
@@ -330,9 +306,7 @@ fun MusicRunScreen(
                         Text(
                             when {
                                 !backendReady -> "Starting native runtime…"
-                                preloadRunning -> "Loading model into HTP…"
-                                q8FastPath && !modelResident -> "Preparing Q8_0…"
-                                !htpAccelerated -> "Generate · CPU fallback"
+                                !htpAccelerated -> "Generate · compatibility"
                                 else -> "Generate music"
                             },
                         )
@@ -460,10 +434,16 @@ fun MusicRunScreen(
                                     Spacer(Modifier.size(8.dp))
                                     TextButton(
                                         onClick = {
-                                            MusicGenerationService.preload(context, modelId)
+                                            context.startForegroundService(
+                                                Intent(context, BackendService::class.java).apply {
+                                                    action = BackendService.ACTION_RESTART
+                                                    putExtra("modelId", modelId)
+                                                    putExtra("backendType", "yue2")
+                                                },
+                                            )
                                         },
                                     ) {
-                                        Text("Retry model load")
+                                        Text("Restart native runtime")
                                     }
                                 }
                             }
@@ -488,7 +468,7 @@ fun MusicRunScreen(
                                 )
                                 Text(
                                     if (q8FastPath) {
-                                        "Q8_0 preloads AR + NAR + Oobleck on entry, then generation starts from resident weights."
+                                        "Mobile-safe staged loading: AR → NAR → Oobleck. Only one heavy module stays on HTP at a time."
                                     } else {
                                         "Pipeline: AR score → semantic codes → NAR flow → Oobleck decode"
                                     },
