@@ -597,10 +597,18 @@ class BackendService : Service() {
                 }
 
                 isMusicBackend(backendType) -> {
-                    // yue2.cpp's native async server. 20-second UI requests fit
-                    // comfortably in an 8192-token KV cache while avoiding the
-                    // multi-GB full-context allocation. STRICT is the default,
-                    // so AR -> NAR -> VAE swap cleanly between stages.
+                    // YuE2 is deliberately stage-swapped on mobile. Upstream's
+                    // --keep-loaded mode is meant for devices with a generous
+                    // accelerator memory budget; it keeps AR + NAR + VAE
+                    // resident together and is a bad fit for a phone.
+                    //
+                    // 20 s output needs only ~500 semantic frames, so a 4096
+                    // token KV cache leaves plenty of headroom while lowering
+                    // resident memory substantially versus the old 8192 setup.
+                    //
+                    // FLASH_ATTN_EXT currently has a documented correctness bug
+                    // on Snapdragon Hexagon v75, so use the plain attention path
+                    // and still offload supported matmuls to HTP.
                     mutableListOf(
                         executableFile.absolutePath,
                         "--model",
@@ -614,19 +622,13 @@ class BackendService : Service() {
                         "--max-batch",
                         "1",
                         "--max-seq",
-                        "8192",
+                        "4096",
                         "--vae-core",
                         "256",
                         "--vae-halo",
                         "16",
-                    ).apply {
-                        // Q8_0 is the fast YuE2 HTP path. Keep its AR, NAR and
-                        // VAE modules resident so the screen can prewarm once
-                        // and every real generation starts immediately.
-                        if (modelId == "yue2_3b_q8") {
-                            add("--keep-loaded")
-                        }
-                    }
+                        "--no-fa",
+                    )
                 }
 
                 else -> mutableListOf(
