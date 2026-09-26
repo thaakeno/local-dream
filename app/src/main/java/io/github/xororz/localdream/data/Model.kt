@@ -138,6 +138,9 @@ data class Model(
     // their parts are pulled straight from the repositories that publish them
     // instead of being rehosted.
     val packageFiles: List<String> = emptyList(),
+    // Optional shared install directory for family assets. Empty preserves the
+    // classic one-directory-per-model layout.
+    val packageInstallDir: String = "",
     // Optional runtime recipe installed beside the model. Distilled models
     // can own their adapter/sampler schedule without native filename/version
     // checks or hardcoded dimensions.
@@ -202,6 +205,12 @@ data class Model(
                     ModelDownloadService.EXTRA_FILE_NAMES,
                     ArrayList(packageFiles),
                 )
+                if (packageInstallDir.isNotBlank()) {
+                    putExtra(
+                        ModelDownloadService.EXTRA_INSTALL_DIR,
+                        packageInstallDir,
+                    )
+                }
                 // Written only after every file lands, so a partial download
                 // is never picked up as an installed model.
                 putExtra(
@@ -335,28 +344,28 @@ data class Model(
 
         val QWEN_IMAGE_2_1_PACKAGE_FILES = listOf(
             "leejet/Qwen-Image-2.1-GGUF/resolve/main/" +
-                "qwen_image_2.1-Q4_0.gguf|dit.gguf",
+                "qwen_image_2.1-Q4_0.gguf|" + QwenFamilyStorage.DIT_Q4,
         ) + QWEN_IMAGE_2_1_COMMON_FILES
 
         val QWEN_IMAGE_2_1_Q8_PACKAGE_FILES = listOf(
             "leejet/Qwen-Image-2.1-GGUF/resolve/main/" +
-                "qwen_image_2.1-Q8_0.gguf|dit.gguf",
+                "qwen_image_2.1-Q8_0.gguf|" + QwenFamilyStorage.DIT_Q8,
         ) + QWEN_IMAGE_2_1_COMMON_FILES
 
         // Native F8_E4M3 safetensors path for Hexagon's FP8 kernels.
         val QWEN_IMAGE_2_1_FP8_PACKAGE_FILES = listOf(
             "unsloth/Qwen-Image-2.1-FP8/resolve/main/" +
-                "Qwen-Image-2.1-FP8.safetensors|dit.safetensors",
+                "Qwen-Image-2.1-FP8.safetensors|" + QwenFamilyStorage.DIT_FP8,
         ) + QWEN_IMAGE_2_1_COMMON_FILES
 
-        private const val VIGGLE_R128 =
+        private val VIGGLE_R128 =
             "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
                 "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors|" +
-                "turbo_lora.safetensors"
-        private const val VIGGLE_R256 =
+                QwenFamilyStorage.LORA_R128
+        private val VIGGLE_R256 =
             "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
                 "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors|" +
-                "turbo_lora.safetensors"
+                QwenFamilyStorage.LORA_R256
 
         val QWEN_IMAGE_2_1_Q4_VIGGLE_R128_FILES =
             QWEN_IMAGE_2_1_PACKAGE_FILES + VIGGLE_R128
@@ -648,6 +657,7 @@ class ModelRepository private constructor(private val context: Context) {
                 if (!dir.isDirectory) return@forEach
 
                 val modelId = dir.name
+                if (modelId.startsWith("_")) return@forEach
                 if (modelId in RESERVED_MODEL_IDS) {
                     Log.w(
                         "ModelRepository",
@@ -948,13 +958,12 @@ class ModelRepository private constructor(private val context: Context) {
             },
             baseUrl = baseUrl,
             packageFiles = packageFiles,
+            packageInstallDir = QwenFamilyStorage.SHARED_DIR_NAME,
             inferenceProfile = if (turbo) Model.QWEN_IMAGE_2_1_VIGGLE_TURBO_PROFILE else null,
             generationSize = 1024,
             approximateSize = totalSize,
-            isDownloaded = Model.isDitPackageDownloaded(
+            isDownloaded = QwenFamilyStorage.isPackageReady(
                 context,
-                id,
-                "qwen21",
                 packageFiles,
             ),
             codeDefaults = ModelConfig(
@@ -1417,15 +1426,24 @@ class ModelRepository private constructor(private val context: Context) {
             models = withContext(Dispatchers.IO) {
                 current.map { model ->
                     if (model.id == modelId) {
-                        val isDownloaded = if (model.isDit) {
-                            Model.isDitPackageDownloaded(
-                                context,
-                                modelId,
-                                model.ditKind,
-                                model.packageFiles,
-                            )
-                        } else {
-                            Model.isModelDownloaded(context, modelId, model.isCustom)
+                        val isDownloaded = when {
+                            model.catalogFamily == "qwen21" ->
+                                QwenFamilyStorage.isPackageReady(context, model.packageFiles)
+                            model.isMusic ->
+                                Model.isPackageDownloaded(
+                                    context,
+                                    modelId,
+                                    model.packageMarker,
+                                    model.packageFiles,
+                                )
+                            model.isDit ->
+                                Model.isDitPackageDownloaded(
+                                    context,
+                                    modelId,
+                                    model.ditKind,
+                                    model.packageFiles,
+                                )
+                            else -> Model.isModelDownloaded(context, modelId, model.isCustom)
                         }
                         applyConfigDefaults(
                             model.copy(isDownloaded = isDownloaded),
