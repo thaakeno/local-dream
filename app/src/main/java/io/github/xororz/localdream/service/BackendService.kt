@@ -529,6 +529,40 @@ class BackendService : Service() {
                 File(Model.getModelsDir(this), modelId)
             }
 
+            BackendDiagnostics.beginSession(
+                this,
+                "backendType=$backendType model=$modelId",
+            )
+            BackendDiagnostics.append(
+                this,
+                "START",
+                "modelsDir=${modelsDir.absolutePath}",
+            )
+
+            if (isMusicBackend(backendType)) {
+                val backbone = File(modelsDir, "backbone.gguf")
+                val vae = File(modelsDir, "vae.gguf")
+                val invalid = when {
+                    !backbone.isFile -> "YuE2 backbone.gguf is missing"
+                    backbone.length() < 3_000_000_000L && modelId == "yue2_3b_q8" ->
+                        "YuE2 Q8 backbone looks incomplete (${backbone.length()} bytes)"
+                    !vae.isFile -> "YuE2 vae.gguf is missing"
+                    vae.length() < 450_000_000L ->
+                        "YuE2 VAE looks incomplete (${vae.length()} bytes)"
+                    else -> null
+                }
+                BackendDiagnostics.append(
+                    this,
+                    "MODEL",
+                    "backbone=${backbone.length()}B vae=${vae.length()}B",
+                )
+                if (invalid != null) {
+                    BackendDiagnostics.append(this, "ERROR", invalid)
+                    updateState(BackendState.Error(invalid, config.modelId))
+                    return false
+                }
+            }
+
             val executableFile = File(
                 nativeDir,
                 if (isMusicBackend(backendType)) MUSIC_EXECUTABLE_NAME else EXECUTABLE_NAME,
