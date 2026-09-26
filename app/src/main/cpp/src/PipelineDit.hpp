@@ -5,7 +5,6 @@
 
 #include <chrono>
 #include <fstream>
-#include <malloc.h>
 #include <string>
 #include <vector>
 
@@ -123,7 +122,10 @@ class PipelineDit : public Pipeline {
       if (!ctx_)
         throw std::runtime_error("Failed to reset DiT context for 2K generation");
       ctx_has_vision_ = needs_vision_context;
-      malloc_trim(0);
+      // Android uses bionic rather than glibc, so malloc_trim() does not
+      // exist here. Destroying the engine context already releases the large
+      // allocations; bionic returns/free-lists those pages without an
+      // explicit glibc trim call.
     }
 
     if (high_res_request) {
