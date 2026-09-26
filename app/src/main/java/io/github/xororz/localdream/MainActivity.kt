@@ -30,6 +30,7 @@ import io.github.xororz.localdream.ui.screens.HistoryScreen
 import io.github.xororz.localdream.ui.screens.MigrationScreen
 import io.github.xororz.localdream.ui.screens.ModelListScreen
 import io.github.xororz.localdream.ui.screens.ModelRunScreen
+import io.github.xororz.localdream.ui.screens.MusicRunScreen
 import io.github.xororz.localdream.ui.screens.RemoteScreen
 import io.github.xororz.localdream.ui.screens.UpscaleScreen
 import io.github.xororz.localdream.ui.theme.LocalDreamTheme
@@ -203,6 +204,17 @@ private fun AppContent() {
             ModelRunScreen(
                 modelId = modelId,
                 isRemote = isRemote,
+                navController = navController,
+            )
+        }
+        composable(
+            route = Screen.MusicRun.route,
+            arguments = listOf(
+                navArgument("modelId") { type = NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            MusicRunScreen(
+                modelId = backStackEntry.arguments?.getString("modelId") ?: "",
                 navController = navController,
             )
         }
