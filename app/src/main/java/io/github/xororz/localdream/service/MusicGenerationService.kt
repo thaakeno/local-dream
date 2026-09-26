@@ -13,6 +13,7 @@ import io.github.xororz.localdream.utils.BackendDiagnostics
 import io.github.xororz.localdream.utils.CrashDiagnostics
 import io.github.xororz.localdream.utils.Http
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +44,12 @@ class MusicGenerationService : Service() {
     private var synthCall: Call? = null
     private var logCall: Call? = null
     private var cancelRequested = false
+
+    // Native /job only exposes running|done|failed|cancelled. Keep the last
+    // fatal line from the SSE stream so a failed generation surfaces the real
+    // pipeline error instead of the useless generic "native pipeline failed".
+    @Volatile
+    private var lastNativeFailure: String? = null
 
     companion object {
         private const val CHANNEL_ID = "music_generation_channel"
@@ -383,6 +390,7 @@ class MusicGenerationService : Service() {
         val started = System.currentTimeMillis()
 
         cancelRequested = false
+        lastNativeFailure = null
         CrashDiagnostics.beginGenerationSession(
             this,
             "YuE2 generate model=${modelId ?: "unknown"} duration=${duration}s steps=$steps cot=$cot",
@@ -446,7 +454,20 @@ class MusicGenerationService : Service() {
                 )
 
                 val logJob = launch {
-                    followGenerationLogs(id, started, duration, steps)
+                    try {
+                        followGenerationLogs(id, started, duration, steps)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Progress is advisory; losing the SSE stream must
+                        // never take down the actual generation job. The poller
+                        // remains the source of truth for completion.
+                        BackendDiagnostics.append(
+                            this@MusicGenerationService,
+                            "SSE",
+                            "progress stream stopped: ${e.javaClass.simpleName}: ${e.message}",
+                        )
+                    }
                 }
                 try {
                     pollUntilComplete(id, started, duration)
@@ -519,7 +540,9 @@ class MusicGenerationService : Service() {
                     fetchResult(id, started, targetSeconds)
                     return
                 }
-                "failed" -> throw IllegalStateException("YuE2 native pipeline failed")
+                "failed" -> throw IllegalStateException(
+                    lastNativeFailure ?: "YuE2 native pipeline failed",
+                )
                 "cancelled" -> {
                     _state.value = MusicState.Idle
                     return
@@ -595,6 +618,15 @@ class MusicGenerationService : Service() {
         renderSteps: Int,
     ) {
         followNativeLogs(id) { line ->
+            if (
+                line.contains("FATAL:", ignoreCase = true) ||
+                line.contains("[ ERROR ]", ignoreCase = true)
+            ) {
+                lastNativeFailure = line
+                    .replace(Regex("""\s+"""), " ")
+                    .trim()
+                    .take(700)
+            }
             phaseFromLog(line, started, targetSeconds, renderSteps)?.let { next ->
                 _state.value = next
                 CrashDiagnostics.recordGeneration(
@@ -611,25 +643,68 @@ class MusicGenerationService : Service() {
         id: String,
         onLine: (String) -> Unit,
     ) {
-        val request = Request.Builder().url("$BACKEND/logs").get().build()
-        logCall = client.newCall(request)
-        logCall!!.execute().use { response ->
-            if (!response.isSuccessful) return
-            val source = response.body?.source() ?: return
-            var active = false
-            while (!source.exhausted() && !cancelRequested) {
-                val raw = source.readUtf8Line() ?: break
-                if (!raw.startsWith("data: ")) continue
-                val line = raw.removePrefix("data: ")
-                if (!active) {
-                    if (line.contains("[Server] Job $id:")) {
-                        active = true
+        var reconnectAttempt = 0
+        var active = false
+
+        while (!cancelRequested) {
+            val request = Request.Builder().url("$BACKEND/logs").get().build()
+            val call = client.newCall(request)
+            logCall = call
+
+            try {
+                call.execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw IOException("YuE2 log stream HTTP ${response.code}")
+                    }
+
+                    val source = response.body?.source() ?: return
+                    reconnectAttempt = 0
+
+                    while (!cancelRequested && !source.exhausted()) {
+                        val raw = source.readUtf8Line() ?: break
+                        if (!raw.startsWith("data: ")) continue
+                        val line = raw.removePrefix("data: ")
+
+                        if (!active) {
+                            if (line.contains("[Server] Job $id:")) {
+                                active = true
+                                onLine(line)
+                            }
+                            continue
+                        }
                         onLine(line)
                     }
-                    continue
                 }
-                onLine(line)
+
+                // A clean EOF is still unexpected while the job is active.
+                // yue-server's own WebUI reconnects its EventSource too, and
+                // /logs replays a 512-line ring buffer on reconnect.
+                if (cancelRequested || call.isCanceled()) return
+                reconnectAttempt++
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                // OkHttp reports Call.cancel()/closed chunked bodies as
+                // SocketException("Socket closed"). That is normal when the
+                // poller finishes/fails and closes the progress stream.
+                if (cancelRequested || call.isCanceled()) return
+
+                reconnectAttempt++
+                BackendDiagnostics.append(
+                    this,
+                    "SSE",
+                    "stream disconnected (${e.javaClass.simpleName}: ${e.message}); " +
+                        "reconnect=$reconnectAttempt",
+                )
+            } finally {
+                if (logCall === call) logCall = null
+                runCatching { call.cancel() }
             }
+
+            if (cancelRequested) return
+            // Match upstream's reconnecting EventSource behavior, but retry a
+            // little faster on-device so progress resumes promptly.
+            delay((350L * reconnectAttempt.coerceIn(1, 5)).coerceAtMost(1500L))
         }
     }
 
@@ -698,7 +773,7 @@ class MusicGenerationService : Service() {
             line.contains("[VAE] Decoded") ->
                 state("finalizing", "Finishing model warmup", 0.98f)
             line.contains("[Pipeline] Done") ->
-                state("finalizing", "All YuE2 stages resident", 0.995f)
+                state("finalizing", "YuE2 warmup complete", 0.995f)
             else -> null
         }
     }
@@ -766,9 +841,17 @@ class MusicGenerationService : Service() {
 
         return when {
             line.contains("[Server] Job ") ->
-                state("starting", "Resident pipeline accepted the job", 0.02f)
+                state("starting", "Native pipeline accepted the job", 0.02f)
+            line.contains("[LM-KV] Allocated") ->
+                state("loading_ar", nativeDetail(line, "HTP KV cache allocated"), 0.035f)
             line.contains("[Store] Load LM") ->
-                state("loading_ar", "Composer loaded", 0.04f)
+                state("loading_ar", "Composer loaded on HTP", 0.04f)
+            line.contains("[AR] Frame budget clamped") ->
+                state(
+                    "semantic",
+                    "$targetSeconds s target · up to ${targetSeconds * 25} semantic frames",
+                    0.25f,
+                )
             line.contains("[AR] ABC") ->
                 state("planning", "Composing melody and harmony", 0.05f)
             line.contains("[AR] semantic") ->
