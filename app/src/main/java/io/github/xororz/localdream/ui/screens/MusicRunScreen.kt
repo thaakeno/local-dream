@@ -514,9 +514,202 @@ fun MusicRunScreen(
 }
 
 @Composable
+private fun MusicPreloadCard(
+    state: MusicState.Preloading,
+    precision: String,
+    onCancel: () -> Unit,
+) {
+    val elapsed by produceState(initialValue = 0L, state.startedAtMillis) {
+        while (true) {
+            value = (System.currentTimeMillis() - state.startedAtMillis)
+                .coerceAtLeast(0L) / 1000L
+            delay(500)
+        }
+    }
+
+    ElevatedCard(
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Loading $precision",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        state.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                OutlinedButton(onClick = onCancel) {
+                    Icon(Icons.Default.Close, contentDescription = null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("Cancel")
+                }
+            }
+
+            MusicStageStrip(activePhase = state.phase, preload = true)
+
+            MusicStageStrip(activePhase = state.phase, preload = false)
+
+            if (state.progress != null) {
+                SmoothLinearWavyProgressIndicator(
+                    progress = state.progress,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                SmoothIndeterminateLinearWavyProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    when {
+                        state.total > 0 -> "${state.step}/${state.total}"
+                        state.progress != null -> "${(state.progress * 100).toInt()}%"
+                        else -> "Native load"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "Elapsed ${elapsed}s",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Text(
+                "Real warmup: composer → acoustic renderer → Oobleck decoder. " +
+                    "Q8_0 stays resident after this pass.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MusicReadyCard(
+    precision: String,
+    preloadMillis: Long,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.extraLarge,
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                Icons.Default.Bolt,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Column {
+                Text(
+                    "$precision resident · ready",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    if (preloadMillis > 0L) {
+                        "AR, NAR and Oobleck warmed in " +
+                            String.format(java.util.Locale.US, "%.1fs", preloadMillis / 1000f)
+                    } else {
+                        "Native YuE2 pipeline is already resident."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MusicStageStrip(
+    activePhase: String,
+    preload: Boolean,
+) {
+    val stages = if (preload) {
+        listOf(
+            "server" to "Server",
+            "composer" to "AR",
+            "renderer" to "NAR",
+            "decoder" to "VAE",
+            "finalizing" to "Ready",
+        )
+    } else {
+        listOf(
+            "planning" to "Plan",
+            "semantic" to "Tokens",
+            "flow" to "Render",
+            "decoding" to "Decode",
+            "finalizing" to "Finish",
+        )
+    }
+    val aliases = when (activePhase) {
+        "submit", "composer_ready" -> if (preload) "composer" else activePhase
+        "loading_ar", "starting", "queued" -> if (preload) "composer" else "planning"
+        "loading_nar" -> if (preload) "renderer" else "flow"
+        "loading_vae", "result" -> if (preload) "decoder" else "decoding"
+        else -> activePhase
+    }
+    val activeIndex = stages.indexOfFirst { it.first == aliases }.coerceAtLeast(0)
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        stages.forEachIndexed { index, (_, label) ->
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = MaterialTheme.shapes.small,
+                color = if (index <= activeIndex) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHighest
+                },
+            ) {
+                Text(
+                    label,
+                    modifier = Modifier.padding(vertical = 6.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (index <= activeIndex) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun MusicProgressCard(
     state: MusicState.Generating,
     precision: String,
+    runtimeLabel: String,
     onCancel: () -> Unit,
 ) {
     val elapsed by produceState(initialValue = 0L, state.startedAtMillis) {
@@ -584,7 +777,7 @@ private fun MusicProgressCard(
             }
 
             Text(
-                "HTP0 · $precision backbone · ${state.targetSeconds * 25} frame budget · 48 kHz stereo",
+                "$runtimeLabel · $precision backbone · ${state.targetSeconds * 25} frame budget · 48 kHz stereo",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
