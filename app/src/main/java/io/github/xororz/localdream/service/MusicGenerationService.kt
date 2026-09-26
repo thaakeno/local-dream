@@ -485,28 +485,35 @@ class MusicGenerationService : Service() {
         }
     }
 
-    private suspend fun pollUntilComplete(id: String, started: Long, targetSeconds: Int) {
+    private suspend fun pollUntilComplete(
+        id: String,
+        started: Long,
+        targetSeconds: Int,
+    ) {
         while (!cancelRequested) {
-            val request = Request.Builder().url("$BACKEND/job?id=$id").get().build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw IllegalStateException("YuE2 job disappeared")
-                when (JSONObject(response.body?.string().orEmpty()).optString("status")) {
-                    "done" -> {
-                        fetchResult(id, started, targetSeconds)
-                        return
-                    }
-                    "failed" -> throw IllegalStateException("YuE2 native pipeline failed")
-                    "cancelled" -> {
-                        _state.value = MusicState.Idle
-                        return
-                    }
+            when (jobStatus(id)) {
+                "done" -> {
+                    fetchResult(id, started, targetSeconds)
+                    return
+                }
+                "failed" -> throw IllegalStateException("YuE2 native pipeline failed")
+                "cancelled" -> {
+                    _state.value = MusicState.Idle
+                    return
                 }
             }
-            delay(350)
+            delay(300)
         }
     }
 
     private fun fetchResult(id: String, started: Long, targetSeconds: Int) {
+        _state.value = MusicState.Generating(
+            phase = "result",
+            detail = "Collecting encoded track",
+            progress = 0.99f,
+            startedAtMillis = started,
+            targetSeconds = targetSeconds,
+        )
         val request = Request.Builder().url("$BACKEND/job?id=$id&result=1").get().build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IllegalStateException("YuE2 result unavailable")
@@ -522,13 +529,19 @@ class MusicGenerationService : Service() {
             out.writeBytes(parsed.audio)
 
             val replay = runCatching { JSONObject(parsed.replayJson) }.getOrNull()
+            val elapsed = System.currentTimeMillis() - started
+            CrashDiagnostics.recordGeneration(
+                this,
+                "COMPLETE",
+                "YuE2 generation complete elapsed=${elapsed}ms file=${out.name}",
+            )
             _state.value = MusicState.Complete(
                 file = out,
                 score = replay?.optString("abc").orEmpty(),
                 lmSeed = replay?.optLong("lm_seed", -1L) ?: -1L,
                 acousticSeed = replay?.optLong("seed", -1L) ?: -1L,
                 targetSeconds = targetSeconds,
-                elapsedMillis = System.currentTimeMillis() - started,
+                elapsedMillis = elapsed,
             )
             notifyPhase("Music ready")
         }
