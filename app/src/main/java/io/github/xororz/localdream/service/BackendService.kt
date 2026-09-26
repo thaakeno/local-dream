@@ -141,6 +141,7 @@ class BackendService : Service() {
 
         private fun extractBackendError(line: String): String? {
             val trimmed = line.trim()
+            val lower = trimmed.lowercase()
             val errorMarker = "[ ERROR ]"
             val message = when {
                 errorMarker in trimmed -> {
@@ -155,6 +156,15 @@ class BackendService : Service() {
 
                 trimmed.startsWith("ERROR:", ignoreCase = true) ->
                     trimmed.substringAfter(':').trim()
+
+                "[load] fatal:" in lower ||
+                    "[pipeline] fatal:" in lower ||
+                    "failed to open session" in lower ||
+                    "failed to create device/session" in lower ||
+                    "failed to allocate weight buffer" in lower ||
+                    "ggml_assert" in lower ||
+                    "aee_eunabletoload" in lower ->
+                    trimmed
 
                 else -> return null
             }
