@@ -129,7 +129,10 @@ class BackgroundGenerationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d("GenerationService", "service execute: ${intent?.extras}")
 
-        startForeground(NOTIFICATION_ID, createNotification(0f))
+        startForeground(
+            NOTIFICATION_ID,
+            createNotification(0f, "queued", 0, 0),
+        )
 
         when (intent?.action) {
             ACTION_STOP -> {
@@ -294,7 +297,14 @@ class BackgroundGenerationService : Service() {
         // racing the service shutdown after that point is not an error.
         var completed = false
         try {
-            updateState(GenerationState.Progress(0f, 0, steps))
+            updateState(
+                GenerationState.Progress(
+                    progress = 0f,
+                    step = 0,
+                    totalSteps = 0,
+                    phase = "queued",
+                ),
+            )
             CrashDiagnostics.record(
                 this@BackgroundGenerationService,
                 "GENERATION",
@@ -401,10 +411,29 @@ class BackgroundGenerationService : Service() {
                             when (message.optString("type")) {
                                 "phase" -> {
                                     currentPhase = message.optString("phase", "preparing")
+                                    val stageStep = message.optInt("step", 0)
+                                    val stageTotal = message.optInt("total_steps", 0)
+                                    if (stageTotal > 0) {
+                                        currentStep = stageStep.coerceIn(0, stageTotal)
+                                        currentTotalSteps = stageTotal
+                                        currentProgress =
+                                            (currentStep.toFloat() / stageTotal).coerceIn(0f, 1f)
+                                    } else if (currentPhase != "denoising") {
+                                        // A non-numeric stage is indeterminate. Reset the
+                                        // old stage fraction so a previous 100% never looks
+                                        // like overall generation completion.
+                                        currentStep = 0
+                                        currentTotalSteps = 0
+                                        currentProgress = 0f
+                                    }
                                     CrashDiagnostics.recordGeneration(
                                         this@BackgroundGenerationService,
                                         "PHASE",
-                                        currentPhase,
+                                        if (stageTotal > 0) {
+                                            "$currentPhase $currentStep/$currentTotalSteps"
+                                        } else {
+                                            currentPhase
+                                        },
                                     )
                                     CrashDiagnostics.recordGenerationTelemetry(
                                         this@BackgroundGenerationService,
@@ -418,6 +447,12 @@ class BackgroundGenerationService : Service() {
                                             phase = currentPhase,
                                             intermediateImage = currentPreview,
                                         ),
+                                    )
+                                    updateNotification(
+                                        currentProgress,
+                                        currentPhase,
+                                        currentStep,
+                                        currentTotalSteps,
                                     )
                                 }
 
@@ -488,7 +523,12 @@ class BackgroundGenerationService : Service() {
                                             intermediateImage = currentPreview,
                                         ),
                                     )
-                                    updateNotification(currentProgress)
+                                    updateNotification(
+                                        currentProgress,
+                                        currentPhase,
+                                        currentStep,
+                                        currentTotalSteps,
+                                    )
                                 }
 
                                 "complete" -> {
@@ -723,7 +763,27 @@ class BackgroundGenerationService : Service() {
         notificationManager.createNotificationChannel(channel)
     }
 
-    private fun createNotification(progress: Float): Notification {
+    private fun generationPhaseLabel(phase: String): String = when (phase) {
+        "queued" -> "Starting generation"
+        "preparing" -> "Preparing model runtime"
+        "preparing_latents" -> "Preparing latents"
+        "loading_model" -> "Loading model"
+        "loading_denoiser" -> "Loading denoiser"
+        "encoding_input" -> "Encoding input image"
+        "encoding_prompt" -> "Encoding prompt"
+        "inverting" -> "Preparing latent inversion"
+        "denoising" -> "Sampling"
+        "decoding" -> "Decoding image"
+        "finalizing" -> "Finalizing result"
+        else -> phase.replace('_', ' ').replaceFirstChar { it.uppercase() }
+    }
+
+    private fun createNotification(
+        progress: Float,
+        phase: String,
+        step: Int,
+        totalSteps: Int,
+    ): Notification {
         val openAppIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
         }
@@ -740,10 +800,22 @@ class BackgroundGenerationService : Service() {
             Intent(this, BackgroundGenerationService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val hasNumericProgress = totalSteps > 0 &&
+            (phase == "denoising" || phase == "loading_model")
+        val phaseLabel = generationPhaseLabel(phase)
+        val detail = if (hasNumericProgress) {
+            "$phaseLabel · $step/$totalSteps · ${(progress * 100).toInt()}%"
+        } else {
+            phaseLabel
+        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(this.getString(R.string.generating_notify))
-            .setContentText("Progress: ${(progress * 100).toInt()}%")
-            .setProgress(100, (progress * 100).toInt(), false)
+            .setContentText(detail)
+            .setProgress(
+                100,
+                (progress * 100).toInt(),
+                !hasNumericProgress,
+            )
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentIntent(pendingIntent)
             .addAction(
@@ -756,13 +828,21 @@ class BackgroundGenerationService : Service() {
             .build()
     }
 
-    private fun updateNotification(progress: Float) {
-        // The system rate-limits notification updates; posting one per
-        // diffusion step just gets dropped, so throttle to ~2 per second.
+    private fun updateNotification(
+        progress: Float,
+        phase: String,
+        step: Int,
+        totalSteps: Int,
+    ) {
+        // The system rate-limits notifications. The in-app card still updates
+        // on every SSE event; this only throttles the notification surface.
         val now = SystemClock.elapsedRealtime()
-        if (now - lastProgressNotifyAt < 500) return
+        if (now - lastProgressNotifyAt < 350) return
         lastProgressNotifyAt = now
-        notificationManager.notify(NOTIFICATION_ID, createNotification(progress))
+        notificationManager.notify(
+            NOTIFICATION_ID,
+            createNotification(progress, phase, step, totalSteps),
+        )
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
