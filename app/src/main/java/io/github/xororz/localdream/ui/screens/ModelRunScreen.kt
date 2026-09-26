@@ -1986,6 +1986,7 @@ fun ModelRunScreen(
         val source = request.params
         val count = request.count.coerceIn(2, 8)
         if (isRunning || isUpscaling || isUltrafixPreparing) return
+        val previousBatchCount = batchCounts
 
         val targetWidth = if (model?.usesFixedCanvas == true) 1024 else source.width
         val targetHeight = if (model?.usesFixedCanvas == true) 1024 else source.height
@@ -2100,6 +2101,8 @@ fun ModelRunScreen(
             }
             currentBatchIndex = 0
             isRunning = false
+            batchCounts = previousBatchCount
+            saveAllFields()
         }
     }
 
@@ -3287,6 +3290,27 @@ fun ModelRunScreen(
                             onBatchAddToCollection = {
                                 collectionTargetIds = selectedIds.toList()
                                 showAddToCollectionDialog = true
+                            },
+                            onBatchRemoveFromCollection = { collectionId ->
+                                val ids = selectedIds.toList()
+                                scope.launch {
+                                    val ok = historyManager.removeFromCollection(collectionId, ids)
+                                    if (ok) {
+                                        selectedIds.clear()
+                                        isSelectionMode = false
+                                        Toast.makeText(
+                                            context,
+                                            context.getString(R.string.collection_updated),
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    } else {
+                                        Toast.makeText(
+                                            context,
+                                            context.getString(R.string.collection_failed),
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                }
                             },
                             onBatchDelete = { showBatchDeleteDialog = true },
                         )

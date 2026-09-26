@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -91,10 +92,12 @@ fun ResultGalleryOverlay(
         initialPage = initialPage,
         pageCount = { entries.size },
     )
+    var zoomedPage by remember { mutableStateOf<Int?>(null) }
 
     BackHandler(onBack = onDismiss)
 
     LaunchedEffect(pagerState.currentPage, entries) {
+        zoomedPage = null
         entries.getOrNull(pagerState.currentPage)?.historyItem?.let(onHistoryItemChanged)
     }
 
@@ -105,11 +108,17 @@ fun ResultGalleryOverlay(
     ) {
         HorizontalPager(
             state = pagerState,
+            userScrollEnabled = zoomedPage == null,
             modifier = Modifier.fillMaxSize(),
         ) { page ->
             ResultGalleryPhoto(
                 entry = entries[page],
                 onDismiss = onDismiss,
+                onZoomChanged = { zoomed ->
+                    if (page == pagerState.currentPage) {
+                        zoomedPage = if (zoomed) page else null
+                    }
+                },
             )
         }
 
@@ -152,12 +161,15 @@ fun ResultGalleryOverlay(
 private fun ResultGalleryPhoto(
     entry: ResultGalleryEntry,
     onDismiss: () -> Unit,
+    onZoomChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     var scale by remember(entry.stableKey) { mutableFloatStateOf(1f) }
     var panX by remember(entry.stableKey) { mutableFloatStateOf(0f) }
     var panY by remember(entry.stableKey) { mutableFloatStateOf(0f) }
     var dismissDrag by remember(entry.stableKey) { mutableFloatStateOf(0f) }
+    var viewportWidth by remember(entry.stableKey) { mutableFloatStateOf(1f) }
+    var viewportHeight by remember(entry.stableKey) { mutableFloatStateOf(1f) }
     val shownDismissDrag by animateFloatAsState(
         targetValue = dismissDrag,
         animationSpec = tween(170),
@@ -169,9 +181,12 @@ private fun ResultGalleryPhoto(
         val oldScale = scale
         val newScale = (oldScale * zoomChange).coerceIn(1f, 5f)
         scale = newScale
+        onZoomChanged(newScale > 1.01f)
         if (newScale > 1.01f) {
-            panX += panChange.x
-            panY += panChange.y
+            val maxPanX = viewportWidth * (newScale - 1f) / 2f
+            val maxPanY = viewportHeight * (newScale - 1f) / 2f
+            panX = (panX + panChange.x).coerceIn(-maxPanX, maxPanX)
+            panY = (panY + panChange.y).coerceIn(-maxPanY, maxPanY)
         } else {
             panX = 0f
             panY = 0f
@@ -186,6 +201,10 @@ private fun ResultGalleryPhoto(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .onSizeChanged {
+                viewportWidth = it.width.toFloat().coerceAtLeast(1f)
+                viewportHeight = it.height.toFloat().coerceAtLeast(1f)
+            }
             .graphicsLayer { alpha = dragAlpha }
             .draggable(
                 state = verticalDragState,
@@ -223,12 +242,16 @@ private fun ResultGalleryPhoto(
                                 scale = 1f
                                 panX = 0f
                                 panY = 0f
+                                onZoomChanged(false)
                             } else {
                                 scale = 2.5f
                                 val dx = tap.x - size.width / 2f
                                 val dy = tap.y - size.height / 2f
-                                panX = -dx * 0.75f
-                                panY = -dy * 0.75f
+                                val maxPanX = viewportWidth * (scale - 1f) / 2f
+                                val maxPanY = viewportHeight * (scale - 1f) / 2f
+                                panX = (-dx * 0.75f).coerceIn(-maxPanX, maxPanX)
+                                panY = (-dy * 0.75f).coerceIn(-maxPanY, maxPanY)
+                                onZoomChanged(true)
                             }
                         },
                     )

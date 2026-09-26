@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Report
+import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.AssistChip
@@ -564,6 +565,7 @@ internal fun ModelRunHistoryPage(
     onToggleSelectAll: () -> Unit,
     onBatchSave: () -> Unit,
     onBatchAddToCollection: () -> Unit,
+    onBatchRemoveFromCollection: (Long) -> Unit,
     onBatchDelete: () -> Unit,
 ) {
     val locale = LocalConfiguration.current.locales[0]
@@ -838,6 +840,25 @@ internal fun ModelRunHistoryPage(
                                     contentDescription = "Add selected to collection",
                                 )
                             }
+
+                            historyFilter.collectionIds
+                                ?.singleOrNull()
+                                ?.let { collectionId ->
+                                    IconButton(
+                                        onClick = {
+                                            onBatchRemoveFromCollection(collectionId)
+                                        },
+                                        enabled = selectedIds.isNotEmpty() && !isBatchSaving,
+                                        colors = IconButtonDefaults.iconButtonColors(
+                                            contentColor = MaterialTheme.colorScheme.primary,
+                                        ),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.RemoveCircleOutline,
+                                            contentDescription = "Remove selected from collection",
+                                        )
+                                    }
+                                }
                             IconButton(
                                 onClick = onBatchSave,
                                 enabled = selectedIds.isNotEmpty() && !isBatchSaving,

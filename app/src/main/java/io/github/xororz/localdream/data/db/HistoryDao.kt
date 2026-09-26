@@ -8,7 +8,6 @@ import androidx.room.Query
 import androidx.room.RawQuery
 import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
-import io.github.xororz.localdream.data.db.HistoryCollectionItemEntity
 
 @Dao
 interface HistoryDao {

@@ -229,6 +229,27 @@ fun HistoryScreen(navController: NavController) {
                     collectionTargetIds = selectedIds.toList()
                     showAddToCollectionDialog = true
                 },
+                onBatchRemoveFromCollection = { collectionId ->
+                    val ids = selectedIds.toList()
+                    scope.launch {
+                        val ok = historyManager.removeFromCollection(collectionId, ids)
+                        if (ok) {
+                            selectedIds.clear()
+                            isSelectionMode = false
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.collection_updated),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        } else {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.collection_failed),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    }
+                },
                 onBatchDelete = { showBatchDeleteDialog = true },
             )
         }
