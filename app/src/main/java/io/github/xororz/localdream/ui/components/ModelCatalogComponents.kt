@@ -483,8 +483,6 @@ fun QwenFamilyCard(
                 it.isDownloaded
         }
     }
-    val r128Installed = variants.any { it.variantAdapter == "r128" && it.isDownloaded }
-    val r256Installed = variants.any { it.variantAdapter == "r256" && it.isDownloaded }
     val recommended = variants.firstOrNull { it.recommendedVariant }
         ?: variants.firstOrNull { it.isDownloaded }
         ?: variants.first()
@@ -496,8 +494,9 @@ fun QwenFamilyCard(
         colors = CardDefaults.elevatedCardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+        Column {
             AnimatedFamilyHero(
                 title = "Qwen Image 2.1",
                 subtitle = "Image generation · Hexagon HTP",
@@ -509,134 +508,50 @@ fun QwenFamilyCard(
                 music = false,
             )
 
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 18.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min)
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    listOf(
-                        Triple("Q4_0", "Q4", "Compact"),
-                        Triple("Q8_0", "Q8", "Quality"),
-                        Triple("FP8", "FP8", "Fast"),
-                    ).forEach { (precision, label, note) ->
-                        val installed = precision in installedPrecisions
-                        Surface(
-                            shape = MaterialTheme.shapes.large,
-                            color = if (installed) {
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Recommended",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "${recommended.variantPrecision}" +
+                            if (recommended.variantAdapter.isNotEmpty()) {
+                                " + Viggle ${recommended.variantAdapter}"
                             } else {
-                                MaterialTheme.colorScheme.surfaceContainerHigh
+                                " · Base"
                             },
-                            modifier = Modifier
-                                .weight(1f)
-                                .combinedClickable(
-                                    onClick = { showSheet = true },
-                                    onLongClick = {
-                                        if (installed) onDeletePrecision(precision)
-                                    },
-                                ),
-                        ) {
-                            Column(Modifier.padding(11.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        label,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
-                                    if (installed) {
-                                        Spacer(Modifier.weight(1f))
-                                        Icon(
-                                            Icons.Default.CheckCircle,
-                                            null,
-                                            modifier = Modifier.size(16.dp),
-                                            tint = MaterialTheme.colorScheme.primary,
-                                        )
-                                    }
-                                }
-                                Text(
-                                    note,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
 
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(9.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.Speed,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "Shared Turbo adapters",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text(
-                                "download once",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FamilyStatusPill(
-                                "r128 · " + if (r128Installed) "installed" else "680 MB",
-                                emphasized = r128Installed,
-                            )
-                            FamilyStatusPill(
-                                "r256 · " + if (r256Installed) "installed" else "1.36 GB",
-                                emphasized = r256Installed,
-                            )
-                        }
-                        Text(
-                            "A Viggle LoRA is now shared across Q4, Q8 and FP8 instead of being downloaded again for every transformer.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+                VerticalDivider(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .padding(vertical = 2.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
+                TextButton(
+                    onClick = { showSheet = true },
+                    modifier = Modifier.padding(start = 8.dp),
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            "Recommended",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        Text(
-                            "${recommended.variantPrecision}" +
-                                if (recommended.variantAdapter.isNotEmpty()) {
-                                    " + Viggle ${recommended.variantAdapter}"
-                                } else {
-                                    " base"
-                                },
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                    TextButton(onClick = { showSheet = true }) {
-                        Text("Configure")
-                        Spacer(Modifier.width(5.dp))
-                        Icon(Icons.Default.Tune, null)
-                    }
+                    Icon(Icons.Default.Tune, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Configure")
                 }
             }
         }
