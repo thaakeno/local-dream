@@ -376,14 +376,22 @@ data class Model(
         val QWEN_IMAGE_2_1_GGUF_VIGGLE_TURBO_PACKAGE_FILES =
             QWEN_IMAGE_2_1_Q4_VIGGLE_R128_FILES
 
-        // yue2.cpp's recommended near-lossless mobile package. Q8_0 keeps the
-        // 3.6B AR/NAR backbone compact while preserving the audio-code LM; the
-        // Oobleck decoder intentionally stays F32 because its weights directly
-        // shape the waveform.
-        val YUE2_Q8_PACKAGE_FILES = listOf(
-            "Serveurperso/YuE2-GGUF/resolve/main/YuE2-3B-Q8_0.gguf|backbone.gguf",
-            "Serveurperso/YuE2-GGUF/resolve/main/YuE2-Vae-F32.gguf|vae.gguf",
+        // Official yue2.cpp release matrix. There is intentionally no Q4:
+        // the upstream model card notes that the audio-code LM degrades below Q5.
+        // The F32 Oobleck VAE is shared by every variant because quantizing the
+        // decoder directly degrades the waveform.
+        private const val YUE2_VAE =
+            "Serveurperso/YuE2-GGUF/resolve/main/YuE2-Vae-F32.gguf|vae.gguf"
+
+        private fun yue2Package(backbone: String): List<String> = listOf(
+            "Serveurperso/YuE2-GGUF/resolve/main/$backbone|backbone.gguf",
+            YUE2_VAE,
         )
+
+        val YUE2_Q5_PACKAGE_FILES = yue2Package("YuE2-3B-Q5_K_M.gguf")
+        val YUE2_Q6_PACKAGE_FILES = yue2Package("YuE2-3B-Q6_K.gguf")
+        val YUE2_Q8_PACKAGE_FILES = yue2Package("YuE2-3B-Q8_0.gguf")
+        val YUE2_BF16_PACKAGE_FILES = yue2Package("YuE2-3B-BF16.gguf")
 
         // The values are the raw nodes published by Viggle. The engine applies
         // Qwen/FlowMatch's resolution-dependent shift at runtime and appends the
@@ -733,7 +741,47 @@ class ModelRepository private constructor(private val context: Context) {
                 add(createQwenImage21Fp8Model())
                 add(createQwenImage21Fp8ViggleR128Model())
                 add(createQwenImage21ViggleTurboModel())
-                add(createYue2Q8Model())
+                add(createYue2Variant(
+                    id = "yue2_3b_q5km",
+                    precision = "Q5_K_M",
+                    packageFiles = Model.YUE2_Q5_PACKAGE_FILES,
+                    backboneSize = "2.62 GB",
+                    totalSize = "3.15 GB",
+                    modelBytes = 2_620_000_000L,
+                    totalBytes = 3_150_000_000L,
+                    profile = "Compact",
+                ))
+                add(createYue2Variant(
+                    id = "yue2_3b_q6k",
+                    precision = "Q6_K",
+                    packageFiles = Model.YUE2_Q6_PACKAGE_FILES,
+                    backboneSize = "2.94 GB",
+                    totalSize = "3.47 GB",
+                    modelBytes = 2_940_000_000L,
+                    totalBytes = 3_470_000_000L,
+                    profile = "Balanced",
+                ))
+                add(createYue2Variant(
+                    id = "yue2_3b_q8",
+                    precision = "Q8_0",
+                    packageFiles = Model.YUE2_Q8_PACKAGE_FILES,
+                    backboneSize = "3.81 GB",
+                    totalSize = "4.34 GB",
+                    modelBytes = 3_810_000_000L,
+                    totalBytes = 4_340_000_000L,
+                    profile = "Quality",
+                    recommended = true,
+                ))
+                add(createYue2Variant(
+                    id = "yue2_3b_bf16",
+                    precision = "BF16",
+                    packageFiles = Model.YUE2_BF16_PACKAGE_FILES,
+                    backboneSize = "7.17 GB",
+                    totalSize = "7.70 GB",
+                    modelBytes = 7_170_000_000L,
+                    totalBytes = 7_700_000_000L,
+                    profile = "Native",
+                ))
             }
             if (isSdxlCapableSoc(getDeviceSoc())) {
                 add(createIllustriousV16Model())
@@ -825,30 +873,46 @@ class ModelRepository private constructor(private val context: Context) {
         )
     }
 
-    private fun createYue2Q8Model(): Model {
-        val id = "yue2_3b_q8"
+    private fun createYue2Variant(
+        id: String,
+        precision: String,
+        packageFiles: List<String>,
+        backboneSize: String,
+        totalSize: String,
+        modelBytes: Long,
+        totalBytes: Long,
+        profile: String,
+        recommended: Boolean = false,
+    ): Model {
+        val detail = when (precision) {
+            "Q5_K_M" -> "smallest supported quant"
+            "Q6_K" -> "mobile quality / memory balance"
+            "Q8_0" -> "near-lossless upstream default"
+            else -> "native BF16 backbone"
+        }
         return Model(
             id = id,
-            name = "YuE2 3B · Q8_0",
-            description = "Text-to-music · near-lossless Q8 backbone · 48 kHz stereo · HTP",
+            name = "YuE2 3B · $precision",
+            description = "$profile · $detail · $backboneSize backbone · 48 kHz stereo",
             baseUrl = baseUrl,
-            packageFiles = Model.YUE2_Q8_PACKAGE_FILES,
+            packageFiles = packageFiles,
             packageMarker = "YUE2",
-            approximateSize = "4.34GB",
+            approximateSize = totalSize,
             isDownloaded = Model.isPackageDownloaded(
                 context,
                 id,
                 "YUE2",
-                Model.YUE2_Q8_PACKAGE_FILES,
+                packageFiles,
             ),
             runOnCpu = false,
             musicKind = "yue2",
             catalogFamily = "yue2",
-            variantPrecision = "Q8_0",
+            variantPrecision = precision,
             variantFormat = "GGUF",
-            modelBytes = 3_810_000_000L,
-            downloadBytesEstimate = 4_340_000_000L,
-            recommendedVariant = true,
+            variantAdapter = profile,
+            modelBytes = modelBytes,
+            downloadBytesEstimate = totalBytes,
+            recommendedVariant = recommended,
         )
     }
 
@@ -1403,7 +1467,7 @@ class ModelRepository private constructor(private val context: Context) {
             "qwen_image_2_1_q8", "qwen_image_2_1_q8_viggle_r128",
             "qwen_image_2_1_q8_viggle_r256", "qwen_image_2_1_fp8_viggle_r128",
             // Music
-            "yue2_3b_q8",
+            "yue2_3b_q5km", "yue2_3b_q6k", "yue2_3b_q8", "yue2_3b_bf16",
         )
 
         fun isReservedModelId(id: String): Boolean = id in RESERVED_MODEL_IDS
