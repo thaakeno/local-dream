@@ -503,7 +503,14 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 }
 
                 is ModelDownloadService.DownloadState.Success -> {
-                    modelRepository.refreshModelState(state.modelId)
+                    val completed = modelRepository.models.find { it.id == state.modelId }
+                    if (completed?.catalogFamily == "qwen21") {
+                        // A transformer or LoRA downloaded for one selection can
+                        // immediately satisfy every other Qwen combination.
+                        modelRepository.refreshAllModels()
+                    } else {
+                        modelRepository.refreshModelState(state.modelId)
+                    }
                     downloadingModel = null
                     currentProgress = null
                     currentSpeedBytesPerSecond = 0L
