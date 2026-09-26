@@ -584,7 +584,14 @@ class BackendService : Service() {
                         "256",
                         "--vae-halo",
                         "16",
-                    )
+                    ).apply {
+                        // Q8_0 is the fast YuE2 HTP path. Keep its AR, NAR and
+                        // VAE modules resident so the screen can prewarm once
+                        // and every real generation starts immediately.
+                        if (modelId == "yue2_3b_q8") {
+                            add("--keep-loaded")
+                        }
+                    }
                 }
 
                 else -> mutableListOf(
@@ -715,9 +722,9 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (isMusicBackend(backendType)) {
-                // yue2.cpp uses the same statically linked GGML Hexagon backend
-                // as the image DiT engine. HTP0 is the primary scheduler device;
-                // GGML keeps CPU only as a fallback for unsupported tiny ops.
+                // The shared Hexagon backend accelerates Q8_0/BF16 paths. It
+                // does not implement Q5_K_M/Q6_K weight kernels, so those
+                // variants fall back to CPU for their large matmuls.
                 env["GGML_HEXAGON_DEVICES"] = "HTP0"
                 env["GGML_BACKEND"] = "HTP0"
                 val dspPath = listOf(
@@ -728,7 +735,12 @@ class BackendService : Service() {
                 ).joinToString(";")
                 env["ADSP_LIBRARY_PATH"] = dspPath
                 env["DSP_LIBRARY_PATH"] = dspPath
-                Log.i(TAG, "YuE2 backend: HTP0 primary, max_seq=8192, ADSP_LIBRARY_PATH=$dspPath")
+                Log.i(
+                    TAG,
+                    "YuE2 backend: HTP0 available, model=$modelId, " +
+                        "keepLoaded=${modelId == "yue2_3b_q8"}, max_seq=8192, " +
+                        "ADSP_LIBRARY_PATH=$dspPath",
+                )
             }
 
             if (ditEngineDir != null) {
@@ -890,7 +902,9 @@ class BackendService : Service() {
             try {
                 proc.destroy()
 
-                if (!proc.waitFor(5, TimeUnit.SECONDS)) {
+                val gracefulSeconds = if (serving?.backendType == "yue2") 15L else 5L
+                if (!proc.waitFor(gracefulSeconds, TimeUnit.SECONDS)) {
+                    Log.w(TAG, "backend did not exit in ${gracefulSeconds}s; forcing stop")
                     proc.destroyForcibly()
                 }
 
