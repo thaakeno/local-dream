@@ -347,31 +347,48 @@ class MusicGenerationService : Service() {
     private fun startGeneration(intent: Intent) {
         val style = intent.getStringExtra("style")?.trim().orEmpty()
         val lyrics = intent.getStringExtra("lyrics").orEmpty()
+        val modelId = intent.getStringExtra("modelId")
         if (style.isBlank() && lyrics.isBlank()) {
-            _state.value = MusicState.Error("Describe the music or enter lyrics.")
-            stopSelf()
+            _state.value = MusicState.Error("Describe the music or enter lyrics.", modelId)
+            finishService()
             return
         }
 
-        val cot = intent.getStringExtra("cot")?.takeIf { it in setOf("full", "melody", "off") } ?: "full"
+        workJob?.cancel()
+        val cot = intent.getStringExtra("cot")?.takeIf {
+            it in setOf("full", "melody", "off")
+        } ?: "full"
         val duration = intent.getIntExtra("duration", 20).coerceIn(5, 20)
         val steps = intent.getIntExtra("steps", 32).coerceIn(1, 64)
         val seed = intent.getLongExtra("seed", -1L)
-        val temperature = intent.getFloatExtra("semantic_temperature", 1f).coerceIn(0.5f, 1.5f)
-        val topP = intent.getFloatExtra("semantic_top_p", 0.95f).coerceIn(0.5f, 1f)
-        val cfg = intent.getFloatExtra("cfg_scale", -1f).let { value -> if (value < 0f) -1f else value.coerceIn(0.5f, 2f) }
+        val temperature = intent.getFloatExtra("semantic_temperature", 1f)
+            .coerceIn(0.5f, 1.5f)
+        val topP = intent.getFloatExtra("semantic_top_p", 0.95f)
+            .coerceIn(0.5f, 1f)
+        val cfg = intent.getFloatExtra("cfg_scale", -1f).let { value ->
+            if (value < 0f) -1f else value.coerceIn(0.5f, 2f)
+        }
         val started = System.currentTimeMillis()
 
         cancelRequested = false
+        CrashDiagnostics.beginGenerationSession(
+            this,
+            "YuE2 generate model=${modelId ?: "unknown"} duration=${duration}s steps=$steps cot=$cot",
+        )
         _state.value = MusicState.Generating(
             phase = "queued",
-            detail = "Starting native YuE2 runtime",
+            detail = if (_residentModelId.value == modelId) {
+                "Using resident YuE2 pipeline"
+            } else {
+                "Submitting to YuE2"
+            },
+            progress = 0.01f,
             startedAtMillis = started,
             targetSeconds = duration,
         )
         notifyPhase("Starting YuE2")
 
-        scope.launch {
+        workJob = scope.launch {
             try {
                 val payload = JSONObject().apply {
                     put("style", style)
@@ -389,33 +406,25 @@ class MusicGenerationService : Service() {
                     put(
                         "semantic_sampling",
                         JSONObject().apply {
-                            // Override only the two controls exposed in the UI.
-                            // YuE2 keeps its checkpoint-native top-k=100,
-                            // repetition penalty=1.2, window=50 and token bounds.
+                            // Preserve YuE2's checkpoint-native top-k,
+                            // repetition penalty, window and token bounds.
                             put("temperature", temperature.toDouble())
                             put("top_p", topP.toDouble())
                         },
                     )
                 }
 
-                val request = Request.Builder()
-                    .url("$BACKEND/synth")
-                    .post(payload.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-                synthCall = client.newCall(request)
-                val synthResponse = synthCall!!.execute()
-                val synthBody = synthResponse.body?.string().orEmpty()
-                if (!synthResponse.isSuccessful) {
-                    throw IllegalStateException(
-                        runCatching { JSONObject(synthBody).optString("error") }.getOrNull()
-                            ?.takeIf { it.isNotBlank() }
-                            ?: "YuE2 request failed (${synthResponse.code})",
-                    )
-                }
-                val id = JSONObject(synthBody).getString("id")
+                val id = submit(payload)
                 activeJobId = id
+                CrashDiagnostics.recordGeneration(
+                    this@MusicGenerationService,
+                    "PHASE",
+                    "job=$id submitted",
+                )
 
-                val logJob = launch { followLogs(id, started, duration, steps) }
+                val logJob = launch {
+                    followGenerationLogs(id, started, duration, steps)
+                }
                 try {
                     pollUntilComplete(id, started, duration)
                 } finally {
@@ -423,18 +432,56 @@ class MusicGenerationService : Service() {
                     logJob.cancel()
                 }
             } catch (e: CancellationException) {
-                _state.value = MusicState.Idle
+                if (cancelRequested) {
+                    _state.value = MusicState.Idle
+                }
             } catch (e: Exception) {
                 if (!cancelRequested) {
-                    _state.value = MusicState.Error(e.message ?: "Music generation failed")
+                    val message = e.message ?: "Music generation failed"
+                    CrashDiagnostics.recordGeneration(
+                        this@MusicGenerationService,
+                        "ERROR",
+                        message,
+                        e,
+                    )
+                    _state.value = MusicState.Error(message, modelId)
                     notifyPhase("Music generation failed")
                 }
             } finally {
                 synthCall = null
                 logCall = null
                 activeJobId = null
-                stopSelf()
+                finishService()
             }
+        }
+    }
+
+    private fun submit(payload: JSONObject): String {
+        val request = Request.Builder()
+            .url("$BACKEND/synth")
+            .post(payload.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        synthCall = client.newCall(request)
+        synthCall!!.execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException(
+                    runCatching { JSONObject(body).optString("error") }.getOrNull()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "YuE2 request failed (${response.code})",
+                )
+            }
+            return JSONObject(body).getString("id")
+        }
+    }
+
+    private fun jobStatus(id: String): String {
+        val request = Request.Builder().url("$BACKEND/job?id=$id").get().build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IllegalStateException("YuE2 job disappeared")
+            }
+            return JSONObject(response.body?.string().orEmpty()).optString("status")
         }
     }
 
