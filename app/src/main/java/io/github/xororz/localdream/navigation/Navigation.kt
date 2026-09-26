@@ -22,6 +22,10 @@ sealed class Screen(val route: String) {
         fun createRoute(modelId: String, remote: Boolean = false) = "model_run/$modelId?remote=$remote"
     }
 
+    object MusicRun : Screen("music_run/{modelId}") {
+        fun createRoute(modelId: String) = "music_run/$modelId"
+    }
+
     object Upscale : Screen("upscale")
 
     object History : Screen("history")
