@@ -158,7 +158,7 @@ private fun GenerationElapsedLabel(startedAtMillis: Long?) {
         }
     }
     Text(
-        text = "Elapsed $elapsedSeconds" + "s",
+        text = "Elapsed ${elapsedSeconds}s",
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -166,7 +166,7 @@ private fun GenerationElapsedLabel(startedAtMillis: Long?) {
 
 @Composable
 private fun GenerationTelemetryPanel(
-    @Suppress("UNUSED_PARAMETER") startedAtMillis: Long?,
+    startedAtMillis: Long?,
     acceleratorLabel: String,
 ) {
     val context = LocalContext.current
@@ -210,11 +210,6 @@ private fun GenerationTelemetryPanel(
                     (if (t.batteryPercent >= 0) "${t.batteryPercent}%" else "—") +
                     " · $temp · $current · Thermal ${t.thermalStatus}",
                 style = MaterialTheme.typography.bodySmall,
-            )
-            Text(
-                "Elapsed ${elapsed}s",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
