@@ -30,7 +30,7 @@ s = p.read_text()
 if "LOCAL_DREAM_ANDROID_VENDOR_NAMESPACE_FALLBACK" not in s:
     s = s.replace(
         "#    include <dlfcn.h>\n#    include <unistd.h>\n",
-        "#    include <dlfcn.h>\n#    include <unistd.h>\n"
+        "#    include <dlfcn.h>\n#    include <unistd.h>\n#    include <cstdio>\n"
         "#    ifdef __ANDROID__\n"
         "#        include <android/dlext.h>\n"
         "#    endif\n",
