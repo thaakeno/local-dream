@@ -31,3 +31,7 @@
 [submodule "app/src/main/cpp/3rdparty/stable-diffusion.cpp"]
 	path = app/src/main/cpp/3rdparty/stable-diffusion.cpp
 	url = https://github.com/thaakeno/stable-diffusion.cpp.git
+
+[submodule "app/src/main/cpp/3rdparty/yue2.cpp"]
+	path = app/src/main/cpp/3rdparty/yue2.cpp
+	url = https://github.com/ServeurpersoCom/yue2.cpp.git
