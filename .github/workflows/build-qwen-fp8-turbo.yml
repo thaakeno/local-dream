@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - qwen-fp8-turbo
+      - yue2-text-music
     paths:
       - 'app/**'
       - '.gitmodules'
@@ -52,8 +53,10 @@ jobs:
             app/src/main/cpp/3rdparty/xtensor \
             app/src/main/cpp/3rdparty/xtensor-blas \
             app/src/main/cpp/3rdparty/xtl \
-            app/src/main/cpp/3rdparty/zstd
+            app/src/main/cpp/3rdparty/zstd \
+            app/src/main/cpp/3rdparty/yue2.cpp
           git -C app/src/main/cpp/3rdparty/stable-diffusion.cpp submodule update --init --depth 1 ggml
+          git -C app/src/main/cpp/3rdparty/yue2.cpp submodule update --init --depth 1 vendor/cpp-httplib
           git -C app/src/main/cpp/3rdparty/tokenizers-cpp submodule update --init --depth 1 msgpack sentencepiece
 
       - name: Compute native cache key
@@ -225,6 +228,7 @@ jobs:
           cd /workspace/app/src/main/cpp
           bash build.sh
           bash dit/build.sh
+          bash music/build.sh
           CONTAINER_SCRIPT
 
       - name: Verify staged native artifacts
@@ -233,6 +237,7 @@ jobs:
           set -euxo pipefail
           test -s app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
           test -s app/src/main/jniLibs/arm64-v8a/libdit_engine.so
+          test -s app/src/main/jniLibs/arm64-v8a/libyue2_server.so
           test -s app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v79.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
