@@ -37,7 +37,7 @@ object BackendDiagnostics {
                     appendLine("commit=${BuildConfig.GIT_SHA}")
                     appendLine("device=${Build.MANUFACTURER} ${Build.MODEL}")
                     appendLine("android=${Build.VERSION.RELEASE} sdk=${Build.VERSION.SDK_INT}")
-                    appendLine("soc=${Build.SOC_MODEL}")
+                    appendLine("soc=${if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else "unknown"}")
                     appendLine("session=$label")
                     appendLine()
                 },
