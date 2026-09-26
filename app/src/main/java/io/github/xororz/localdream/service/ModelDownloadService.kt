@@ -57,6 +57,7 @@ class ModelDownloadService : Service() {
         val isZip: Boolean,
         val modelType: String,
         val fileNames: List<String>,
+        val installDir: String?,
         val markerFile: String?,
         val inferenceProfile: String?,
         val targetFileName: String?,
@@ -132,6 +133,7 @@ class ModelDownloadService : Service() {
         const val TYPE_UPSCALER = "upscaler"
         const val TYPE_MULTI_FILE = "multi_file"
         const val EXTRA_FILE_NAMES = "file_names"
+        const val EXTRA_INSTALL_DIR = "install_dir"
         const val EXTRA_MARKER_FILE = "marker_file"
         const val EXTRA_INFERENCE_PROFILE = "inference_profile"
         const val EXTRA_TARGET_FILE_NAME = "target_file_name"
@@ -192,6 +194,7 @@ class ModelDownloadService : Service() {
                     isZip = intent.getBooleanExtra(EXTRA_IS_ZIP, false),
                     modelType = intent.getStringExtra(EXTRA_MODEL_TYPE) ?: TYPE_SD,
                     fileNames = intent.getStringArrayListExtra(EXTRA_FILE_NAMES).orEmpty(),
+                    installDir = intent.getStringExtra(EXTRA_INSTALL_DIR),
                     markerFile = intent.getStringExtra(EXTRA_MARKER_FILE),
                     inferenceProfile = intent.getStringExtra(EXTRA_INFERENCE_PROFILE),
                     targetFileName = intent.getStringExtra(EXTRA_TARGET_FILE_NAME),
@@ -256,6 +259,7 @@ class ModelDownloadService : Service() {
                         modelName = request.modelName,
                         baseUrl = request.fileUrl,
                         fileNames = request.fileNames,
+                        installDir = request.installDir,
                         markerFile = request.markerFile,
                         inferenceProfile = request.inferenceProfile,
                         preferXet = xetEnabled,
@@ -463,12 +467,16 @@ class ModelDownloadService : Service() {
         modelName: String,
         baseUrl: String,
         fileNames: List<String>,
+        installDir: String?,
         markerFile: String?,
         inferenceProfile: String?,
         preferXet: Boolean,
     ) = withContext(Dispatchers.IO) {
         require(fileNames.isNotEmpty()) { "empty package file list" }
-        val modelDir = File(getModelsDir(), modelId).apply { mkdirs() }
+        val modelDir = File(
+            getModelsDir(),
+            installDir?.takeIf { it.isNotBlank() } ?: modelId,
+        ).apply { mkdirs() }
         val base = baseUrl.removeSuffix("/")
 
         val parts = fileNames.map { entry ->
@@ -589,7 +597,7 @@ class ModelDownloadService : Service() {
             )
         }
 
-        if (!inferenceProfile.isNullOrBlank()) {
+        if (!inferenceProfile.isNullOrBlank() && installDir.isNullOrBlank()) {
             val profileFile = File(modelDir, "inference_profile.conf")
             profileFile.writeText(inferenceProfile.trim() + "\n")
             DownloadDiagnostics.info(
