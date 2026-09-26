@@ -2,22 +2,19 @@ package io.github.xororz.localdream.ui.components
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.SizeTransform
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -39,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -53,7 +51,8 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import io.github.xororz.localdream.data.HistoryItem
 import kotlin.math.absoluteValue
-import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 @Composable
 fun HistoryCarouselOverlay(
@@ -66,6 +65,7 @@ fun HistoryCarouselOverlay(
     if (items.isEmpty()) return
 
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val initialPage = remember(items, initialItemId) {
         items.indexOfFirst { it.id == initialItemId }.coerceAtLeast(0)
     }
@@ -86,15 +86,12 @@ fun HistoryCarouselOverlay(
             .fillMaxSize()
             .background(Color.Black),
     ) {
-        // Full-bleed moving backdrop: no flat grey letterbox strips around
-        // portrait/landscape generations anymore.
+        // Edge-to-edge background follows the current image. It is deliberately
+        // cropped and blurred, so any space around a portrait/landscape image
+        // feels intentional instead of becoming a grey letterbox.
         AnimatedContent(
             targetState = currentItem,
-            transitionSpec = {
-                (fadeIn(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) togetherWith
-                    fadeOut(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)))
-                    .using(SizeTransform(clip = false))
-            },
+            transitionSpec = { fadeIn() togetherWith fadeOut() },
             label = "historyBackdrop",
             modifier = Modifier.fillMaxSize(),
         ) { item ->
@@ -107,11 +104,11 @@ fun HistoryCarouselOverlay(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        scaleX = 1.14f
-                        scaleY = 1.14f
-                        alpha = 0.42f
+                        scaleX = 1.18f
+                        scaleY = 1.18f
+                        alpha = 0.38f
                     }
-                    .blur(34.dp),
+                    .blur(42.dp),
                 contentScale = ContentScale.Crop,
             )
         }
@@ -119,45 +116,66 @@ fun HistoryCarouselOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.56f)),
+                .background(Color.Black.copy(alpha = 0.54f)),
         )
 
         HorizontalPager(
             state = pagerState,
-            contentPadding = PaddingValues(horizontal = 24.dp),
+            contentPadding = PaddingValues(horizontal = 22.dp),
             pageSpacing = 14.dp,
             modifier = Modifier.fillMaxSize(),
         ) { page ->
             val signedOffset =
                 (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction
             val distance = signedOffset.absoluteValue.coerceIn(0f, 1f)
-            val scale = 1f - (0.065f * distance)
+            val item = items[page]
+            val ratio = (
+                item.params.width.toFloat() /
+                    item.params.height.toFloat().coerceAtLeast(1f)
+                ).coerceIn(0.18f, 5.5f)
 
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(top = 94.dp, bottom = 126.dp)
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        alpha = 1f - (distance * 0.34f)
-                        rotationZ = signedOffset.coerceIn(-1f, 1f) * 1.8f
-                        translationY = 18f * distance
-                        shadowElevation = 24f * (1f - distance)
-                    }
-                    .clip(RoundedCornerShape(28.dp))
-                    .background(Color.Black.copy(alpha = 0.18f)),
+                    .padding(top = 76.dp, bottom = 116.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(items[page].imageFile)
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = "History image ${page + 1}",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Fit,
-                )
+                val viewportRatio =
+                    (maxWidth.value / maxHeight.value.coerceAtLeast(1f))
+                        .coerceAtLeast(0.01f)
+                val imageWidth =
+                    if (ratio >= viewportRatio) maxWidth else maxHeight * ratio
+                val imageHeight =
+                    if (ratio >= viewportRatio) maxWidth / ratio else maxHeight
+
+                // The card itself now has the exact generated aspect ratio.
+                // No giant generic rectangle means no grey bars above/below.
+                Surface(
+                    modifier = Modifier
+                        .size(imageWidth, imageHeight)
+                        .graphicsLayer {
+                            val scale = 1f - distance * 0.055f
+                            scaleX = scale
+                            scaleY = scale
+                            alpha = 1f - distance * 0.28f
+                            translationX = -signedOffset * 18f
+                            rotationZ = signedOffset.coerceIn(-1f, 1f) * 1.1f
+                            shadowElevation = 26f * (1f - distance)
+                        },
+                    shape = RoundedCornerShape(24.dp),
+                    color = Color.Transparent,
+                    shadowElevation = 14.dp,
+                ) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(item.imageFile)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "History image ${page + 1}",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                }
             }
         }
 
@@ -182,7 +200,7 @@ fun HistoryCarouselOverlay(
                 .align(Alignment.TopCenter)
                 .padding(top = 56.dp),
             shape = RoundedCornerShape(50),
-            color = Color.Black.copy(alpha = 0.46f),
+            color = Color.Black.copy(alpha = 0.44f),
         ) {
             Text(
                 text = "${pagerState.currentPage + 1} / ${items.size}",
@@ -197,7 +215,7 @@ fun HistoryCarouselOverlay(
                 .align(Alignment.TopEnd)
                 .padding(top = 48.dp, end = 12.dp),
             shape = RoundedCornerShape(50),
-            color = Color.Black.copy(alpha = 0.46f),
+            color = Color.Black.copy(alpha = 0.44f),
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 2.dp),
@@ -210,33 +228,35 @@ fun HistoryCarouselOverlay(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            HistoryPageDots(
+            InteractiveHistoryDots(
                 count = items.size,
                 currentPage = pagerState.currentPage,
+                currentPageOffsetFraction = pagerState.currentPageOffsetFraction,
+                onPageSelected = { page ->
+                    scope.launch { pagerState.animateScrollToPage(page) }
+                },
             )
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(9.dp))
 
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(26.dp),
-                color = Color.Black.copy(alpha = 0.58f),
+                shape = RoundedCornerShape(24.dp),
+                color = Color.Black.copy(alpha = 0.56f),
                 tonalElevation = 0.dp,
-                shadowElevation = 14.dp,
+                shadowElevation = 12.dp,
             ) {
                 AnimatedContent(
                     targetState = currentItem,
-                    transitionSpec = {
-                        fadeIn() togetherWith fadeOut()
-                    },
+                    transitionSpec = { fadeIn() togetherWith fadeOut() },
                     label = "historyMetadata",
                 ) { item ->
                     Column(
-                        modifier = Modifier.padding(horizontal = 17.dp, vertical = 13.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         Text(
                             text = "${item.modelId} · ${item.params.width}×${item.params.height}" +
@@ -263,53 +283,45 @@ fun HistoryCarouselOverlay(
 }
 
 @Composable
-private fun HistoryPageDots(
+private fun InteractiveHistoryDots(
     count: Int,
     currentPage: Int,
+    currentPageOffsetFraction: Float,
+    onPageSelected: (Int) -> Unit,
 ) {
     if (count <= 1) return
 
-    val visibleCount = min(count, 7)
-    val half = visibleCount / 2
-    val start = when {
-        count <= visibleCount -> 0
-        currentPage < half -> 0
-        currentPage > count - half - 1 -> count - visibleCount
-        else -> currentPage - half
-    }
+    // Keep the control compact for large histories, but make it move with the
+    // swipe instead of only changing after the pager settles.
+    val center = (currentPage + currentPageOffsetFraction).coerceIn(0f, (count - 1).toFloat())
+    val centerPage = center.roundToInt()
+    val visibleCount = count.coerceAtMost(7)
+    val start = (centerPage - visibleCount / 2)
+        .coerceIn(0, (count - visibleCount).coerceAtLeast(0))
 
     Surface(
         shape = RoundedCornerShape(50),
-        color = Color.Black.copy(alpha = 0.36f),
+        color = Color.Black.copy(alpha = 0.38f),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             repeat(visibleCount) { slot ->
                 val page = start + slot
-                val selected = page == currentPage
-                val width by animateFloatAsState(
-                    targetValue = if (selected) 18f else 6f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessMedium,
-                    ),
-                    label = "historyDotWidth",
-                )
-                val alpha by animateFloatAsState(
-                    targetValue = if (selected) 1f else 0.46f,
-                    animationSpec = spring(stiffness = Spring.StiffnessMedium),
-                    label = "historyDotAlpha",
-                )
+                val distance = (page - center).absoluteValue.coerceIn(0f, 1f)
+                val active = 1f - distance
+                val width = 7f + 15f * active
+                val alpha = 0.42f + 0.58f * active
 
                 Box(
                     modifier = Modifier
                         .width(width.dp)
-                        .height(6.dp)
+                        .height(7.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(Color.White.copy(alpha = alpha)),
+                        .background(Color.White.copy(alpha = alpha))
+                        .clickable { onPageSelected(page) },
                 )
             }
         }
