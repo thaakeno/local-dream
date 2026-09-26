@@ -12,6 +12,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -44,6 +45,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -54,6 +56,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -240,51 +243,54 @@ private fun AnimatedFamilyHero(
     music: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val transition = rememberInfiniteTransition(label = if (music) "yueHero" else "qwenHero")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(if (music) 4600 else 6200, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "familyHeroPhase",
-    )
-
-    if (music) {
-        val gradient = Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF4A235F),
-                Color(0xFF8E3A78),
-                Color(0xFFD46A9B),
+    val gradient = if (music) {
+        Brush.linearGradient(
+            listOf(
+                Color(0xFF351344),
+                Color(0xFF713069),
+                Color(0xFFB84D81),
             ),
-            start = Offset(phase * 260f, 0f),
-            end = Offset(880f - phase * 180f, 430f),
         )
-        Box(
-            modifier = modifier
-                .fillMaxWidth()
-                .background(gradient, MaterialTheme.shapes.extraLarge)
-                .padding(horizontal = 18.dp, vertical = 18.dp),
-        ) {
-            Box(
-                Modifier
-                    .size(110.dp)
-                    .align(Alignment.CenterEnd)
-                    .background(Color.White.copy(alpha = 0.055f), CircleShape),
-            )
+    } else {
+        Brush.linearGradient(
+            listOf(
+                Color(0xFF071D45),
+                Color(0xFF0A4A9F),
+                Color(0xFF2878E8),
+            ),
+        )
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(gradient, MaterialTheme.shapes.extraLarge)
+            .padding(horizontal = 18.dp, vertical = 18.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(15.dp),
+                horizontalArrangement = Arrangement.spacedBy(13.dp),
             ) {
                 Surface(
-                    modifier = Modifier.size(62.dp),
-                    shape = CircleShape,
-                    color = Color.White.copy(alpha = 0.14f),
+                    modifier = Modifier.size(54.dp),
+                    shape = MaterialTheme.shapes.large,
+                    color = Color.White.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
                 ) {
-                    AnimatedMusicMark(Modifier.padding(12.dp))
+                    if (music) {
+                        AnimatedMusicMark(Modifier.padding(11.dp))
+                    } else {
+                        Icon(
+                            Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.padding(13.dp),
+                        )
+                    }
                 }
+
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         title,
@@ -295,26 +301,14 @@ private fun AnimatedFamilyHero(
                     Text(
                         subtitle,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.80f),
+                        color = Color.White.copy(alpha = 0.78f),
                     )
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                        repeat(6) { index ->
-                            Box(
-                                Modifier
-                                    .width(16.dp)
-                                    .height((5 + ((index + phase * 5).toInt() % 3) * 3).dp)
-                                    .background(
-                                        Color.White.copy(alpha = 0.55f),
-                                        CircleShape,
-                                    ),
-                            )
-                        }
-                    }
                 }
+
                 Surface(
                     shape = MaterialTheme.shapes.extraLarge,
-                    color = Color.White.copy(alpha = 0.14f),
+                    color = Color.White.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
                 ) {
                     Text(
                         badge,
@@ -324,88 +318,25 @@ private fun AnimatedFamilyHero(
                     )
                 }
             }
-        }
-    } else {
-        val gradient = Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF061A40),
-                Color(0xFF0D47A1),
-                Color(0xFF2F7CF6),
-            ),
-            start = Offset(0f, phase * 220f),
-            end = Offset(920f, 360f - phase * 120f),
-        )
-        Box(
-            modifier = modifier
-                .fillMaxWidth()
-                .background(gradient, MaterialTheme.shapes.extraLarge)
-                .padding(horizontal = 18.dp, vertical = 18.dp),
-        ) {
-            Box(
-                Modifier
-                    .size(150.dp)
-                    .align(Alignment.TopEnd)
-                    .offset(x = 50.dp, y = (-55).dp)
-                    .background(Color.White.copy(alpha = 0.05f), CircleShape),
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Surface(
-                        modifier = Modifier.size(48.dp),
-                        shape = MaterialTheme.shapes.large,
-                        color = Color.White.copy(alpha = 0.12f),
-                    ) {
-                        Icon(
-                            Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.padding(12.dp),
-                        )
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            title,
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                        )
-                        Text(
-                            subtitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White.copy(alpha = 0.78f),
-                        )
-                    }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                val capabilities = if (music) {
+                    listOf("Q8", "BF16", "48 kHz")
+                } else {
+                    listOf("Q4", "Q8", "FP8", "Viggle")
+                }
+                capabilities.forEach { label ->
                     Surface(
                         shape = MaterialTheme.shapes.extraLarge,
-                        color = Color.White.copy(alpha = 0.13f),
+                        color = Color.White.copy(alpha = 0.09f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.07f)),
                     ) {
                         Text(
-                            badge,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = Color.White,
+                            label,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.90f),
                         )
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    listOf("Q4", "Q8", "FP8", "Viggle").forEachIndexed { index, label ->
-                        Surface(
-                            shape = MaterialTheme.shapes.medium,
-                            color = Color.White.copy(
-                                alpha = if (index == ((phase * 3).toInt() % 3)) 0.19f else 0.09f,
-                            ),
-                        ) {
-                            Text(
-                                label,
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White.copy(alpha = 0.88f),
-                            )
-                        }
                     }
                 }
             }
@@ -466,41 +397,47 @@ private fun FamilyVariantTile(
     onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    ElevatedCard(
-        modifier = modifier.combinedClickable(
-            onClick = onClick,
-            onLongClick = {
-                if (installed) onLongClick?.invoke()
-            },
-        ),
+    Surface(
+        modifier = modifier
+            .heightIn(min = 106.dp)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    if (installed) onLongClick?.invoke()
+                },
+            ),
         shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = if (selected) {
-                MaterialTheme.colorScheme.primaryContainer
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        border = BorderStroke(
+            1.dp,
+            if (selected) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
             } else {
-                MaterialTheme.colorScheme.surfaceContainerHigh
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
             },
         ),
-        elevation = CardDefaults.elevatedCardElevation(
-            defaultElevation = if (selected) 4.dp else 0.dp,
-        ),
+        tonalElevation = if (selected) 3.dp else 0.dp,
     ) {
         Column(
-            modifier = Modifier.padding(13.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     icon,
                     contentDescription = null,
-                    modifier = Modifier.size(19.dp),
+                    modifier = Modifier.size(20.dp),
                     tint = if (selected) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )
-                Spacer(Modifier.width(7.dp))
+                Spacer(Modifier.width(8.dp))
                 Text(
                     title,
                     style = MaterialTheme.typography.titleSmall,
@@ -511,7 +448,7 @@ private fun FamilyVariantTile(
                     Icon(
                         Icons.Default.CheckCircle,
                         contentDescription = "Installed",
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(19.dp),
                         tint = MaterialTheme.colorScheme.primary,
                     )
                 }
@@ -522,24 +459,6 @@ private fun FamilyVariantTile(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
             )
-            if (installed) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "On device",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    if (onLongClick != null) {
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            "· hold to remove",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
         }
     }
 }
