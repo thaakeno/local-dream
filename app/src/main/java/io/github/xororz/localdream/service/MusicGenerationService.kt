@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import io.github.xororz.localdream.R
+import io.github.xororz.localdream.utils.CrashDiagnostics
 import io.github.xororz.localdream.utils.Http
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -36,6 +37,7 @@ import org.json.JSONObject
  */
 class MusicGenerationService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + Job())
+    private var workJob: Job? = null
     private var activeJobId: String? = null
     private var synthCall: Call? = null
     private var logCall: Call? = null
@@ -46,6 +48,7 @@ class MusicGenerationService : Service() {
         private const val NOTIFICATION_ID = 7
         private const val BACKEND = "http://127.0.0.1:8081"
 
+        const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_MUSIC"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_MUSIC"
         const val ACTION_STOP = "io.github.xororz.localdream.STOP_MUSIC"
 
@@ -59,11 +62,60 @@ class MusicGenerationService : Service() {
                 .build()
         }
 
+        private val quickClient: OkHttpClient by lazy {
+            Http.client.newBuilder()
+                .connectTimeout(3, TimeUnit.SECONDS)
+                .readTimeout(3, TimeUnit.SECONDS)
+                .writeTimeout(3, TimeUnit.SECONDS)
+                .callTimeout(5, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(false)
+                .build()
+        }
+
         private val _state = MutableStateFlow<MusicState>(MusicState.Idle)
         val state: StateFlow<MusicState> = _state
 
+        private val _residentModelId = MutableStateFlow<String?>(null)
+        val residentModelId: StateFlow<String?> = _residentModelId
+
         fun reset() {
-            if (_state.value !is MusicState.Generating) _state.value = MusicState.Idle
+            if (_state.value !is MusicState.Generating &&
+                _state.value !is MusicState.Preloading
+            ) {
+                _state.value = MusicState.Idle
+            }
+        }
+
+        fun resetForModel(modelId: String) {
+            val currentResident = _residentModelId.value
+            if (currentResident != null && currentResident != modelId) {
+                _residentModelId.value = null
+            }
+            when (val current = _state.value) {
+                is MusicState.Preloading -> if (current.modelId != modelId) {
+                    _state.value = MusicState.Idle
+                }
+                is MusicState.Ready -> if (current.modelId != modelId) {
+                    _state.value = MusicState.Idle
+                }
+                else -> Unit
+            }
+        }
+
+        fun preload(context: Context, modelId: String) {
+            context.startForegroundService(
+                Intent(context, MusicGenerationService::class.java)
+                    .setAction(ACTION_PRELOAD)
+                    .putExtra("modelId", modelId),
+            )
+        }
+
+        fun clearResident() {
+            _residentModelId.value = null
+            val current = _state.value
+            if (current is MusicState.Ready || current is MusicState.Preloading) {
+                _state.value = MusicState.Idle
+            }
         }
 
         fun stop(context: Context) {
@@ -75,6 +127,21 @@ class MusicGenerationService : Service() {
 
     sealed class MusicState {
         object Idle : MusicState()
+
+        data class Preloading(
+            val modelId: String,
+            val phase: String,
+            val detail: String,
+            val progress: Float? = null,
+            val step: Int = 0,
+            val total: Int = 0,
+            val startedAtMillis: Long,
+        ) : MusicState()
+
+        data class Ready(
+            val modelId: String,
+            val preloadMillis: Long,
+        ) : MusicState()
 
         data class Generating(
             val phase: String,
@@ -95,7 +162,7 @@ class MusicGenerationService : Service() {
             val elapsedMillis: Long,
         ) : MusicState()
 
-        data class Error(val message: String) : MusicState()
+        data class Error(val message: String, val modelId: String? = null) : MusicState()
     }
 
     override fun onCreate() {
@@ -111,29 +178,170 @@ class MusicGenerationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, notification("Preparing YuE2"))
         when (intent?.action) {
-            ACTION_STOP -> {
-                cancelRequested = true
-                activeJobId?.let { id ->
-                    scope.launch {
-                        runCatching {
-                            client.newCall(
-                                Request.Builder()
-                                    .url("$BACKEND/job?id=$id&cancel=1")
-                                    .post(ByteArray(0).toRequestBody(null))
-                                    .build(),
-                            ).execute().close()
-                        }
-                    }
+            ACTION_STOP -> cancelWork(startId)
+            ACTION_PRELOAD -> {
+                val modelId = intent.getStringExtra("modelId").orEmpty()
+                if (modelId.isBlank()) {
+                    _state.value = MusicState.Error("Missing YuE2 model id")
+                    finishService()
+                } else {
+                    startPreload(modelId)
                 }
-                synthCall?.cancel()
-                logCall?.cancel()
-                _state.value = MusicState.Idle
-                stopSelf()
             }
             ACTION_GENERATE -> startGeneration(intent)
-            else -> stopSelf()
+            else -> finishService()
         }
         return START_NOT_STICKY
+    }
+
+    private fun startPreload(modelId: String) {
+        if (_residentModelId.value == modelId) {
+            _state.value = MusicState.Ready(modelId, 0L)
+            finishService()
+            return
+        }
+        when (val current = _state.value) {
+            is MusicState.Preloading -> if (current.modelId == modelId) return
+            is MusicState.Generating -> return
+            else -> Unit
+        }
+
+        workJob?.cancel()
+        cancelRequested = false
+        val started = System.currentTimeMillis()
+        CrashDiagnostics.beginGenerationSession(
+            this,
+            "YuE2 preload model=$modelId",
+        )
+        _state.value = MusicState.Preloading(
+            modelId = modelId,
+            phase = "server",
+            detail = "Connecting to native YuE2 runtime",
+            progress = 0.02f,
+            startedAtMillis = started,
+        )
+        notifyPhase("Loading YuE2 model")
+
+        workJob = scope.launch {
+            try {
+                waitForBackend(modelId, started)
+                if (cancelRequested) return@launch
+
+                val payload = JSONObject().apply {
+                    put("style", "instrumental warmup")
+                    put("lyrics", "")
+                    put("cot", "off")
+                    // One 25 Hz semantic frame. This is a real end-to-end
+                    // LM -> NAR -> VAE pass, not a fake loading animation.
+                    put("duration", 0.04)
+                    put("lm_seed", 0)
+                    put("seed", 0)
+                    put("steps", 1)
+                    put("lm_batch_size", 1)
+                    put("synth_batch_size", 1)
+                    put("cfg_scale", 1.0)
+                    put("output_format", "wav")
+                    put(
+                        "semantic_sampling",
+                        JSONObject().apply {
+                            put("temperature", 1.0)
+                            put("top_p", 0.95)
+                        },
+                    )
+                }
+
+                _state.value = MusicState.Preloading(
+                    modelId = modelId,
+                    phase = "submit",
+                    detail = "Starting one-frame model warmup",
+                    progress = 0.06f,
+                    startedAtMillis = started,
+                )
+                val id = submit(payload)
+                activeJobId = id
+                CrashDiagnostics.recordGeneration(
+                    this@MusicGenerationService,
+                    "PHASE",
+                    "warmup job=$id submitted",
+                )
+
+                val logJob = launch { followPreloadLogs(id, modelId, started) }
+                try {
+                    pollPreload(id, modelId, started)
+                } finally {
+                    logCall?.cancel()
+                    logJob.cancel()
+                }
+            } catch (e: CancellationException) {
+                if (cancelRequested) _state.value = MusicState.Idle
+            } catch (e: Exception) {
+                if (!cancelRequested) {
+                    val message = e.message ?: "YuE2 preload failed"
+                    CrashDiagnostics.recordGeneration(
+                        this@MusicGenerationService,
+                        "ERROR",
+                        message,
+                        e,
+                    )
+                    _state.value = MusicState.Error(message, modelId)
+                    notifyPhase("YuE2 model load failed")
+                }
+            } finally {
+                synthCall = null
+                logCall = null
+                activeJobId = null
+                if (_state.value !is MusicState.Preloading) finishService()
+            }
+        }
+    }
+
+    private suspend fun waitForBackend(modelId: String, started: Long) {
+        repeat(120) { attempt ->
+            if (cancelRequested) throw CancellationException()
+            val ready = runCatching {
+                quickClient.newCall(
+                    Request.Builder().url("$BACKEND/health").get().build(),
+                ).execute().use { it.isSuccessful }
+            }.getOrDefault(false)
+            if (ready) return
+
+            _state.value = MusicState.Preloading(
+                modelId = modelId,
+                phase = "server",
+                detail = "Starting native server · attempt ${attempt + 1}",
+                progress = 0.02f,
+                startedAtMillis = started,
+            )
+            delay(250)
+        }
+        throw IllegalStateException("YuE2 server did not become ready")
+    }
+
+    private suspend fun pollPreload(id: String, modelId: String, started: Long) {
+        while (!cancelRequested) {
+            when (jobStatus(id)) {
+                "done" -> {
+                    val elapsed = System.currentTimeMillis() - started
+                    _residentModelId.value = modelId
+                    CrashDiagnostics.recordGeneration(
+                        this,
+                        "COMPLETE",
+                        "YuE2 preload ready model=$modelId elapsed=${elapsed}ms",
+                    )
+                    _state.value = MusicState.Ready(modelId, elapsed)
+                    notifyPhase("YuE2 ready")
+                    return
+                }
+                "failed" -> throw IllegalStateException(
+                    "YuE2 warmup failed. Check the native-stage details.",
+                )
+                "cancelled" -> {
+                    _state.value = MusicState.Idle
+                    return
+                }
+            }
+            delay(250)
+        }
     }
 
     private fun startGeneration(intent: Intent) {
