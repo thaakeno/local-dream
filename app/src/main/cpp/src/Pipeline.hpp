@@ -1065,6 +1065,7 @@ inline GenerationResult Pipeline::generateImpl(
         // The inversion runs the UNet before the denoising loop; let lowram
         // pipelines swap the VAE encoder out for the UNet now (idempotent,
         // called again before the loop).
+        phase_callback("loading_denoiser", 0, 0);
         beginDenoise(req);
         phase_callback("inverting", 0, 0);
         latents_noise = ultrafixInvertNoise(
