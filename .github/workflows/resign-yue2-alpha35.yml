@@ -78,8 +78,8 @@ jobs:
 
           "$apksigner_bin" verify --verbose --print-certs "$out_apk"
 
-          old_cert="$("$apksigner_bin" verify --print-certs "$old_apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
-          new_cert="$("$apksigner_bin" verify --print-certs "$out_apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
+          old_cert="$("$apksigner_bin" verify --print-certs "$old_apk" | sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1)"
+          new_cert="$("$apksigner_bin" verify --print-certs "$out_apk" | sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1)"
 
           echo "alpha34 signer: $old_cert"
           echo "alpha35 signer: $new_cert"
