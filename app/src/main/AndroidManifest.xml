@@ -34,6 +34,18 @@
         android:theme="@style/Theme.LocalDream"
         tools:targetApi="33">
 
+        <!--
+             Android 12+ isolates vendor native libraries behind the app linker
+             namespace. ggml-hexagon dlopens libcdsprpc.so directly, so merely
+             having the library under /vendor/lib64 is not enough for an
+             untrusted app process. Declaring it here exposes the OEM FastRPC
+             transport without putting /vendor/lib64 on LD_LIBRARY_PATH (which
+             breaks the HAL fallback on SM8850-class Android 16 devices).
+        -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode"
