@@ -1429,6 +1429,7 @@ fun ModelRunScreen(
         progress = 0f
         generationStep = 0
         generationTotalSteps = 0
+        generationPhase = "queued"
         currentBatchIndex = 0
         generationStartTime = null
         Toast.makeText(
@@ -1755,6 +1756,7 @@ fun ModelRunScreen(
                 progress = 0f
                 generationStep = 0
                 generationTotalSteps = 0
+                generationPhase = "queued"
                 generationStartTime = null
                 pendingUltrafix = false
             }
