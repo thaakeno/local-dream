@@ -841,6 +841,12 @@ class BackendService : Service() {
             Log.d(TAG, "DIR: $runtimeDir")
             Log.d(TAG, "LD_LIBRARY_PATH=${env["LD_LIBRARY_PATH"]}")
             Log.d(TAG, "DSP_LIBRARY_PATH=${env["DSP_LIBRARY_PATH"]}")
+            BackendDiagnostics.append(this, "COMMAND", command.joinToString(" "))
+            BackendDiagnostics.append(
+                this,
+                "PATHS",
+                "runtime=${runtimeDir.absolutePath} native=$nativeDir",
+            )
 
             val processBuilder = ProcessBuilder(command).apply {
                 directory(File(nativeDir))
@@ -856,6 +862,7 @@ class BackendService : Service() {
             return true
         } catch (e: Exception) {
             Log.e(TAG, "backend start failed", e)
+            BackendDiagnostics.appendThrowable(this, "START_ERROR", e)
             updateState(BackendState.Error("backend start failed: ${e.message}", config.modelId))
             return false
         }
@@ -877,6 +884,11 @@ class BackendService : Service() {
                             }
                         }
                         Log.i(TAG, "Backend: $backendLine")
+                        BackendDiagnostics.append(
+                            this@BackendService,
+                            "NATIVE",
+                            backendLine,
+                        )
                         CrashDiagnostics.recordBackendLine(this@BackendService, backendLine)
                     }
                 }
@@ -885,6 +897,7 @@ class BackendService : Service() {
                 code
             } catch (e: Exception) {
                 Log.e(TAG, "monitor error", e)
+                BackendDiagnostics.appendThrowable(this@BackendService, "MONITOR_ERROR", e)
                 if (isLiveCrash(proc)) {
                     updateState(
                         BackendState.Error(
@@ -896,6 +909,11 @@ class BackendService : Service() {
                 return@Thread
             }
             Log.i(TAG, "Backend process exited with code: $exitCode")
+            BackendDiagnostics.append(
+                this@BackendService,
+                "EXIT",
+                "process exited code=$exitCode model=${servingModelId.value}",
+            )
             CrashDiagnostics.record(
                 this@BackendService,
                 "BACKEND_EXIT",
