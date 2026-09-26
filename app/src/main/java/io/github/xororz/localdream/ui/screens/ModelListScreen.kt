@@ -128,6 +128,12 @@ import kotlinx.coroutines.withContext
 
 data class LoRAFile(val uri: Uri, val weight: Float = 1.0f)
 
+private sealed interface FamilyAssetDeleteTarget {
+    data class QwenPrecision(val precision: String) : FamilyAssetDeleteTarget
+    data class QwenAdapter(val adapter: String) : FamilyAssetDeleteTarget
+    data class YueVariant(val model: Model) : FamilyAssetDeleteTarget
+}
+
 private fun getCleanFileName(uri: Uri): String {
     val fileName = uri.lastPathSegment ?: "Unknown file"
     return if (fileName.startsWith("primary:")) {
@@ -371,6 +377,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var showDownloadConfirm by remember { mutableStateOf<Model?>(null) }
     var showDownloadDetails by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var familyAssetDeleteTarget by remember {
+        mutableStateOf<FamilyAssetDeleteTarget?>(null)
+    }
 
     var isSelectionMode by remember { mutableStateOf(false) }
     var selectedModels by remember { mutableStateOf(setOf<Model>()) }
@@ -1008,6 +1017,75 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
         )
     }
 
+    familyAssetDeleteTarget?.let { target ->
+        val title = when (target) {
+            is FamilyAssetDeleteTarget.QwenPrecision ->
+                "Delete ${target.precision} transformer?"
+            is FamilyAssetDeleteTarget.QwenAdapter ->
+                "Delete Viggle ${target.adapter}?"
+            is FamilyAssetDeleteTarget.YueVariant ->
+                "Delete YuE2 ${target.model.variantPrecision}?"
+        }
+        val body = when (target) {
+            is FamilyAssetDeleteTarget.QwenPrecision ->
+                "This removes only the ${target.precision} visual transformer. " +
+                    "Shared Qwen encoder/VAE files and your Viggle LoRAs stay installed."
+            is FamilyAssetDeleteTarget.QwenAdapter ->
+                "This removes the shared ${target.adapter} LoRA once. " +
+                    "Q4, Q8 and FP8 transformers stay installed."
+            is FamilyAssetDeleteTarget.YueVariant ->
+                "This removes the downloaded ${target.model.approximateSize} YuE2 package. " +
+                    "Other YuE2 precisions are untouched."
+        }
+
+        AlertDialog(
+            onDismissRequest = { familyAssetDeleteTarget = null },
+            icon = { Icon(Icons.Default.Delete, contentDescription = null) },
+            title = { Text(title) },
+            text = { Text(body) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val request = target
+                        familyAssetDeleteTarget = null
+                        scope.launch {
+                            val deleted = withContext(Dispatchers.IO) {
+                                when (request) {
+                                    is FamilyAssetDeleteTarget.QwenPrecision ->
+                                        QwenFamilyStorage.deletePrecision(
+                                            context,
+                                            request.precision,
+                                        )
+                                    is FamilyAssetDeleteTarget.QwenAdapter ->
+                                        QwenFamilyStorage.deleteAdapter(
+                                            context,
+                                            request.adapter,
+                                        )
+                                    is FamilyAssetDeleteTarget.YueVariant ->
+                                        request.model.deleteModel(context, keepHistory = true)
+                                }
+                            }
+                            modelRepository.refreshAllModels()
+                            snackbarHostState.showSnackbar(
+                                if (deleted) msgDeleteSuccess else msgDeleteFailed,
+                            )
+                        }
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Text(stringResource(R.string.delete))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { familyAssetDeleteTarget = null }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
+
     showDownloadConfirm?.let { model ->
         if (downloadingModel != null) {
             AlertDialog(
@@ -1376,6 +1454,10 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 onDownload = { model ->
                                     showDownloadConfirm = model
                                 },
+                                onDelete = { model ->
+                                    familyAssetDeleteTarget =
+                                        FamilyAssetDeleteTarget.YueVariant(model)
+                                },
                                 modifier = Modifier.animateItem(
                                     fadeInSpec = tween(Motion.DurationMedium),
                                     fadeOutSpec = tween(Motion.DurationMedium),
@@ -1394,6 +1476,14 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 },
                                 onDownload = { model ->
                                     showDownloadConfirm = model
+                                },
+                                onDeletePrecision = { precision ->
+                                    familyAssetDeleteTarget =
+                                        FamilyAssetDeleteTarget.QwenPrecision(precision)
+                                },
+                                onDeleteAdapter = { adapter ->
+                                    familyAssetDeleteTarget =
+                                        FamilyAssetDeleteTarget.QwenAdapter(adapter)
                                 },
                                 modifier = Modifier.animateItem(
                                     fadeInSpec = tween(Motion.DurationMedium),
