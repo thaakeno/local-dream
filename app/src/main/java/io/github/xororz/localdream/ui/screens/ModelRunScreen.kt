@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Error
@@ -75,6 +76,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -153,18 +155,22 @@ import io.github.xororz.localdream.data.TagMatchType
 import io.github.xororz.localdream.data.TagSuggestion
 import io.github.xororz.localdream.data.UpscalerRepository
 import io.github.xororz.localdream.navigation.HISTORY_REPRODUCE_ID_KEY
+import io.github.xororz.localdream.navigation.HISTORY_VARIATION_COUNT_KEY
+import io.github.xororz.localdream.navigation.HISTORY_VARIATION_ID_KEY
 import io.github.xororz.localdream.service.BackendService
 import io.github.xororz.localdream.service.BackgroundGenerationService
 import io.github.xororz.localdream.service.BackgroundGenerationService.GenerationState
+import io.github.xororz.localdream.ui.components.AddToCollectionDialog
 import io.github.xororz.localdream.ui.components.BlockingProgressOverlay
 import io.github.xororz.localdream.ui.components.GenerationParamsDialog
 import io.github.xororz.localdream.ui.components.HistoryCarouselOverlay
+import io.github.xororz.localdream.ui.components.ManageCollectionsDialog
 import io.github.xororz.localdream.ui.components.ImportParametersDialog
 import io.github.xororz.localdream.ui.components.OverlayIconButton
 import io.github.xororz.localdream.ui.components.ReproduceParametersDialog
+import io.github.xororz.localdream.ui.components.ResultGalleryOverlay
 import io.github.xororz.localdream.ui.components.ShareParamsFlow
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
-import io.github.xororz.localdream.ui.components.ZoomableImageOverlay
 import io.github.xororz.localdream.ui.theme.Motion
 import io.github.xororz.localdream.utils.ImportedParams
 import io.github.xororz.localdream.utils.LogCapture
@@ -192,6 +198,11 @@ private data class EditReferenceSelection(
     val uri: Uri,
     val bitmap: Bitmap,
     val base64: String,
+)
+
+private data class VariationRequest(
+    val params: GenerationParameters,
+    val count: Int,
 )
 
 @SuppressLint("DefaultLocale")
@@ -301,6 +312,8 @@ fun ModelRunScreen(
         .collectAsState(initial = emptyList())
     val knownSizes by remember { historyManager.observeKnownSizes() }
         .collectAsState(initial = emptyList())
+    val collections by remember { historyManager.observeCollections() }
+        .collectAsState(initial = emptyList())
     var showHistoryFilterSheet by remember { mutableStateOf(false) }
     var selectedHistoryItem by remember { mutableStateOf<HistoryItem?>(null) }
     var historyCarouselItems by remember { mutableStateOf<List<HistoryItem>>(emptyList()) }
@@ -310,6 +323,11 @@ fun ModelRunScreen(
     var deletingHistoryItemId by remember { mutableStateOf<Long?>(null) }
     var showReproduceParamsDialog by remember { mutableStateOf(false) }
     var pendingReproduceParams by remember { mutableStateOf<GenerationParameters?>(null) }
+    var showAddToCollectionDialog by remember { mutableStateOf(false) }
+    var collectionTargetIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var showManageCollectionsDialog by remember { mutableStateOf(false) }
+    var variationTargetParams by remember { mutableStateOf<GenerationParameters?>(null) }
+    var showVariationCountDialog by remember { mutableStateOf(false) }
 
     // Parameter share state
     var shareSourceParams by remember { mutableStateOf<GenerationParameters?>(null) }
@@ -1964,6 +1982,144 @@ fun ModelRunScreen(
         }
     }
 
+    fun launchVariationBatch(request: VariationRequest) {
+        val source = request.params
+        val count = request.count.coerceIn(2, 8)
+        if (isRunning || isUpscaling || isUltrafixPreparing) return
+
+        val targetWidth = if (model?.usesFixedCanvas == true) 1024 else source.width
+        val targetHeight = if (model?.usesFixedCanvas == true) 1024 else source.height
+        val targetAspect = inferAspectRatioString(source.width, source.height)
+        val effectiveVariationWidth =
+            if (model?.usesFixedCanvas == true) source.width else targetWidth
+        val effectiveVariationHeight =
+            if (model?.usesFixedCanvas == true) source.height else targetHeight
+        val needsBackendRestart =
+            targetWidth != currentWidth ||
+                targetHeight != currentHeight ||
+                source.useOpenCL != useOpenCL
+
+        // Variations are a clean txt2img branch: same recorded generation
+        // settings, fresh random seed each pass, never stale img2img/reference
+        // state from whatever the user was doing on the prompt page.
+        clearImg2imgState()
+        promptField.replaceText(source.prompt)
+        negativePromptField.replaceText(source.negativePrompt)
+        steps = source.steps.toFloat()
+        cfg = source.cfg
+        seed = ""
+        scheduler = source.scheduler
+        denoiseStrength = source.denoiseStrength
+        useOpenCL = source.useOpenCL
+        batchCounts = count
+        aspectRatio = targetAspect
+        currentWidth = targetWidth
+        currentHeight = targetHeight
+        saveAllFields()
+
+        batchGenerationJob?.cancel()
+        batchGenerationJob = coroutineScope.launch {
+            try {
+                pagerState.animateScrollToPage(0)
+            } catch (_: kotlinx.coroutines.CancellationException) {
+                // Generation does not depend on the page animation.
+            }
+
+            if (needsBackendRestart) {
+                backendReady = false
+                isCheckingBackend = true
+                errorMessage = null
+                if (isRemote) {
+                    val ok = remoteClient?.selectModel(modelId, targetWidth, targetHeight) ?: false
+                    if (!ok) {
+                        isCheckingBackend = false
+                        errorMessage = msgRemoteSelectFailed
+                        return@launch
+                    }
+                } else {
+                    val targetModel = model ?: return@launch
+                    val serviceIntent = Intent(context, BackendService::class.java).apply {
+                        action = BackendService.ACTION_RESTART
+                        putExtra("modelId", modelId)
+                        putExtra("backendType", targetModel.backendType)
+                        putExtra("width", targetWidth)
+                        putExtra("height", targetHeight)
+                        putExtra("use_opencl", source.useOpenCL)
+                        putExtra("htp_mode", htpMode)
+                    }
+                    context.startForegroundService(serviceIntent)
+                }
+                delay(650)
+                awaitBackendReady()
+            } else if (!backendReady) {
+                awaitBackendReady()
+            }
+            if (!backendReady) return@launch
+
+            isRunning = true
+            for (index in 0 until count) {
+                currentBatchIndex = index + 1
+                generationParamsTmp = source.copy(
+                    seed = null,
+                    generationTime = "",
+                    width = targetWidth,
+                    height = targetHeight,
+                    runOnCpu = model?.runOnCpu ?: source.runOnCpu,
+                    mode = GenerationMode.TXT2IMG,
+                )
+                val intent = Intent(
+                    context,
+                    BackgroundGenerationService::class.java,
+                ).apply {
+                    putExtra("prompt", source.prompt)
+                    putExtra("negative_prompt", source.negativePrompt)
+                    putExtra("steps", source.steps)
+                    putExtra("cfg", source.cfg)
+                    // Deliberately no seed: each request gets a fresh random seed.
+                    putExtra("width", targetWidth)
+                    putExtra("height", targetHeight)
+                    putExtra("effective_width", effectiveVariationWidth)
+                    putExtra("effective_height", effectiveVariationHeight)
+                    putExtra("denoise_strength", source.denoiseStrength)
+                    putExtra("use_opencl", source.useOpenCL)
+                    putExtra("scheduler", source.scheduler)
+                    putExtra("aspect_ratio", targetAspect)
+                    putExtra("batch_index", index)
+                    putExtra("backend_host", backendHost)
+                }
+                context.startForegroundService(intent)
+
+                val terminal = BackgroundGenerationService.generationState.first { state ->
+                    state is GenerationState.Complete || state is GenerationState.Error
+                }
+                withTimeoutOrNull(5000L) {
+                    BackgroundGenerationService.isServiceRunning.first { !it }
+                }
+                BackgroundGenerationService.resetState()
+                if (terminal is GenerationState.Error) break
+            }
+            currentBatchIndex = 0
+            isRunning = false
+        }
+    }
+
+    // Global History can request variations without duplicating generation
+    // logic there. The actual run starts only after this model screen exists.
+    LaunchedEffect(hasInitialized, modelId) {
+        if (!hasInitialized) return@LaunchedEffect
+        val sourceEntry = navController.previousBackStackEntry ?: return@LaunchedEffect
+        val historyId =
+            sourceEntry.savedStateHandle.remove<Long>(HISTORY_VARIATION_ID_KEY)
+                ?: return@LaunchedEffect
+        val count =
+            sourceEntry.savedStateHandle.remove<Int>(HISTORY_VARIATION_COUNT_KEY)
+                ?: 4
+        val item = historyManager.getItems(listOf(historyId)).firstOrNull()
+        if (item != null && item.modelId == modelId) {
+            launchVariationBatch(VariationRequest(item.params, count))
+        }
+    }
+
     // Remote mode starts its health check only after /select has been sent
     // (in the hasInitialized effect); checking in parallel could see the host
     // still Ready on a previous model and race the switch.
@@ -2950,6 +3106,7 @@ fun ModelRunScreen(
                             currentBitmap = currentBitmap,
                             imageVersion = imageVersion,
                             generationParams = generationParams,
+                            generationModelId = generationParamsModelId,
                             recentHistory = recentHistory,
                             showReportButton = BuildConfig.FLAVOR == "filter",
                             // Upscaling is only offered for the NPU runtime and resolutions <= 1024.
@@ -2999,6 +3156,18 @@ fun ModelRunScreen(
                                     scope.launch(Dispatchers.IO) {
                                         historyManager.setFavorite(id, !current)
                                     }
+                                }
+                            },
+                            onGenerateVariations = {
+                                generationParams?.let { params ->
+                                    variationTargetParams = params
+                                    showVariationCountDialog = true
+                                }
+                            },
+                            onQuickFilter = { quickFilter ->
+                                historyFilter = quickFilter
+                                coroutineScope.launch {
+                                    pagerState.animateScrollToPage(2)
                                 }
                             },
                             onReportClick = { showReportDialog = true },
@@ -3103,7 +3272,22 @@ fun ModelRunScreen(
                                     }
                                 }
                             },
+                            collections = collections,
+                            onCollectionSelected = { collectionId ->
+                                historyFilter = historyFilter.copy(
+                                    collectionIds = collectionId?.let { setOf(it) },
+                                )
+                            },
+                            onCreateCollection = {
+                                collectionTargetIds = emptyList()
+                                showAddToCollectionDialog = true
+                            },
+                            onManageCollections = { showManageCollectionsDialog = true },
                             onBatchSave = { showBatchSaveDialog = true },
+                            onBatchAddToCollection = {
+                                collectionTargetIds = selectedIds.toList()
+                                showAddToCollectionDialog = true
+                            },
                             onBatchDelete = { showBatchDeleteDialog = true },
                         )
                     }
@@ -3239,16 +3423,24 @@ fun ModelRunScreen(
     }
 
     if (isPreviewMode && currentBitmap != null) {
-        ZoomableImageOverlay(
-            bitmap = currentBitmap,
+        ResultGalleryOverlay(
+            currentBitmap = currentBitmap!!,
+            currentHistoryId = currentDisplayedHistoryId,
+            recentHistory = recentHistory,
             onDismiss = { isPreviewMode = false },
-            showScaleIndicator = true,
-            topEndContent = {
-                OverlayIconButton(
-                    icon = Icons.Default.Close,
-                    contentDescription = "close preview",
-                    onClick = { isPreviewMode = false },
-                )
+            onHistoryItemChanged = { item ->
+                scope.launch {
+                    val bitmap = withContext(Dispatchers.IO) {
+                        BitmapFactory.decodeFile(item.imageFile.absolutePath)
+                    }
+                    if (bitmap != null) {
+                        currentBitmap = bitmap
+                        generationParams = item.params
+                        generationParamsModelId = item.modelId
+                        currentDisplayedHistoryId = item.id
+                        imageVersion++
+                    }
+                }
             },
         )
     }
@@ -3674,6 +3866,26 @@ fun ModelRunScreen(
                     )
                 }
                 OverlayIconButton(
+                    icon = Icons.Default.Shuffle,
+                    contentDescription = "Generate variations",
+                    onClick = {
+                        selectedHistoryItem?.let { item ->
+                            variationTargetParams = item.params
+                            showVariationCountDialog = true
+                        }
+                    },
+                )
+                OverlayIconButton(
+                    icon = Icons.Default.CreateNewFolder,
+                    contentDescription = "Add to collection",
+                    onClick = {
+                        selectedHistoryItem?.let { item ->
+                            collectionTargetIds = listOf(item.id)
+                            showAddToCollectionDialog = true
+                        }
+                    },
+                )
+                OverlayIconButton(
                     icon = Icons.Default.Save,
                     contentDescription = "Save to gallery",
                     onClick = {
@@ -3712,6 +3924,93 @@ fun ModelRunScreen(
                     },
                 )
             },
+        )
+    }
+
+    if (showVariationCountDialog && variationTargetParams != null) {
+        VariationCountDialog(
+            onGenerate = { count ->
+                val params = variationTargetParams ?: return@VariationCountDialog
+                showVariationCountDialog = false
+                variationTargetParams = null
+                showHistoryDetailDialog = false
+                selectedHistoryItem = null
+                launchVariationBatch(VariationRequest(params, count))
+            },
+            onDismiss = {
+                showVariationCountDialog = false
+                variationTargetParams = null
+            },
+        )
+    }
+
+    if (showAddToCollectionDialog) {
+        AddToCollectionDialog(
+            collections = collections,
+            itemCount = collectionTargetIds.size,
+            onAddToExisting = { collection ->
+                scope.launch {
+                    val ok = historyManager.addToCollection(collection.id, collectionTargetIds)
+                    showAddToCollectionDialog = false
+                    if (ok) {
+                        selectedIds.clear()
+                        isSelectionMode = false
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.collection_updated),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.collection_failed),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
+            onCreateAndAdd = { name ->
+                scope.launch {
+                    val collection = historyManager.createCollection(name)
+                    val ok = collection != null &&
+                        historyManager.addToCollection(collection.id, collectionTargetIds)
+                    showAddToCollectionDialog = false
+                    if (ok) {
+                        selectedIds.clear()
+                        isSelectionMode = false
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.collection_created),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.collection_failed),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
+            onDismiss = { showAddToCollectionDialog = false },
+        )
+    }
+
+    if (showManageCollectionsDialog) {
+        ManageCollectionsDialog(
+            collections = collections,
+            onRename = { collection, name ->
+                scope.launch { historyManager.renameCollection(collection.id, name) }
+            },
+            onDelete = { collection ->
+                scope.launch {
+                    historyManager.deleteCollection(collection.id)
+                    if (collection.id in historyFilter.collectionIds.orEmpty()) {
+                        historyFilter = historyFilter.copy(collectionIds = null)
+                    }
+                }
+            },
+            onDismiss = { showManageCollectionsDialog = false },
         )
     }
 
