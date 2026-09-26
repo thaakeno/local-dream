@@ -3110,6 +3110,18 @@ fun ModelRunScreen(
                             imageVersion = imageVersion,
                             generationParams = generationParams,
                             generationModelId = generationParamsModelId,
+                            generationVariantLabel = modelRepository.models
+                                .firstOrNull { it.id == generationParamsModelId }
+                                ?.let { sourceModel ->
+                                    listOf(
+                                        sourceModel.variantPrecision,
+                                        sourceModel.variantFormat,
+                                        sourceModel.variantAdapter,
+                                    )
+                                        .filter { it.isNotBlank() }
+                                        .joinToString(" · ")
+                                        .ifBlank { null }
+                                },
                             recentHistory = recentHistory,
                             showReportButton = BuildConfig.FLAVOR == "filter",
                             // Upscaling is only offered for the NPU runtime and resolutions <= 1024.

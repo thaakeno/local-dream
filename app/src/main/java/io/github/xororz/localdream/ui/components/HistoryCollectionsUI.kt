@@ -115,23 +115,36 @@ fun AddToCollectionDialog(
     var newName by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.collection_add_to)) },
+        title = {
+            Text(
+                stringResource(
+                    if (itemCount > 0) R.string.collection_add_to else R.string.collection_new,
+                ),
+            )
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    stringResource(R.string.collection_add_count, itemCount),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                collections.forEach { collection ->
-                    AssistChip(
-                        onClick = { onAddToExisting(collection) },
-                        label = { Text("${collection.name} · ${collection.itemCount}", maxLines = 1) },
-                        leadingIcon = {
-                            Icon(Icons.Default.CollectionsBookmark, contentDescription = null)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
+                if (itemCount > 0) {
+                    Text(
+                        stringResource(R.string.collection_add_count, itemCount),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    collections.forEach { collection ->
+                        AssistChip(
+                            onClick = { onAddToExisting(collection) },
+                            label = {
+                                Text(
+                                    "${collection.name} · ${collection.itemCount}",
+                                    maxLines = 1,
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.CollectionsBookmark, contentDescription = null)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
                 OutlinedTextField(
                     value = newName,
@@ -147,7 +160,13 @@ fun AddToCollectionDialog(
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null)
                     Text(
-                        stringResource(R.string.collection_create_and_add),
+                        stringResource(
+                            if (itemCount > 0) {
+                                R.string.collection_create_and_add
+                            } else {
+                                R.string.collection_create
+                            },
+                        ),
                         modifier = Modifier.padding(start = 6.dp),
                     )
                 }
@@ -171,6 +190,7 @@ fun ManageCollectionsDialog(
 ) {
     var editing by remember { mutableStateOf<HistoryCollection?>(null) }
     var editName by remember { mutableStateOf("") }
+    var deleting by remember { mutableStateOf<HistoryCollection?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -203,7 +223,7 @@ fun ManageCollectionsDialog(
                         ) {
                             Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.rename))
                         }
-                        FilledTonalIconButton(onClick = { onDelete(collection) }) {
+                        FilledTonalIconButton(onClick = { deleting = collection }) {
                             Icon(
                                 Icons.Default.Delete,
                                 contentDescription = stringResource(R.string.delete),
@@ -220,6 +240,36 @@ fun ManageCollectionsDialog(
             }
         },
     )
+
+    deleting?.let { collection ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text(stringResource(R.string.collection_delete_title)) },
+            text = {
+                Text(
+                    stringResource(R.string.collection_delete_hint, collection.name),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDelete(collection)
+                        deleting = null
+                    },
+                ) {
+                    Text(
+                        stringResource(R.string.delete),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleting = null }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
 
     editing?.let { collection ->
         AlertDialog(

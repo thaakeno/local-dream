@@ -112,6 +112,7 @@ internal fun ModelRunResultPage(
     imageVersion: Int,
     generationParams: GenerationParameters?,
     generationModelId: String,
+    generationVariantLabel: String?,
     // Newest few items only (bounded query); drives the thumbnail strip.
     recentHistory: List<HistoryItem>,
     showReportButton: Boolean,
@@ -412,6 +413,23 @@ internal fun ModelRunResultPage(
                                             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                                         ),
                                     )
+                                }
+                                generationVariantLabel?.takeIf { it.isNotBlank() }?.let { variant ->
+                                    item {
+                                        AssistChip(
+                                            onClick = {
+                                                // Variant IDs are distinct catalog entries, so
+                                                // filtering this model is the exact variant filter.
+                                                onQuickFilter(
+                                                    HistoryFilter(
+                                                        modelIds = setOf(generationModelId),
+                                                    ),
+                                                )
+                                            },
+                                            label = { Text(variant) },
+                                            border = null,
+                                        )
+                                    }
                                 }
                                 item {
                                     AssistChip(

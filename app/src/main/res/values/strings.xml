@@ -192,8 +192,11 @@
     <string name="collection_add_to">Add to collection</string>
     <string name="collection_add_count">Add %1$d selected image(s)</string>
     <string name="collection_create_and_add">Create and add</string>
+    <string name="collection_create">Create collection</string>
     <string name="collection_manage">Manage collections</string>
     <string name="collection_rename">Rename collection</string>
+    <string name="collection_delete_title">Delete collection?</string>
+    <string name="collection_delete_hint">Delete “%1$s”? The images stay in History.</string>
     <string name="collection_items_count">%1$d images</string>
     <string name="collection_created">Collection created</string>
     <string name="collection_updated">Collection updated</string>

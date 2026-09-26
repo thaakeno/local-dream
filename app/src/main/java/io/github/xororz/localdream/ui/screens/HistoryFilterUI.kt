@@ -159,6 +159,10 @@ internal fun HistoryFilter.hasAdvancedFilters(): Boolean = modes != null ||
     devices != null ||
     !promptSubstring.isNullOrBlank() ||
     !favorites.isNullOrEmpty() ||
+    !steps.isNullOrEmpty() ||
+    !cfgValues.isNullOrEmpty() ||
+    !generationTimes.isNullOrEmpty() ||
+    !collectionIds.isNullOrEmpty() ||
     !descending
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
