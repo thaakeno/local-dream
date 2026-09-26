@@ -47,6 +47,7 @@ import io.github.xororz.localdream.data.HistoryItem
 import io.github.xororz.localdream.data.HistoryManager
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
 import io.github.xororz.localdream.ui.components.GenerationParamsDialog
+import io.github.xororz.localdream.ui.components.HistoryCarouselOverlay
 import io.github.xororz.localdream.ui.components.OverlayIconButton
 import io.github.xororz.localdream.ui.components.ShareParamsFlow
 import io.github.xororz.localdream.ui.components.ZoomableImageOverlay
@@ -102,6 +103,7 @@ fun HistoryScreen(navController: NavController) {
     var batchSaveFailed by remember { mutableStateOf(0) }
 
     var previewItem by remember { mutableStateOf<HistoryItem?>(null) }
+    var carouselItems by remember { mutableStateOf<List<HistoryItem>>(emptyList()) }
     var showParamsDialog by remember { mutableStateOf(false) }
     var showShareDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -165,6 +167,8 @@ fun HistoryScreen(navController: NavController) {
                             selectedIds.add(item.id)
                         }
                     } else {
+                        val loaded = pagedItems.itemSnapshotList.items
+                        carouselItems = if (loaded.any { it.id == item.id }) loaded else listOf(item)
                         previewItem = item
                     }
                 },
@@ -220,9 +224,13 @@ fun HistoryScreen(navController: NavController) {
                 BitmapFactory.decodeFile(imagePath)
             }
         }
-        ZoomableImageOverlay(
-            bitmap = previewBitmap,
+        HistoryCarouselOverlay(
+            items = carouselItems.ifEmpty { listOf(item) },
+            initialItemId = item.id,
             onDismiss = { previewItem = null },
+            onCurrentItemChanged = { current ->
+                if (previewItem?.id != current.id) previewItem = current
+            },
             topEndContent = {
                 OverlayIconButton(
                     icon = Icons.Default.Info,
@@ -239,7 +247,11 @@ fun HistoryScreen(navController: NavController) {
                     onClick = {
                         // Keep the overlay's own copy in sync; the grid
                         // refreshes through the observed flow.
-                        previewItem = item.copy(favorite = !item.favorite)
+                        val updated = item.copy(favorite = !item.favorite)
+                        previewItem = updated
+                        carouselItems = carouselItems.map {
+                            if (it.id == updated.id) updated else it
+                        }
                         scope.launch(Dispatchers.IO) {
                             historyManager.setFavorite(item.id, !item.favorite)
                         }

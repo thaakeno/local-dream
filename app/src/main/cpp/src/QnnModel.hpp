@@ -169,7 +169,7 @@ class QnnModel : public QnnSampleApp {
     QnnHtpPerfInfrastructure_PowerConfig_t powerConfig;
     memset(&powerConfig, 0, sizeof(powerConfig));
     powerConfig.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
-    powerConfig.dcvsV3Config.dcvsEnable = 0;
+    powerConfig.dcvsV3Config.dcvsEnable = 1;
     powerConfig.dcvsV3Config.setDcvsEnable = 1;
     powerConfig.dcvsV3Config.contextId = powerConfigId;
     powerConfig.dcvsV3Config.powerMode =
@@ -177,7 +177,7 @@ class QnnModel : public QnnSampleApp {
     powerConfig.dcvsV3Config.setSleepLatency = 1;
     powerConfig.dcvsV3Config.setBusParams = 1;
     powerConfig.dcvsV3Config.setCoreParams = 1;
-    powerConfig.dcvsV3Config.sleepDisable = 1;
+    powerConfig.dcvsV3Config.sleepDisable = 0;
     powerConfig.dcvsV3Config.setSleepDisable = 1;
     powerConfig.dcvsV3Config.sleepLatency = 40;
     powerConfig.dcvsV3Config.busVoltageCornerMin =

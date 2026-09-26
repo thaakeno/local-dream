@@ -156,6 +156,7 @@ import io.github.xororz.localdream.service.BackgroundGenerationService
 import io.github.xororz.localdream.service.BackgroundGenerationService.GenerationState
 import io.github.xororz.localdream.ui.components.BlockingProgressOverlay
 import io.github.xororz.localdream.ui.components.GenerationParamsDialog
+import io.github.xororz.localdream.ui.components.HistoryCarouselOverlay
 import io.github.xororz.localdream.ui.components.ImportParametersDialog
 import io.github.xororz.localdream.ui.components.OverlayIconButton
 import io.github.xororz.localdream.ui.components.ReproduceParametersDialog
@@ -262,8 +263,12 @@ fun ModelRunScreen(
 
     val view = LocalView.current
     DisposableEffect(view) {
-        view.keepScreenOn = true
-        onDispose { view.keepScreenOn = false }
+        val previousKeepScreenOn = view.keepScreenOn
+        // Generation already runs in a foreground service. Forcing the panel
+        // awake just wastes battery and thermal headroom, so let Android's
+        // normal screen timeout work while inference continues unchanged.
+        view.keepScreenOn = false
+        onDispose { view.keepScreenOn = previousKeepScreenOn }
     }
 
     var showResetConfirmDialog by remember { mutableStateOf(false) }
@@ -296,6 +301,7 @@ fun ModelRunScreen(
         .collectAsState(initial = emptyList())
     var showHistoryFilterSheet by remember { mutableStateOf(false) }
     var selectedHistoryItem by remember { mutableStateOf<HistoryItem?>(null) }
+    var historyCarouselItems by remember { mutableStateOf<List<HistoryItem>>(emptyList()) }
     var showHistoryDetailDialog by remember { mutableStateOf(false) }
     var showHistoryParametersDialog by remember { mutableStateOf(false) }
     var showDeleteHistoryDialog by remember { mutableStateOf(false) }
@@ -3044,7 +3050,11 @@ fun ModelRunScreen(
                                         selectedIds.add(item.id)
                                     }
                                 } else {
-                                    // Normal preview
+                                    // Open a swipeable carousel over the currently loaded
+                                    // filtered history pages, anchored on the tapped image.
+                                    val loaded = pagedHistory.itemSnapshotList.items
+                                    historyCarouselItems =
+                                        if (loaded.any { it.id == item.id }) loaded else listOf(item)
                                     selectedHistoryItem = item
                                     showHistoryDetailDialog = true
                                 }
@@ -3579,9 +3589,15 @@ fun ModelRunScreen(
             dismissDetail()
             return true
         }
-        ZoomableImageOverlay(
-            bitmap = historyBitmap,
+        HistoryCarouselOverlay(
+            items = historyCarouselItems.ifEmpty { listOfNotNull(detailItem) },
+            initialItemId = detailItem?.id ?: -1L,
             onDismiss = dismissDetail,
+            onCurrentItemChanged = { current ->
+                if (selectedHistoryItem?.id != current.id) {
+                    selectedHistoryItem = current
+                }
+            },
             topEndContent = {
                 OverlayIconButton(
                     icon = Icons.Default.Info,
@@ -3604,7 +3620,11 @@ fun ModelRunScreen(
                         if (item != null) {
                             // Keep the dialog's own copy in sync; the grid
                             // refreshes through the observed flow.
-                            selectedHistoryItem = item.copy(favorite = !item.favorite)
+                            val updated = item.copy(favorite = !item.favorite)
+                            selectedHistoryItem = updated
+                            historyCarouselItems = historyCarouselItems.map {
+                                if (it.id == updated.id) updated else it
+                            }
                             scope.launch(Dispatchers.IO) {
                                 historyManager.setFavorite(item.id, !item.favorite)
                             }

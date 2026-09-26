@@ -424,6 +424,9 @@ class BackgroundGenerationService : Service() {
                                 "progress" -> {
                                     val step = message.optInt("step")
                                     val totalSteps = message.optInt("total_steps")
+                                    if (totalSteps > 0 && currentPhase != "denoising") {
+                                        currentPhase = "denoising"
+                                    }
                                     val progress = if (totalSteps > 0) {
                                         (step.toFloat() / totalSteps).coerceIn(0f, 1f)
                                     } else {

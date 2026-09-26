@@ -4,6 +4,8 @@
 #include <dlfcn.h>
 
 #include <chrono>
+#include <fstream>
+#include <malloc.h>
 #include <string>
 #include <vector>
 
@@ -107,6 +109,32 @@ class PipelineDit : public Pipeline {
       throw std::runtime_error("img2img not available (disabled)");
     const size_t pixel_count =
         static_cast<size_t>(req.width) * static_cast<size_t>(req.height);
+    const bool high_res_request = pixel_count >= kHighResResetPixels;
+    const bool needs_vision_context =
+        nativeEditRequest(req) && !llm_vision_path_.empty();
+
+    // A 2K graph is large enough that stale HTP residency from the previous
+    // generation can make Android's LMKD kill the whole app. Start 2K from a
+    // clean engine context, then return freed libc pages to the OS.
+    if (high_res_request && has_generated_) {
+      QNN_INFO("Resetting DiT context before high-resolution generation");
+      api_->destroy(ctx_);
+      ctx_ = createEngineContext(needs_vision_context);
+      if (!ctx_)
+        throw std::runtime_error("Failed to reset DiT context for 2K generation");
+      ctx_has_vision_ = needs_vision_context;
+      malloc_trim(0);
+    }
+
+    if (high_res_request) {
+      const long available_kb = readMemAvailableKb();
+      if (available_kb > 0 && available_kb < kHighResMinAvailableKb) {
+        throw std::runtime_error(
+            "Not enough free RAM for stable 2048 generation after cleanup (" +
+            std::to_string(available_kb / 1024) +
+            " MB available; close background apps and retry)");
+      }
+    }
     if (req.img2img && req.img_data.size() != 3 * pixel_count)
       throw std::invalid_argument("Invalid img_data");
     if (req.has_mask &&
@@ -116,7 +144,7 @@ class PipelineDit : public Pipeline {
       throw std::invalid_argument(
           "native reference editing is not supported by this DiT model");
 
-    if (nativeEditRequest(req) && !llm_vision_path_.empty() && !ctx_has_vision_) {
+    if (needs_vision_context && !ctx_has_vision_) {
       QNN_INFO("Switching Qwen context to lazy vision/edit mode");
       api_->destroy(ctx_);
       ctx_ = createEngineContext(/*with_vision=*/true);
@@ -200,8 +228,15 @@ class PipelineDit : public Pipeline {
     }
     // Full-frame decode needs latent-sized scratch that grows with the square
     // of the resolution; tile once past the point where it stops fitting.
-    if (vae_tile_size_ > 0 &&
-        static_cast<long>(req.width) * req.height >= kTileAbovePixels) {
+    if (high_res_request) {
+      // 2K decode gets a smaller tile even when the normal model tile is 1024;
+      // this caps the final VAE workspace instead of hitting a second memory
+      // cliff after a successful denoise.
+      params.vae_tile_size =
+          vae_tile_size_ > 0 ? std::min(vae_tile_size_, 512) : 512;
+      params.vae_tile_overlap = 0.25f;
+    } else if (vae_tile_size_ > 0 &&
+               static_cast<long>(req.width) * req.height >= kTileAbovePixels) {
       params.vae_tile_size = vae_tile_size_;
       params.vae_tile_overlap = 0.25f;
     }
@@ -226,6 +261,7 @@ class PipelineDit : public Pipeline {
                                    &PipelineDit::forwardPreview, &callbacks,
                                    &out_pixels, &out_width, &out_height,
                                    &out_channels);
+    has_generated_ = true;
     if (!ok) {
       // A progress callback that threw (client hung up) is reported by the
       // engine as a cancellation; rethrow the original so /generate answers
@@ -296,6 +332,20 @@ class PipelineDit : public Pipeline {
   // FP8 DiT remains resident. Tile at 1024+ to cap peak memory; 512/768 keep
   // the faster full-frame decode path.
   static constexpr long kTileAbovePixels = 1024L * 1024L;
+  static constexpr size_t kHighResResetPixels =
+      static_cast<size_t>(2048L) * 2048L;
+  static constexpr long kHighResMinAvailableKb = 4600L * 1024L;
+
+  static long readMemAvailableKb() {
+    std::ifstream meminfo("/proc/meminfo");
+    std::string key;
+    long value = -1;
+    std::string unit;
+    while (meminfo >> key >> value >> unit) {
+      if (key == "MemAvailable:") return value;
+    }
+    return -1;
+  }
 
   bool isNativeEditModel() const {
     return kind_ == DIT_MODEL_FLUX2_KLEIN ||
@@ -523,6 +573,7 @@ class PipelineDit : public Pipeline {
   const dit_engine_api *api_ = nullptr;
   dit_ctx *ctx_ = nullptr;
   bool ctx_has_vision_ = false;
+  bool has_generated_ = false;
 };
 
 #endif  // PIPELINEDIT_HPP

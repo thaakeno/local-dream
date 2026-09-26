@@ -79,6 +79,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
@@ -534,8 +535,18 @@ internal fun ModelRunHistoryPage(
                         // every index below itemCount; guard anyway for safety.
                         val item = pagedItems[index] ?: return@items
                         val isSelected = item.id in selectedIds
+                        val cardScale by animateFloatAsState(
+                            targetValue = if (isSelected) 0.96f else 1f,
+                            animationSpec = Motion.Fade,
+                            label = "historyCardScale",
+                        )
                         Card(
-                            modifier = Modifier.aspectRatio(1f),
+                            modifier = Modifier
+                                .aspectRatio(1f)
+                                .graphicsLayer {
+                                    scaleX = cardScale
+                                    scaleY = cardScale
+                                },
                             shape = MaterialTheme.shapes.medium,
                             elevation = CardDefaults.cardElevation(
                                 defaultElevation = 2.dp,
@@ -556,6 +567,7 @@ internal fun ModelRunHistoryPage(
                                         .build(),
                                     contentDescription = "Generated image",
                                     modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop,
                                 )
 
                                 if (isSelected) {
