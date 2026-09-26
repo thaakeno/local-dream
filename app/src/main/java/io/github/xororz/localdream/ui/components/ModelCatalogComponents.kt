@@ -747,7 +747,7 @@ fun Yue2FamilyCard(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "${selected.variantPrecision} · ${selected.variantAdapter}",
+                            "${selected.variantPrecision} · ${selected.variantProfile}",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
