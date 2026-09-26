@@ -224,6 +224,158 @@ private fun DownloadLogsDialog(onDismiss: () -> Unit) {
 }
 
 @Composable
+private fun NativeBackendLogsDialog(
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var refreshKey by remember { mutableIntStateOf(0) }
+    val logs = remember(refreshKey) { BackendDiagnostics.read(context) }
+    val preview = if (logs.length > 180_000) {
+        "… preview trimmed; Save contains the full log …\n\n" +
+            logs.takeLast(180_000)
+    } else {
+        logs
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Native backend logs") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Persistent yue2.cpp / FastRPC / Hexagon output. This starts before " +
+                        "model loading, so HTP startup failures are not lost.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 220.dp, max = 460.dp),
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                ) {
+                    Text(
+                        text = preview,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Row {
+                TextButton(
+                    onClick = {
+                        val result = SafeClipboard.copyText(
+                            context,
+                            "Local Dream native backend logs",
+                            logs,
+                        )
+                        val message = when {
+                            !result.copied -> "Could not copy logs; use Save"
+                            result.truncated ->
+                                "Log is huge; copied a safe tail. Save for the full log"
+                            else -> context.getString(R.string.logs_copied)
+                        }
+                        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                    },
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("Copy")
+                }
+                TextButton(
+                    onClick = {
+                        val timestamp = SimpleDateFormat(
+                            "yyyy-MM-dd_HH-mm-ss",
+                            Locale.US,
+                        ).format(Date())
+                        val filename = "local_dream_backend_$timestamp.log"
+                        scope.launch(Dispatchers.IO) {
+                            val savedPath = try {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    val values = ContentValues().apply {
+                                        put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                                        put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                                        put(
+                                            MediaStore.Downloads.RELATIVE_PATH,
+                                            Environment.DIRECTORY_DOWNLOADS + "/LocalDream",
+                                        )
+                                    }
+                                    val resolver = context.contentResolver
+                                    val uri = resolver.insert(
+                                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                                        values,
+                                    ) ?: throw java.io.IOException("MediaStore insert failed")
+                                    resolver.openOutputStream(uri)?.use { out ->
+                                        out.write(logs.toByteArray(Charsets.UTF_8))
+                                    } ?: throw java.io.IOException("openOutputStream failed")
+                                    "Downloads/LocalDream/$filename"
+                                } else {
+                                    val dir = File(
+                                        Environment.getExternalStoragePublicDirectory(
+                                            Environment.DIRECTORY_DOWNLOADS,
+                                        ),
+                                        "LocalDream",
+                                    )
+                                    if (!dir.exists()) dir.mkdirs()
+                                    val file = File(dir, filename)
+                                    FileOutputStream(file).use { out ->
+                                        out.write(logs.toByteArray(Charsets.UTF_8))
+                                    }
+                                    file.absolutePath
+                                }
+                            } catch (e: Exception) {
+                                Log.e("BackendDiagnostics", "save failed", e)
+                                null
+                            }
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    context,
+                                    savedPath?.let { "Saved to $it" } ?: "Could not save log",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        }
+                    },
+                ) {
+                    Icon(Icons.Default.Save, contentDescription = null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("Save")
+                }
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(
+                    onClick = {
+                        BackendDiagnostics.clear(context)
+                        refreshKey++
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Icon(Icons.Default.DeleteSweep, contentDescription = null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("Clear")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Close")
+                }
+            }
+        },
+    )
+}
+
+@Composable
 private fun DeleteConfirmDialog(
     selectedCount: Int,
     onConfirm: (keepHistory: Boolean) -> Unit,
