@@ -12,6 +12,7 @@ import io.github.xororz.localdream.R
 import io.github.xororz.localdream.data.DitEngine
 import io.github.xororz.localdream.data.DitResolution
 import io.github.xororz.localdream.data.Model
+import io.github.xororz.localdream.data.QwenFamilyStorage
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.Executors
@@ -520,7 +521,12 @@ class BackendService : Service() {
 
         try {
             val nativeDir = applicationInfo.nativeLibraryDir
-            val modelsDir = File(Model.getModelsDir(this), modelId)
+            val modelsDir = if (backendType == "qwen21") {
+                QwenFamilyStorage.prepareRuntimeDir(this, modelId)
+                    ?: File(Model.getModelsDir(this), modelId)
+            } else {
+                File(Model.getModelsDir(this), modelId)
+            }
 
             val executableFile = File(
                 nativeDir,
