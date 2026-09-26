@@ -21,7 +21,7 @@
 extern "C" {
 #endif
 
-#define DIT_ENGINE_ABI_VERSION 6
+#define DIT_ENGINE_ABI_VERSION 7
 
 // Name of the single symbol the core resolves after dlopen.
 #define DIT_ENGINE_ENTRY_SYMBOL "dit_engine_get_api"
@@ -87,11 +87,16 @@ typedef struct {
   float vae_tile_overlap;
 } dit_gen_params;
 
-// Called for sampling and for long auxiliary work so callers can still cancel
-// while weights/VAE tiles are running. total_steps is the effective sampling
-// step count during sampling, and 0 during auxiliary work. Returning false
-// asks the engine to cancel the generation.
-typedef bool (*dit_progress_cb)(int step, int total_steps, float step_seconds,
+typedef enum {
+  DIT_PROGRESS_SAMPLING = 0,
+  DIT_PROGRESS_MODEL_LOADING,
+  DIT_PROGRESS_AUXILIARY,
+} dit_progress_kind;
+
+// Called for sampling and long auxiliary work so callers can still cancel.
+// Kind keeps model-loading counters completely separate from sampler steps.
+typedef bool (*dit_progress_cb)(dit_progress_kind kind, int step,
+                                int total_steps, float step_seconds,
                                 void *user_data);
 
 typedef enum {
