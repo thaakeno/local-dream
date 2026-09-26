@@ -61,6 +61,7 @@ class BackendService : Service() {
     companion object {
         private const val TAG = "BackendService"
         private const val EXECUTABLE_NAME = "libstable_diffusion_core.so"
+        private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
@@ -94,6 +95,8 @@ class BackendService : Service() {
         // --type values served by the downloadable DiT engine.
         fun isDitBackend(backendType: String): Boolean = backendType == "zimage" ||
             backendType == "klein" || backendType == "qwen21"
+
+        fun isMusicBackend(backendType: String): Boolean = backendType == "yue2"
 
         // One reused dir, stamped with the SDK it holds. Per-file copying only
         // refreshes libs whose size changed, so an SDK bump would otherwise
@@ -519,7 +522,10 @@ class BackendService : Service() {
             val nativeDir = applicationInfo.nativeLibraryDir
             val modelsDir = File(Model.getModelsDir(this), modelId)
 
-            val executableFile = File(nativeDir, EXECUTABLE_NAME)
+            val executableFile = File(
+                nativeDir,
+                if (isMusicBackend(backendType)) MUSIC_EXECUTABLE_NAME else EXECUTABLE_NAME,
+            )
 
             if (!executableFile.exists()) {
                 Log.e(TAG, "error: executable does not exist: ${executableFile.absolutePath}")
@@ -534,20 +540,48 @@ class BackendService : Service() {
             // requirement changes instead of reusing a mismatched one.
             val listenOnAll = config.listenOnAll
 
-            val command = if (backendType == BACKEND_TYPE_UPSCALER) {
-                // Same invocation as the standalone upscale screen's private
-                // process; run through this service so host mode gets the
-                // usual reconcile/stop-grace lifecycle and --listen_all.
-                mutableListOf(
-                    executableFile.absolutePath,
-                    "--upscaler_mode",
-                    "--lib_dir",
-                    runtimeDir.absolutePath,
-                    "--port",
-                    "8081",
-                )
-            } else {
-                mutableListOf(
+            val command = when {
+                backendType == BACKEND_TYPE_UPSCALER -> {
+                    // Same invocation as the standalone upscale screen's private
+                    // process; run through this service so host mode gets the
+                    // usual reconcile/stop-grace lifecycle.
+                    mutableListOf(
+                        executableFile.absolutePath,
+                        "--upscaler_mode",
+                        "--lib_dir",
+                        runtimeDir.absolutePath,
+                        "--port",
+                        "8081",
+                    )
+                }
+
+                isMusicBackend(backendType) -> {
+                    // yue2.cpp's native async server. 20-second UI requests fit
+                    // comfortably in an 8192-token KV cache while avoiding the
+                    // multi-GB full-context allocation. STRICT is the default,
+                    // so AR -> NAR -> VAE swap cleanly between stages.
+                    mutableListOf(
+                        executableFile.absolutePath,
+                        "--model",
+                        File(modelsDir, "backbone.gguf").absolutePath,
+                        "--vae",
+                        File(modelsDir, "vae.gguf").absolutePath,
+                        "--host",
+                        if (listenOnAll) "0.0.0.0" else "127.0.0.1",
+                        "--port",
+                        "8081",
+                        "--max-batch",
+                        "1",
+                        "--max-seq",
+                        "8192",
+                        "--vae-core",
+                        "256",
+                        "--vae-halo",
+                        "16",
+                    )
+                }
+
+                else -> mutableListOf(
                     executableFile.absolutePath,
                     "--type",
                     backendType,
@@ -578,11 +612,13 @@ class BackendService : Service() {
                 // in the same backend process.
                 command += listOf("--qnn_lib_dir", runtimeDir.absolutePath)
             } else if (backendType != "sd15cpu" && backendType != "sdxlmnn" &&
-                backendType != BACKEND_TYPE_UPSCALER
+                backendType != BACKEND_TYPE_UPSCALER && !isMusicBackend(backendType)
             ) {
                 command += listOf("--lib_dir", runtimeDir.absolutePath)
             }
-            if (!useImg2img && backendType != BACKEND_TYPE_UPSCALER) {
+            if (!useImg2img && backendType != BACKEND_TYPE_UPSCALER &&
+                !isMusicBackend(backendType)
+            ) {
                 command += "--no_img2img"
             }
             if (backendType == "sd15npu" && (width != 512 || height != 512)) {
@@ -612,7 +648,9 @@ class BackendService : Service() {
             }
             // The upscaler-mode process takes no safety-checker flag (same as
             // the standalone upscale screen's own invocation).
-            if (BuildConfig.FLAVOR == "filter" && backendType != BACKEND_TYPE_UPSCALER) {
+            if (BuildConfig.FLAVOR == "filter" && backendType != BACKEND_TYPE_UPSCALER &&
+                !isMusicBackend(backendType)
+            ) {
                 command += listOf(
                     "--safety_checker",
                     File(filesDir, "safety_checker.mnn").absolutePath,
@@ -632,7 +670,7 @@ class BackendService : Service() {
                     command += "--anima_seq_dit"
                 }
             }
-            if (listenOnAll) {
+            if (listenOnAll && !isMusicBackend(backendType)) {
                 command += "--listen_all"
             }
             val env = mutableMapOf<String, String>()
@@ -669,6 +707,24 @@ class BackendService : Service() {
             val systemLibPathsStr = systemLibPaths.joinToString(":")
             env["LD_LIBRARY_PATH"] = systemLibPathsStr
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
+
+            if (isMusicBackend(backendType)) {
+                // yue2.cpp uses the same statically linked GGML Hexagon backend
+                // as the image DiT engine. HTP0 is the primary scheduler device;
+                // GGML keeps CPU only as a fallback for unsupported tiny ops.
+                env["GGML_HEXAGON_DEVICES"] = "HTP0"
+                env["GGML_BACKEND"] = "HTP0"
+                val dspPath = listOf(
+                    runtimeDir.absolutePath,
+                    "/vendor/lib/rfsa/adsp",
+                    "/vendor/dsp/cdsp",
+                    "/dsp",
+                ).joinToString(";")
+                env["ADSP_LIBRARY_PATH"] = dspPath
+                env["DSP_LIBRARY_PATH"] = dspPath
+                Log.i(TAG, "YuE2 backend: HTP0 primary, max_seq=8192, ADSP_LIBRARY_PATH=$dspPath")
+            }
+
             if (ditEngineDir != null) {
                 if (backendType == "qwen21") {
                     // Keep the full platform/vendor host-library search path.
