@@ -25,6 +25,12 @@ fun SmoothLinearWavyProgressIndicator(progress: Float, modifier: Modifier = Modi
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
+fun SmoothIndeterminateLinearWavyProgressIndicator(modifier: Modifier = Modifier) {
+    LinearWavyProgressIndicator(modifier = modifier)
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
 fun SmoothCircularWavyProgressIndicator(progress: Float, modifier: Modifier = Modifier) {
     val animated by animateFloatAsState(
         targetValue = progress.coerceIn(0f, 1f),
