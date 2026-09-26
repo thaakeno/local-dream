@@ -66,6 +66,7 @@ enum class CatalogFilterMode(val label: String) {
     All("All"),
     Installed("Installed"),
     Dit("DiT"),
+    Music("Music"),
     Sdxl("SDXL"),
     Custom("Custom"),
 }
@@ -85,6 +86,7 @@ fun filterAndSortCatalog(
             CatalogFilterMode.All -> true
             CatalogFilterMode.Installed -> model.isDownloaded
             CatalogFilterMode.Dit -> model.isDit
+            CatalogFilterMode.Music -> model.isMusic
             CatalogFilterMode.Sdxl -> model.isSdxl
             CatalogFilterMode.Custom -> model.isCustom
         }
