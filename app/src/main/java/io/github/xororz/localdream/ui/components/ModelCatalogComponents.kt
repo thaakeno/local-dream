@@ -245,87 +245,169 @@ private fun AnimatedFamilyHero(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(5200, easing = LinearEasing),
+            animation = tween(if (music) 4600 else 6200, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse,
         ),
-        label = "gradientPhase",
+        label = "familyHeroPhase",
     )
-    val primary = MaterialTheme.colorScheme.primary
-    val secondary = MaterialTheme.colorScheme.secondary
-    val tertiary = MaterialTheme.colorScheme.tertiary
-    val gradient = if (music) {
-        Brush.linearGradient(
-            colors = listOf(
-                tertiary.copy(alpha = 0.88f),
-                secondary.copy(alpha = 0.72f),
-                primary.copy(alpha = 0.58f),
-            ),
-            start = Offset(phase * 420f, 0f),
-            end = Offset(920f - phase * 260f, 520f),
-        )
-    } else {
-        Brush.linearGradient(
-            colors = listOf(
-                primary.copy(alpha = 0.90f),
-                secondary.copy(alpha = 0.72f),
-                tertiary.copy(alpha = 0.55f),
-            ),
-            start = Offset(0f, phase * 260f),
-            end = Offset(900f, 420f - phase * 170f),
-        )
-    }
 
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(gradient, MaterialTheme.shapes.extraLarge)
-            .padding(horizontal = 18.dp, vertical = 18.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
+    if (music) {
+        val gradient = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF4A235F),
+                Color(0xFF8E3A78),
+                Color(0xFFD46A9B),
+            ),
+            start = Offset(phase * 260f, 0f),
+            end = Offset(880f - phase * 180f, 430f),
+        )
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .background(gradient, MaterialTheme.shapes.extraLarge)
+                .padding(horizontal = 18.dp, vertical = 18.dp),
         ) {
-            Surface(
-                modifier = Modifier.size(58.dp),
-                shape = MaterialTheme.shapes.extraLarge,
-                color = Color.White.copy(alpha = 0.16f),
+            Box(
+                Modifier
+                    .size(110.dp)
+                    .align(Alignment.CenterEnd)
+                    .background(Color.White.copy(alpha = 0.055f), CircleShape),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(15.dp),
             ) {
-                if (music) {
-                    AnimatedMusicMark(Modifier.padding(10.dp))
-                } else {
-                    Icon(
-                        Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.padding(15.dp),
+                Surface(
+                    modifier = Modifier.size(62.dp),
+                    shape = CircleShape,
+                    color = Color.White.copy(alpha = 0.14f),
+                ) {
+                    AnimatedMusicMark(Modifier.padding(12.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                    )
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.80f),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        repeat(6) { index ->
+                            Box(
+                                Modifier
+                                    .width(16.dp)
+                                    .height((5 + ((index + phase * 5).toInt() % 3) * 3).dp)
+                                    .background(
+                                        Color.White.copy(alpha = 0.55f),
+                                        CircleShape,
+                                    ),
+                            )
+                        }
+                    }
+                }
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = Color.White.copy(alpha = 0.14f),
+                ) {
+                    Text(
+                        badge,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White,
                     )
                 }
             }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White.copy(alpha = 0.82f),
-                )
-            }
-            Surface(
-                shape = MaterialTheme.shapes.extraLarge,
-                color = Color.White.copy(alpha = 0.16f),
-            ) {
-                Text(
-                    badge,
-                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = Color.White,
-                )
+        }
+    } else {
+        val gradient = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF061A40),
+                Color(0xFF0D47A1),
+                Color(0xFF2F7CF6),
+            ),
+            start = Offset(0f, phase * 220f),
+            end = Offset(920f, 360f - phase * 120f),
+        )
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .background(gradient, MaterialTheme.shapes.extraLarge)
+                .padding(horizontal = 18.dp, vertical = 18.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(150.dp)
+                    .align(Alignment.TopEnd)
+                    .offset(x = 50.dp, y = (-55).dp)
+                    .background(Color.White.copy(alpha = 0.05f), CircleShape),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Surface(
+                        modifier = Modifier.size(48.dp),
+                        shape = MaterialTheme.shapes.large,
+                        color = Color.White.copy(alpha = 0.12f),
+                    ) {
+                        Icon(
+                            Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.padding(12.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                        )
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.78f),
+                        )
+                    }
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = Color.White.copy(alpha = 0.13f),
+                    ) {
+                        Text(
+                            badge,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color.White,
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    listOf("Q4", "Q8", "FP8", "Viggle").forEachIndexed { index, label ->
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = Color.White.copy(
+                                alpha = if (index == ((phase * 3).toInt() % 3)) 0.19f else 0.09f,
+                            ),
+                        ) {
+                            Text(
+                                label,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.88f),
+                            )
+                        }
+                    }
+                }
             }
         }
     }
