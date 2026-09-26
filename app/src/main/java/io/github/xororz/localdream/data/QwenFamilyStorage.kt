@@ -100,6 +100,60 @@ object QwenFamilyStorage {
         return File(sharedDir(context), file).isFile
     }
 
+
+    fun deletePrecision(context: Context, precision: String): Boolean = synchronized(lock) {
+        val target = when (precision) {
+            "Q4_0" -> DIT_Q4
+            "Q8_0" -> DIT_Q8
+            "FP8" -> DIT_FP8
+            else -> return@synchronized false
+        }
+
+        var touched = false
+        val shared = sharedDir(context)
+        val sharedFile = File(shared, target)
+        if (sharedFile.exists()) {
+            touched = sharedFile.delete() || touched
+        }
+
+        // alpha.34 and earlier stored a full copy/link per combination.
+        specs.filterValues { it.precision == precision }.forEach { (modelId, spec) ->
+            val legacy = File(File(Model.getModelsDir(context), modelId), spec.runtimeTransformerName)
+            if (legacy.exists()) {
+                touched = legacy.delete() || touched
+            }
+            File(context.filesDir, "runtime_models/qwen21/$modelId").deleteRecursively()
+        }
+
+        Log.i(TAG, "Deleted Qwen precision $precision touched=$touched")
+        touched
+    }
+
+    fun deleteAdapter(context: Context, adapter: String): Boolean = synchronized(lock) {
+        val target = when (adapter) {
+            "r128" -> LORA_R128
+            "r256" -> LORA_R256
+            else -> return@synchronized false
+        }
+
+        var touched = false
+        val sharedFile = File(sharedDir(context), target)
+        if (sharedFile.exists()) {
+            touched = sharedFile.delete() || touched
+        }
+
+        specs.filterValues { it.adapter == adapter }.forEach { (modelId, _) ->
+            val legacy = File(File(Model.getModelsDir(context), modelId), "turbo_lora.safetensors")
+            if (legacy.exists()) {
+                touched = legacy.delete() || touched
+            }
+            File(context.filesDir, "runtime_models/qwen21/$modelId").deleteRecursively()
+        }
+
+        Log.i(TAG, "Deleted shared Qwen adapter $adapter touched=$touched")
+        touched
+    }
+
     /**
      * Return a native-compatible model directory for a built-in Qwen variant.
      * Custom qwen21 imports are intentionally not handled here.
