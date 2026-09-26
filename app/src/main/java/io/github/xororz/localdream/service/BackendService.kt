@@ -122,6 +122,11 @@ class BackendService : Service() {
         private object StateHolder {
             val _backendState = MutableStateFlow<BackendState>(BackendState.Idle)
 
+            // Live milestone stream for native startup. MusicRunScreen renders
+            // this directly instead of showing an opaque disabled button while
+            // FastRPC / Hexagon is being initialized.
+            val _startupStatus = MutableStateFlow<BackendStartupStatus?>(null)
+
             // modelId the live process is serving (null when none). Process-wide
             // so a screen can tell whether 8081 is already serving *its* model
             // vs. a previous model still alive in the stop grace window.
@@ -134,6 +139,8 @@ class BackendService : Service() {
         }
 
         val backendState: StateFlow<BackendState> = StateHolder._backendState
+
+        val startupStatus: StateFlow<BackendStartupStatus?> = StateHolder._startupStatus
 
         val servingModelId: StateFlow<String?> = StateHolder._servingModelId
 
@@ -159,6 +166,7 @@ class BackendService : Service() {
 
                 "[load] fatal:" in lower ||
                     "[pipeline] fatal:" in lower ||
+                    "failed to load libcdsprpc.so" in lower ||
                     "failed to open session" in lower ||
                     "failed to create device/session" in lower ||
                     "failed to allocate weight buffer" in lower ||
@@ -180,11 +188,23 @@ class BackendService : Service() {
             StateHolder._backendState.value = state
         }
 
+        private fun updateStartup(status: BackendStartupStatus?) {
+            StateHolder._startupStatus.value = status
+        }
+
         private fun updateServing(config: BackendConfig?) {
             StateHolder._servingModelId.value = config?.modelId
             StateHolder._servingResolution.value = config?.let { Pair(it.width, it.height) }
         }
     }
+
+    data class BackendStartupStatus(
+        val modelId: String,
+        val phase: String,
+        val detail: String,
+        val progress: Float,
+        val startedAtMillis: Long,
+    )
 
     sealed class BackendState {
         object Idle : BackendState()
@@ -339,14 +359,20 @@ class BackendService : Service() {
         if (alreadyServing && !forceRestart) {
             Log.i(TAG, "backend already serving ${want.modelId} ${want.width}x${want.height}")
             updateServing(want)
-            updateState(BackendState.Running)
+            if (!isMusicBackend(want.backendType) || backendState.value is BackendState.Running) {
+                updateState(BackendState.Running)
+            }
             return
         }
         stopBackend()
         if (startBackend(want)) {
             serving = want
             updateServing(want)
-            updateState(BackendState.Running)
+            // yue-server is only ready after its "[Server] Listening" line.
+            // Other backends keep their existing spawn == running behavior.
+            if (!isMusicBackend(want.backendType)) {
+                updateState(BackendState.Running)
+            }
         } else {
             serving = null
             updateServing(null)
@@ -529,6 +555,19 @@ class BackendService : Service() {
         // crash reporting for the process we are about to start.
         stopping = false
         updateState(BackendState.Starting)
+        if (isMusicBackend(backendType)) {
+            updateStartup(
+                BackendStartupStatus(
+                    modelId = modelId,
+                    phase = "launch",
+                    detail = "Launching native YuE2 process",
+                    progress = 0.04f,
+                    startedAtMillis = System.currentTimeMillis(),
+                ),
+            )
+        } else {
+            updateStartup(null)
+        }
 
         try {
             val nativeDir = applicationInfo.nativeLibraryDir
@@ -866,7 +905,7 @@ class BackendService : Service() {
             val proc = processBuilder.start()
             process = proc
 
-            startMonitorThread(proc)
+            startMonitorThread(proc, config)
 
             return true
         } catch (e: Exception) {
@@ -877,7 +916,78 @@ class BackendService : Service() {
         }
     }
 
-    private fun startMonitorThread(proc: Process) {
+    private fun updateMusicStartupFromLine(modelId: String, line: String) {
+        val current = StateHolder._startupStatus.value
+        if (current?.modelId != modelId) return
+
+        val lower = line.lowercase()
+        val next = when {
+            "[store] created" in lower ->
+                current.copy(
+                    phase = "process",
+                    detail = "Native process started",
+                    progress = maxOf(current.progress, 0.10f),
+                )
+            "[bpe] loaded" in lower ->
+                current.copy(
+                    phase = "tokenizer",
+                    detail = "Tokenizer ready",
+                    progress = maxOf(current.progress, 0.22f),
+                )
+            "[gguf]" in lower ->
+                current.copy(
+                    phase = "model",
+                    detail = "Validated YuE2 model metadata",
+                    progress = maxOf(current.progress, 0.34f),
+                )
+            "loading driver libcdsprpc.so" in lower ->
+                current.copy(
+                    phase = "fastrpc",
+                    detail = "Opening Qualcomm FastRPC transport",
+                    progress = maxOf(current.progress, 0.46f),
+                )
+            "hexagon arch version" in lower ->
+                current.copy(
+                    phase = "htp",
+                    detail = line.substringAfter("ggml-hex: ").trim(),
+                    progress = maxOf(current.progress, 0.62f),
+                )
+            " new session " in lower && "ggml-hex:" in lower ->
+                current.copy(
+                    phase = "session",
+                    detail = "Hexagon HTP session opened",
+                    progress = maxOf(current.progress, 0.78f),
+                )
+            "[load]" in lower && "backend:" in lower ->
+                current.copy(
+                    phase = "backend",
+                    detail = line.trim(),
+                    progress = maxOf(current.progress, 0.86f),
+                )
+            "[server] yue-server" in lower ->
+                current.copy(
+                    phase = "server",
+                    detail = "YuE2 server initialized",
+                    progress = maxOf(current.progress, 0.94f),
+                )
+            "[server] listening on" in lower ->
+                current.copy(
+                    phase = "ready",
+                    detail = line.substringAfter("[Server] ").trim(),
+                    progress = 1.0f,
+                )
+            else -> null
+        }
+
+        if (next != null) {
+            updateStartup(next)
+            if (next.phase == "ready") {
+                updateState(BackendState.Running)
+            }
+        }
+    }
+
+    private fun startMonitorThread(proc: Process, config: BackendConfig) {
         Thread {
             var firstBackendError: String? = null
             var backendErrorCount = 0
@@ -886,10 +996,24 @@ class BackendService : Service() {
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
                         val backendLine = line ?: continue
+                        if (isMusicBackend(config.backendType)) {
+                            updateMusicStartupFromLine(config.modelId, backendLine)
+                        }
                         extractBackendError(backendLine)?.let { detail ->
                             backendErrorCount++
                             if (firstBackendError == null) {
                                 firstBackendError = detail
+                            }
+                            if (isMusicBackend(config.backendType)) {
+                                val current = StateHolder._startupStatus.value
+                                if (current?.modelId == config.modelId) {
+                                    updateStartup(
+                                        current.copy(
+                                            phase = "error",
+                                            detail = detail,
+                                        ),
+                                    )
+                                }
                             }
                         }
                         Log.i(TAG, "Backend: $backendLine")
@@ -911,7 +1035,7 @@ class BackendService : Service() {
                     updateState(
                         BackendState.Error(
                             "Backend monitor failed: ${e.message ?: e.javaClass.simpleName}",
-                            servingModelId.value,
+                            config.modelId,
                         ),
                     )
                 }
@@ -921,12 +1045,12 @@ class BackendService : Service() {
             BackendDiagnostics.append(
                 this@BackendService,
                 "EXIT",
-                "process exited code=$exitCode model=${servingModelId.value}",
+                "process exited code=$exitCode model=${config.modelId}",
             )
             CrashDiagnostics.record(
                 this@BackendService,
                 "BACKEND_EXIT",
-                "process exited code=$exitCode model=${servingModelId.value}",
+                "process exited code=$exitCode model=${config.modelId}",
             )
             // Only surface as an error when this is still the active process and
             // we didn't intentionally stop it; a torn-down or superseded process
@@ -943,7 +1067,7 @@ class BackendService : Service() {
                     BackendState.Error(
                         detail?.let { "Backend failed (code $exitCode): $it" }
                             ?: "Backend process exited with code: $exitCode",
-                        servingModelId.value,
+                        config.modelId,
                     ),
                 )
             } else {
@@ -998,5 +1122,8 @@ class BackendService : Service() {
         }
         serving = null
         updateServing(null)
+        if (stopping) {
+            updateStartup(null)
+        }
     }
 }
