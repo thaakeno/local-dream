@@ -554,6 +554,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var showFileManagerDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
     var showCleanTempDialog by remember { mutableStateOf(false) }
+    var showBackendLogsDialog by remember { mutableStateOf(false) }
     var tempScanBytes by remember { mutableLongStateOf(0L) }
     var showEmbeddingManagerDialog by remember { mutableStateOf(false) }
     var showCustomModelDialog by remember { mutableStateOf(false) }
@@ -874,6 +875,12 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     Text(stringResource(R.string.cancel))
                 }
             },
+        )
+    }
+
+    if (showBackendLogsDialog) {
+        NativeBackendLogsDialog(
+            onDismiss = { showBackendLogsDialog = false },
         )
     }
 
@@ -2577,6 +2584,15 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                     }
                                 }
                             },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+
+                    item {
+                        SettingNavCard(
+                            icon = Icons.Default.Terminal,
+                            label = "Native backend logs",
+                            onClick = { showBackendLogsDialog = true },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
