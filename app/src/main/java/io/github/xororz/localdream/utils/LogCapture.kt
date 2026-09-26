@@ -4,6 +4,9 @@ import android.util.Log
 import androidx.compose.runtime.mutableStateOf
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -30,8 +33,12 @@ object LogCapture {
             buffer.clear()
             try {
                 val pid = android.os.Process.myPid()
+                // Start at the exact capture time. --pid alone can replay old
+                // ring-buffer entries when Android has reused this PID, which
+                // made crash reports look like they contained events from hours ago.
+                val since = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
                 val proc = Runtime.getRuntime().exec(
-                    arrayOf("logcat", "--pid=$pid", "-v", "threadtime"),
+                    arrayOf("logcat", "--pid=$pid", "-T", since, "-v", "threadtime"),
                 )
                 captureProcess = proc
                 val scope = CoroutineScope(Dispatchers.IO)
