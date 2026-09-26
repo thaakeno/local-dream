@@ -190,6 +190,32 @@ fun ModelCatalogControls(
 private fun gb(bytes: Long): String =
     if (bytes <= 0L) "—" else String.format(Locale.US, "%.2f GB", bytes / 1_000_000_000.0)
 
+@Composable
+private fun FamilyStatusPill(
+    text: String,
+    emphasized: Boolean = false,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.extraLarge,
+        color = if (emphasized) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHighest
+        },
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = if (emphasized) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QwenFamilyCard(
@@ -202,35 +228,36 @@ fun QwenFamilyCard(
 
     var showSheet by remember { mutableStateOf(false) }
     val installed = variants.count { it.isDownloaded }
+    val recommended = variants.firstOrNull { it.recommendedVariant }
+        ?: variants.firstOrNull { it.isDownloaded }
+        ?: variants.first()
 
     ElevatedCard(
         onClick = { showSheet = true },
-        modifier = modifier
-            .fillMaxWidth()
-            .animateContentSize(),
+        modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ),
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.primary,
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.primaryContainer,
                 ) {
                     Icon(
                         Icons.Default.AutoAwesome,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.padding(12.dp).size(24.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(13.dp).size(26.dp),
                     )
                 }
                 Column(modifier = Modifier.weight(1f)) {
@@ -240,47 +267,62 @@ fun QwenFamilyCard(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        "One model family • choose precision + Turbo adapter",
+                        "Native image generation on HTP",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Badge {
-                    Text(if (installed > 0) "$installed installed" else "NPU")
-                }
+                FamilyStatusPill(
+                    text = if (installed > 0) "$installed installed" else "NPU",
+                    emphasized = installed > 0,
+                )
             }
 
             Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                AssistChip(
-                    onClick = { showSheet = true },
-                    label = { Text("Q4_0") },
-                    leadingIcon = { Icon(Icons.Default.SdStorage, null) },
-                )
-                AssistChip(
-                    onClick = { showSheet = true },
-                    label = { Text("Q8_0") },
-                    leadingIcon = { Icon(Icons.Default.Memory, null) },
-                )
-                AssistChip(
-                    onClick = { showSheet = true },
-                    label = { Text("FP8") },
-                    leadingIcon = { Icon(Icons.Default.Bolt, null) },
-                )
-                AssistChip(
-                    onClick = { showSheet = true },
-                    label = { Text("Viggle 6-pass") },
-                    leadingIcon = { Icon(Icons.Default.Speed, null) },
-                )
+                FamilyStatusPill("Q4 compact")
+                FamilyStatusPill("Q8 quality")
+                FamilyStatusPill("FP8 fast")
             }
 
-            Text(
-                "Native 1024 • no upscaling • Q8 quality / FP8 speed / Q4 compact",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Recommended",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            "${recommended.variantPrecision}" +
+                                if (recommended.variantAdapter.isNotEmpty()) {
+                                    " + Viggle ${recommended.variantAdapter}"
+                                } else {
+                                    " base"
+                                },
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Text(
+                        "Configure",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Default.Tune, contentDescription = null)
+                }
+            }
         }
     }
 
@@ -297,6 +339,64 @@ fun QwenFamilyCard(
                 onDownload(it)
             },
         )
+    }
+}
+
+@Composable
+private fun VariantChoiceCard(
+    selected: Boolean,
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    ElevatedCard(
+        onClick = onClick,
+        modifier = modifier,
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
+        ),
+        elevation = CardDefaults.elevatedCardElevation(
+            defaultElevation = if (selected) 3.dp else 0.dp,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(19.dp),
+                    tint = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+            )
+        }
     }
 }
 
@@ -322,99 +422,109 @@ private fun QwenVariantSheet(
     }
     val selected = variants.firstOrNull {
         it.variantPrecision == precision && it.variantAdapter == adapter
-    } ?: variants.first()
+    } ?: variants.firstOrNull { it.variantPrecision == precision }
+        ?: variants.first()
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 22.dp)
-                .padding(bottom = 30.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 Surface(
-                    shape = MaterialTheme.shapes.large,
+                    shape = MaterialTheme.shapes.extraLarge,
                     color = MaterialTheme.colorScheme.primaryContainer,
                 ) {
                     Icon(
-                        Icons.Default.Tune,
+                        Icons.Default.AutoAwesome,
                         null,
                         modifier = Modifier.padding(12.dp).size(24.dp),
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 }
-                Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Configure Qwen Image 2.1",
+                        "Qwen Image 2.1",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        "Pick the visual transformer and optional Turbo LoRA.",
+                        "Choose the runtime you actually want.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Transformer precision", style = MaterialTheme.typography.titleSmall)
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text("Transformer", style = MaterialTheme.typography.titleSmall)
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     precisions.forEach { p ->
                         val subtitle = when (p) {
-                            "Q4_0" -> "4.20 GB • compact"
-                            "Q8_0" -> "7.69 GB • quality"
-                            else -> "7.12 GB • fast"
+                            "Q4_0" -> "4.20 GB\ncompact"
+                            "Q8_0" -> "7.69 GB\nbest quality"
+                            else -> "7.12 GB\nfast FP8"
                         }
-                        FilterChip(
+                        VariantChoiceCard(
                             selected = precision == p,
-                            onClick = { precision = p },
-                            label = { Text("$p  $subtitle") },
-                            leadingIcon = {
-                                Icon(
-                                    when (p) {
-                                        "Q4_0" -> Icons.Default.SdStorage
-                                        "Q8_0" -> Icons.Default.Memory
-                                        else -> Icons.Default.Bolt
-                                    },
-                                    null,
-                                )
+                            title = p,
+                            subtitle = subtitle,
+                            icon = when (p) {
+                                "Q4_0" -> Icons.Default.SdStorage
+                                "Q8_0" -> Icons.Default.Memory
+                                else -> Icons.Default.Bolt
                             },
+                            onClick = {
+                                precision = p
+                                if (variants.none {
+                                        it.variantPrecision == p &&
+                                            it.variantAdapter == adapter
+                                    }
+                                ) {
+                                    adapter = variants.firstOrNull {
+                                        it.variantPrecision == p
+                                    }?.variantAdapter ?: ""
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
                         )
                     }
                 }
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Turbo adapter", style = MaterialTheme.typography.titleSmall)
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text("Turbo", style = MaterialTheme.typography.titleSmall)
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     adapters.forEach { a ->
-                        val label = when (a) {
-                            "r128" -> "Viggle r128 • 680 MB"
-                            "r256" -> "Viggle r256 • 1.36 GB"
-                            else -> "Off • base model"
+                        val enabled = variants.any {
+                            it.variantPrecision == precision && it.variantAdapter == a
                         }
-                        FilterChip(
+                        VariantChoiceCard(
                             selected = adapter == a,
-                            onClick = { adapter = a },
-                            label = { Text(label) },
-                            leadingIcon = {
-                                Icon(
-                                    if (a.isEmpty()) Icons.Default.PlayArrow else Icons.Default.AutoAwesome,
-                                    null,
-                                )
+                            title = when (a) {
+                                "r128" -> "r128"
+                                "r256" -> "r256"
+                                else -> "Base"
                             },
+                            subtitle = when (a) {
+                                "r128" -> "680 MB\n6-pass"
+                                "r256" -> "1.36 GB\n6-pass"
+                                else -> "20-step\nno LoRA"
+                            },
+                            icon = if (a.isEmpty()) Icons.Default.PlayArrow else Icons.Default.Speed,
+                            onClick = { if (enabled) adapter = a },
+                            modifier = Modifier.weight(1f),
                         )
                     }
                 }
@@ -422,9 +532,7 @@ private fun QwenVariantSheet(
 
             AnimatedContent(
                 targetState = selected.id,
-                transitionSpec = {
-                    fadeIn(tween(180)) togetherWith fadeOut(tween(120))
-                },
+                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
                 label = "qwenVariantDetails",
             ) {
                 Surface(
@@ -433,15 +541,21 @@ private fun QwenVariantSheet(
                 ) {
                     Column(
                         modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                selected.name,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.weight(1f),
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    selected.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    selected.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                             if (selected.isDownloaded) {
                                 Icon(
                                     Icons.Default.CheckCircle,
@@ -450,59 +564,33 @@ private fun QwenVariantSheet(
                                 )
                             }
                         }
-                        Text(
-                            selected.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            leadingContent = { Icon(Icons.Default.Memory, null) },
-                            headlineContent = { Text("Visual transformer") },
-                            supportingContent = {
-                                Text("${selected.variantPrecision} ${selected.variantFormat}")
-                            },
-                            trailingContent = { Text(gb(selected.modelBytes)) },
-                        )
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            leadingContent = { Icon(Icons.Default.AutoAwesome, null) },
-                            headlineContent = { Text("Turbo LoRA") },
-                            supportingContent = {
-                                Text(
-                                    if (selected.variantAdapter.isEmpty()) {
-                                        "Disabled • 20-step base path"
-                                    } else {
-                                        "Viggle v0.2.1 ${selected.variantAdapter} • exact 6-pass"
-                                    },
-                                )
-                            },
-                            trailingContent = {
-                                Text(if (selected.adapterBytes > 0) gb(selected.adapterBytes) else "—")
-                            },
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            FamilyStatusPill("${selected.variantPrecision} ${selected.variantFormat}")
+                            FamilyStatusPill(
+                                if (selected.variantAdapter.isEmpty()) {
+                                    "Base · 20 steps"
+                                } else {
+                                    "Viggle ${selected.variantAdapter} · 6 passes"
+                                },
+                                emphasized = selected.variantAdapter.isNotEmpty(),
+                            )
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
                             Text(
-                                "Full package",
-                                style = MaterialTheme.typography.labelLarge,
+                                "Package size",
+                                style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
                                 selected.approximateSize,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
-                            )
-                        }
-
-                        AnimatedVisibility(visible = selected.recommendedVariant) {
-                            Text(
-                                "Recommended quality/mobile balance",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary,
                             )
                         }
                     }
@@ -514,6 +602,7 @@ private fun QwenVariantSheet(
                     if (selected.isDownloaded) onOpen(selected) else onDownload(selected)
                 },
                 modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.large,
             ) {
                 Icon(
                     if (selected.isDownloaded) Icons.Default.PlayArrow else Icons.Default.CloudDownload,
@@ -522,15 +611,210 @@ private fun QwenVariantSheet(
                 Spacer(Modifier.width(8.dp))
                 Text(
                     if (selected.isDownloaded) {
-                        "Open ${selected.variantPrecision}"
+                        "Use ${selected.variantPrecision}"
                     } else {
                         "Download ${selected.approximateSize}"
                     },
                 )
             }
+        }
+    }
+}
 
-            TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
-                Text("Close")
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun Yue2FamilyCard(
+    variants: List<Model>,
+    onOpen: (Model) -> Unit,
+    onDownload: (Model) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (variants.isEmpty()) return
+    val model = variants.firstOrNull { it.recommendedVariant } ?: variants.first()
+    var showSheet by remember { mutableStateOf(false) }
+
+    ElevatedCard(
+        onClick = { showSheet = true },
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                ) {
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                        modifier = Modifier.padding(13.dp).size(26.dp),
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "YuE2 3B",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Text to music · native HTP",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                FamilyStatusPill(
+                    if (model.isDownloaded) "Installed" else "NPU",
+                    emphasized = model.isDownloaded,
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FamilyStatusPill("Q8 near-lossless")
+                FamilyStatusPill("48 kHz stereo")
+                FamilyStatusPill("≤ 20s")
+            }
+
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "AR plan + semantic → flow → Oobleck",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "One 4.34 GB package · stage-swapped for mobile memory",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(Icons.Default.Tune, contentDescription = null)
+                }
+            }
+        }
+    }
+
+    if (showSheet) {
+        ModalBottomSheet(onDismissRequest = { showSheet = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                    ) {
+                        Icon(
+                            Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.padding(12.dp).size(24.dp),
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "YuE2 3B · Q8_0",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "High-quality local music generation on Snapdragon HTP.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            VariantChoiceCard(
+                                selected = true,
+                                title = "Q8_0",
+                                subtitle = "3.81 GB\nnear-lossless",
+                                icon = Icons.Default.Memory,
+                                onClick = {},
+                                modifier = Modifier.weight(1f),
+                            )
+                            VariantChoiceCard(
+                                selected = true,
+                                title = "HTP",
+                                subtitle = "NPU primary\nCPU fallback",
+                                icon = Icons.Default.Bolt,
+                                onClick = {},
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Text(
+                            "Includes the 530 MB F32 Oobleck VAE. The AR and NAR halves " +
+                                "swap by stage instead of staying resident together.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                "Full package",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                model.approximateSize,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        showSheet = false
+                        if (model.isDownloaded) onOpen(model) else onDownload(model)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.large,
+                ) {
+                    Icon(
+                        if (model.isDownloaded) Icons.Default.PlayArrow else Icons.Default.CloudDownload,
+                        contentDescription = null,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (model.isDownloaded) "Create music" else "Download ${model.approximateSize}")
+                }
             }
         }
     }
