@@ -730,7 +730,7 @@ private fun QwenVariantSheet(
                     adapters.forEach { a ->
                         FamilyVariantTile(
                             selected = adapter == a,
-                            installed = adapterReady(a),
+                            installed = a.isNotEmpty() && adapterReady(a),
                             title = when (a) {
                                 "r128" -> "r128"
                                 "r256" -> "r256"
@@ -739,7 +739,7 @@ private fun QwenVariantSheet(
                             subtitle = when (a) {
                                 "r128" -> "680 MB · 6-pass"
                                 "r256" -> "1.36 GB · 6-pass"
-                                else -> "20 steps · no LoRA"
+                                else -> "20 steps · no extra file"
                             },
                             icon = if (a.isEmpty()) Icons.Default.PlayArrow else Icons.Default.Speed,
                             onClick = { adapter = a },
