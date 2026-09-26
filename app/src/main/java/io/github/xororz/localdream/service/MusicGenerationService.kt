@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import io.github.xororz.localdream.R
+import io.github.xororz.localdream.utils.BackendDiagnostics
 import io.github.xororz.localdream.utils.CrashDiagnostics
 import io.github.xororz.localdream.utils.Http
 import java.io.File
@@ -283,6 +284,11 @@ class MusicGenerationService : Service() {
                         message,
                         e,
                     )
+                    BackendDiagnostics.appendThrowable(
+                        this@MusicGenerationService,
+                        "GENERATION_ERROR",
+                        e,
+                    )
                     _state.value = MusicState.Error(message, modelId)
                     notifyPhase("YuE2 model load failed")
                 }
@@ -375,6 +381,12 @@ class MusicGenerationService : Service() {
             this,
             "YuE2 generate model=${modelId ?: "unknown"} duration=${duration}s steps=$steps cot=$cot",
         )
+        BackendDiagnostics.append(
+            this,
+            "REQUEST",
+            "generate model=${modelId ?: "unknown"} duration=${duration}s " +
+                "steps=$steps cot=$cot temp=$temperature topP=$topP cfg=$cfg",
+        )
         _state.value = MusicState.Generating(
             phase = "queued",
             detail = if (_residentModelId.value == modelId) {
@@ -420,6 +432,11 @@ class MusicGenerationService : Service() {
                     this@MusicGenerationService,
                     "PHASE",
                     "job=$id submitted",
+                )
+                BackendDiagnostics.append(
+                    this@MusicGenerationService,
+                    "JOB",
+                    "submitted id=$id",
                 )
 
                 val logJob = launch {
