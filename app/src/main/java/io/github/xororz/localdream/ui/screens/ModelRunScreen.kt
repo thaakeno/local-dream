@@ -157,6 +157,7 @@ import io.github.xororz.localdream.data.UpscalerRepository
 import io.github.xororz.localdream.navigation.HISTORY_REPRODUCE_ID_KEY
 import io.github.xororz.localdream.navigation.HISTORY_VARIATION_COUNT_KEY
 import io.github.xororz.localdream.navigation.HISTORY_VARIATION_ID_KEY
+import io.github.xororz.localdream.navigation.Screen
 import io.github.xororz.localdream.service.BackendService
 import io.github.xororz.localdream.service.BackgroundGenerationService
 import io.github.xororz.localdream.service.BackgroundGenerationService.GenerationState
@@ -203,6 +204,12 @@ private data class EditReferenceSelection(
 private data class VariationRequest(
     val params: GenerationParameters,
     val count: Int,
+)
+
+private data class VariationTarget(
+    val modelId: String,
+    val params: GenerationParameters,
+    val historyId: Long?,
 )
 
 @SuppressLint("DefaultLocale")
@@ -326,7 +333,7 @@ fun ModelRunScreen(
     var showAddToCollectionDialog by remember { mutableStateOf(false) }
     var collectionTargetIds by remember { mutableStateOf<List<Long>>(emptyList()) }
     var showManageCollectionsDialog by remember { mutableStateOf(false) }
-    var variationTargetParams by remember { mutableStateOf<GenerationParameters?>(null) }
+    var variationTarget by remember { mutableStateOf<VariationTarget?>(null) }
     var showVariationCountDialog by remember { mutableStateOf(false) }
 
     // Parameter share state
@@ -3175,7 +3182,11 @@ fun ModelRunScreen(
                             },
                             onGenerateVariations = {
                                 generationParams?.let { params ->
-                                    variationTargetParams = params
+                                    variationTarget = VariationTarget(
+                                        modelId = generationParamsModelId,
+                                        params = params,
+                                        historyId = currentDisplayedHistoryId,
+                                    )
                                     showVariationCountDialog = true
                                 }
                             },
@@ -3906,7 +3917,11 @@ fun ModelRunScreen(
                     contentDescription = "Generate variations",
                     onClick = {
                         selectedHistoryItem?.let { item ->
-                            variationTargetParams = item.params
+                            variationTarget = VariationTarget(
+                                modelId = item.modelId,
+                                params = item.params,
+                                historyId = item.id,
+                            )
                             showVariationCountDialog = true
                         }
                     },
@@ -3963,19 +3978,34 @@ fun ModelRunScreen(
         )
     }
 
-    if (showVariationCountDialog && variationTargetParams != null) {
+    if (showVariationCountDialog && variationTarget != null) {
         VariationCountDialog(
             onGenerate = { count ->
-                val params = variationTargetParams ?: return@VariationCountDialog
+                val target = variationTarget ?: return@VariationCountDialog
                 showVariationCountDialog = false
-                variationTargetParams = null
+                variationTarget = null
                 showHistoryDetailDialog = false
                 selectedHistoryItem = null
-                launchVariationBatch(VariationRequest(params, count))
+
+                if (target.modelId == modelId) {
+                    launchVariationBatch(VariationRequest(target.params, count))
+                } else {
+                    // The all-model History view can surface an image owned by
+                    // another runtime. Never run its parameters on the wrong
+                    // model; hand the stable history id to the target screen.
+                    val historyId = target.historyId
+                    if (historyId != null) {
+                        navController.currentBackStackEntry?.savedStateHandle?.apply {
+                            set(HISTORY_VARIATION_ID_KEY, historyId)
+                            set(HISTORY_VARIATION_COUNT_KEY, count)
+                        }
+                        navController.navigate(Screen.ModelRun.createRoute(target.modelId))
+                    }
+                }
             },
             onDismiss = {
                 showVariationCountDialog = false
-                variationTargetParams = null
+                variationTarget = null
             },
         )
     }
@@ -4086,9 +4116,18 @@ fun ModelRunScreen(
                 }
             },
             onReproduce = {
-                pendingReproduceParams = selectedHistoryItem!!.params
+                val item = selectedHistoryItem ?: return@GenerationParamsDialog
                 showHistoryParametersDialog = false
-                showReproduceParamsDialog = true
+                if (item.modelId == modelId) {
+                    pendingReproduceParams = item.params
+                    showReproduceParamsDialog = true
+                } else {
+                    navController.currentBackStackEntry?.savedStateHandle
+                        ?.set(HISTORY_REPRODUCE_ID_KEY, item.id)
+                    showHistoryDetailDialog = false
+                    selectedHistoryItem = null
+                    navController.navigate(Screen.ModelRun.createRoute(item.modelId))
+                }
             },
             onDismiss = { showHistoryParametersDialog = false },
         )
