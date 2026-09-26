@@ -451,7 +451,7 @@ class ModelDownloadService : Service() {
                 ),
             )
         } else {
-            discardPartialFiles(request.modelType, request.modelId)
+            discardPartialFiles(request.modelType, request.modelId, request.installDir)
             if (request.modelType != TYPE_MULTI_FILE) {
                 File(filesDir, "temp_downloads/${request.modelId}.part").delete()
             }
@@ -1344,7 +1344,7 @@ class ModelDownloadService : Service() {
         if (job?.isActive == true) {
             job.cancel()
         } else if (request != null) {
-            discardPartialFiles(request.modelType, request.modelId)
+            discardPartialFiles(request.modelType, request.modelId, request.installDir)
             if (request.modelType != TYPE_MULTI_FILE) {
                 File(filesDir, "temp_downloads/${request.modelId}.part").delete()
             }
@@ -1355,9 +1355,16 @@ class ModelDownloadService : Service() {
         }
     }
 
-    private fun discardPartialFiles(modelType: String, modelId: String) {
+    private fun discardPartialFiles(
+        modelType: String,
+        modelId: String,
+        installDir: String? = null,
+    ) {
         if (modelType != TYPE_MULTI_FILE) return
-        val modelDir = File(getModelsDir(), modelId)
+        val modelDir = File(
+            getModelsDir(),
+            installDir?.takeIf { it.isNotBlank() } ?: modelId,
+        )
         modelDir.listFiles { file -> file.isFile && file.name.endsWith(".part") }
             ?.forEach { it.delete() }
     }
