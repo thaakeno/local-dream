@@ -125,6 +125,13 @@ data class Model(
     val isAnima: Boolean = false,
     // DiT packages run by libdit_engine.so: "zimage", "klein" or "qwen21".
     val ditKind: String = "",
+    // Native audio packages use a separate yue2.cpp process. Keeping this
+    // distinct from ditKind prevents image-only resolution/edit assumptions
+    // from leaking into music models.
+    val musicKind: String = "",
+    // Optional marker written only after every package file is complete.
+    // Image DiT models fall back to their legacy marker when this is blank.
+    val packageMarker: String = "",
     // Files that make up a package downloaded file-by-file rather than as one
     // zip, as "<path under baseUrl>|<name on disk>" pairs. Used by the DiT
     // packages: they are too large to unpack from an archive on device, and
@@ -147,6 +154,7 @@ data class Model(
     val recommendedVariant: Boolean = false,
 ) {
     val isDit: Boolean get() = ditKind.isNotEmpty()
+    val isMusic: Boolean get() = musicKind.isNotEmpty()
 
     // Per-field priority: code defaults > config.json > global defaults.
     val defaults: GenerationDefaults
@@ -167,6 +175,7 @@ data class Model(
     // Backend --type value; each type implies the full model file layout.
     val backendType: String
         get() = when {
+            isMusic -> musicKind
             isDit -> ditKind
             isAnima -> "anima"
             isSdxl -> if (runOnCpu) "sdxlmnn" else "sdxl"
@@ -194,7 +203,10 @@ data class Model(
                 )
                 // Written only after every file lands, so a partial download
                 // is never picked up as an installed model.
-                putExtra(ModelDownloadService.EXTRA_MARKER_FILE, markerFileName(ditKind))
+                putExtra(
+                    ModelDownloadService.EXTRA_MARKER_FILE,
+                    packageMarker.ifBlank { markerFileName(ditKind) },
+                )
                 if (!inferenceProfile.isNullOrBlank()) {
                     putExtra(
                         ModelDownloadService.EXTRA_INFERENCE_PROFILE,
@@ -364,6 +376,15 @@ data class Model(
         val QWEN_IMAGE_2_1_GGUF_VIGGLE_TURBO_PACKAGE_FILES =
             QWEN_IMAGE_2_1_Q4_VIGGLE_R128_FILES
 
+        // yue2.cpp's recommended near-lossless mobile package. Q8_0 keeps the
+        // 3.6B AR/NAR backbone compact while preserving the audio-code LM; the
+        // Oobleck decoder intentionally stays F32 because its weights directly
+        // shape the waveform.
+        val YUE2_Q8_PACKAGE_FILES = listOf(
+            "Serveurperso/YuE2-GGUF/resolve/main/YuE2-3B-Q8_0.gguf|backbone.gguf",
+            "Serveurperso/YuE2-GGUF/resolve/main/YuE2-Vae-F32.gguf|vae.gguf",
+        )
+
         // The values are the raw nodes published by Viggle. The engine applies
         // Qwen/FlowMatch's resolution-dependent shift at runtime and appends the
         // terminal zero, yielding six actual Euler transformer passes.
@@ -419,21 +440,32 @@ data class Model(
             return files != null && files.isNotEmpty()
         }
 
-        fun isDitPackageDownloaded(
+        fun isPackageDownloaded(
             context: Context,
             modelId: String,
-            ditKind: String,
+            marker: String,
             packageFiles: List<String>,
         ): Boolean {
             val modelDir = File(getModelsDir(context), modelId)
-            val marker = markerFileName(ditKind)
-            if (marker.isEmpty() || !File(modelDir, marker).isFile) return false
+            if (marker.isBlank() || !File(modelDir, marker).isFile) return false
             return packageFiles.all { entry ->
                 val remote = entry.substringBefore('|')
                 val local = entry.substringAfter('|', remote.substringAfterLast('/'))
                 File(modelDir, local).let { it.isFile && it.length() > 0L }
             }
         }
+
+        fun isDitPackageDownloaded(
+            context: Context,
+            modelId: String,
+            ditKind: String,
+            packageFiles: List<String>,
+        ): Boolean = isPackageDownloaded(
+            context,
+            modelId,
+            markerFileName(ditKind),
+            packageFiles,
+        )
 
         private fun markerFileName(ditKind: String): String = when (ditKind) {
             "zimage" -> "ZIMAGE"
@@ -701,6 +733,7 @@ class ModelRepository private constructor(private val context: Context) {
                 add(createQwenImage21Fp8Model())
                 add(createQwenImage21Fp8ViggleR128Model())
                 add(createQwenImage21ViggleTurboModel())
+                add(createYue2Q8Model())
             }
             if (isSdxlCapableSoc(getDeviceSoc())) {
                 add(createIllustriousV16Model())
@@ -789,6 +822,33 @@ class ModelRepository private constructor(private val context: Context) {
             ),
             runOnCpu = false,
             ditKind = "klein",
+        )
+    }
+
+    private fun createYue2Q8Model(): Model {
+        val id = "yue2_3b_q8"
+        return Model(
+            id = id,
+            name = "YuE2 3B · Q8_0",
+            description = "Text-to-music · near-lossless Q8 backbone · 48 kHz stereo · HTP",
+            baseUrl = baseUrl,
+            packageFiles = Model.YUE2_Q8_PACKAGE_FILES,
+            packageMarker = "YUE2",
+            approximateSize = "4.34GB",
+            isDownloaded = Model.isPackageDownloaded(
+                context,
+                id,
+                "YUE2",
+                Model.YUE2_Q8_PACKAGE_FILES,
+            ),
+            runOnCpu = false,
+            musicKind = "yue2",
+            catalogFamily = "yue2",
+            variantPrecision = "Q8_0",
+            variantFormat = "GGUF",
+            modelBytes = 3_810_000_000L,
+            downloadBytesEstimate = 4_340_000_000L,
+            recommendedVariant = true,
         )
     }
 
@@ -1342,6 +1402,8 @@ class ModelRepository private constructor(private val context: Context) {
             "qwen_image_2_1_q4_viggle_r256",
             "qwen_image_2_1_q8", "qwen_image_2_1_q8_viggle_r128",
             "qwen_image_2_1_q8_viggle_r256", "qwen_image_2_1_fp8_viggle_r128",
+            // Music
+            "yue2_3b_q8",
         )
 
         fun isReservedModelId(id: String): Boolean = id in RESERVED_MODEL_IDS
