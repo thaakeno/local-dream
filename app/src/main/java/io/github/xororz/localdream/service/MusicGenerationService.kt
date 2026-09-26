@@ -780,6 +780,48 @@ class MusicGenerationService : Service() {
         return cleaned.takeIf { it.isNotBlank() } ?: fallback
     }
 
+    private fun cancelWork(startId: Int) {
+        cancelRequested = true
+        val id = activeJobId
+        synthCall?.cancel()
+        logCall?.cancel()
+        workJob?.cancel()
+        CrashDiagnostics.recordGeneration(
+            this,
+            "CANCELLED",
+            "YuE2 cancel requested job=${id ?: "none"}",
+        )
+
+        scope.launch {
+            if (id != null) {
+                runCatching {
+                    quickClient.newCall(
+                        Request.Builder()
+                            .url("$BACKEND/job?id=$id&cancel=1")
+                            .post(ByteArray(0).toRequestBody(null))
+                            .build(),
+                    ).execute().close()
+                }
+            }
+            activeJobId = null
+            _state.value = MusicState.Idle
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+        }
+    }
+
+    private fun finishService() {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        synthCall?.cancel()
+        logCall?.cancel()
+        workJob?.cancel()
+        super.onDestroy()
+    }
+
     private data class ParsedTrack(val replayJson: String, val audio: ByteArray)
 
     private fun parseSingleTrackMultipart(data: ByteArray, boundary: String): ParsedTrack {
