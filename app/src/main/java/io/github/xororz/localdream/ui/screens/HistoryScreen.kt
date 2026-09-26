@@ -14,6 +14,8 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,10 +48,14 @@ import io.github.xororz.localdream.data.HistoryFilter
 import io.github.xororz.localdream.data.HistoryItem
 import io.github.xororz.localdream.data.HistoryManager
 import io.github.xororz.localdream.navigation.HISTORY_REPRODUCE_ID_KEY
+import io.github.xororz.localdream.navigation.HISTORY_VARIATION_COUNT_KEY
+import io.github.xororz.localdream.navigation.HISTORY_VARIATION_ID_KEY
 import io.github.xororz.localdream.navigation.Screen
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
+import io.github.xororz.localdream.ui.components.AddToCollectionDialog
 import io.github.xororz.localdream.ui.components.GenerationParamsDialog
 import io.github.xororz.localdream.ui.components.HistoryCarouselOverlay
+import io.github.xororz.localdream.ui.components.ManageCollectionsDialog
 import io.github.xororz.localdream.ui.components.OverlayIconButton
 import io.github.xororz.localdream.ui.components.ShareParamsFlow
 import io.github.xororz.localdream.ui.components.ZoomableImageOverlay
@@ -93,6 +99,8 @@ fun HistoryScreen(navController: NavController) {
         .collectAsState(initial = emptyList())
     val knownSizes by remember { historyManager.observeKnownSizes() }
         .collectAsState(initial = emptyList())
+    val collections by remember { historyManager.observeCollections() }
+        .collectAsState(initial = emptyList())
 
     var showFilterSheet by remember { mutableStateOf(false) }
 
@@ -111,6 +119,10 @@ fun HistoryScreen(navController: NavController) {
     var showShareDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var deletingHistoryItemId by remember { mutableStateOf<Long?>(null) }
+    var showAddToCollectionDialog by remember { mutableStateOf(false) }
+    var collectionTargetIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var showManageCollectionsDialog by remember { mutableStateOf(false) }
+    var variationTarget by remember { mutableStateOf<HistoryItem?>(null) }
 
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
@@ -201,7 +213,22 @@ fun HistoryScreen(navController: NavController) {
                         }
                     }
                 },
+                collections = collections,
+                onCollectionSelected = { collectionId ->
+                    historyFilter = historyFilter.copy(
+                        collectionIds = collectionId?.let { setOf(it) },
+                    )
+                },
+                onCreateCollection = {
+                    collectionTargetIds = emptyList()
+                    showAddToCollectionDialog = true
+                },
+                onManageCollections = { showManageCollectionsDialog = true },
                 onBatchSave = { showBatchSaveDialog = true },
+                onBatchAddToCollection = {
+                    collectionTargetIds = selectedIds.toList()
+                    showAddToCollectionDialog = true
+                },
                 onBatchDelete = { showBatchDeleteDialog = true },
             )
         }
@@ -260,6 +287,19 @@ fun HistoryScreen(navController: NavController) {
                         scope.launch(Dispatchers.IO) {
                             historyManager.setFavorite(item.id, !item.favorite)
                         }
+                    },
+                )
+                OverlayIconButton(
+                    icon = Icons.Default.Shuffle,
+                    contentDescription = "Generate variations",
+                    onClick = { variationTarget = previewItem ?: item },
+                )
+                OverlayIconButton(
+                    icon = Icons.Default.CreateNewFolder,
+                    contentDescription = "Add to collection",
+                    onClick = {
+                        collectionTargetIds = listOf((previewItem ?: item).id)
+                        showAddToCollectionDialog = true
                     },
                 )
                 OverlayIconButton(
@@ -374,6 +414,91 @@ fun HistoryScreen(navController: NavController) {
                 onDismiss = { showDeleteDialog = false },
             )
         }
+    }
+
+    if (showAddToCollectionDialog) {
+        AddToCollectionDialog(
+            collections = collections,
+            itemCount = collectionTargetIds.size,
+            onAddToExisting = { collection ->
+                scope.launch {
+                    val ok = historyManager.addToCollection(collection.id, collectionTargetIds)
+                    showAddToCollectionDialog = false
+                    if (ok) {
+                        selectedIds.clear()
+                        isSelectionMode = false
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.collection_updated),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.collection_failed),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
+            onCreateAndAdd = { name ->
+                scope.launch {
+                    val collection = historyManager.createCollection(name)
+                    val ok = collection != null &&
+                        historyManager.addToCollection(collection.id, collectionTargetIds)
+                    showAddToCollectionDialog = false
+                    if (ok) {
+                        selectedIds.clear()
+                        isSelectionMode = false
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.collection_created),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.collection_failed),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
+            onDismiss = { showAddToCollectionDialog = false },
+        )
+    }
+
+    if (showManageCollectionsDialog) {
+        ManageCollectionsDialog(
+            collections = collections,
+            onRename = { collection, name ->
+                scope.launch { historyManager.renameCollection(collection.id, name) }
+            },
+            onDelete = { collection ->
+                scope.launch {
+                    historyManager.deleteCollection(collection.id)
+                    if (collection.id in historyFilter.collectionIds.orEmpty()) {
+                        historyFilter = historyFilter.copy(collectionIds = null)
+                    }
+                }
+            },
+            onDismiss = { showManageCollectionsDialog = false },
+        )
+    }
+
+    variationTarget?.let { target ->
+        VariationCountDialog(
+            onGenerate = { count ->
+                variationTarget = null
+                navController.currentBackStackEntry?.savedStateHandle?.apply {
+                    set(HISTORY_VARIATION_ID_KEY, target.id)
+                    set(HISTORY_VARIATION_COUNT_KEY, count)
+                }
+                previewItem = null
+                navController.navigate(Screen.ModelRun.createRoute(target.modelId))
+            },
+            onDismiss = { variationTarget = null },
+        )
     }
 
     if (showBatchSaveDialog && selectedIds.isNotEmpty()) {
