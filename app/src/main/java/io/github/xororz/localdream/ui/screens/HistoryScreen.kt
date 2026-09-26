@@ -45,6 +45,8 @@ import io.github.xororz.localdream.data.GenerationPreferences
 import io.github.xororz.localdream.data.HistoryFilter
 import io.github.xororz.localdream.data.HistoryItem
 import io.github.xororz.localdream.data.HistoryManager
+import io.github.xororz.localdream.navigation.HISTORY_REPRODUCE_ID_KEY
+import io.github.xororz.localdream.navigation.Screen
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
 import io.github.xororz.localdream.ui.components.GenerationParamsDialog
 import io.github.xororz.localdream.ui.components.HistoryCarouselOverlay
@@ -54,6 +56,7 @@ import io.github.xororz.localdream.ui.components.ZoomableImageOverlay
 import io.github.xororz.localdream.utils.saveImage
 import io.github.xororz.localdream.utils.saveImageFromFile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -107,6 +110,7 @@ fun HistoryScreen(navController: NavController) {
     var showParamsDialog by remember { mutableStateOf(false) }
     var showShareDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var deletingHistoryItemId by remember { mutableStateOf<Long?>(null) }
 
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
@@ -231,6 +235,7 @@ fun HistoryScreen(navController: NavController) {
             onCurrentItemChanged = { current ->
                 if (previewItem?.id != current.id) previewItem = current
             },
+            deletingItemId = deletingHistoryItemId,
             topEndContent = {
                 OverlayIconButton(
                     icon = Icons.Default.Info,
@@ -301,13 +306,21 @@ fun HistoryScreen(navController: NavController) {
                 modelId = item.modelId,
                 displayMode = item.mode,
                 showImg2imgButton = false,
-                showReproduceButton = false,
+                showReproduceButton = true,
                 onShare = {
                     showParamsDialog = false
                     showShareDialog = true
                 },
                 onSendToImg2img = {},
-                onReproduce = {},
+                onReproduce = {
+                    val target = previewItem ?: item
+                    showParamsDialog = false
+                    navController.currentBackStackEntry
+                        ?.savedStateHandle
+                        ?.set(HISTORY_REPRODUCE_ID_KEY, target.id)
+                    previewItem = null
+                    navController.navigate(Screen.ModelRun.createRoute(target.modelId))
+                },
                 onDismiss = { showParamsDialog = false },
             )
         }
@@ -331,13 +344,29 @@ fun HistoryScreen(navController: NavController) {
                 confirmText = stringResource(R.string.delete),
                 destructiveConfirm = true,
                 onConfirm = {
+                    val deleting = previewItem ?: item
+                    showDeleteDialog = false
+                    deletingHistoryItemId = deleting.id
                     scope.launch {
-                        val success = historyManager.deleteHistoryItem(item)
-                        showDeleteDialog = false
+                        delay(560)
+                        val success = historyManager.deleteHistoryItem(deleting)
                         if (success) {
-                            previewItem = null
+                            val before = carouselItems.ifEmpty { listOf(deleting) }
+                            val oldIndex = before.indexOfFirst { it.id == deleting.id }
+                                .coerceAtLeast(0)
+                            val remaining = before.filterNot { it.id == deleting.id }
+                            carouselItems = remaining
+                            deletingHistoryItemId = null
+                            if (remaining.isEmpty()) {
+                                previewItem = null
+                            } else {
+                                previewItem = remaining[
+                                    oldIndex.coerceAtMost(remaining.lastIndex)
+                                ]
+                            }
                             Toast.makeText(context, msgDeleted, Toast.LENGTH_SHORT).show()
                         } else {
+                            deletingHistoryItemId = null
                             Toast.makeText(context, msgDeleteFailed, Toast.LENGTH_SHORT).show()
                         }
                     }

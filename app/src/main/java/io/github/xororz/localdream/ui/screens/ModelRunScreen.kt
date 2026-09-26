@@ -67,6 +67,7 @@ import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Draw
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -151,6 +152,7 @@ import io.github.xororz.localdream.data.TagAutocompleteRepository
 import io.github.xororz.localdream.data.TagMatchType
 import io.github.xororz.localdream.data.TagSuggestion
 import io.github.xororz.localdream.data.UpscalerRepository
+import io.github.xororz.localdream.navigation.HISTORY_REPRODUCE_ID_KEY
 import io.github.xororz.localdream.service.BackendService
 import io.github.xororz.localdream.service.BackgroundGenerationService
 import io.github.xororz.localdream.service.BackgroundGenerationService.GenerationState
@@ -305,6 +307,7 @@ fun ModelRunScreen(
     var showHistoryDetailDialog by remember { mutableStateOf(false) }
     var showHistoryParametersDialog by remember { mutableStateOf(false) }
     var showDeleteHistoryDialog by remember { mutableStateOf(false) }
+    var deletingHistoryItemId by remember { mutableStateOf<Long?>(null) }
     var showReproduceParamsDialog by remember { mutableStateOf(false) }
     var pendingReproduceParams by remember { mutableStateOf<GenerationParameters?>(null) }
 
@@ -404,6 +407,22 @@ fun ModelRunScreen(
     var generationStartTime by remember { mutableStateOf<Long?>(null) }
     var hasInitialized by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
+
+    // Global History can hand an item back to its model. Wait until the model
+    // screen has initialized, then open the same selective Reproduce dialog
+    // used by the model-local history flow.
+    LaunchedEffect(hasInitialized, isCheckingBackend, modelId) {
+        if (!hasInitialized && isCheckingBackend) return@LaunchedEffect
+        val source = navController.previousBackStackEntry ?: return@LaunchedEffect
+        val historyId =
+            source.savedStateHandle.remove<Long>(HISTORY_REPRODUCE_ID_KEY)
+                ?: return@LaunchedEffect
+        val item = historyManager.getItems(listOf(historyId)).firstOrNull()
+        if (item != null && item.modelId == modelId) {
+            pendingReproduceParams = item.params
+            showReproduceParamsDialog = true
+        }
+    }
 
     // The prompt fields live on page 0. When the user swipes to the result or
     // history page the suggestion popup is anchored absolutely and would linger,
@@ -3598,6 +3617,7 @@ fun ModelRunScreen(
                     selectedHistoryItem = current
                 }
             },
+            deletingItemId = deletingHistoryItemId,
             topEndContent = {
                 OverlayIconButton(
                     icon = Icons.Default.Info,
@@ -3679,6 +3699,15 @@ fun ModelRunScreen(
                                     },
                                 )
                             }
+                        }
+                    },
+                )
+                OverlayIconButton(
+                    icon = Icons.Default.Delete,
+                    contentDescription = "Delete image",
+                    onClick = {
+                        if (selectedHistoryItem != null && deletingHistoryItemId == null) {
+                            showDeleteHistoryDialog = true
                         }
                     },
                 )
@@ -3820,20 +3849,34 @@ fun ModelRunScreen(
             confirmText = stringResource(R.string.delete),
             destructiveConfirm = true,
             onConfirm = {
+                val deleting = selectedHistoryItem ?: return@ModelRunConfirmDialog
+                showDeleteHistoryDialog = false
+                deletingHistoryItemId = deleting.id
                 scope.launch {
-                    val success = historyManager.deleteHistoryItem(
-                        item = selectedHistoryItem!!,
-                    )
+                    delay(560)
+                    val success = historyManager.deleteHistoryItem(deleting)
                     if (success) {
-                        showDeleteHistoryDialog = false
-                        showHistoryDetailDialog = false
-                        selectedHistoryItem = null
+                        val before = historyCarouselItems.ifEmpty { listOf(deleting) }
+                        val oldIndex = before.indexOfFirst { it.id == deleting.id }
+                            .coerceAtLeast(0)
+                        val remaining = before.filterNot { it.id == deleting.id }
+                        historyCarouselItems = remaining
+                        deletingHistoryItemId = null
+                        if (remaining.isEmpty()) {
+                            showHistoryDetailDialog = false
+                            selectedHistoryItem = null
+                        } else {
+                            selectedHistoryItem = remaining[
+                                oldIndex.coerceAtMost(remaining.lastIndex)
+                            ]
+                        }
                         Toast.makeText(
                             context,
                             msgDeleted,
                             Toast.LENGTH_SHORT,
                         ).show()
                     } else {
+                        deletingHistoryItemId = null
                         Toast.makeText(
                             context,
                             msgDeleteFailedMessage,

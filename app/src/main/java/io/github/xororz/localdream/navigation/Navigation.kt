@@ -3,6 +3,8 @@ package io.github.xororz.localdream.navigation
 import androidx.lifecycle.Lifecycle
 import androidx.navigation.NavController
 
+const val HISTORY_REPRODUCE_ID_KEY = "history_reproduce_id"
+
 // Ignores pops while a pop transition is already running (current entry not RESUMED),
 // so rapid back-button taps cannot pop the start destination and blank the NavHost.
 fun NavController.popBackStackIfResumed(): Boolean {
