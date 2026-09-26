@@ -614,9 +614,10 @@ private fun QwenVariantSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 18.dp)
                 .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             AnimatedFamilyHero(
                 title = "Qwen Image 2.1",
@@ -812,10 +813,12 @@ fun Yue2FamilyCard(
     modifier: Modifier = Modifier,
 ) {
     if (variants.isEmpty()) return
+
     val supported = variants.filter {
         it.variantPrecision == "Q8_0" || it.variantPrecision == "BF16"
     }
     if (supported.isEmpty()) return
+
     val legacyInstalled = variants.filter {
         (it.variantPrecision == "Q5_K_M" || it.variantPrecision == "Q6_K") &&
             it.isDownloaded
@@ -835,154 +838,61 @@ fun Yue2FamilyCard(
         colors = CardDefaults.elevatedCardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+        Column {
             AnimatedFamilyHero(
                 title = "YuE2 3B",
-                subtitle = "Text to music · 48 kHz stereo",
+                subtitle = "Text to music · Hexagon HTP",
                 badge = if (supported.any { it.variantPrecision == "Q8_0" && it.isDownloaded }) {
-                    "Q8 HTP ready"
+                    "Q8 ready"
                 } else if (installed > 0) {
-                    "$installed installed"
+                    "$installed ready"
                 } else {
-                    "Q8 HTP"
+                    "HTP"
                 },
                 music = true,
             )
 
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 18.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min)
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.GraphicEq,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.tertiary,
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        if (selected.isDownloaded) "Ready to create" else "Recommended",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            "Choose backbone precision",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            "The F32 Oobleck decoder is shared by every option.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text(
+                        "${selected.variantPrecision} · ${selected.variantProfile}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
 
-                supported.sortedBy {
-                    when (it.variantPrecision) {
-                        "Q8_0" -> 0
-                        else -> 1
-                    }
-                }.chunked(2).forEach { row ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        row.forEach { variant ->
-                            FamilyVariantTile(
-                                selected = selected.id == variant.id,
-                                installed = variant.isDownloaded,
-                                title = variant.variantPrecision,
-                                subtitle = when (variant.variantPrecision) {
-                                    "Q8_0" -> "HTP · near-lossless · 4.34 GB"
-                                    else -> "HTP · BF16 · 7.70 GB"
-                                },
-                                icon = when (variant.variantPrecision) {
-                                    "Q8_0" -> Icons.Default.Memory
-                                    else -> Icons.Default.AutoAwesome
-                                },
-                                onClick = {
-                                    selectedId = variant.id
-                                    showSheet = true
-                                },
-                                onLongClick = if (variant.isDownloaded) {
-                                    { onDelete(variant) }
-                                } else {
-                                    null
-                                },
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
-                }
+                VerticalDivider(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .padding(vertical = 2.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                )
 
-                if (legacyInstalled.isNotEmpty()) {
-                    Surface(
-                        shape = MaterialTheme.shapes.large,
-                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.62f),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(13.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onErrorContainer,
-                            )
-                            Spacer(Modifier.width(9.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "Storage cleanup",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                )
-                                Text(
-                                    legacyInstalled.joinToString(" · ") {
-                                        "${it.variantPrecision} ${it.approximateSize}"
-                                    },
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                )
-                            }
-                            TextButton(onClick = { onDelete(legacyInstalled.first()) }) {
-                                Text("Remove")
-                            }
-                        }
-                    }
-                }
-
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                TextButton(
                     onClick = { showSheet = true },
+                    modifier = Modifier.padding(start = 8.dp),
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "${selected.variantPrecision} · ${selected.variantProfile}",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                "Hexagon HTP · AR → semantic → NAR → Oobleck · ≤20s",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Text(
-                            if (selected.isDownloaded) "Create" else "Details",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        Spacer(Modifier.width(5.dp))
-                        Icon(Icons.Default.Tune, null)
-                    }
+                    Icon(Icons.Default.Tune, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Configure")
                 }
             }
         }
@@ -991,6 +901,7 @@ fun Yue2FamilyCard(
     if (showSheet) {
         Yue2VariantSheet(
             variants = supported,
+            legacyInstalled = legacyInstalled,
             selectedId = selected.id,
             onDelete = onDelete,
             onSelect = { selectedId = it.id },
@@ -1011,6 +922,7 @@ fun Yue2FamilyCard(
 @Composable
 private fun Yue2VariantSheet(
     variants: List<Model>,
+    legacyInstalled: List<Model>,
     selectedId: String,
     onDelete: (Model) -> Unit,
     onSelect: (Model) -> Unit,
@@ -1032,9 +944,10 @@ private fun Yue2VariantSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 18.dp)
                 .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             AnimatedFamilyHero(
                 title = "YuE2 3B",
@@ -1149,6 +1062,43 @@ private fun Yue2VariantSheet(
                                 selected.approximateSize,
                                 fontWeight = FontWeight.SemiBold,
                             )
+                        }
+                    }
+                }
+            }
+
+            if (legacyInstalled.isNotEmpty()) {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.58f),
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.error.copy(alpha = 0.18f),
+                    ),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Legacy download",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                            Text(
+                                legacyInstalled.joinToString(" · ") {
+                                    "${it.variantPrecision} ${it.approximateSize}"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        }
+                        TextButton(onClick = { onDelete(legacyInstalled.first()) }) {
+                            Text("Remove")
                         }
                     }
                 }
