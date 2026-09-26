@@ -28,6 +28,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import io.github.xororz.localdream.ui.components.SmoothIndeterminateLinearWavyProgressIndicator
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
 import io.github.xororz.localdream.utils.GenerationTelemetry
 import io.github.xororz.localdream.utils.GenerationTelemetrySnapshot
@@ -75,17 +76,14 @@ internal fun GenerationProgressCard(
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
-                        val phaseLabel = when (phase) {
-                            "encoding_input" -> "Encoding input"
-                            "encoding_prompt" -> "Encoding prompt"
-                            "denoising" -> "Denoising"
-                            "decoding" -> "Decoding"
-                            "finalizing" -> "Finalizing"
-                            else -> "Preparing runtime"
-                        }
+                        val phaseLabel = generationPhaseLabel(phase)
+                        val numericStage =
+                            totalSteps > 0 &&
+                                (phase == "denoising" || phase == "loading_model")
                         Text(
-                            text = if (phase == "denoising" && totalSteps > 0) {
-                                "$phaseLabel · Step ${step.coerceAtLeast(0)}/$totalSteps · " +
+                            text = if (numericStage) {
+                                val prefix = if (phase == "denoising") "Step " else ""
+                                "$phaseLabel · $prefix${step.coerceIn(0, totalSteps)}/$totalSteps · " +
                                     "${(progress * 100).toInt()}%"
                             } else {
                                 phaseLabel
@@ -93,14 +91,24 @@ internal fun GenerationProgressCard(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        GenerationElapsedLabel(startedAtMillis)
                     }
                     OutlinedButton(onClick = onCancel) { Text("Cancel") }
                 }
 
-                SmoothLinearWavyProgressIndicator(
-                    progress = progress,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                val determinate =
+                    totalSteps > 0 &&
+                        (phase == "denoising" || phase == "loading_model")
+                if (determinate) {
+                    SmoothLinearWavyProgressIndicator(
+                        progress = progress,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    SmoothIndeterminateLinearWavyProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
 
                 if (showStats) {
                     GenerationTelemetryPanel(startedAtMillis, acceleratorLabel)
@@ -124,8 +132,43 @@ internal fun GenerationProgressCard(
     }
 }
 
+private fun generationPhaseLabel(phase: String): String = when (phase) {
+    "queued" -> "Starting generation"
+    "preparing" -> "Preparing model runtime"
+    "preparing_latents" -> "Preparing latents"
+    "loading_model" -> "Loading model"
+    "loading_denoiser" -> "Loading denoiser"
+    "encoding_input" -> "Encoding input image"
+    "encoding_prompt" -> "Encoding prompt"
+    "inverting" -> "Preparing latent inversion"
+    "denoising" -> "Sampling"
+    "decoding" -> "Decoding image"
+    "finalizing" -> "Finalizing result"
+    else -> phase.replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
 @Composable
-private fun GenerationTelemetryPanel(startedAtMillis: Long?, acceleratorLabel: String) {
+private fun GenerationElapsedLabel(startedAtMillis: Long?) {
+    val elapsedSeconds by produceState(initialValue = 0L, key1 = startedAtMillis) {
+        while (true) {
+            value = startedAtMillis?.let {
+                (System.currentTimeMillis() - it).coerceAtLeast(0L) / 1000L
+            } ?: 0L
+            delay(500L)
+        }
+    }
+    Text(
+        text = "Elapsed $elapsedSeconds" + "s",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun GenerationTelemetryPanel(
+    @Suppress("UNUSED_PARAMETER") startedAtMillis: Long?,
+    acceleratorLabel: String,
+) {
     val context = LocalContext.current
     val telemetry by produceState<GenerationTelemetrySnapshot?>(
         initialValue = null,
@@ -137,9 +180,6 @@ private fun GenerationTelemetryPanel(startedAtMillis: Long?, acceleratorLabel: S
         }
     }
     val t = telemetry ?: return
-    val elapsed = startedAtMillis?.let {
-        (System.currentTimeMillis() - it).coerceAtLeast(0L) / 1000L
-    } ?: 0L
     val temp = t.batteryTempC?.let {
         String.format(java.util.Locale.US, "%.1f°C", it)
     } ?: "—"
