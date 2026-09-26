@@ -99,6 +99,12 @@ class MusicGenerationService : Service() {
                 is MusicState.Ready -> if (current.modelId != modelId) {
                     _state.value = MusicState.Idle
                 }
+                is MusicState.Error -> {
+                    // A previous backend/startup failure must not remain pinned
+                    // over a fresh screen entry after the native runtime has
+                    // been fixed/restarted.
+                    _state.value = MusicState.Idle
+                }
                 else -> Unit
             }
         }
