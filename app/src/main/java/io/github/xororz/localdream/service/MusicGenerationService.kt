@@ -547,7 +547,47 @@ class MusicGenerationService : Service() {
         }
     }
 
-    private suspend fun followLogs(id: String, started: Long, targetSeconds: Int, renderSteps: Int) {
+    private suspend fun followPreloadLogs(
+        id: String,
+        modelId: String,
+        started: Long,
+    ) {
+        followNativeLogs(id) { line ->
+            preloadPhaseFromLog(line, modelId, started)?.let { next ->
+                _state.value = next
+                CrashDiagnostics.recordGeneration(
+                    this@MusicGenerationService,
+                    "PHASE",
+                    "${next.phase}: ${next.detail}",
+                )
+                notifyPhase(next.detail)
+            }
+        }
+    }
+
+    private suspend fun followGenerationLogs(
+        id: String,
+        started: Long,
+        targetSeconds: Int,
+        renderSteps: Int,
+    ) {
+        followNativeLogs(id) { line ->
+            phaseFromLog(line, started, targetSeconds, renderSteps)?.let { next ->
+                _state.value = next
+                CrashDiagnostics.recordGeneration(
+                    this@MusicGenerationService,
+                    "PHASE",
+                    "${next.phase}: ${next.detail}",
+                )
+                notifyPhase(next.detail)
+            }
+        }
+    }
+
+    private suspend fun followNativeLogs(
+        id: String,
+        onLine: (String) -> Unit,
+    ) {
         val request = Request.Builder().url("$BACKEND/logs").get().build()
         logCall = client.newCall(request)
         logCall!!.execute().use { response ->
@@ -559,13 +599,84 @@ class MusicGenerationService : Service() {
                 if (!raw.startsWith("data: ")) continue
                 val line = raw.removePrefix("data: ")
                 if (!active) {
-                    if (line.contains("[Server] Job $id:")) active = true else continue
+                    if (line.contains("[Server] Job $id:")) {
+                        active = true
+                        onLine(line)
+                    }
+                    continue
                 }
-                phaseFromLog(line, started, targetSeconds, renderSteps)?.let {
-                    _state.value = it
-                    notifyPhase(it.detail)
-                }
+                onLine(line)
             }
+        }
+    }
+
+    private fun preloadPhaseFromLog(
+        line: String,
+        modelId: String,
+        started: Long,
+    ): MusicState.Preloading? {
+        fun state(
+            phase: String,
+            detail: String,
+            progress: Float? = null,
+            step: Int = 0,
+            total: Int = 0,
+        ) = MusicState.Preloading(
+            modelId,
+            phase,
+            detail,
+            progress,
+            step,
+            total,
+            started,
+        )
+
+        val nar = Regex("""\[NAR] Step (\d+)/(\d+)""").find(line)
+        if (nar != null) {
+            val step = nar.groupValues[1].toInt()
+            val total = nar.groupValues[2].toInt()
+            val local = step.toFloat() / total.coerceAtLeast(1)
+            return state(
+                "renderer",
+                "Warming acoustic renderer · $step/$total",
+                0.66f + 0.14f * local,
+                step,
+                total,
+            )
+        }
+
+        return when {
+            line.contains("[Server] Job ") ->
+                state("composer", "Loading composer weights", 0.10f)
+            line.contains("[Load] LM backend") ->
+                state("composer", nativeDetail(line, "Initializing composer backend"), 0.14f)
+            line.contains("[LM] Backend") ->
+                state("composer", nativeDetail(line, "Composer backend selected"), 0.18f)
+            line.contains("[GGUF]") ->
+                state("composer", nativeDetail(line, "Reading model weights"), 0.22f)
+            line.contains("[Store] Load LM") ->
+                state("composer_ready", "Composer loaded · warming token path", 0.42f)
+            line.contains("[AR] semantic") ->
+                state("composer_ready", "Composer warm · generating one test frame", 0.48f)
+            line.contains("[Load] NAR backend") ->
+                state("renderer", nativeDetail(line, "Initializing acoustic renderer"), 0.56f)
+            line.contains("[NAR] Backend") || line.contains("[NAR] Loaded") ->
+                state("renderer", nativeDetail(line, "Loading acoustic renderer"), 0.62f)
+            line.contains("[Store] Load NAR") ->
+                state("renderer", "Acoustic renderer loaded", 0.80f)
+            line.contains("[Load] VAE backend") ->
+                state("decoder", nativeDetail(line, "Initializing Oobleck decoder"), 0.84f)
+            line.contains("[VAE] Backend") || line.contains("[VAE] Loaded") ->
+                state("decoder", nativeDetail(line, "Loading Oobleck decoder"), 0.90f)
+            line.contains("[Store] Load VAE") ->
+                state("decoder", "Oobleck decoder loaded", 0.94f)
+            line.contains("[VAE] Track") || line.contains("[VAE] Graph") ->
+                state("decoder", "Warming 48 kHz audio decode", 0.96f)
+            line.contains("[VAE] Decoded") ->
+                state("finalizing", "Finishing model warmup", 0.98f)
+            line.contains("[Pipeline] Done") ->
+                state("finalizing", "All YuE2 stages resident", 0.995f)
+            else -> null
         }
     }
 
@@ -581,54 +692,92 @@ class MusicGenerationService : Service() {
             progress: Float? = null,
             step: Int = 0,
             total: Int = 0,
-        ) = MusicState.Generating(phase, detail, progress, step, total, started, targetSeconds)
+        ) = MusicState.Generating(
+            phase,
+            detail,
+            progress,
+            step,
+            total,
+            started,
+            targetSeconds,
+        )
 
         val ar = Regex("""\[AR] (ABC|semantic) (\d+)/(\d+)""").find(line)
         if (ar != null) {
             val kind = ar.groupValues[1]
             val step = ar.groupValues[2].toInt()
             val total = ar.groupValues[3].toInt()
-            return state(
-                if (kind == "ABC") "planning" else "semantic",
-                if (kind == "ABC") "Composing symbolic score" else "Writing semantic audio tokens",
-                (step.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f),
-                step,
-                total,
-            )
+            val local = (step.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f)
+            return if (kind == "ABC") {
+                state(
+                    "planning",
+                    "Composing symbolic score · $step/$total",
+                    0.04f + local * 0.20f,
+                    step,
+                    total,
+                )
+            } else {
+                state(
+                    "semantic",
+                    "Writing semantic audio frames · $step/$total",
+                    0.24f + local * 0.31f,
+                    step,
+                    total,
+                )
+            }
         }
 
         val nar = Regex("""\[NAR] Step (\d+)/(\d+)""").find(line)
         if (nar != null) {
             val step = nar.groupValues[1].toInt()
             val total = nar.groupValues[2].toInt()
+            val local = (step.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f)
             return state(
                 "flow",
-                "Rendering acoustic latents on HTP",
-                (step.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f),
+                "Rendering acoustic latents · $step/$total",
+                0.58f + local * 0.31f,
                 step,
                 total,
             )
         }
 
         return when {
-            line.contains("[Load] LM") || line.contains("Load LM") ->
-                state("loading_ar", "Loading AR composer on HTP")
+            line.contains("[Server] Job ") ->
+                state("starting", "Resident pipeline accepted the job", 0.02f)
+            line.contains("[Store] Load LM") ->
+                state("loading_ar", "Composer loaded", 0.04f)
             line.contains("[AR] ABC") ->
-                state("planning", "Composing melody and harmony")
+                state("planning", "Composing melody and harmony", 0.05f)
             line.contains("[AR] semantic") ->
-                state("semantic", "Writing up to ${targetSeconds * 25} semantic frames")
+                state(
+                    "semantic",
+                    "Writing up to ${targetSeconds * 25} semantic frames",
+                    0.25f,
+                )
             line.contains("[Store] Load NAR") || line.contains("[NAR] Loaded") ->
-                state("loading_nar", "Swapping to the NAR renderer")
-            line.contains("[NAR] Graph") ->
-                state("flow", "Preparing $renderSteps-step acoustic flow")
+                state("loading_nar", "Acoustic renderer ready", 0.57f)
+            line.contains("[NAR] Song") ->
+                state("flow", "Preparing $renderSteps-step acoustic flow", 0.58f)
             line.contains("[Store] Load VAE") || line.contains("[VAE] Loaded") ->
-                state("loading_vae", "Loading Oobleck decoder")
-            line.contains("[VAE] Tiled decode") ->
-                state("decoding", "Decoding 48 kHz stereo audio")
-            line.contains("[VAE] Decoded") || line.contains("[VAE] Tiled decode done") ->
-                state("finalizing", "Encoding 320 kbps MP3")
+                state("loading_vae", "Oobleck decoder ready", 0.90f)
+            line.contains("[VAE] Track") || line.contains("[VAE] Graph") ->
+                state("decoding", "Decoding 48 kHz stereo audio", 0.92f)
+            line.contains("[VAE] Decoded") ->
+                state("finalizing", "Audio decoded · encoding MP3", 0.96f)
+            line.contains("[MP3] Encoding") ->
+                state("finalizing", "Encoding 320 kbps MP3", 0.98f)
+            line.contains("[Pipeline] Done") ->
+                state("finalizing", "Native pipeline complete", 0.985f)
             else -> null
         }
+    }
+
+    private fun nativeDetail(line: String, fallback: String): String {
+        val cleaned = line
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+            .take(110)
+        return cleaned.takeIf { it.isNotBlank() } ?: fallback
     }
 
     private data class ParsedTrack(val replayJson: String, val audio: ByteArray)
