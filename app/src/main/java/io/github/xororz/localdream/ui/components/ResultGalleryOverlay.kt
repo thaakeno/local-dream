@@ -2,7 +2,7 @@ package io.github.xororz.localdream.ui.components
 
 import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.Orientation
@@ -58,7 +58,7 @@ fun ResultGalleryOverlay(
     onDismiss: () -> Unit,
     onHistoryItemChanged: (HistoryItem) -> Unit,
 ) {
-    val entries = remember(currentBitmap, currentHistoryId, recentHistory) {
+    val entries = remember {
         val history = recentHistory.map {
             ResultGalleryEntry(
                 stableKey = "history:${it.id}",
@@ -83,7 +83,7 @@ fun ResultGalleryOverlay(
     }
     if (entries.isEmpty()) return
 
-    val initialPage = remember(entries, currentHistoryId) {
+    val initialPage = remember {
         currentHistoryId?.let { id ->
             entries.indexOfFirst { it.historyItem?.id == id }.takeIf { it >= 0 }
         } ?: 0
@@ -170,12 +170,7 @@ private fun ResultGalleryPhoto(
     var dismissDrag by remember(entry.stableKey) { mutableFloatStateOf(0f) }
     var viewportWidth by remember(entry.stableKey) { mutableFloatStateOf(1f) }
     var viewportHeight by remember(entry.stableKey) { mutableFloatStateOf(1f) }
-    val shownDismissDrag by animateFloatAsState(
-        targetValue = dismissDrag,
-        animationSpec = tween(170),
-        label = "galleryDismissY",
-    )
-    val dragAlpha = (1f - abs(shownDismissDrag) / 900f).coerceIn(0.35f, 1f)
+    val dragAlpha = (1f - abs(dismissDrag) / 900f).coerceIn(0.35f, 1f)
 
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
         val oldScale = scale
@@ -213,8 +208,14 @@ private fun ResultGalleryPhoto(
                 onDragStopped = {
                     if (dismissDrag > 180f) {
                         onDismiss()
-                    } else {
-                        dismissDrag = 0f
+                    } else if (dismissDrag != 0f) {
+                        val settle = Animatable(dismissDrag)
+                        settle.animateTo(
+                            targetValue = 0f,
+                            animationSpec = tween(180),
+                        ) {
+                            dismissDrag = value
+                        }
                     }
                 },
             ),
@@ -233,7 +234,7 @@ private fun ResultGalleryPhoto(
                     scaleX = scale
                     scaleY = scale
                     translationX = panX
-                    translationY = panY + shownDismissDrag
+                    translationY = panY + dismissDrag
                 }
                 .pointerInput(entry.stableKey) {
                     detectTapGestures(
