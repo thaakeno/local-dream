@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
@@ -134,7 +135,8 @@ fun MusicRunScreen(
         if (!backendReady || !q8FastPath || modelResident) return@LaunchedEffect
         if (musicState is MusicState.Generating ||
             musicState is MusicState.Preloading ||
-            musicState is MusicState.Complete
+            musicState is MusicState.Complete ||
+            musicState is MusicState.Error
         ) {
             return@LaunchedEffect
         }
@@ -224,7 +226,7 @@ fun MusicRunScreen(
                             color = MaterialTheme.colorScheme.tertiaryContainer,
                         ) {
                             Icon(
-                                Icons.Default.AutoAwesome,
+                                Icons.Default.MusicNote,
                                 contentDescription = null,
                                 modifier = Modifier.padding(12.dp).size(24.dp),
                                 tint = MaterialTheme.colorScheme.onTertiaryContainer,
@@ -454,6 +456,16 @@ fun MusicRunScreen(
                                     state.message,
                                     color = MaterialTheme.colorScheme.onErrorContainer,
                                 )
+                                if (q8FastPath && backendReady) {
+                                    Spacer(Modifier.size(8.dp))
+                                    TextButton(
+                                        onClick = {
+                                            MusicGenerationService.preload(context, modelId)
+                                        },
+                                    ) {
+                                        Text("Retry model load")
+                                    }
+                                }
                             }
                         }
                     }
