@@ -5,7 +5,7 @@ on:
     branches:
       - qwen-fp8-turbo
     paths:
-      - '.github/workflows/resign-yue2-alpha36.yml'
+      - '.github/workflows/resign-yue2-alpha35.yml'
 
 permissions:
   contents: read
