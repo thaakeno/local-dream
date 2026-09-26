@@ -1,5 +1,6 @@
 package io.github.xororz.localdream.service
 
+import io.github.xororz.localdream.utils.BackendDiagnostics
 import io.github.xororz.localdream.utils.CrashDiagnostics
 
 import android.app.*
