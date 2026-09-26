@@ -103,6 +103,7 @@ import io.github.xororz.localdream.ui.theme.LocalThemeController
 import io.github.xororz.localdream.ui.theme.Motion
 import io.github.xororz.localdream.ui.theme.ThemePreset
 import io.github.xororz.localdream.ui.theme.scheme
+import io.github.xororz.localdream.utils.BackendDiagnostics
 import io.github.xororz.localdream.utils.CrashDiagnostics
 import io.github.xororz.localdream.utils.DownloadDiagnostics
 import io.github.xororz.localdream.utils.LogCapture
