@@ -95,6 +95,7 @@ import io.github.xororz.localdream.ui.components.CatalogFilterMode
 import io.github.xororz.localdream.ui.components.CatalogSortMode
 import io.github.xororz.localdream.ui.components.ModelCatalogControls
 import io.github.xororz.localdream.ui.components.QwenFamilyCard
+import io.github.xororz.localdream.ui.components.Yue2FamilyCard
 import io.github.xororz.localdream.ui.components.filterAndSortCatalog
 import io.github.xororz.localdream.ui.components.SmoothCircularWavyProgressIndicator
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
@@ -1285,8 +1286,15 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 } else {
                     emptyList()
                 }
-                val standalone = if (qwenVariants.isNotEmpty()) {
-                    rawModels.filter { it.catalogFamily != "qwen21" }
+                val yue2Variants = if (page == 1 && !remoteActive) {
+                    rawModels.filter { it.catalogFamily == "yue2" }
+                } else {
+                    emptyList()
+                }
+                val standalone = if (qwenVariants.isNotEmpty() || yue2Variants.isNotEmpty()) {
+                    rawModels.filter {
+                        it.catalogFamily != "qwen21" && it.catalogFamily != "yue2"
+                    }
                 } else {
                     rawModels
                 }
@@ -1303,7 +1311,16 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     when (catalogFilter) {
                         CatalogFilterMode.All, CatalogFilterMode.Dit -> true
                         CatalogFilterMode.Installed -> qwenVariants.any { it.isDownloaded }
-                        CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
+                        CatalogFilterMode.Music, CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
+                    }
+                val yue2Needle = catalogQuery.trim().lowercase(Locale.US)
+                val yue2Visible = yue2Variants.isNotEmpty() &&
+                    (yue2Needle.isBlank() ||
+                        "yue2 yue 2 music audio song text to music q8 gguf".contains(yue2Needle)) &&
+                    when (catalogFilter) {
+                        CatalogFilterMode.All, CatalogFilterMode.Music -> true
+                        CatalogFilterMode.Installed -> yue2Variants.any { it.isDownloaded }
+                        CatalogFilterMode.Dit, CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
                     }
 
                 LazyColumn(
@@ -1338,6 +1355,25 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 accent = true,
                                 onClick = { showCustomNpuModelDialog = true },
                                 modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+
+                    if (yue2Visible) {
+                        item(key = "yue2-family") {
+                            Yue2FamilyCard(
+                                variants = yue2Variants,
+                                onOpen = { model ->
+                                    navController.navigate(Screen.MusicRun.createRoute(model.id))
+                                },
+                                onDownload = { model ->
+                                    showDownloadConfirm = model
+                                },
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = tween(Motion.DurationMedium),
+                                    fadeOutSpec = tween(Motion.DurationMedium),
+                                    placementSpec = Motion.springExpressiveSpatial(),
+                                ),
                             )
                         }
                     }
@@ -1429,7 +1465,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         )
                     }
 
-                    if (models.isEmpty() && !qwenVisible && modelRepository.isLoaded) {
+                    if (models.isEmpty() && !qwenVisible && !yue2Visible && modelRepository.isLoaded) {
                         item {
                             var visible by remember { mutableStateOf(false) }
                             LaunchedEffect(Unit) { visible = true }
