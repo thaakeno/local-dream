@@ -47,6 +47,9 @@ class MusicGenerationService : Service() {
     private var scoreStageStartedAt = 0L
     private var semanticStageStartedAt = 0L
     private var vaeDecodeStartedAt = 0L
+    private var vaeDecodeTileStep = 0
+    private var vaeDecodeTileTotal = 0
+    private var vaeDecodeTileLatent = 0
 
     // Native /job only exposes running|done|failed|cancelled. Keep the last
     // fatal line from the SSE stream so a failed generation surfaces the real
@@ -410,6 +413,9 @@ class MusicGenerationService : Service() {
         scoreStageStartedAt = 0L
         semanticStageStartedAt = 0L
         vaeDecodeStartedAt = 0L
+        vaeDecodeTileStep = 0
+        vaeDecodeTileTotal = 0
+        vaeDecodeTileLatent = 0
         CrashDiagnostics.beginGenerationSession(
             this,
             "YuE2 generate model=${modelId ?: "unknown"} duration=${duration}s steps=$steps cot=$cot",
@@ -925,6 +931,26 @@ class MusicGenerationService : Service() {
             )
         }
 
+        val vaeTiledDecode = Regex(
+            """\[VAE] Tiled decode: (\d+) tiles \(core=(\d+), halo=(\d+)\)""",
+        ).find(line)
+        if (vaeTiledDecode != null) {
+            val total = vaeTiledDecode.groupValues[1].toInt().coerceAtLeast(1)
+            val core = vaeTiledDecode.groupValues[2].toInt()
+            val halo = vaeTiledDecode.groupValues[3].toInt()
+            vaeDecodeTileStep = 0
+            vaeDecodeTileTotal = total
+            vaeDecodeTileLatent = 0
+            vaeDecodeStartedAt = System.currentTimeMillis()
+            return state(
+                "decoding",
+                "VAE decode · $total exact HTP tiles · core $core + halo $halo",
+                0.90f,
+                0,
+                total,
+            )
+        }
+
         val vaeTileBegin = Regex("""\[VAE] Tile (\d+)/(\d+) begin: latent=(\d+)""").find(line)
         if (vaeTileBegin != null) {
             val step = vaeTileBegin.groupValues[1].toInt()
@@ -932,11 +958,14 @@ class MusicGenerationService : Service() {
             val latent = vaeTileBegin.groupValues[3].toInt()
             val now = System.currentTimeMillis()
             if (vaeDecodeStartedAt == 0L || step == 1) vaeDecodeStartedAt = now
+            vaeDecodeTileStep = step
+            vaeDecodeTileTotal = total
+            vaeDecodeTileLatent = latent
             val completed = (step - 1).coerceAtLeast(0)
             val local = (completed.toFloat() / total).coerceIn(0f, 1f)
             return state(
                 "decoding",
-                "Decoding waveform · tile $step/$total · $latent latent frames · HTP",
+                "HTP tile $step/$total · $latent latent frames · decoding",
                 0.90f + local * 0.07f,
                 completed,
                 total,
@@ -949,6 +978,8 @@ class MusicGenerationService : Service() {
             val total = vaeTile.groupValues[2].toInt().coerceAtLeast(1)
             val ms = vaeTile.groupValues[3].toLong()
             val now = System.currentTimeMillis()
+            vaeDecodeTileStep = step
+            vaeDecodeTileTotal = total
             if (vaeDecodeStartedAt == 0L) vaeDecodeStartedAt = now - ms
             val local = (step.toFloat() / total).coerceIn(0f, 1f)
             val elapsedMs = (now - vaeDecodeStartedAt).coerceAtLeast(ms)
@@ -973,6 +1004,27 @@ class MusicGenerationService : Service() {
                 0.90f + local * 0.07f,
                 step,
                 total,
+            )
+        }
+
+        val vaeGraph = Regex("""\[VAE] Graph: (\d+) nodes, T_latent=(\d+)""").find(line)
+        if (vaeGraph != null) {
+            val nodes = vaeGraph.groupValues[1].toInt()
+            val latent = vaeGraph.groupValues[2].toInt()
+            vaeDecodeTileLatent = latent
+            val total = vaeDecodeTileTotal.coerceAtLeast(1)
+            val active = vaeDecodeTileStep.coerceIn(1, total)
+            val completed = (active - 1).coerceAtLeast(0)
+            return state(
+                "decoding",
+                if (vaeDecodeTileTotal > 0) {
+                    "HTP tile $active/$total · $nodes-node decoder graph · $latent latent frames"
+                } else {
+                    "HTP decoder graph · $nodes nodes · $latent latent frames"
+                },
+                0.90f + (completed.toFloat() / total) * 0.07f,
+                completed,
+                if (vaeDecodeTileTotal > 0) total else 0,
             )
         }
 
@@ -1033,12 +1085,18 @@ class MusicGenerationService : Service() {
                 state("flow", nativeDetail(line, "Acoustic flow solved"), 0.89f)
             line.contains("[Store] Load VAE") || line.contains("[VAE] Loaded") ->
                 state("loading_vae", "Oobleck decoder loaded", 0.90f)
-            line.contains("[VAE] Track") || line.contains("[VAE] Graph") ->
-                state("decoding", "Decoding 48 kHz stereo audio", 0.92f)
-            line.contains("[VAE] Tiled decode") ->
-                state("decoding", nativeDetail(line, "Decoding audio tiles"), 0.93f)
-            line.contains("[VAE] Tiled decode done") || line.contains("[VAE] Decoded") ->
+            line.contains("[VAE] Tiled decode done") || line.contains("[VAE] Decoded") -> {
+                vaeDecodeTileStep = vaeDecodeTileTotal
                 state("finalizing", nativeDetail(line, "Audio decoded · encoding MP3"), 0.975f)
+            }
+            line.contains("[VAE] Track") ->
+                state(
+                    "decoding",
+                    "Preparing exact HTP waveform tiles",
+                    0.90f,
+                    0,
+                    vaeDecodeTileTotal,
+                )
             line.contains("[MP3] Encoding") ->
                 state("finalizing", "Encoding 320 kbps MP3", 0.98f)
             line.contains("[Pipeline] Done") ->
