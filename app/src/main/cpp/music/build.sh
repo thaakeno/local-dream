@@ -62,7 +62,10 @@ cmake -S "$YUE2_DIR" -B "$BUILD_DIR" -G Ninja \
     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
 
-cmake --build "$BUILD_DIR" --target yue-server -j "$(nproc)"
+# ExternalProject skels are not guaranteed to be pulled in by the host
+# executable target, so build the two Android architectures Local Dream ships
+# explicitly. This is still one matched source/backend revision.
+cmake --build "$BUILD_DIR" --target yue-server htp-mempool-v79 htp-mempool-v81 -j "$(nproc)"
 
 JNI_DIR="$(cd ../.. && pwd)/jniLibs/arm64-v8a"
 ASSET_DIR="$(cd ../.. && pwd)/assets/yue2libs"
