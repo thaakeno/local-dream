@@ -2,9 +2,9 @@
 """Compile-time YuE2/Hexagon integration for Local Dream.
 
 The dependency revisions are pinned. This script fails on source drift and adds
-native HTP implementations for the two Oobleck ops missing from upstream
-DSPQueue (SIN and COL2IM_1D), then switches yue2.cpp to a one-backend strict
-accelerator scheduler. There is no runtime source rewriting or CPU fallback.
+native HTP implementations for the Oobleck ops missing from upstream
+DSPQueue (SIN and COL2IM_1D), canonicalizes VAE binary inputs for native HTP,
+and enforces strict accelerator compute. There is no CPU compute fallback.
 """
 from pathlib import Path
 import shutil
@@ -197,9 +197,38 @@ static bool backend_strict_pin_graph(ggml_backend_sched_t sched,
             continue;
         }
         if (!ggml_backend_supports_op(accelerator, node)) {
+            const struct ggml_tensor * s0 = node->src[0];
+            const struct ggml_tensor * s1 = node->src[1];
             fprintf(stderr,
                     "[%s] FATAL: HTP unsupported node %d op=%s name=%s; CPU fallback blocked\\n",
                     label, i, ggml_op_desc(node), node->name[0] ? node->name : "<unnamed>");
+            fprintf(stderr,
+                    "[%s] node shape=[%lld,%lld,%lld,%lld] type=%s nb=[%zu,%zu,%zu,%zu]\\n",
+                    label,
+                    (long long) node->ne[0], (long long) node->ne[1],
+                    (long long) node->ne[2], (long long) node->ne[3],
+                    ggml_type_name(node->type),
+                    node->nb[0], node->nb[1], node->nb[2], node->nb[3]);
+            if (s0) {
+                fprintf(stderr,
+                        "[%s] src0 shape=[%lld,%lld,%lld,%lld] type=%s nb=[%zu,%zu,%zu,%zu] cont=%d perm=%d\\n",
+                        label,
+                        (long long) s0->ne[0], (long long) s0->ne[1],
+                        (long long) s0->ne[2], (long long) s0->ne[3],
+                        ggml_type_name(s0->type),
+                        s0->nb[0], s0->nb[1], s0->nb[2], s0->nb[3],
+                        (int) ggml_is_contiguous(s0), (int) ggml_is_permuted(s0));
+            }
+            if (s1) {
+                fprintf(stderr,
+                        "[%s] src1 shape=[%lld,%lld,%lld,%lld] type=%s nb=[%zu,%zu,%zu,%zu] cont=%d perm=%d\\n",
+                        label,
+                        (long long) s1->ne[0], (long long) s1->ne[1],
+                        (long long) s1->ne[2], (long long) s1->ne[3],
+                        ggml_type_name(s1->type),
+                        s1->nb[0], s1->nb[1], s1->nb[2], s1->nb[3],
+                        (int) ggml_is_contiguous(s1), (int) ggml_is_permuted(s1));
+            }
             return false;
         }
         ggml_backend_sched_set_tensor_backend(sched, node, accelerator);
@@ -264,6 +293,40 @@ replace_once(
 )
 
 vae = yue / "src/vae.h"
+replace_once(
+    vae,
+    """// Graph building
+// Snake activation (5-op naive decomposition for backend pattern fusion)""",
+    """// Graph building
+// Keep ADDs native-HTP compatible without changing their numerical result.
+// Conv/col2im views may expose non-contiguous strides rejected by Hexagon's
+// binary kernels. Materialize only those operands; already-contiguous tensors
+// remain zero-copy.
+static struct ggml_tensor * vae_htp_add(struct ggml_context * ctx,
+                                        struct ggml_tensor *  a,
+                                        struct ggml_tensor *  b) {
+    if (!ggml_is_contiguous(a) || ggml_is_permuted(a)) {
+        a = ggml_cont(ctx, a);
+    }
+    if (!ggml_is_contiguous(b) || ggml_is_permuted(b)) {
+        b = ggml_cont(ctx, b);
+    }
+    return ggml_add(ctx, a, b);
+}
+
+// Snake activation (5-op naive decomposition for backend pattern fusion)""",
+    "VAE HTP-safe ADD canonicalization",
+)
+
+vtext = vae.read_text()
+vtext = vtext.replace("return ggml_add(ctx, x, d);",
+                      "return vae_htp_add(ctx, x, d);")
+vtext = vtext.replace("y                        = ggml_add(ctx, y, b2d);",
+                      "y                        = vae_htp_add(ctx, y, b2d);")
+vtext = vtext.replace("return ggml_add(ctx, skip, x);",
+                      "return vae_htp_add(ctx, skip, x);")
+vae.write_text(vtext)
+
 replace_once(
     vae,
     """        if (!ggml_backend_sched_alloc_graph(m->sched, m->graph)) {""",
