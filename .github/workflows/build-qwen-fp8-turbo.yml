@@ -251,8 +251,10 @@ jobs:
           grep -q 'sin-hvx' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'col2im-channel-blocked' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'channel-bcast-add-hvx' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'adaptive-binary-vtcm' app/src/main/assets/yue2libs/backend-version.txt
-          grep -q 'dpmpp2m' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'dpmpp2m-sgm-uniform' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'htp-kv-window64' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'strict-accelerator' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'cpu_fallback=disabled' app/src/main/assets/yue2libs/backend-version.txt
           test -s app/src/main/assets/qnnlibs/libQnnHtp.so
