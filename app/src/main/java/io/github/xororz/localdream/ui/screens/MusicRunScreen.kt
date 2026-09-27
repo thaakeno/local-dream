@@ -2,6 +2,10 @@ package io.github.xororz.localdream.ui.screens
 
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
+import android.os.Build
+import android.os.PowerManager
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -77,6 +81,7 @@ import io.github.xororz.localdream.ui.components.SmoothIndeterminateLinearWavyPr
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
 import io.github.xororz.localdream.utils.AppHaptics
 import kotlinx.coroutines.delay
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -102,7 +107,7 @@ fun MusicRunScreen(
     }
     var duration by rememberSaveable { mutableIntStateOf(20) }
     var planning by rememberSaveable { mutableStateOf("off") }
-    var steps by rememberSaveable { mutableIntStateOf(32) }
+    var steps by rememberSaveable { mutableIntStateOf(8) }
     var seed by rememberSaveable { mutableLongStateOf(-1L) }
     var semanticTemperature by rememberSaveable { mutableFloatStateOf(1f) }
     var semanticTopP by rememberSaveable { mutableFloatStateOf(0.95f) }
@@ -453,7 +458,7 @@ fun MusicRunScreen(
                     is MusicState.Generating -> MusicProgressCard(
                         state = state,
                         precision = model?.variantPrecision ?: "GGUF",
-                        runtimeLabel = "HTP0 · Hexagon DSPQueue",
+                        runtimeLabel = "HTP0 · Native-only DSPQueue",
                         onCancel = {
                             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                             MusicGenerationService.stop(context)
@@ -1071,7 +1076,7 @@ private fun MusicProgressCard(
             }
 
             Text(
-                "$runtimeLabel · $precision backbone · ${state.targetSeconds * 25} frame budget · 48 kHz stereo",
+                "$runtimeLabel · CPU offload disabled · $precision · ${state.targetSeconds * 25} frames · 48 kHz stereo",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1183,7 +1188,7 @@ private fun MusicGenerationConfigSheet(
                     }
                 }
                 Text(
-                    "These are midpoint flow-matching steps. 32 is the yue2.cpp reference default; 16 is the mobile balance.",
+                    "8 is the mobile HTP fast path. 16 is balanced and 32 is the yue2.cpp reference render. This changes only the acoustic flow solver, not song duration.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
