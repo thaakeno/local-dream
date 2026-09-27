@@ -57,6 +57,9 @@ grep -q 'YuE2 adaptive binary VTCM thread fit' "$GGML_DIR/src/ggml-hexagon/ggml-
 grep -q 'col2im_fast_channel' "$(pwd)/native/col2im-ops.c"
 grep -q 'YUE2_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'op_snake' "$(pwd)/native/snake-ops.c"
+grep -q 'ode_method' "$YUE2_DIR/src/request.h"
+grep -q 'dpmpp_2m' "$YUE2_DIR/src/nar.h"
+grep -q 'r.ode_method.c_str()' "$YUE2_DIR/src/pipeline.h"
 
 rm -rf "$BUILD_DIR"
 
@@ -110,7 +113,7 @@ cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
 variant=dspqueue-yue2-native-0.5.0
-integration=snake-hvx-fused,sin-hvx,col2im1d-htp,col2im-channel-blocked,adaptive-binary-vtcm,strict-accelerator
+integration=snake-hvx-fused,sin-hvx,col2im1d-htp,col2im-channel-blocked,adaptive-binary-vtcm,dpmpp2m,strict-accelerator
 cpu_fallback=disabled
 EOF
 
