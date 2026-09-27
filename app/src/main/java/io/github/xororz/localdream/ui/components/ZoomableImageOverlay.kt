@@ -84,7 +84,19 @@ fun ZoomableImageOverlay(
                 }
             }
             .pointerInput(bitmap) {
-                detectTapGestures(onTap = { offset ->
+                detectTapGestures(
+                    onDoubleTap = {
+                        if (scale > 1.05f) {
+                            scale = 1f
+                            offsetX = 0f
+                            offsetY = 0f
+                        } else {
+                            scale = 2.5f
+                            offsetX = 0f
+                            offsetY = 0f
+                        }
+                    },
+                    onTap = { offset ->
                     val bmp = bitmap
                     if (bmp == null) {
                         onDismiss()
@@ -117,7 +129,8 @@ fun ZoomableImageOverlay(
                     ) {
                         onDismiss()
                     }
-                })
+                },
+                )
             },
     ) {
         if (bitmap != null) {
