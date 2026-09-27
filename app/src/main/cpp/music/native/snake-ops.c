@@ -16,6 +16,25 @@
 #include "htp-ops.h"
 #include "htp-tensor.h"
 
+// Keep the vector arithmetic local to this kernel.  hvx-arith.h's
+// HVX_OP_* macros are intentionally private and are undefined at the end of
+// that header, so depending on them here breaks the standalone HTP build.
+static inline HVX_Vector snake_mul_f32(HVX_Vector a, HVX_Vector b) {
+#if __HVX_ARCH__ < 79
+    return Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(a, b));
+#else
+    return Q6_Vsf_vmpy_VsfVsf(a, b);
+#endif
+}
+
+static inline HVX_Vector snake_add_f32(HVX_Vector a, HVX_Vector b) {
+#if __HVX_ARCH__ < 79
+    return Q6_Vsf_equals_Vqf32(Q6_Vqf32_vadd_VsfVsf(a, b));
+#else
+    return Q6_Vsf_vadd_VsfVsf(a, b);
+#endif
+}
+
 struct htp_snake_context {
     struct htp_ops_context * octx;
     uint32_t channels;
@@ -58,11 +77,11 @@ static void snake_thread(unsigned int nth, unsigned int ith, void * data) {
         uint32_t t = 0;
         for (; t + VLEN_FP32 <= sctx->time; t += VLEN_FP32) {
             const HVX_Vector vx = *(const HVX_UVector *) (row + t);
-            const HVX_Vector vax = HVX_OP_MUL_F32(vx, va);
+            const HVX_Vector vax = snake_mul_f32(vx, va);
             const HVX_Vector vs = hvx_vec_sin_f32(vax);
-            const HVX_Vector vs2 = HVX_OP_MUL_F32(vs, vs);
-            const HVX_Vector vd = HVX_OP_MUL_F32(vs2, vb);
-            const HVX_Vector vy = HVX_OP_ADD_F32(vx, vd);
+            const HVX_Vector vs2 = snake_mul_f32(vs, vs);
+            const HVX_Vector vd = snake_mul_f32(vs2, vb);
+            const HVX_Vector vy = snake_add_f32(vx, vd);
             *(HVX_UVector *) (out + t) = vy;
         }
         for (; t < sctx->time; ++t) {
