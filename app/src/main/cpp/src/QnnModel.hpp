@@ -259,10 +259,20 @@ class QnnModel : public QnnSampleApp {
       return StatusCode::FAILURE;
     }
 
-    const auto corner = burst
+    // Efficient mode is a race-to-idle profile: allow DCVS to fall to
+    // NOM_PLUS between HTP submissions, but keep TURBO as target/max so a live
+    // UNet graph still gets full throughput. This removes the old permanent
+    // MAX vote without turning the denoising loop into a low-clock workload.
+    const auto minCorner = burst
+        ? DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER
+        : DCVS_VOLTAGE_VCORNER_NOM_PLUS;
+    const auto targetCorner = burst
         ? DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER
         : (cool ? DCVS_VOLTAGE_VCORNER_NOM_PLUS
                 : DCVS_VOLTAGE_VCORNER_TURBO);
+    const auto maxCorner = burst
+        ? DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER
+        : DCVS_VOLTAGE_VCORNER_TURBO;
 
     QnnHtpPerfInfrastructure_PowerConfig_t powerConfig{};
     powerConfig.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
@@ -270,19 +280,19 @@ class QnnModel : public QnnSampleApp {
     powerConfig.dcvsV3Config.powerMode =
         QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
     powerConfig.dcvsV3Config.setDcvsEnable = 1;
-    powerConfig.dcvsV3Config.dcvsEnable = cool ? 1 : 0;
+    powerConfig.dcvsV3Config.dcvsEnable = burst ? 0 : 1;
     powerConfig.dcvsV3Config.setSleepLatency = 1;
     powerConfig.dcvsV3Config.sleepLatency = burst ? 40 : (cool ? 1000 : 100);
     powerConfig.dcvsV3Config.setSleepDisable = 1;
     powerConfig.dcvsV3Config.sleepDisable = 0;
     powerConfig.dcvsV3Config.setBusParams = 1;
-    powerConfig.dcvsV3Config.busVoltageCornerMin = corner;
-    powerConfig.dcvsV3Config.busVoltageCornerTarget = corner;
-    powerConfig.dcvsV3Config.busVoltageCornerMax = corner;
+    powerConfig.dcvsV3Config.busVoltageCornerMin = minCorner;
+    powerConfig.dcvsV3Config.busVoltageCornerTarget = targetCorner;
+    powerConfig.dcvsV3Config.busVoltageCornerMax = maxCorner;
     powerConfig.dcvsV3Config.setCoreParams = 1;
-    powerConfig.dcvsV3Config.coreVoltageCornerMin = corner;
-    powerConfig.dcvsV3Config.coreVoltageCornerTarget = corner;
-    powerConfig.dcvsV3Config.coreVoltageCornerMax = corner;
+    powerConfig.dcvsV3Config.coreVoltageCornerMin = minCorner;
+    powerConfig.dcvsV3Config.coreVoltageCornerTarget = targetCorner;
+    powerConfig.dcvsV3Config.coreVoltageCornerMax = maxCorner;
     const QnnHtpPerfInfrastructure_PowerConfig_t *powerConfigs3[] = {
         &powerConfig, NULL};
     perfInfraErr = perfInfra.setPowerConfig(powerConfigId, powerConfigs3);
@@ -303,10 +313,12 @@ class QnnModel : public QnnSampleApp {
       return StatusCode::FAILURE;
     }
 
-    QNN_INFO("[HTP power] mode=%s corner=%s rpc_poll=%u us dcvs=%d",
+    QNN_INFO("[HTP power] mode=%s min=%s target=%s max=%s rpc_poll=%u us dcvs=%d",
              mode.c_str(),
+             burst ? "MAX" : "NOM_PLUS",
              burst ? "MAX" : (cool ? "NOM_PLUS" : "TURBO"),
-             burst ? 9999u : 0u, cool ? 1 : 0);
+             burst ? "MAX" : "TURBO",
+             burst ? 9999u : 0u, burst ? 0 : 1);
     return StatusCode::SUCCESS;
   }
 
