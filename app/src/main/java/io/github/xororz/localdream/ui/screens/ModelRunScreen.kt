@@ -486,6 +486,9 @@ fun ModelRunScreen(
     val preferences = remember {
         context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
     }
+    var sdxlNpuOnly by remember(modelId) {
+        mutableStateOf(preferences.getBoolean("sdxl_npu_only_$modelId", false))
+    }
     val showGenerationStats = remember {
         preferences.getBoolean("show_generation_stats", false)
     }
@@ -1092,6 +1095,7 @@ fun ModelRunScreen(
                     putExtra("effective_height", bmp.height)
                     putExtra("denoise_strength", ultrafixDenoiseStrength)
                     putExtra("scheduler", scheduler)
+                    putExtra("npu_only", model?.isSdxl == true && !model.runOnCpu && sdxlNpuOnly)
                     putExtra("ultrafix", true)
                     putExtra("ultrafix_tile_size", tileSize)
                     putExtra("backend_host", backendHost)
@@ -1910,6 +1914,8 @@ fun ModelRunScreen(
                 scheduler = defaults.scheduler
                 aspectRatio = defaults.aspectRatio
                 htpMode = "auto"
+                sdxlNpuOnly = false
+                preferences.edit().putBoolean("sdxl_npu_only_$modelId", false).apply()
                 promptField.replaceText(defaults.prompt)
                 negativePromptField.replaceText(defaults.negativePrompt)
                 denoiseStrength = defaults.denoiseStrength
@@ -2092,6 +2098,7 @@ fun ModelRunScreen(
                     putExtra("effective_height", effectiveVariationHeight)
                     putExtra("denoise_strength", source.denoiseStrength)
                     putExtra("use_opencl", source.useOpenCL)
+                    putExtra("npu_only", model?.isSdxl == true && !model.runOnCpu && sdxlNpuOnly)
                     putExtra("scheduler", source.scheduler)
                     putExtra("aspect_ratio", targetAspect)
                     putExtra("batch_index", index)
@@ -2314,6 +2321,7 @@ fun ModelRunScreen(
                                     steps = steps,
                                     cfg = cfg,
                                     useOpenCL = useOpenCL,
+                                    npuOnly = sdxlNpuOnly,
                                     isQwen21 = model?.ditKind == "qwen21" && !isRemote,
                                     htpMode = htpMode,
                                     batchCounts = batchCounts,
@@ -2355,6 +2363,12 @@ fun ModelRunScreen(
                                         saveAllFields()
                                     },
                                     onGpuSelected = { showOpenCLWarningDialog = true },
+                                    onNpuOnlyChange = { enabled ->
+                                        sdxlNpuOnly = enabled
+                                        preferences.edit()
+                                            .putBoolean("sdxl_npu_only_$modelId", enabled)
+                                            .apply()
+                                    },
                                     onHtpModeChange = { mode ->
                                         if (!isRunning && htpMode != mode) {
                                             htpMode = mode
@@ -2555,6 +2569,7 @@ fun ModelRunScreen(
                                                 denoiseStrength,
                                             )
                                             putExtra("use_opencl", useOpenCL)
+                                            putExtra("npu_only", model?.isSdxl == true && !model.runOnCpu && sdxlNpuOnly)
                                             putExtra("scheduler", scheduler)
                                             putExtra("aspect_ratio", aspectRatio)
                                             putExtra("batch_index", i)
