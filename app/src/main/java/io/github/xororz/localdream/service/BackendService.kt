@@ -67,7 +67,7 @@ class BackendService : Service() {
         private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
-        private const val MUSIC_RUNTIME_VERSION = "jz_fastrpc_883df324_v049_clean"
+        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_2b129ccf_clean"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
@@ -1009,15 +1009,20 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (isMusicBackend(backendType)) {
-                // ggml-hexagon 0.4.9 registers each FastRPC session as the
-                // actual GGML backend device name. With one requested session
-                // the registry exposes HTP0:0 (not HTP0), so use the exact same
-                // selector for both device creation and YuE2 backend forcing.
-                val musicHtpSessionSpec = "HTP0:0"
+                // Use the current upstream DSPQueue backend with its default
+                // single physical HTP session. Do not request the JZ virtual-session
+                // syntax here: with no GGML_HEXAGON_DEVICES override the clean
+                // backend registers exactly HTP0, which YuE2 then forces below.
+                env.remove("GGML_HEXAGON_DEVICES")
+                env["GGML_BACKEND"] = "HTP0"
+                env["LOCAL_DREAM_YUE2_BACKEND"] = "dspqueue-2b129ccf"
 
-                env["GGML_HEXAGON_DEVICES"] = musicHtpSessionSpec
-                env["GGML_BACKEND"] = musicHtpSessionSpec
-                env["LOCAL_DREAM_YUE2_BACKEND"] = "fastrpc-mempool-0.4.9"
+                // Keep queue pressure bounded for a multi-gigabyte AR model while
+                // retaining enough in-flight work to feed SM8850. These are native
+                // DSPQueue controls, not a CPU fallback.
+                env["GGML_HEXAGON_OPPOLL"] = "1"
+                env["GGML_HEXAGON_OPBATCH"] = "1024"
+                env["GGML_HEXAGON_OPQUEUE"] = "16"
 
                 env["LD_LIBRARY_PATH"] = listOf(
                     nativeDir,
@@ -1044,8 +1049,8 @@ class BackendService : Service() {
                 )
 
                 val message =
-                    "YuE2 HTP: backend=FastRPC-mempool-0.4.9 selector=$musicHtpSessionSpec " +
-                        "session=$musicHtpSessionSpec model=$modelId max_seq=$MUSIC_MAX_SEQ " +
+                    "YuE2 HTP: backend=DSPQueue selector=HTP0 session=physical-0 " +
+                        "model=$modelId max_seq=$MUSIC_MAX_SEQ queue=1024/16 " +
                         "flashAttention=auto-v81 runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
                 BackendDiagnostics.append(this, "ENV", message)

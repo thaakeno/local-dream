@@ -95,13 +95,13 @@ fun MusicRunScreen(
     val musicState by MusicGenerationService.state.collectAsState()
 
     var style by rememberSaveable {
-        mutableStateOf("cinematic electronic pop, emotional female vocals, punchy drums, wide synths")
+        mutableStateOf("solo acoustic piano, instrumental, gentle expressive melody, warm intimate tone, no vocals")
     }
     var lyrics by rememberSaveable {
-        mutableStateOf("[Verse]\nNeon rain across the glass\nwe make the moment last\n\n[Chorus]\nTurn the signal into light")
+        mutableStateOf("")
     }
     var duration by rememberSaveable { mutableIntStateOf(20) }
-    var planning by rememberSaveable { mutableStateOf("full") }
+    var planning by rememberSaveable { mutableStateOf("off") }
     var steps by rememberSaveable { mutableIntStateOf(32) }
     var seed by rememberSaveable { mutableLongStateOf(-1L) }
     var semanticTemperature by rememberSaveable { mutableFloatStateOf(1f) }
@@ -453,7 +453,7 @@ fun MusicRunScreen(
                     is MusicState.Generating -> MusicProgressCard(
                         state = state,
                         precision = model?.variantPrecision ?: "GGUF",
-                        runtimeLabel = "HTP0 · FastRPC 0.4.9",
+                        runtimeLabel = "HTP0 · Hexagon DSPQueue",
                         onCancel = {
                             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                             MusicGenerationService.stop(context)

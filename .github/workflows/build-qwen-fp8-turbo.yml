@@ -245,9 +245,8 @@ jobs:
           test -s app/src/main/assets/yue2libs/libggml-htp-v79.so
           test -s app/src/main/assets/yue2libs/libggml-htp-v81.so
           test -s app/src/main/assets/yue2libs/ggml-hexagon.cfg
-          grep -q 'commit=883df3244370aefd54cfdb44ca804f5ed4827241' app/src/main/assets/yue2libs/backend-version.txt
-          grep -q 'variant=fastrpc-mempool' app/src/main/assets/yue2libs/backend-version.txt
-          grep -q 'version=0.4.9' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'commit=2b129ccfa03aea330d2d9ac4650a10de393dbe3a' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'variant=dspqueue' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'patchset=none' app/src/main/assets/yue2libs/backend-version.txt
           test -s app/src/main/assets/qnnlibs/libQnnHtp.so
           find app/src/main/jniLibs/arm64-v8a app/src/main/assets/ditlibs app/src/main/assets/yue2libs -maxdepth 1 -type f -ls
