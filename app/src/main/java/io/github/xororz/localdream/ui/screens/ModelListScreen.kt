@@ -3320,6 +3320,7 @@ fun ModelCard(
     modifier: Modifier = Modifier,
     isPinned: Boolean = false,
 ) {
+    val context = LocalContext.current
     val isDisabledInSelection = !model.isDownloaded && isSelectionMode
 
     val elevation by animateFloatAsState(
@@ -3369,10 +3370,16 @@ fun ModelCard(
                 .fillMaxWidth()
                 .combinedClickable(
                     onClick = {
-                        if (!isSelectionMode || model.isDownloaded) onClick()
+                        if (!isSelectionMode || model.isDownloaded) {
+                            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                            onClick()
+                        }
                     },
                     onLongClick = {
-                        if (model.isDownloaded && !isSelectionMode) onLongClick()
+                        if (model.isDownloaded && !isSelectionMode) {
+                            AppHaptics.perform(context, AppHaptics.Kind.Stage)
+                            onLongClick()
+                        }
                     },
                 ),
         ) {
@@ -4973,8 +4980,12 @@ private fun getFileNameFromUri(context: Context, uri: Uri): String? = try {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingNavCard(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
     Card(
-        onClick = onClick,
+        onClick = {
+            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+            onClick()
+        },
         modifier = modifier,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
