@@ -67,7 +67,7 @@ class BackendService : Service() {
         private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
-        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_7ac59a6_yue2_native_v1"
+        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_7ac59a6_yue2_native_v2"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
@@ -857,6 +857,12 @@ class BackendService : Service() {
                     // upstream itself, while the full 4096 ABC budget remains
                     // available for quality.
                     //
+                    // Keep VAE tiles bounded to 96 semantic frames. Every supported 5-20 s
+                    // generation is therefore decoded in 2-6 exact halo tiles instead
+                    // of one giant blocking graph. This improves HTP locality, exposes
+                    // real decode progress/cancellation checkpoints, and preserves the
+                    // same full-receptive-field output through the existing halo crop.
+                    //
                     // FLASH_ATTN_EXT currently has a documented correctness bug
                     // on Snapdragon Hexagon v75, so use the plain attention path
                     // and still offload supported matmuls to HTP.
@@ -875,7 +881,7 @@ class BackendService : Service() {
                         "--max-seq",
                         MUSIC_MAX_SEQ.toString(),
                         "--vae-core",
-                        "256",
+                        "96",
                         "--vae-halo",
                         "16",
                     )
