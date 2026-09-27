@@ -92,6 +92,6 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: LocalDream-YuE2-alpha41-HTP-compatible
-          path: out/LocalDream-YuE2-3.0.0-alpha.41-compatible.apk
+          path: out/LocalDream-YuE2-3.0.0-alpha.41-HTP-compatible.apk
           if-no-files-found: error
           retention-days: 14
