@@ -1009,14 +1009,14 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (isMusicBackend(backendType)) {
-                // Session selection and backend selection are separate: the
-                // FastRPC session is HTP0:0 while the GGML device name is HTP0.
-                // Force that exact accelerator so YuE2 never silently selects
-                // another backend at module load time.
+                // ggml-hexagon 0.4.9 registers each FastRPC session as the
+                // actual GGML backend device name. With one requested session
+                // the registry exposes HTP0:0 (not HTP0), so use the exact same
+                // selector for both device creation and YuE2 backend forcing.
                 val musicHtpSessionSpec = "HTP0:0"
 
                 env["GGML_HEXAGON_DEVICES"] = musicHtpSessionSpec
-                env["GGML_BACKEND"] = "HTP0"
+                env["GGML_BACKEND"] = musicHtpSessionSpec
                 env["LOCAL_DREAM_YUE2_BACKEND"] = "fastrpc-mempool-0.4.9"
 
                 env["LD_LIBRARY_PATH"] = listOf(
@@ -1044,7 +1044,7 @@ class BackendService : Service() {
                 )
 
                 val message =
-                    "YuE2 HTP: backend=FastRPC-mempool-0.4.9 selector=HTP0 " +
+                    "YuE2 HTP: backend=FastRPC-mempool-0.4.9 selector=$musicHtpSessionSpec " +
                         "session=$musicHtpSessionSpec model=$modelId max_seq=$MUSIC_MAX_SEQ " +
                         "flashAttention=auto-v81 runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
