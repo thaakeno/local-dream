@@ -1066,7 +1066,7 @@ class BackendService : Service() {
                 val message =
                     "YuE2 HTP: backend=DSPQueue-native-0.5.0 selector=HTP0 session=physical-0 " +
                         "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ queue=1280/32 blocking-wait " +
-                        "hmx=1 hvx=all vae=snake-fused+sin+col2im1d-native core=1024 " +
+                        "hmx=1 hvx=all vae=snake-fused+sin+col2im1d-native+channel-bcast-add core=1024 " +
                         "runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
                 BackendDiagnostics.append(this, "ENV", message)
