@@ -150,6 +150,7 @@ jobs:
           path: |
             app/src/main/jniLibs/arm64-v8a
             app/src/main/assets/ditlibs
+            app/src/main/assets/yue2libs
             app/src/main/assets/qnnlibs
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
@@ -241,8 +242,12 @@ jobs:
           test -s app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v79.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
+          test -s app/src/main/assets/yue2libs/libggml-htp-v79.so
+          test -s app/src/main/assets/yue2libs/libggml-htp-v81.so
+          test -s app/src/main/assets/yue2libs/ggml-hexagon.cfg
+          grep -q 'variant=fastrpc-mempool' app/src/main/assets/yue2libs/backend-version.txt
           test -s app/src/main/assets/qnnlibs/libQnnHtp.so
-          find app/src/main/jniLibs/arm64-v8a app/src/main/assets/ditlibs -maxdepth 1 -type f -ls
+          find app/src/main/jniLibs/arm64-v8a app/src/main/assets/ditlibs app/src/main/assets/yue2libs -maxdepth 1 -type f -ls
 
       - name: Save native artifacts cache
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -251,6 +256,7 @@ jobs:
           path: |
             app/src/main/jniLibs/arm64-v8a
             app/src/main/assets/ditlibs
+            app/src/main/assets/yue2libs
             app/src/main/assets/qnnlibs
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
