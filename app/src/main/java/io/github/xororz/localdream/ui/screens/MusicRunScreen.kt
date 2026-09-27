@@ -861,9 +861,7 @@ private fun MusicPreloadCard(
 
             MusicStageStrip(activePhase = state.phase, preload = true)
 
-            if (state.phase == "decoding") {
-                MusicDecodeProgress(state)
-            } else if (state.progress != null) {
+            if (state.progress != null) {
                 SmoothLinearWavyProgressIndicator(
                     progress = state.progress,
                     modifier = Modifier.fillMaxWidth(),
