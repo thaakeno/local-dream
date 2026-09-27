@@ -1,6 +1,14 @@
 // Local Dream YuE2 native HTP COL2IM_1D op.
-// Scatter-add half of Oobleck's GEMM-based ConvTranspose1d.
-// Runs entirely in HTP-mapped DDR, so audio tensors never bounce through CPU.
+//
+// Oobleck's transposed convolutions always use kernel = 2 * stride.  In that
+// case the overlap pattern is exact and tiny: each output block is either one
+// half-kernel at an edge, or the sum of the second half from t-1 and the first
+// half from t.  Compute that layout directly instead of doing one division,
+// range search and scattered load per output sample.
+//
+// The op stays entirely on HTP-mapped memory, partitions by output channel so
+// workers never contend for the same destination row, and writes each row
+// sequentially.  Unexpected shapes keep a correctness fallback.
 #include <HAP_farf.h>
 #include <stdint.h>
 
@@ -12,8 +20,9 @@
 
 struct htp_col2im_context {
     struct htp_ops_context * octx;
-    uint32_t total;
-    uint32_t per_thread;
+    uint32_t channel_start;
+    uint32_t channel_count;
+    uint32_t channels_per_thread;
     int32_t stride;
     int32_t out_channels;
     int32_t padding;
@@ -21,43 +30,113 @@ struct htp_col2im_context {
     int32_t k_oc;
     int32_t t_in;
     int32_t t_out;
+    int32_t fast_overlap;
 };
 
-static void col2im_thread(unsigned int nth, unsigned int ith, void * data) {
-    (void) nth;
-    const struct htp_col2im_context * c = (const struct htp_col2im_context *) data;
-    const struct htp_tensor * src_t = c->octx->src[0];
-    const struct htp_tensor * dst_t = c->octx->dst;
-    const float * src = (const float *) (uintptr_t) src_t->data;
-    float * dst = (float *) (uintptr_t) dst_t->data;
+static inline void col2im_fast_channel(const float * src,
+                                       float * dst,
+                                       int32_t oc,
+                                       const struct htp_col2im_context * c) {
+    const int32_t s = c->stride;
+    const int32_t edge = s - c->padding;
+    const size_t oc_off = (size_t) oc * (size_t) c->kernel;
+    size_t out = 0;
 
-    uint32_t begin = c->per_thread * ith;
-    uint32_t end = MIN(begin + c->per_thread, c->total);
-    if (begin >= end) return;
+    // Full (uncropped) transpose-conv blocks are:
+    //   A0,
+    //   B0 + A1,
+    //   B1 + A2,
+    //   ...
+    //   B(T-2) + A(T-1),
+    //   B(T-1)
+    // Padding simply crops p values from both outer blocks.
+    const float * a0 = src + oc_off;
+    for (int32_t r = c->padding; r < s; ++r) {
+        dst[out++] = a0[r];
+    }
 
-    struct htp_thread_trace * tr = &c->octx->ctx->trace[ith];
-    htp_trace_event_start(tr, HTP_TRACE_EVT_HVX_COMP, (uint16_t) ith);
+    for (int32_t ti = 1; ti < c->t_in; ++ti) {
+        const float * prev_b =
+            src + (size_t) (ti - 1) * (size_t) c->k_oc + oc_off + (size_t) s;
+        const float * cur_a =
+            src + (size_t) ti * (size_t) c->k_oc + oc_off;
 
-    for (uint32_t work = begin; work < end; ++work) {
-        int32_t oc = (int32_t) (work / (uint32_t) c->t_out);
-        int32_t t_out = (int32_t) (work - (uint32_t) oc * (uint32_t) c->t_out);
-        int32_t t_abs = t_out + c->padding;
+        if (ti + 1 < c->t_in) {
+            __builtin_prefetch(
+                src + (size_t) (ti + 1) * (size_t) c->k_oc + oc_off,
+                0,
+                2);
+        }
 
+        // stride is one of 6,5,4,4,2,2 for YuE2.  Keeping this tiny loop
+        // branch-free is substantially cheaper than reconstructing t_min /
+        // t_max for every output sample.
+        for (int32_t r = 0; r < s; ++r) {
+            dst[out++] = prev_b[r] + cur_a[r];
+        }
+    }
+
+    const float * tail =
+        src + (size_t) (c->t_in - 1) * (size_t) c->k_oc + oc_off + (size_t) s;
+    for (int32_t r = 0; r < edge; ++r) {
+        dst[out++] = tail[r];
+    }
+}
+
+static inline void col2im_generic_channel(const float * src,
+                                          float * dst,
+                                          int32_t oc,
+                                          const struct htp_col2im_context * c) {
+    for (int32_t t_out = 0; t_out < c->t_out; ++t_out) {
+        const int32_t t_abs = t_out + c->padding;
         const int32_t a = t_abs - c->kernel + 1;
-        int32_t t_min = a >= 0 ? (a + c->stride - 1) / c->stride : a / c->stride;
+        int32_t t_min = a >= 0
+            ? (a + c->stride - 1) / c->stride
+            : a / c->stride;
         if (t_min < 0) t_min = 0;
+
         int32_t t_max = t_abs / c->stride;
         if (t_max >= c->t_in) t_max = c->t_in - 1;
 
         float sum = 0.0f;
         for (int32_t ti = t_min; ti <= t_max; ++ti) {
-            int32_t k = t_abs - ti * c->stride;
+            const int32_t k = t_abs - ti * c->stride;
             if ((uint32_t) k < (uint32_t) c->kernel) {
                 sum += src[(size_t) ti * (size_t) c->k_oc +
-                           (size_t) oc * (size_t) c->kernel + (size_t) k];
+                           (size_t) oc * (size_t) c->kernel +
+                           (size_t) k];
             }
         }
-        dst[(size_t) oc * (size_t) c->t_out + (size_t) t_out] = sum;
+        dst[t_out] = sum;
+    }
+}
+
+static void col2im_thread(unsigned int nth, unsigned int ith, void * data) {
+    (void) nth;
+    const struct htp_col2im_context * c =
+        (const struct htp_col2im_context *) data;
+    const struct htp_tensor * src_t = c->octx->src[0];
+    const struct htp_tensor * dst_t = c->octx->dst;
+    const float * src = (const float *) (uintptr_t) src_t->data;
+    float * dst = (float *) (uintptr_t) dst_t->data;
+
+    const uint32_t begin =
+        c->channel_start + c->channels_per_thread * ith;
+    const uint32_t end = MIN(
+        begin + c->channels_per_thread,
+        c->channel_start + c->channel_count);
+    if (begin >= end) return;
+
+    struct htp_thread_trace * tr = &c->octx->ctx->trace[ith];
+    htp_trace_event_start(tr, HTP_TRACE_EVT_HVX_COMP, (uint16_t) ith);
+
+    for (uint32_t ch = begin; ch < end; ++ch) {
+        float * out = dst + (size_t) ch * (size_t) c->t_out;
+        if (c->fast_overlap) {
+            col2im_fast_channel(src, out, (int32_t) ch, c);
+        } else {
+            col2im_generic_channel(src, out, (int32_t) ch, c);
+        }
     }
 
     htp_trace_event_stop(tr, HTP_TRACE_EVT_HVX_COMP, (uint16_t) ith);
@@ -75,29 +154,35 @@ int op_col2im_1d(struct htp_ops_context * octx) {
         return HTP_STATUS_NO_SUPPORT;
     }
 
-    int32_t stride = octx->op_params[0];
-    int32_t oc = octx->op_params[1];
-    int32_t padding = octx->op_params[2];
+    const int32_t stride = octx->op_params[0];
+    const int32_t oc = octx->op_params[1];
+    const int32_t padding = octx->op_params[2];
     if (stride <= 0 || oc <= 0 || src->ne[0] % (uint32_t) oc != 0) {
         return HTP_STATUS_INVAL_PARAMS;
     }
 
-    int32_t k_oc = (int32_t) src->ne[0];
-    int32_t kernel = k_oc / oc;
-    int32_t t_in = (int32_t) src->ne[1];
-    int32_t t_out = (t_in - 1) * stride + kernel - 2 * padding;
-    if (t_out <= 0 || dst->ne[0] != (uint32_t) t_out || dst->ne[1] != (uint32_t) oc) {
+    const int32_t k_oc = (int32_t) src->ne[0];
+    const int32_t kernel = k_oc / oc;
+    const int32_t t_in = (int32_t) src->ne[1];
+    const int32_t t_out =
+        (t_in - 1) * stride + kernel - 2 * padding;
+    if (t_in <= 0 || t_out <= 0 ||
+        dst->ne[0] != (uint32_t) t_out ||
+        dst->ne[1] != (uint32_t) oc) {
         return HTP_STATUS_INVAL_PARAMS;
     }
 
-    uint64_t total64 = (uint64_t) oc * (uint64_t) t_out;
-    if (total64 == 0 || total64 > UINT32_MAX) return HTP_STATUS_INVAL_PARAMS;
-    uint32_t total = (uint32_t) total64;
-    uint32_t n_threads = octx->ctx->n_threads;
+    const uint32_t n_threads = MIN(
+        octx->n_threads,
+        (uint32_t) oc);
+    if (n_threads == 0) return HTP_STATUS_INVAL_PARAMS;
+
     struct htp_col2im_context ctx = {
         .octx = octx,
-        .total = total,
-        .per_thread = (total + n_threads - 1) / n_threads,
+        .channel_start = 0,
+        .channel_count = (uint32_t) oc,
+        .channels_per_thread =
+            ((uint32_t) oc + n_threads - 1) / n_threads,
         .stride = stride,
         .out_channels = oc,
         .padding = padding,
@@ -105,7 +190,16 @@ int op_col2im_1d(struct htp_ops_context * octx) {
         .k_oc = k_oc,
         .t_in = t_in,
         .t_out = t_out,
+        .fast_overlap =
+            kernel == 2 * stride &&
+            padding >= 0 &&
+            padding < stride,
     };
-    work_queue_run(octx->ctx->work_queue, col2im_thread, &ctx, n_threads);
+
+    work_queue_run(
+        octx->ctx->work_queue,
+        col2im_thread,
+        &ctx,
+        n_threads);
     return HTP_STATUS_OK;
 }
