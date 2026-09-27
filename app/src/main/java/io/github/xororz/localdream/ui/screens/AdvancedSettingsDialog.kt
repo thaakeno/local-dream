@@ -65,6 +65,7 @@ internal fun AdvancedSettingsDialog(
     steps: Float,
     cfg: Float,
     useOpenCL: Boolean,
+    npuOnly: Boolean = false,
     isQwen21: Boolean = false,
     htpMode: String = "auto",
     batchCounts: Int,
@@ -82,6 +83,7 @@ internal fun AdvancedSettingsDialog(
     onSizeChange: (Float) -> Unit,
     onCpuSelected: () -> Unit,
     onGpuSelected: () -> Unit,
+    onNpuOnlyChange: (Boolean) -> Unit = {},
     onHtpModeChange: (String) -> Unit = {},
     onBatchCountsChange: (Float) -> Unit,
     onDenoiseStrengthChange: (Float) -> Unit,
@@ -381,6 +383,51 @@ internal fun AdvancedSettingsDialog(
                         )
                     }
                 }
+                if (isSdxl && !runOnCpu) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "NPU only",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    if (npuOnly) {
+                                        "Strict HTP generation. CPU/MNN CLIP is blocked; cached prompt conditioning is required."
+                                    } else {
+                                        "UNet + VAE use HTP. CLIP may run on CPU only when its prompt cache misses."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            CompositionLocalProvider(
+                                LocalMinimumInteractiveComponentSize provides Dp.Unspecified,
+                            ) {
+                                Switch(
+                                    checked = npuOnly,
+                                    enabled = !isRunning,
+                                    onCheckedChange = onNpuOnlyChange,
+                                    modifier = Modifier.scale(0.86f),
+                                )
+                            }
+                        }
+                        if (npuOnly) {
+                            Text(
+                                "Tip: CFG 1 models skip negative CLIP entirely. For a new prompt, disable this once to warm the positive prompt cache.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+
                 if (runOnCpu) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
