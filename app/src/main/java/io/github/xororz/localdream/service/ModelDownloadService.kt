@@ -1152,7 +1152,7 @@ class ModelDownloadService : Service() {
             done = packageOffset + expectedSize,
             total = effectivePackageTotal,
             speed = 0L,
-            eta = 0L,
+            eta = null,
             currentFileName = currentFileName,
             usingXet = true,
             networkSpeed = 0L,
