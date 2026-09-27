@@ -48,6 +48,7 @@ import io.github.xororz.localdream.data.HistoryFilter
 import io.github.xororz.localdream.data.HistoryItem
 import io.github.xororz.localdream.data.HistoryManager
 import io.github.xororz.localdream.navigation.HISTORY_REPRODUCE_ID_KEY
+import io.github.xororz.localdream.navigation.HISTORY_USE_PROMPT_ID_KEY
 import io.github.xororz.localdream.navigation.HISTORY_VARIATION_COUNT_KEY
 import io.github.xororz.localdream.navigation.HISTORY_VARIATION_ID_KEY
 import io.github.xororz.localdream.navigation.Screen
@@ -361,11 +362,12 @@ fun HistoryScreen(navController: NavController) {
         )
 
         if (showParamsDialog) {
+            val target = previewItem ?: item
             GenerationParamsDialog(
                 title = stringResource(R.string.generation_params_title),
-                params = item.params,
-                modelId = item.modelId,
-                displayMode = item.mode,
+                params = target.params,
+                modelId = target.modelId,
+                displayMode = target.mode,
                 showImg2imgButton = false,
                 showReproduceButton = true,
                 onShare = {
@@ -374,11 +376,18 @@ fun HistoryScreen(navController: NavController) {
                 },
                 onSendToImg2img = {},
                 onReproduce = {
-                    val target = previewItem ?: item
                     showParamsDialog = false
                     navController.currentBackStackEntry
                         ?.savedStateHandle
                         ?.set(HISTORY_REPRODUCE_ID_KEY, target.id)
+                    previewItem = null
+                    navController.navigate(Screen.ModelRun.createRoute(target.modelId))
+                },
+                onUsePrompt = {
+                    showParamsDialog = false
+                    navController.currentBackStackEntry
+                        ?.savedStateHandle
+                        ?.set(HISTORY_USE_PROMPT_ID_KEY, target.id)
                     previewItem = null
                     navController.navigate(Screen.ModelRun.createRoute(target.modelId))
                 },
