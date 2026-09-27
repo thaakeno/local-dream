@@ -254,6 +254,36 @@ replace_once(
     "YuE2 fused Snake batch pattern",
 )
 
+
+replace_once(
+    host,
+    """            if (graph->nodes[i]->op == GGML_OP_RMS_NORM && ggml_can_fuse(graph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL })) {
+                extra->flags |= GGML_HEXAGON_TENSOR_FUSEABLE;
+            } else if (graph->nodes[i]->op == GGML_OP_MUL_MAT || graph->nodes[i]->op == GGML_OP_MUL_MAT_ID) {
+                if ((i + 1 < graph->n_nodes && graph->nodes[i + 1]->op == GGML_OP_ADD && ggml_can_fuse(graph, i, { graph->nodes[i]->op, GGML_OP_ADD })) ||
+                    ggml_node_has_n_uses(graph, i, 1)) {
+                    extra->flags |= GGML_HEXAGON_TENSOR_FUSEABLE;
+                }
+            }""",
+    """            if (graph->nodes[i]->op == GGML_OP_RMS_NORM && ggml_can_fuse(graph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL })) {
+                extra->flags |= GGML_HEXAGON_TENSOR_FUSEABLE;
+            } else if (graph->nodes[i]->op == GGML_OP_MUL_MAT || graph->nodes[i]->op == GGML_OP_MUL_MAT_ID) {
+                if ((i + 1 < graph->n_nodes && graph->nodes[i + 1]->op == GGML_OP_ADD && ggml_can_fuse(graph, i, { graph->nodes[i]->op, GGML_OP_ADD })) ||
+                    ggml_node_has_n_uses(graph, i, 1)) {
+                    extra->flags |= GGML_HEXAGON_TENSOR_FUSEABLE;
+                }
+            } else if ((graph->nodes[i]->op == GGML_OP_MUL ||
+                        graph->nodes[i]->op == GGML_OP_SIN ||
+                        graph->nodes[i]->op == GGML_OP_SQR) &&
+                       ggml_node_has_n_uses(graph, i, 1)) {
+                // YuE2 Oobleck Snake intermediates are single-consumer. Mark
+                // them so the DSPQueue pattern fusion can safely collapse
+                // MUL->SIN->SQR->MUL->ADD without touching unrelated graphs.
+                extra->flags |= GGML_HEXAGON_TENSOR_FUSEABLE;
+            }""",
+    "YuE2 Snake fuseable tensor tags",
+)
+
 replace_once(
     host,
     """    struct htp_binary_vtcm_layout L;
