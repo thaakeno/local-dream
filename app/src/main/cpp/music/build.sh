@@ -48,6 +48,7 @@ cmake -S "$YUE2_DIR" -B "$BUILD_DIR" -G Ninja \
     -DANDROID_ABI=arm64-v8a \
     -DANDROID_PLATFORM=android-28 \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PROJECT_INCLUDE="$(pwd)/android-yue2-deps.cmake" \
     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE" \
     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE" \
     -DGGML_SOURCE_DIR="$GGML_DIR" \
