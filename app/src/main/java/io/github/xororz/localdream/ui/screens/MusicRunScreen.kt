@@ -1368,7 +1368,7 @@ private fun MusicGenerationConfigSheet(
                 Text("Acoustic solver", style = MaterialTheme.typography.titleSmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
-                        "dpmpp_2m" to "DPM++ 2M",
+                        "dpmpp_2m" to "DPM++ 2M · SGM",
                         "midpoint" to "Midpoint",
                     ).forEach { (method, label) ->
                         FilterChip(
@@ -1380,7 +1380,7 @@ private fun MusicGenerationConfigSheet(
                 }
                 Text(
                     if (odeMethod == "dpmpp_2m") {
-                        "Fast second-order multistep solver: one HTP model evaluation per step. It reuses the previous velocity instead of doing midpoint's second probe."
+                        "ComfyUI-compatible DPM++ 2M with the SGM-uniform flow schedule: one HTP model evaluation per step, using the denoised-history correction instead of midpoint's second probe."
                     } else {
                         "YuE2 reference solver. Midpoint performs two full NAR model evaluations per step, so 32 steps means 64 HTP evaluations."
                     },
@@ -1411,7 +1411,7 @@ private fun MusicGenerationConfigSheet(
                 }
                 Text(
                     if (odeMethod == "dpmpp_2m") {
-                        "8 is the mobile default. 16 keeps more refinement; 32 is the closest DPM++ setting to the 32-step reference while still using half as many NAR evaluations."
+                        "8 is the mobile default. 6 is the aggressive fast preset; 16 and 32 spend more evaluations on refinement. DPM++ uses one NAR evaluation per step."
                     } else {
                         "32 reproduces the released YuE2 midpoint protocol. Lower midpoint counts are faster but are not the reference render."
                     },
