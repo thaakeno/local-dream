@@ -67,7 +67,7 @@ class BackendService : Service() {
         private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
-        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_2b129ccf_clean"
+        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_7ac59a6_yue2_native_v1"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
@@ -875,7 +875,7 @@ class BackendService : Service() {
                         "--max-seq",
                         MUSIC_MAX_SEQ.toString(),
                         "--vae-core",
-                        "512",
+                        "256",
                         "--vae-halo",
                         "16",
                     )
@@ -1015,14 +1015,19 @@ class BackendService : Service() {
                 // backend registers exactly HTP0, which YuE2 then forces below.
                 env.remove("GGML_HEXAGON_DEVICES")
                 env["GGML_BACKEND"] = "HTP0"
-                env["LOCAL_DREAM_YUE2_BACKEND"] = "dspqueue-2b129ccf"
+                env["YUE2_STRICT_ACCELERATOR"] = "1"
+                env["LOCAL_DREAM_YUE2_BACKEND"] = "dspqueue-native-7ac59a6"
 
-                // Keep queue pressure bounded for a multi-gigabyte AR model while
-                // retaining enough in-flight work to feed SM8850. These are native
-                // DSPQueue controls, not a CPU fallback.
+                // SM8850: keep HMX/HVX enabled and use the current upstream
+                // queue depth. Strict YuE2 scheduling means unsupported graph
+                // nodes are errors instead of hidden HTP -> CPU transfers.
+                env["GGML_HEXAGON_NHMX"] = "1"
+                env["GGML_HEXAGON_NHVX"] = "0"
+                env["GGML_HEXAGON_MM_SELECT"] = "2"
+                env["GGML_HEXAGON_OPFUSION"] = "1"
                 env["GGML_HEXAGON_OPPOLL"] = "1"
-                env["GGML_HEXAGON_OPBATCH"] = "1024"
-                env["GGML_HEXAGON_OPQUEUE"] = "16"
+                env["GGML_HEXAGON_OPBATCH"] = "1280"
+                env["GGML_HEXAGON_OPQUEUE"] = "32"
 
                 env["LD_LIBRARY_PATH"] = listOf(
                     nativeDir,
@@ -1049,9 +1054,9 @@ class BackendService : Service() {
                 )
 
                 val message =
-                    "YuE2 HTP: backend=DSPQueue selector=HTP0 session=physical-0 " +
-                        "model=$modelId max_seq=$MUSIC_MAX_SEQ queue=1024/16 " +
-                        "flashAttention=auto-v81 runtime=${musicRuntimeDir.absolutePath}"
+                    "YuE2 HTP: backend=DSPQueue-native selector=HTP0 session=physical-0 " +
+                        "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ queue=1280/32 " +
+                        "hmx=1 hvx=all vae=sin+col2im1d-native runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
                 BackendDiagnostics.append(this, "ENV", message)
             }
