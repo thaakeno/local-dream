@@ -19,7 +19,7 @@ BUILD_DIR=build/android
 YUE2_DIR="$(cd ../3rdparty/yue2.cpp && pwd)"
 
 JZ_REPO="https://github.com/kan-linux/ggml-hexagon.git"
-JZ_COMMIT="7ac59a6e3ad851cd41af00f678effab0598ba9a8"
+JZ_COMMIT="37f752b77fc4d661e2552128f42cb811d7bdb628"
 JZ_ROOT="$(pwd)/build/deps/ggml-hexagon"
 GGML_DIR="$JZ_ROOT/ggml"
 
@@ -49,10 +49,14 @@ test -f "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q '#include <dspqueue.h>' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 python3 "$(pwd)/integrate_htp_yue2.py" "$JZ_ROOT" "$YUE2_DIR" "$(pwd)/native"
 grep -q 'HTP_OP_COL2IM_1D' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
+grep -q 'HTP_OP_SNAKE' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
+grep -q 'op_snake' "$GGML_DIR/src/ggml-hexagon/htp/main.c"
 grep -q 'GGML_OP_SIN' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'YUE2_STRICT_ACCELERATOR' "$YUE2_DIR/src/backend.h"
 grep -q 'YuE2 adaptive binary VTCM thread fit' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'col2im_fast_channel' "$(pwd)/native/col2im-ops.c"
+grep -q 'YUE2_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'op_snake' "$(pwd)/native/snake-ops.c"
 
 rm -rf "$BUILD_DIR"
 
@@ -105,8 +109,8 @@ rm -f "$ASSET_DIR/ggml-hexagon.cfg"
 cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
-variant=dspqueue-yue2-native
-integration=sin-hvx,col2im1d-htp,col2im-channel-blocked,adaptive-binary-vtcm,strict-accelerator
+variant=dspqueue-yue2-native-0.5.0
+integration=snake-hvx-fused,sin-hvx,col2im1d-htp,col2im-channel-blocked,adaptive-binary-vtcm,strict-accelerator
 cpu_fallback=disabled
 EOF
 
