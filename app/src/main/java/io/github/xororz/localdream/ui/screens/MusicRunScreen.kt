@@ -1074,7 +1074,7 @@ private fun rememberMusicDeviceTelemetry(context: Context): MusicDeviceTelemetry
 @Composable
 private fun MusicDeviceTelemetryCard(telemetry: MusicDeviceTelemetry) {
     val primary = buildString {
-        telemetry.batteryPercent?.let { append("Battery \$it%") }
+        telemetry.batteryPercent?.let { append("Battery $it%") }
         telemetry.batteryTempC?.let {
             if (isNotEmpty()) append(" · ")
             append(String.format(java.util.Locale.US, "%.1f°C", it))
