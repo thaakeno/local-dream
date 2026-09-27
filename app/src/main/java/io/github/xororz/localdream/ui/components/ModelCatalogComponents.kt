@@ -68,9 +68,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.xororz.localdream.data.Model
+import io.github.xororz.localdream.utils.AppHaptics
 import java.util.Locale
 
 enum class CatalogSortMode(val label: String) {
@@ -398,13 +400,20 @@ private fun FamilyVariantTile(
     onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     Surface(
         modifier = modifier
             .heightIn(min = 106.dp)
             .combinedClickable(
-                onClick = onClick,
+                onClick = {
+                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                    onClick()
+                },
                 onLongClick = {
-                    if (installed) onLongClick?.invoke()
+                    if (installed) {
+                        AppHaptics.perform(context, AppHaptics.Kind.Stage)
+                        onLongClick?.invoke()
+                    }
                 },
             ),
         shape = MaterialTheme.shapes.extraLarge,
@@ -476,6 +485,7 @@ fun QwenFamilyCard(
 ) {
     if (variants.isEmpty()) return
 
+    val context = LocalContext.current
     var showSheet by remember { mutableStateOf(false) }
     val installedPrecisions = listOf("Q4_0", "Q8_0", "FP8").filter { precision ->
         variants.any {
@@ -489,7 +499,10 @@ fun QwenFamilyCard(
         ?: variants.first()
 
     ElevatedCard(
-        onClick = { showSheet = true },
+        onClick = {
+            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+            showSheet = true
+        },
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(
@@ -547,7 +560,10 @@ fun QwenFamilyCard(
                 )
 
                 TextButton(
-                    onClick = { showSheet = true },
+                    onClick = {
+                        AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                        showSheet = true
+                    },
                     modifier = Modifier.padding(start = 8.dp),
                 ) {
                     Icon(Icons.Default.Tune, contentDescription = null)
@@ -815,6 +831,7 @@ fun Yue2FamilyCard(
 ) {
     if (variants.isEmpty()) return
 
+    val context = LocalContext.current
     val supported = variants.filter {
         it.variantPrecision == "Q8_0" || it.variantPrecision == "BF16"
     }
@@ -833,7 +850,10 @@ fun Yue2FamilyCard(
     val installed = supported.count { it.isDownloaded }
 
     ElevatedCard(
-        onClick = { showSheet = true },
+        onClick = {
+            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+            showSheet = true
+        },
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(
@@ -888,7 +908,10 @@ fun Yue2FamilyCard(
                 )
 
                 TextButton(
-                    onClick = { showSheet = true },
+                    onClick = {
+                        AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                        showSheet = true
+                    },
                     modifier = Modifier.padding(start = 8.dp),
                 ) {
                     Icon(Icons.Default.Tune, contentDescription = null)
