@@ -84,16 +84,29 @@ object AppHaptics {
         val vibrator = vibrator(context) ?: return
         if (!vibrator.hasVibrator()) return
 
-        val effect = when (kind) {
-            Kind.Interaction -> predefinedForStyle(settings.style, interaction = true)
-            Kind.Stage -> predefinedForStyle(settings.style, interaction = false)
-            Kind.Progress -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
-            Kind.Success -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK)
-            Kind.Failure -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK)
+        val effect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            when (kind) {
+                Kind.Interaction -> predefinedForStyle(settings.style, interaction = true)
+                Kind.Stage -> predefinedForStyle(settings.style, interaction = false)
+                Kind.Progress -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+                Kind.Success -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK)
+                Kind.Failure -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK)
+            }
+        } else {
+            // minSdk is 28. Predefined OEM-tuned effects arrived in API 29,
+            // so keep the legacy fallback extremely short rather than using a
+            // long custom waveform.
+            val millis = when (kind) {
+                Kind.Progress, Kind.Interaction -> 8L
+                Kind.Stage, Kind.Success -> 14L
+                Kind.Failure -> 24L
+            }
+            VibrationEffect.createOneShot(millis, VibrationEffect.DEFAULT_AMPLITUDE)
         }
         runCatching { vibrator.vibrate(effect) }
     }
 
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.Q)
     private fun predefinedForStyle(
         style: HapticSettings.Style,
         interaction: Boolean,
