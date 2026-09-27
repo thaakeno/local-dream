@@ -1,4 +1,4 @@
-name: Re-sign YuE2 alpha.41 with existing Local Dream key
+name: Re-sign YuE2 alpha.41 HTP build with existing Local Dream key
 
 on:
   push:
@@ -41,7 +41,7 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/10918513104/zip" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/10920950953/zip" \
             -o "$RUNNER_TEMP/yue2.zip"
           curl -fL --retry 5 \
             -H "Authorization: Bearer $GH_TOKEN" \
@@ -66,7 +66,7 @@ jobs:
           test -s "$old_apk"
 
           mkdir -p "$GITHUB_WORKSPACE/out"
-          out_apk="$GITHUB_WORKSPACE/out/LocalDream-YuE2-3.0.0-alpha.41-compatible.apk"
+          out_apk="$GITHUB_WORKSPACE/out/LocalDream-YuE2-3.0.0-alpha.41-HTP-compatible.apk"
 
           "$apksigner_bin" sign \
             --ks "$RUNNER_TEMP/localdream-ci.jks" \
@@ -91,7 +91,7 @@ jobs:
       - name: Upload compatible APK
         uses: actions/upload-artifact@v6
         with:
-          name: LocalDream-YuE2-alpha41-compatible
+          name: LocalDream-YuE2-alpha41-HTP-compatible
           path: out/LocalDream-YuE2-3.0.0-alpha.41-compatible.apk
           if-no-files-found: error
           retention-days: 14
