@@ -8,8 +8,12 @@
 # leaves the hottest projection on CPU. The mempool backend keeps repacked
 # weights resident in one FastRPC pool and can execute that head on HTP.
 #
-# Nothing is patched at build time. Both dependencies are pinned commits and
-# built directly from their source trees.
+# Both dependencies are pinned. Local Dream carries one narrow, version-locked
+# backend fix for Android HTP: FastRPC must retry the *complete* mempool
+# registration transaction when a large AP allocation does not fit in the DSP
+# process VA window. The patch is checked against the exact pinned revision and
+# the build fails on source drift; there is no runtime fallback or source
+# rewriting.
 set -euo pipefail
 
 : "${ANDROID_NDK_ROOT:?set ANDROID_NDK_ROOT}"
@@ -23,6 +27,8 @@ JZ_REPO="https://github.com/kan-linux/ggml-hexagon.git"
 JZ_COMMIT="6485ca781502e57975053b6b82c09a3e9492731d"
 JZ_ROOT="$(pwd)/build/deps/ggml-hexagon"
 GGML_DIR="$JZ_ROOT/ggml"
+PATCH_DIR="$(pwd)/patches"
+MEMPOOL_PATCH="$PATCH_DIR/ggml-hexagon-adaptive-mempool.patch"
 
 # Fetch exactly one reviewed backend revision. This is a normal pinned
 # dependency, not a source rewrite/monkey patch.
@@ -40,6 +46,16 @@ fi
 
 test "$(git -C "$JZ_ROOT" rev-parse HEAD)" = "$JZ_COMMIT"
 test -f "$GGML_DIR/CMakeLists.txt"
+test -s "$MEMPOOL_PATCH"
+
+# Always start from the pinned dependency tree, then apply the reviewed patch
+# as a normal Git patch. --check makes dependency drift a hard build failure
+# instead of silently producing a different backend.
+git -C "$JZ_ROOT" reset --hard "$JZ_COMMIT"
+git -C "$JZ_ROOT" clean -fdx
+git -C "$JZ_ROOT" apply --check "$MEMPOOL_PATCH"
+git -C "$JZ_ROOT" apply "$MEMPOOL_PATCH"
+grep -q 'rpc mempool selected:' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp"
 
 rm -rf "$BUILD_DIR"
 
@@ -95,6 +111,7 @@ cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
 variant=fastrpc-mempool
+patchset=localdream-adaptive-mempool-v1
 EOF
 
 chmod +x "$JNI_DIR/libyue2_server.so"
