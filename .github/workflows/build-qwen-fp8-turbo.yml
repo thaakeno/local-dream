@@ -302,6 +302,24 @@ jobs:
             -PRELEASE_KEY_PASSWORD=android
           find app/build/outputs/apk -type f -name '*.apk' -ls
 
+      - name: Verify update-compatible APK signer
+        shell: bash
+        run: |
+          set -euxo pipefail
+          apksigner_bin="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n 1)"
+          apk="$(find app/build/outputs/apk/basic/debug -type f -name '*.apk' | head -n 1)"
+          test -x "$apksigner_bin"
+          test -s "$apk"
+
+          # Certificate used by the existing installable Local Dream builds.
+          expected="4231f002da1066b9055386ceae442394262070545a7a2202d414c8efba724af7"
+          actual="$("$apksigner_bin" verify --print-certs "$apk" |             sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1 |             tr -d ':' | tr 'A-F' 'a-f')"
+
+          echo "expected signer: $expected"
+          echo "actual signer:   $actual"
+          test -n "$actual"
+          test "$actual" = "$expected"
+
       - name: Upload APK
         uses: actions/upload-artifact@v6
         with:
