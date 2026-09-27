@@ -1,7 +1,7 @@
 diff --git a/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp b/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp
 --- a/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp
 +++ b/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp
-@@ -1770,98 +1770,128 @@
+@@ -1770,98 +1770,122 @@
      return htp_arch;
  }
  
@@ -125,6 +125,7 @@ diff --git a/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp b/ggml/src/ggml-hexa
 +    while (true) {
 +        const size_t pool_mb   = target_mb - 8;
 +        const size_t pool_size = pool_mb * SIZE_IN_MB;
++        bool mapped = false;
 +
 +        uint8_t * buf = static_cast<uint8_t *>(
 +            rpcmem_alloc2(RPCMEM_HEAP_ID_SYSTEM, RPCMEM_DEFAULT_FLAGS, pool_size));
@@ -132,80 +133,73 @@ diff --git a/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp b/ggml/src/ggml-hexa
 +            GGMLHEXAGON_LOG_WARN(
 +                "rpc mempool probe: AP allocation %zu MiB failed, trying a smaller pool",
 +                pool_mb);
-+            goto next_pool_size;
-+        }
++        } else {
++            ctx->rpc_mempool          = buf;
++            ctx->rpc_mempool_capacity = target_mb * SIZE_IN_MB;
++            ctx->rpc_mempool_len      = pool_size;
++            ctx->rpc_mempool_handle   = rpcmem_to_fd(ctx->rpc_mempool);
 +
-+        ctx->rpc_mempool          = buf;
-+        ctx->rpc_mempool_capacity = target_mb * SIZE_IN_MB;
-+        ctx->rpc_mempool_len      = pool_size;
-+        ctx->rpc_mempool_handle   = rpcmem_to_fd(ctx->rpc_mempool);
++            if (ctx->rpc_mempool_handle < 0) {
++                GGMLHEXAGON_LOG_WARN(
++                    "rpc mempool probe: rpcmem_to_fd failed at %zu MiB, trying a smaller pool",
++                    pool_mb);
++            } else {
++                const int mmap_err = fastrpc_mmap(
++                    ctx->domain_id,
++                    ctx->rpc_mempool_handle,
++                    ctx->rpc_mempool,
++                    0,
++                    ctx->rpc_mempool_len,
++                    mmap_flags);
++                if (mmap_err != 0) {
++                    GGMLHEXAGON_LOG_WARN(
++                        "rpc mempool probe: fastrpc_mmap(%s) rejected %zu MiB (error %d), trying a smaller pool",
++                        mmap_mode_str, pool_mb, mmap_err);
++                } else {
++                    mapped = true;
++                    const uint32_t ion_fd  = (uint32_t) ctx->rpc_mempool_handle;
++                    const uint32_t size_lo = (uint32_t) (ctx->rpc_mempool_len & 0xFFFFFFFF);
++                    const uint32_t size_hi = (uint32_t) ((ctx->rpc_mempool_len >> 32) & 0xFFFFFFFF);
 +
-+        if (ctx->rpc_mempool_handle < 0) {
-+            GGMLHEXAGON_LOG_WARN(
-+                "rpc mempool probe: rpcmem_to_fd failed at %zu MiB, trying a smaller pool",
-+                pool_mb);
-+            rpcmem_free(ctx->rpc_mempool);
-+            ctx->rpc_mempool          = nullptr;
-+            ctx->rpc_mempool_len      = 0;
-+            ctx->rpc_mempool_capacity = 0;
-+            goto next_pool_size;
-+        }
++                    const int64_t t0_reg = ggml_time_us();
++                    const int reg_err =
++                        ggml_htp_register_rpcmem(ctx->ggmlop_handle, ion_fd, size_lo, size_hi);
++                    const int64_t dt_reg = ggml_time_us() - t0_reg;
++                    if (reg_err == AEE_SUCCESS) {
++                        GGMLHEXAGON_LOG_ALWAYS(
++                            "rpc mempool selected: %zu MiB, fd=%d, map=%s, DSP registration=%lld us",
++                            pool_mb, ctx->rpc_mempool_handle, mmap_mode_str, (long long) dt_reg);
++                        GGMLHEXAGON_LOG_ALWAYS("mempool layout: total=%zuMB", pool_mb);
 +
-+        int mmap_err = fastrpc_mmap(
-+            ctx->domain_id,
-+            ctx->rpc_mempool_handle,
-+            ctx->rpc_mempool,
-+            0,
-+            ctx->rpc_mempool_len,
-+            mmap_flags);
-+        if (mmap_err != 0) {
-+            GGMLHEXAGON_LOG_WARN(
-+                "rpc mempool probe: fastrpc_mmap(%s) rejected %zu MiB (error %d), trying a smaller pool",
-+                mmap_mode_str, pool_mb, mmap_err);
++                        // Prime the RPC overhead profiler only after the pool is
++                        // known to be valid. Failed probes never leak into
++                        // inference state.
++                        for (int i = 0; i < 6; i++) {
++                            (void) hexagon_warmup_invoke_timed(ctx);
++                        }
++                        return 0;
++                    }
++
++                    GGMLHEXAGON_LOG_WARN(
++                        "rpc mempool probe: DSP rejected %zu MiB (0x%x), releasing it and trying smaller",
++                        pool_mb, reg_err);
++                }
++            }
++
++            if (mapped) {
++                fastrpc_munmap(
++                    ctx->domain_id,
++                    ctx->rpc_mempool_handle,
++                    ctx->rpc_mempool,
++                    ctx->rpc_mempool_len);
++            }
 +            rpcmem_free(ctx->rpc_mempool);
 +            ctx->rpc_mempool          = nullptr;
 +            ctx->rpc_mempool_len      = 0;
 +            ctx->rpc_mempool_capacity = 0;
 +            ctx->rpc_mempool_handle   = -1;
-+            goto next_pool_size;
 +        }
 +
-+        const uint32_t ion_fd  = (uint32_t) ctx->rpc_mempool_handle;
-+        const uint32_t size_lo = (uint32_t) (ctx->rpc_mempool_len & 0xFFFFFFFF);
-+        const uint32_t size_hi = (uint32_t) ((ctx->rpc_mempool_len >> 32) & 0xFFFFFFFF);
-+
-+        const int64_t t0_reg = ggml_time_us();
-+        const int reg_err = ggml_htp_register_rpcmem(ctx->ggmlop_handle, ion_fd, size_lo, size_hi);
-+        const int64_t dt_reg = ggml_time_us() - t0_reg;
-+        if (reg_err == AEE_SUCCESS) {
-+            GGMLHEXAGON_LOG_ALWAYS(
-+                "rpc mempool selected: %zu MiB, fd=%d, map=%s, DSP registration=%lld us",
-+                pool_mb, ctx->rpc_mempool_handle, mmap_mode_str, (long long) dt_reg);
-+            GGMLHEXAGON_LOG_ALWAYS("mempool layout: total=%zuMB", pool_mb);
-+
-+            // Prime the RPC overhead profiler only after the pool is known to
-+            // be valid. Failed probes never leak into inference state.
-+            for (int i = 0; i < 6; i++) {
-+                (void) hexagon_warmup_invoke_timed(ctx);
-+            }
-+            return 0;
-+        }
-+
-+        GGMLHEXAGON_LOG_WARN(
-+            "rpc mempool probe: DSP rejected %zu MiB (0x%x), releasing it and trying smaller",
-+            pool_mb, reg_err);
-+        fastrpc_munmap(
-+            ctx->domain_id,
-+            ctx->rpc_mempool_handle,
-+            ctx->rpc_mempool,
-+            ctx->rpc_mempool_len);
-+        rpcmem_free(ctx->rpc_mempool);
-+        ctx->rpc_mempool          = nullptr;
-+        ctx->rpc_mempool_len      = 0;
-+        ctx->rpc_mempool_capacity = 0;
-+        ctx->rpc_mempool_handle   = -1;
-+
-+next_pool_size:
 +        if (target_mb <= min_target_mb) {
 +            break;
 +        }
