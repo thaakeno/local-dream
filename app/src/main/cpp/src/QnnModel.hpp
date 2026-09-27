@@ -27,6 +27,24 @@ class QnnModel : public QnnSampleApp {
   Qnn_Tensor_t *outputs = nullptr;
   void *m_modelHandle = nullptr;
   bool anima_io_logged_ = false;
+
+  struct SdxlNativeVariant {
+    const float *source = nullptr;
+    int tokens = 0;
+    int active_chunks = 0;
+    std::vector<uint8_t> native;
+  };
+  struct SdxlStaticInputState {
+    const float *active_source = nullptr;
+    int active_tokens = -1;
+    int active_chunks = -1;
+    std::vector<SdxlNativeVariant> variants;
+  };
+  std::vector<SdxlStaticInputState> sdxl_static_inputs_;
+  std::vector<float> sdxl_attention_mask_;
+  int sdxl_mask_tokens_ = 0;
+  int sdxl_mask_chunks_ = -1;
+
   QnnModel(QnnFunctionPointers qnnFunctionPointers, std::string inputListPaths,
            std::string opPackagePaths, void *backendHandle,
            std::string outputPath = s_defaultOutputPath, bool debug = false,
@@ -71,6 +89,60 @@ class QnnModel : public QnnSampleApp {
   // Valid only after a successful initialize()/createFromBinary(): the QNN
   // context handle, used as the group head reference for the other models.
   Qnn_ContextHandle_t getContextHandle() const { return m_context; }
+
+  // SDXL conditioning is constant across every denoising step. Cache the
+  // already-quantized native QNN representation so CFG runs do not repeatedly
+  // quantize hundreds of KB of CLIP hidden states on the CPU. For CFG=1 the
+  // same side stays active, so after step one these tensors are not touched at
+  // all. Reset once per generation to make pointer identity safe.
+  void resetSdxlStaticInputCache() {
+    sdxl_static_inputs_.clear();
+    sdxl_attention_mask_.clear();
+    sdxl_mask_tokens_ = 0;
+    sdxl_mask_chunks_ = -1;
+  }
+
+  bool copySdxlStaticInput(uint32_t inputIndex, const float *source,
+                           Qnn_Tensor_t *input, int tokens, int activeChunks) {
+    if (sdxl_static_inputs_.size() <= inputIndex)
+      sdxl_static_inputs_.resize(inputIndex + 1);
+    auto &state = sdxl_static_inputs_[inputIndex];
+    if (state.active_source == source &&
+        state.active_tokens == tokens &&
+        state.active_chunks == activeChunks) {
+      return true;
+    }
+
+    auto &client = QNN_TENSOR_GET_CLIENT_BUF(*input);
+    for (const auto &variant : state.variants) {
+      if (variant.source == source && variant.tokens == tokens &&
+          variant.active_chunks == activeChunks &&
+          variant.native.size() == client.dataSize) {
+        memcpy(client.data, variant.native.data(), client.dataSize);
+        state.active_source = source;
+        state.active_tokens = tokens;
+        state.active_chunks = activeChunks;
+        return true;
+      }
+    }
+
+    if (m_ioTensor.copyFromFloatToNative(
+            const_cast<float *>(source), input) !=
+        qnn::tools::iotensor::StatusCode::SUCCESS)
+      return false;
+
+    SdxlNativeVariant variant;
+    variant.source = source;
+    variant.tokens = tokens;
+    variant.active_chunks = activeChunks;
+    variant.native.resize(client.dataSize);
+    memcpy(variant.native.data(), client.data, client.dataSize);
+    state.variants.emplace_back(std::move(variant));
+    state.active_source = source;
+    state.active_tokens = tokens;
+    state.active_chunks = activeChunks;
+    return true;
+  }
 
   // Queries the HTP backend for this context's real spill-fill scratch
   // requirement (bytes). Valid only after the context is created. Returns 0 if
@@ -457,24 +529,49 @@ class QnnModel : public QnnSampleApp {
                                    float *out_sample, int tokens, int active_chunks) {
     if (!ensureIoTensors()) return StatusCode::FAILURE;
     auto graphInfo = (*m_graphsInfo)[0];
-    std::vector<float> mask(tokens, 0.0f);
-    std::fill_n(mask.begin(), active_chunks * 77, 1.0f);
+    if (sdxl_mask_tokens_ != tokens || sdxl_mask_chunks_ != active_chunks) {
+      sdxl_attention_mask_.assign(tokens, 0.0f);
+      const int active = std::min(tokens, active_chunks * 77);
+      std::fill_n(sdxl_attention_mask_.begin(), active, 1.0f);
+      sdxl_mask_tokens_ = tokens;
+      sdxl_mask_chunks_ = active_chunks;
+    }
+
     float time = static_cast<float>(timestep);
     for (uint32_t i = 0; i < graphInfo.numInputTensors; ++i) {
       auto &input = inputs[i];
       const std::string name = QNN_TENSOR_GET_NAME(input);
       float *source = nullptr;
-      if (name.find("encoder_hidden_states") != std::string::npos) source = encoder_hidden_states;
-      else if (name.find("encoder_attention_mask") != std::string::npos) source = mask.data();
-      else if (name.find("text_embeds") != std::string::npos) source = text_embeds;
-      else if (name.find("time_ids") != std::string::npos) source = time_ids;
-      else if (name.find("sample") != std::string::npos) source = sample;
-      else if (name.find("timestamp") != std::string::npos ||
-               name.find("timestep") != std::string::npos) source = &time;
-      else return StatusCode::FAILURE;
-      if (m_ioTensor.copyFromFloatToNative(source, &input) !=
-          qnn::tools::iotensor::StatusCode::SUCCESS)
+      bool isStatic = false;
+      if (name.find("encoder_hidden_states") != std::string::npos) {
+        source = encoder_hidden_states;
+        isStatic = true;
+      } else if (name.find("encoder_attention_mask") != std::string::npos) {
+        source = sdxl_attention_mask_.data();
+        isStatic = true;
+      } else if (name.find("text_embeds") != std::string::npos) {
+        source = text_embeds;
+        isStatic = true;
+      } else if (name.find("time_ids") != std::string::npos) {
+        source = time_ids;
+        isStatic = true;
+      } else if (name.find("sample") != std::string::npos) {
+        source = sample;
+      } else if (name.find("timestamp") != std::string::npos ||
+                 name.find("timestep") != std::string::npos) {
+        source = &time;
+      } else {
+        QNN_ERROR("Unknown SDXL UNet input: %s", name.c_str());
         return StatusCode::FAILURE;
+      }
+
+      if (isStatic) {
+        if (!copySdxlStaticInput(i, source, &input, tokens, active_chunks))
+          return StatusCode::FAILURE;
+      } else if (m_ioTensor.copyFromFloatToNative(source, &input) !=
+                 qnn::tools::iotensor::StatusCode::SUCCESS) {
+        return StatusCode::FAILURE;
+      }
     }
     if (!runGraph(graphInfo, "sdxl unet")) return StatusCode::FAILURE;
     if (m_ioTensor.convertToFloatInto(out_sample, &outputs[0]) !=
