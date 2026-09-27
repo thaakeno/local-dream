@@ -46,6 +46,7 @@ class MusicGenerationService : Service() {
     private var cancelRequested = false
     private var scoreStageStartedAt = 0L
     private var semanticStageStartedAt = 0L
+    private var vaeDecodeStartedAt = 0L
 
     // Native /job only exposes running|done|failed|cancelled. Keep the last
     // fatal line from the SSE stream so a failed generation surfaces the real
@@ -408,6 +409,7 @@ class MusicGenerationService : Service() {
         lastNativeFailure = null
         scoreStageStartedAt = 0L
         semanticStageStartedAt = 0L
+        vaeDecodeStartedAt = 0L
         CrashDiagnostics.beginGenerationSession(
             this,
             "YuE2 generate model=${modelId ?: "unknown"} duration=${duration}s steps=$steps cot=$cot",
@@ -923,15 +925,46 @@ class MusicGenerationService : Service() {
             )
         }
 
+        val vaeTileBegin = Regex("""\[VAE] Tile (\d+)/(\d+) begin: latent=(\d+)""").find(line)
+        if (vaeTileBegin != null) {
+            val step = vaeTileBegin.groupValues[1].toInt()
+            val total = vaeTileBegin.groupValues[2].toInt().coerceAtLeast(1)
+            val latent = vaeTileBegin.groupValues[3].toInt()
+            val now = System.currentTimeMillis()
+            if (vaeDecodeStartedAt == 0L || step == 1) vaeDecodeStartedAt = now
+            val completed = (step - 1).coerceAtLeast(0)
+            val local = (completed.toFloat() / total).coerceIn(0f, 1f)
+            return state(
+                "decoding",
+                "Decoding waveform · tile $step/$total · $latent latent frames · HTP",
+                0.90f + local * 0.07f,
+                completed,
+                total,
+            )
+        }
+
         val vaeTile = Regex("""\[VAE] Tile (\d+)/(\d+) done: (\d+) ms""").find(line)
         if (vaeTile != null) {
             val step = vaeTile.groupValues[1].toInt()
             val total = vaeTile.groupValues[2].toInt().coerceAtLeast(1)
             val ms = vaeTile.groupValues[3].toLong()
+            val now = System.currentTimeMillis()
+            if (vaeDecodeStartedAt == 0L) vaeDecodeStartedAt = now - ms
             val local = (step.toFloat() / total).coerceIn(0f, 1f)
-            val etaMs = (total - step).coerceAtLeast(0).toLong() * ms
+            val elapsedMs = (now - vaeDecodeStartedAt).coerceAtLeast(ms)
+            val avgMs = elapsedMs.toDouble() / step.coerceAtLeast(1)
+            val etaMs = ((total - step).coerceAtLeast(0) * avgMs).toLong()
             val detail = buildString {
-                append("Decoding waveform · tile $step/$total · $ms ms")
+                append("Decoded tile $step/$total · $ms ms")
+                if (step > 1) {
+                    append(
+                        String.format(
+                            java.util.Locale.US,
+                            " · %.0f ms/tile",
+                            avgMs,
+                        ),
+                    )
+                }
                 if (etaMs >= 1000L) append(" · ~${formatEta(etaMs / 1000L)} left")
             }
             return state(
@@ -1004,8 +1037,8 @@ class MusicGenerationService : Service() {
                 state("decoding", "Decoding 48 kHz stereo audio", 0.92f)
             line.contains("[VAE] Tiled decode") ->
                 state("decoding", nativeDetail(line, "Decoding audio tiles"), 0.93f)
-            line.contains("[VAE] Decoded") ->
-                state("finalizing", "Audio decoded · encoding MP3", 0.96f)
+            line.contains("[VAE] Tiled decode done") || line.contains("[VAE] Decoded") ->
+                state("finalizing", nativeDetail(line, "Audio decoded · encoding MP3"), 0.975f)
             line.contains("[MP3] Encoding") ->
                 state("finalizing", "Encoding 320 kbps MP3", 0.98f)
             line.contains("[Pipeline] Done") ->
