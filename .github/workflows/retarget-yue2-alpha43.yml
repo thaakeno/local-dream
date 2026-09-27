@@ -1,0 +1,107 @@
+name: Retarget YuE2 alpha.43 canonical re-sign
+
+on:
+  push:
+    branches:
+      - qwen-fp8-turbo
+    paths:
+      - '.github/workflows/retarget-yue2-alpha43.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  SOURCE_RUN_ID: '36289509118'
+
+jobs:
+  retarget:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout qwen branch
+        uses: actions/checkout@v6
+        with:
+          ref: qwen-fp8-turbo
+          fetch-depth: 1
+
+      - name: Wait for successful alpha.43 source artifact
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          api="https://api.github.com/repos/${{ github.repository }}/actions/runs/$SOURCE_RUN_ID"
+          completed=false
+
+          for attempt in $(seq 1 48); do
+            run_json="$(
+              curl -fsSL                 -H "Authorization: Bearer $GH_TOKEN"                 -H "Accept: application/vnd.github+json"                 -H "X-GitHub-Api-Version: 2022-11-28"                 "$api"
+            )"
+            status="$(jq -r '.status' <<<"$run_json")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run_json")"
+            echo "source run attempt=$attempt status=$status conclusion=$conclusion"
+
+            if [ "$status" = "completed" ]; then
+              test "$conclusion" = "success"
+              completed=true
+              break
+            fi
+
+            sleep 15
+          done
+
+          test "$completed" = "true"
+
+          artifacts_json="$(
+            curl -fsSL               -H "Authorization: Bearer $GH_TOKEN"               -H "Accept: application/vnd.github+json"               -H "X-GitHub-Api-Version: 2022-11-28"               "https://api.github.com/repos/${{ github.repository }}/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100"
+          )"
+
+          artifact_id="$(
+            jq -r '
+              [.artifacts[]
+                | select(.expired == false)
+                | select(.name == "LocalDream-Qwen-FP8-Turbo")]
+              | sort_by(.created_at)
+              | last
+              | .id // empty
+            ' <<<"$artifacts_json"
+          )"
+
+          test -n "$artifact_id"
+          echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
+          echo "source artifact id: $artifact_id"
+
+      - name: Point canonical re-sign workflow at alpha.43
+        env:
+          ARTIFACT_ID: ${{ steps.source.outputs.artifact_id }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(".github/workflows/resign-yue2-alpha35.yml")
+          text = path.read_text()
+
+          old = '10920950953'
+          new = os.environ['ARTIFACT_ID']
+          if old not in text:
+              raise SystemExit(f"expected source artifact id {old} not found")
+
+          text = text.replace(old, new, 1)
+          text = text.replace("alpha.41", "alpha.43")
+          text = text.replace("alpha41", "alpha43")
+          path.write_text(text)
+          PY
+
+          git diff -- .github/workflows/resign-yue2-alpha35.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/resign-yue2-alpha35.yml
+          git commit -m "ci: re-sign YuE2 alpha.43 with canonical key"
+          git push origin HEAD:qwen-fp8-turbo
