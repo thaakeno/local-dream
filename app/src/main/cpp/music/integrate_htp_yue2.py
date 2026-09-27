@@ -190,8 +190,9 @@ static bool backend_strict_pin_graph(ggml_backend_sched_t sched,
     }
 
     int pinned = 0;
-    for (int i = 0; i < graph->n_nodes; ++i) {
-        struct ggml_tensor * node = graph->nodes[i];
+    const int n_nodes = ggml_graph_n_nodes(graph);
+    for (int i = 0; i < n_nodes; ++i) {
+        struct ggml_tensor * node = ggml_graph_node(graph, i);
         if (!node || node->op == GGML_OP_NONE || ggml_is_view(node)) {
             continue;
         }
