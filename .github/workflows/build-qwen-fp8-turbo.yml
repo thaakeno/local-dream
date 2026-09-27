@@ -244,9 +244,10 @@ jobs:
           test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
           test -s app/src/main/assets/yue2libs/libggml-htp-v79.so
           test -s app/src/main/assets/yue2libs/libggml-htp-v81.so
-          grep -q 'commit=2b129ccfa03aea330d2d9ac4650a10de393dbe3a' app/src/main/assets/yue2libs/backend-version.txt
-          grep -q 'variant=dspqueue' app/src/main/assets/yue2libs/backend-version.txt
-          grep -q 'patchset=none' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'commit=7ac59a6e3ad851cd41af00f678effab0598ba9a8' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'variant=dspqueue-yue2-native' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'integration=sin-hvx,col2im1d-htp,strict-accelerator' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'cpu_fallback=disabled' app/src/main/assets/yue2libs/backend-version.txt
           test -s app/src/main/assets/qnnlibs/libQnnHtp.so
           find app/src/main/jniLibs/arm64-v8a app/src/main/assets/ditlibs app/src/main/assets/yue2libs -maxdepth 1 -type f -ls
 
