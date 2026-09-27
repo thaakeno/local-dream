@@ -155,6 +155,7 @@ import io.github.xororz.localdream.data.TagMatchType
 import io.github.xororz.localdream.data.TagSuggestion
 import io.github.xororz.localdream.data.UpscalerRepository
 import io.github.xororz.localdream.navigation.HISTORY_REPRODUCE_ID_KEY
+import io.github.xororz.localdream.navigation.HISTORY_USE_PROMPT_ID_KEY
 import io.github.xororz.localdream.navigation.HISTORY_VARIATION_COUNT_KEY
 import io.github.xororz.localdream.navigation.HISTORY_VARIATION_ID_KEY
 import io.github.xororz.localdream.navigation.Screen
@@ -787,6 +788,22 @@ fun ModelRunScreen(
     }
     promptField.onTextCommitted = { saveAllFields() }
     negativePromptField.onTextCommitted = { saveAllFields() }
+
+    // Global History can send just the stored prompt back to this model.
+    // Apply it directly, persist it, and bring the prompt page into view.
+    LaunchedEffect(hasInitialized, modelId) {
+        if (!hasInitialized) return@LaunchedEffect
+        val source = navController.previousBackStackEntry ?: return@LaunchedEffect
+        val historyId =
+            source.savedStateHandle.remove<Long>(HISTORY_USE_PROMPT_ID_KEY)
+                ?: return@LaunchedEffect
+        val item = historyManager.getItems(listOf(historyId)).firstOrNull()
+        if (item != null && item.modelId == modelId) {
+            promptField.replaceText(item.params.prompt)
+            saveAllFields()
+            pagerState.animateScrollToPage(0)
+        }
+    }
 
     PromptTokenCountEffect(promptField, backendReady = backendReady, backendHost = backendHost)
     PromptTokenCountEffect(negativePromptField, backendReady = backendReady, backendHost = backendHost)
@@ -3482,6 +3499,16 @@ fun ModelRunScreen(
                     showReproduceParamsDialog = true
                 }
             },
+            onUsePrompt = { value ->
+                promptField.replaceText(value)
+                saveAllFields()
+                scope.launch { pagerState.animateScrollToPage(0) }
+            },
+            onUseNegativePrompt = { value ->
+                negativePromptField.replaceText(value)
+                saveAllFields()
+                scope.launch { pagerState.animateScrollToPage(0) }
+            },
             onDismiss = { showParametersDialog = false },
         )
     }
@@ -4145,6 +4172,16 @@ fun ModelRunScreen(
                     selectedHistoryItem = null
                     navController.navigate(Screen.ModelRun.createRoute(item.modelId))
                 }
+            },
+            onUsePrompt = { value ->
+                promptField.replaceText(value)
+                saveAllFields()
+                scope.launch { pagerState.animateScrollToPage(0) }
+            },
+            onUseNegativePrompt = { value ->
+                negativePromptField.replaceText(value)
+                saveAllFields()
+                scope.launch { pagerState.animateScrollToPage(0) }
             },
             onDismiss = { showHistoryParametersDialog = false },
         )
