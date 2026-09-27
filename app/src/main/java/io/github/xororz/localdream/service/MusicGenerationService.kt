@@ -923,6 +923,26 @@ class MusicGenerationService : Service() {
             )
         }
 
+        val vaeTile = Regex("""\[VAE] Tile (\d+)/(\d+) done: (\d+) ms""").find(line)
+        if (vaeTile != null) {
+            val step = vaeTile.groupValues[1].toInt()
+            val total = vaeTile.groupValues[2].toInt().coerceAtLeast(1)
+            val ms = vaeTile.groupValues[3].toLong()
+            val local = (step.toFloat() / total).coerceIn(0f, 1f)
+            val etaMs = (total - step).coerceAtLeast(0).toLong() * ms
+            val detail = buildString {
+                append("Decoding waveform · tile $step/$total · $ms ms")
+                if (etaMs >= 1000L) append(" · ~${formatEta(etaMs / 1000L)} left")
+            }
+            return state(
+                "decoding",
+                detail,
+                0.90f + local * 0.07f,
+                step,
+                total,
+            )
+        }
+
         val scorePrefill = Regex("""\[AR] Score song \d+: (\d+) tokens prefilled, (\d+) ms""")
             .find(line)
         if (scorePrefill != null) {
