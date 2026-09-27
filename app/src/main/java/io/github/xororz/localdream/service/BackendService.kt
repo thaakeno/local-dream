@@ -1002,17 +1002,20 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (isMusicBackend(backendType)) {
-                // Dedicated FastRPC/mempool runtime. Keep the Hexagon
-                // device list as the single source of truth: ggml's forced
-                // backend lookup requires an exact enumerated device name
-                // (e.g. HTP0:0), so deriving GGML_BACKEND from this list
-                // prevents the device/session strings from drifting apart.
-                val musicHtpDevices = listOf("HTP0:0")
-                val musicHtpDeviceSpec = musicHtpDevices.joinToString(",")
-                val musicPrimaryBackend = musicHtpDevices.first()
+                // Session selection and GGML backend selection are different
+                // namespaces in the FastRPC backend. GGML_HEXAGON_DEVICES
+                // describes physical/virtual HTP sessions (e.g. HTP0:0),
+                // while the backend registry exposes the accelerator itself as
+                // HTP0. Never derive a GGML backend name from a session alias.
+                //
+                // ggml_backend_init_best() prefers GPU -> IGPU -> CPU, and the
+                // Hexagon backend reports itself as GPU. Leave GGML_BACKEND
+                // unset, let GGML select the accelerator by capability, and
+                // enforce HTP-only operation from the native load lines below.
+                val musicHtpSessionSpec = "HTP0:0"
 
-                env["GGML_HEXAGON_DEVICES"] = musicHtpDeviceSpec
-                env["GGML_BACKEND"] = musicPrimaryBackend
+                env["GGML_HEXAGON_DEVICES"] = musicHtpSessionSpec
+                env.remove("GGML_BACKEND")
                 env["LOCAL_DREAM_YUE2_BACKEND"] = "fastrpc-mempool"
 
                 env["LD_LIBRARY_PATH"] = listOf(
@@ -1040,8 +1043,8 @@ class BackendService : Service() {
                 )
 
                 val message =
-                    "YuE2 HTP: backend=FastRPC-mempool device=$musicPrimaryBackend " +
-                        "devices=$musicHtpDeviceSpec model=$modelId max_seq=$MUSIC_MAX_SEQ " +
+                    "YuE2 HTP: backend=FastRPC-mempool selector=best-accelerator " +
+                        "session=$musicHtpSessionSpec model=$modelId max_seq=$MUSIC_MAX_SEQ " +
                         "flashAttention=auto-v81 runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
                 BackendDiagnostics.append(this, "ENV", message)
@@ -1134,6 +1137,13 @@ class BackendService : Service() {
         }
     }
 
+    private fun musicBackendNameFromLoadLine(line: String): String? =
+        Regex("""\[Load]\s+\S+\s+backend:\s+([^\s(]+)""", RegexOption.IGNORE_CASE)
+            .find(line)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
     private fun updateMusicStartupFromLine(modelId: String, line: String) {
         val current = StateHolder._startupStatus.value
         if (current?.modelId != modelId) return
@@ -1176,12 +1186,18 @@ class BackendService : Service() {
                     detail = "Hexagon HTP session opened",
                     progress = maxOf(current.progress, 0.78f),
                 )
-            "[load]" in lower && "backend:" in lower ->
+            "[load]" in lower && "backend:" in lower -> {
+                val backendName = musicBackendNameFromLoadLine(line)
                 current.copy(
-                    phase = "backend",
+                    phase = if (backendName?.startsWith("HTP", ignoreCase = true) == true) {
+                        "backend"
+                    } else {
+                        "backend_check"
+                    },
                     detail = line.trim(),
                     progress = maxOf(current.progress, 0.86f),
                 )
+            }
             "[server] yue-server" in lower ->
                 current.copy(
                     phase = "server",
@@ -1209,13 +1225,66 @@ class BackendService : Service() {
         Thread {
             var firstBackendError: String? = null
             var backendErrorCount = 0
+            var musicHtpConfirmed = false
             val exitCode = try {
                 proc.inputStream.bufferedReader().use { reader ->
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
                         val backendLine = line ?: continue
                         if (isMusicBackend(config.backendType)) {
-                            updateMusicStartupFromLine(config.modelId, backendLine)
+                            musicBackendNameFromLoadLine(backendLine)?.let { backendName ->
+                                if (backendName.startsWith("HTP", ignoreCase = true)) {
+                                    musicHtpConfirmed = true
+                                    BackendDiagnostics.append(
+                                        this@BackendService,
+                                        "HTP_SELECTED",
+                                        "YuE2 native backend=$backendName",
+                                    )
+                                } else {
+                                    val detail =
+                                        "YuE2 requires Hexagon HTP, but native runtime selected $backendName"
+                                    firstBackendError = firstBackendError ?: detail
+                                    backendErrorCount++
+                                    updateState(BackendState.Error(detail, config.modelId))
+                                    StateHolder._startupStatus.value?.let { current ->
+                                        if (current.modelId == config.modelId) {
+                                            updateStartup(
+                                                current.copy(
+                                                    phase = "error",
+                                                    detail = detail,
+                                                ),
+                                            )
+                                        }
+                                    }
+                                    BackendDiagnostics.append(
+                                        this@BackendService,
+                                        "ERROR",
+                                        detail,
+                                    )
+                                    // NPU-only policy: never leave yue-server
+                                    // alive on a CPU-selected backend.
+                                    proc.destroy()
+                                }
+                            }
+
+                            if (
+                                backendLine.contains("[Server] Listening on", ignoreCase = true) &&
+                                !musicHtpConfirmed
+                            ) {
+                                val detail =
+                                    "YuE2 server started without a confirmed Hexagon HTP backend"
+                                firstBackendError = firstBackendError ?: detail
+                                backendErrorCount++
+                                updateState(BackendState.Error(detail, config.modelId))
+                                BackendDiagnostics.append(
+                                    this@BackendService,
+                                    "ERROR",
+                                    detail,
+                                )
+                                proc.destroy()
+                            } else {
+                                updateMusicStartupFromLine(config.modelId, backendLine)
+                            }
                         }
                         extractBackendError(backendLine)?.let { detail ->
                             backendErrorCount++
