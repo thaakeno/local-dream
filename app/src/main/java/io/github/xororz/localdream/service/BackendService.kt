@@ -67,7 +67,7 @@ class BackendService : Service() {
         private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
-        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_7ac59a6_yue2_native_v2"
+        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_37f752_yue2_snake_v3"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
@@ -881,7 +881,7 @@ class BackendService : Service() {
                         "--max-seq",
                         MUSIC_MAX_SEQ.toString(),
                         "--vae-core",
-                        "96",
+                        "256",
                         "--vae-halo",
                         "16",
                     )
@@ -1022,7 +1022,7 @@ class BackendService : Service() {
                 env.remove("GGML_HEXAGON_DEVICES")
                 env["GGML_BACKEND"] = "HTP0"
                 env["YUE2_STRICT_ACCELERATOR"] = "1"
-                env["LOCAL_DREAM_YUE2_BACKEND"] = "dspqueue-native-7ac59a6"
+                env["LOCAL_DREAM_YUE2_BACKEND"] = "dspqueue-native-0.5.0-37f752"
 
                 // SM8850: keep HMX/HVX enabled and use the current upstream
                 // queue depth. Strict YuE2 scheduling means unsupported graph
@@ -1060,9 +1060,10 @@ class BackendService : Service() {
                 )
 
                 val message =
-                    "YuE2 HTP: backend=DSPQueue-native selector=HTP0 session=physical-0 " +
+                    "YuE2 HTP: backend=DSPQueue-native-0.5.0 selector=HTP0 session=physical-0 " +
                         "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ queue=1280/32 " +
-                        "hmx=1 hvx=all vae=sin+col2im1d-native runtime=${musicRuntimeDir.absolutePath}"
+                        "hmx=1 hvx=all vae=snake-fused+sin+col2im1d-native core=256 " +
+                        "runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
                 BackendDiagnostics.append(this, "ENV", message)
             }
