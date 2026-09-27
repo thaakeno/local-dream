@@ -4,6 +4,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.navigation.NavController
 
 const val HISTORY_REPRODUCE_ID_KEY = "history_reproduce_id"
+const val HISTORY_USE_PROMPT_ID_KEY = "history_use_prompt_id"
 const val HISTORY_VARIATION_ID_KEY = "history_variation_id"
 const val HISTORY_VARIATION_COUNT_KEY = "history_variation_count"
 
