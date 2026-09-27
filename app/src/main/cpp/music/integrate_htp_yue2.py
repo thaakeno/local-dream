@@ -3,8 +3,10 @@
 
 The dependency revisions are pinned. This script fails on source drift and adds
 native HTP implementations for the Oobleck ops missing from upstream
-DSPQueue (SIN and COL2IM_1D), adds adaptive VTCM fitting for native HTP
-binary broadcasts, canonicalizes VAE binary inputs, and enforces strict accelerator compute. There is no CPU compute fallback.
+DSPQueue (SIN and COL2IM_1D), fuses Oobleck's five-node Snake activation into
+one HVX kernel, adds adaptive VTCM fitting for native HTP binary broadcasts,
+canonicalizes VAE binary inputs, and enforces strict accelerator compute.
+There is no CPU compute fallback.
 """
 from pathlib import Path
 import shutil
@@ -28,32 +30,33 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
 
 shutil.copy2(overlay / "sin-ops.c", htp / "sin-ops.c")
 shutil.copy2(overlay / "col2im-ops.c", htp / "col2im-ops.c")
+shutil.copy2(overlay / "snake-ops.c", htp / "snake-ops.c")
 
 replace_once(
     htp / "CMakeLists.txt",
     "    im2col-ops.c\n    roll-ops.c",
-    "    im2col-ops.c\n    col2im-ops.c\n    sin-ops.c\n    roll-ops.c",
+    "    im2col-ops.c\n    col2im-ops.c\n    sin-ops.c\n    snake-ops.c\n    roll-ops.c",
     "HTP source list",
 )
 
 replace_once(
     htp / "htp-ops.h",
     "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n\n    HTP_OP_INVALID",
-    "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n    HTP_OP_SIN,\n    HTP_OP_COL2IM_1D,\n\n    HTP_OP_INVALID",
+    "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n    HTP_OP_SIN,\n    HTP_OP_COL2IM_1D,\n    HTP_OP_SNAKE,\n\n    HTP_OP_INVALID",
     "HTP op enum",
 )
 
 replace_once(
     htp / "htp-ctx.h",
     "int op_im2col(struct htp_ops_context * octx);\nint op_allreduce",
-    "int op_im2col(struct htp_ops_context * octx);\nint op_col2im_1d(struct htp_ops_context * octx);\nint op_sin(struct htp_ops_context * octx);\nint op_allreduce",
+    "int op_im2col(struct htp_ops_context * octx);\nint op_col2im_1d(struct htp_ops_context * octx);\nint op_sin(struct htp_ops_context * octx);\nint op_snake(struct htp_ops_context * octx);\nint op_allreduce",
     "HTP op declarations",
 )
 
 replace_once(
     htp / "main.c",
     "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_ROLL:",
-    "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_COL2IM_1D:\n            return op_col2im_1d(octx);\n\n        case HTP_OP_SIN:\n            return op_sin(octx);\n\n        case HTP_OP_ROLL:",
+    "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_COL2IM_1D:\n            return op_col2im_1d(octx);\n\n        case HTP_OP_SIN:\n            return op_sin(octx);\n\n        case HTP_OP_SNAKE:\n            return op_snake(octx);\n\n        case HTP_OP_ROLL:",
     "HTP dispatch",
 )
 
@@ -116,6 +119,139 @@ replace_once(
     "        case GGML_OP_IM2COL:          return HTP_OP_IM2COL;",
     "        case GGML_OP_IM2COL:          return HTP_OP_IM2COL;\n        case GGML_OP_COL2IM_1D:       return HTP_OP_COL2IM_1D;",
     "host COL2IM remap",
+)
+
+
+# Oobleck Snake is emitted by yue2.cpp as:
+#   MUL(x, alpha) -> SIN -> SQR -> MUL(inv_beta) -> ADD(x)
+# Collapse the chain inside the DSPQueue batch builder so one HTP invocation
+# performs the entire activation. This keeps the canonical GGML graph intact
+# while eliminating four intermediate DDR tensors / dispatch barriers for each
+# of the decoder's dozens of Snake activations.
+snake_fusion = r"""
+    bool try_fuse_yue2_snake(const htp_opnode & node) {
+        if (node.opcode != HTP_OP_ADD || n_ops < 4) return false;
+
+        const unsigned int base = n_ops - 4;
+        htp_opnode & mul_alpha = ops[base + 0];
+        htp_opnode & sin_node  = ops[base + 1];
+        htp_opnode & sqr_node  = ops[base + 2];
+        htp_opnode & mul_beta  = ops[base + 3];
+
+        if (mul_alpha.opcode != HTP_OP_MUL ||
+            sin_node.opcode  != HTP_OP_SIN ||
+            sqr_node.opcode  != HTP_OP_SQR ||
+            mul_beta.opcode  != HTP_OP_MUL) {
+            return false;
+        }
+
+        const ggml_tensor * ax  = mul_alpha.dst();
+        const ggml_tensor * sn  = sin_node.dst();
+        const ggml_tensor * sq  = sqr_node.dst();
+        const ggml_tensor * del = mul_beta.dst();
+        const ggml_tensor * out = node.dst();
+
+        if (!ax || !sn || !sq || !del || !out ||
+            sin_node.src0() != ax ||
+            sqr_node.src0() != sn) {
+            return false;
+        }
+
+        const ggml_tensor * x = nullptr;
+        const ggml_tensor * alpha = nullptr;
+        if (mul_alpha.src0() && mul_alpha.src1()) {
+            // In the canonical graph x is [T,C] and alpha is [1,C]. Keep this
+            // structural check instead of depending on tensor names.
+            if (mul_alpha.src0()->ne[0] > 1 && mul_alpha.src1()->ne[0] == 1) {
+                x = mul_alpha.src0();
+                alpha = mul_alpha.src1();
+            } else if (mul_alpha.src1()->ne[0] > 1 && mul_alpha.src0()->ne[0] == 1) {
+                x = mul_alpha.src1();
+                alpha = mul_alpha.src0();
+            }
+        }
+        if (!x || !alpha) return false;
+
+        const ggml_tensor * inv_beta = nullptr;
+        if (mul_beta.src0() == sq) inv_beta = mul_beta.src1();
+        else if (mul_beta.src1() == sq) inv_beta = mul_beta.src0();
+        if (!inv_beta) return false;
+
+        const bool final_chain =
+            (node.src0() == x && node.src1() == del) ||
+            (node.src1() == x && node.src0() == del);
+        if (!final_chain) return false;
+
+        if (x->type != GGML_TYPE_F32 || alpha->type != GGML_TYPE_F32 ||
+            inv_beta->type != GGML_TYPE_F32 || out->type != GGML_TYPE_F32 ||
+            x->ne[2] != 1 || x->ne[3] != 1 ||
+            out->ne[0] != x->ne[0] || out->ne[1] != x->ne[1] ||
+            out->ne[2] != 1 || out->ne[3] != 1 ||
+            alpha->ne[0] != 1 || alpha->ne[1] != x->ne[1] ||
+            alpha->ne[2] != 1 || alpha->ne[3] != 1 ||
+            inv_beta->ne[0] != 1 || inv_beta->ne[1] != x->ne[1] ||
+            inv_beta->ne[2] != 1 || inv_beta->ne[3] != 1 ||
+            !ggml_is_contiguous(x) || !ggml_is_contiguous(alpha) ||
+            !ggml_is_contiguous(inv_beta) || !ggml_is_contiguous(out)) {
+            return false;
+        }
+
+        // Every intermediate must be single-use/fuseable; otherwise replacing
+        // the chain would change another consumer's value.
+        if (!ggml_hexagon_tensor_is_fuseable(ax) ||
+            !ggml_hexagon_tensor_is_fuseable(sn) ||
+            !ggml_hexagon_tensor_is_fuseable(sq) ||
+            !ggml_hexagon_tensor_is_fuseable(del)) {
+            return false;
+        }
+
+        if (!try_fuse_common({x, alpha, inv_beta, out})) {
+            return false;
+        }
+
+        htp_opnode fused(HTP_OP_SNAKE, const_cast<ggml_tensor *>(out));
+        fused.name = "YUE2_SNAKE";
+        fused.inputs.clear();
+        fused.inputs.push_back(x);
+        fused.inputs.push_back(alpha);
+        fused.inputs.push_back(inv_beta);
+        fused.outputs.clear();
+        fused.outputs.push_back(out);
+        fused.fused.push_back(mul_alpha.node);
+        fused.fused.push_back(sin_node.node);
+        fused.fused.push_back(sqr_node.node);
+        fused.fused.push_back(mul_beta.node);
+        fused.fused.push_back(node.node);
+
+        // Reuse the first descriptor slot and discard the remaining four ops.
+        // Tensor-map entries for the removed intermediates may remain in the
+        // batch metadata; they are harmless and avoid mutating the map while
+        // the batch is being built.
+        ops[base] = fused;
+        htp_op_desc & o = h_ops[base];
+        memset(&o, 0, sizeof(o));
+        o.opcode = HTP_OP_SNAKE;
+        for (unsigned int k = 0; k < HTP_OP_MAX_INPUTS; ++k) o.src[k] = 0xffff;
+        for (unsigned int k = 0; k < HTP_OP_MAX_OUTPUTS; ++k) o.dst[k] = 0xffff;
+        o.src[0] = add_tensor(x);
+        o.src[1] = add_tensor(alpha);
+        o.src[2] = add_tensor(inv_beta);
+        o.dst[0] = add_tensor(out);
+
+        n_ops = base + 1;
+        HEX_VERBOSE("ggml-hex: %s fused YuE2 Snake (#%u)\n", sess->c_name(), base);
+        return true;
+    }
+
+"""
+replace_once(
+    host,
+    """    bool try_fuse(const htp_opnode & node) {
+        if (!opt_opfusion) return false;""",
+    snake_fusion + """    bool try_fuse(const htp_opnode & node) {
+        if (!opt_opfusion) return false;
+        if (try_fuse_yue2_snake(node)) return true;""",
+    "YuE2 fused Snake batch pattern",
 )
 
 replace_once(
