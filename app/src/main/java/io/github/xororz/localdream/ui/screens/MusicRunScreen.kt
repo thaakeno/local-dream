@@ -75,6 +75,7 @@ import io.github.xororz.localdream.service.MusicGenerationService.MusicState
 import io.github.xororz.localdream.ui.components.MusicPlayerCard
 import io.github.xororz.localdream.ui.components.SmoothIndeterminateLinearWavyProgressIndicator
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
+import io.github.xororz.localdream.utils.AppHaptics
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -108,6 +109,9 @@ fun MusicRunScreen(
     var cfgScale by rememberSaveable { mutableFloatStateOf(-1f) }
     var showConfig by remember { mutableStateOf(false) }
     var showScore by remember { mutableStateOf(false) }
+    var lastHapticPhase by remember { mutableStateOf<String?>(null) }
+    var lastProgressBucket by remember { mutableIntStateOf(-1) }
+    var lastTerminalHaptic by remember { mutableStateOf<String?>(null) }
 
     val backendReady = backendState is BackendService.BackendState.Running &&
         servingModelId == modelId
@@ -117,6 +121,56 @@ fun MusicRunScreen(
     val startupForModel = startupStatus?.takeIf { it.modelId == modelId }
     val backendError = (backendState as? BackendService.BackendState.Error)
         ?.takeIf { it.modelId == null || it.modelId == modelId }
+
+    LaunchedEffect(musicState) {
+        when (val state = musicState) {
+            is MusicState.Generating -> {
+                if (state.phase != lastHapticPhase) {
+                    if (lastHapticPhase != null) {
+                        AppHaptics.perform(context, AppHaptics.Kind.Stage)
+                    }
+                    lastHapticPhase = state.phase
+                }
+
+                state.progress?.let { progress ->
+                    val bucket = (progress.coerceIn(0f, 1f) * 10f).toInt()
+                    if (bucket in 1..9 && bucket > lastProgressBucket) {
+                        AppHaptics.perform(context, AppHaptics.Kind.Progress)
+                        lastProgressBucket = bucket
+                    }
+                }
+                lastTerminalHaptic = null
+            }
+
+            is MusicState.Complete -> {
+                if (lastTerminalHaptic != "complete") {
+                    AppHaptics.perform(context, AppHaptics.Kind.Success)
+                    lastTerminalHaptic = "complete"
+                }
+            }
+
+            is MusicState.Error -> {
+                if (lastTerminalHaptic != "error") {
+                    AppHaptics.perform(context, AppHaptics.Kind.Failure)
+                    lastTerminalHaptic = "error"
+                }
+            }
+
+            MusicState.Idle -> {
+                lastHapticPhase = null
+                lastProgressBucket = -1
+            }
+
+            else -> Unit
+        }
+    }
+
+    LaunchedEffect(backendError?.message) {
+        if (backendError != null && lastTerminalHaptic != "backend_error") {
+            AppHaptics.perform(context, AppHaptics.Kind.Failure)
+            lastTerminalHaptic = "backend_error"
+        }
+    }
 
     LaunchedEffect(model?.id) {
         if (model == null || !model.isDownloaded || !model.isMusic) return@LaunchedEffect
@@ -176,7 +230,12 @@ fun MusicRunScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showConfig = true }) {
+                    IconButton(
+                        onClick = {
+                            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                            showConfig = true
+                        },
+                    ) {
                         Icon(Icons.Default.Tune, contentDescription = "Generation settings")
                     }
                 },
@@ -296,13 +355,18 @@ fun MusicRunScreen(
                                     buildString {
                                         append(model?.variantPrecision ?: "GGUF")
                                         append(" · 48 kHz stereo · 320 kbps MP3 · ")
-                                        append(if (htpAccelerated) "Hexagon HTP" else "CPU compatibility")
+                                        append(if (htpAccelerated) "Hexagon HTP" else "NPU unavailable")
                                     },
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            TextButton(onClick = { showConfig = true }) {
+                            TextButton(
+                                onClick = {
+                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                    showConfig = true
+                                },
+                            ) {
                                 Text("Tune")
                             }
                         }
@@ -310,6 +374,7 @@ fun MusicRunScreen(
 
                     Button(
                         onClick = {
+                            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                             MusicGenerationService.reset()
                             context.startForegroundService(
                                 Intent(context, MusicGenerationService::class.java)
@@ -329,6 +394,7 @@ fun MusicRunScreen(
                             )
                         },
                         enabled = backendReady &&
+                            htpAccelerated &&
                             style.isNotBlank() &&
                             musicState !is MusicState.Generating,
                         modifier = Modifier.fillMaxWidth(),
@@ -358,21 +424,11 @@ fun MusicRunScreen(
                     shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f),
                 ) {
-                    Column(Modifier.padding(14.dp)) {
-                        Text(
-                            "$precision is a compatibility path",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                        )
-                        Text(
-                            "The current Hexagon backend has no Q5_K/Q6_K matrix kernels. " +
-                                "Large YuE2 matmuls fall back to CPU, which is why loading can take minutes. " +
-                                "Use Q8_0 for the fast HTP path.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                        )
-                    }
+                    Text(
+                        "This YuE2 precision is not supported by the NPU-only music runtime.",
+                        modifier = Modifier.padding(14.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
                 }
             }
 
@@ -397,8 +453,11 @@ fun MusicRunScreen(
                     is MusicState.Generating -> MusicProgressCard(
                         state = state,
                         precision = model?.variantPrecision ?: "GGUF",
-                        runtimeLabel = if (htpAccelerated) "HTP0" else "CPU fallback",
-                        onCancel = { MusicGenerationService.stop(context) },
+                        runtimeLabel = "HTP0 · FastRPC mempool",
+                        onCancel = {
+                            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                            MusicGenerationService.stop(context)
+                        },
                     )
                     is MusicState.Complete -> {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
