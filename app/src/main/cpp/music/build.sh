@@ -51,6 +51,7 @@ python3 "$(pwd)/integrate_htp_yue2.py" "$JZ_ROOT" "$YUE2_DIR" "$(pwd)/native"
 grep -q 'HTP_OP_COL2IM_1D' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'GGML_OP_SIN' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'YUE2_STRICT_ACCELERATOR' "$YUE2_DIR/src/backend.h"
+grep -q 'YuE2 adaptive binary VTCM thread fit' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 
 rm -rf "$BUILD_DIR"
 
@@ -104,7 +105,7 @@ cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
 variant=dspqueue-yue2-native
-integration=sin-hvx,col2im1d-htp,strict-accelerator
+integration=sin-hvx,col2im1d-htp,adaptive-binary-vtcm,strict-accelerator
 cpu_fallback=disabled
 EOF
 
