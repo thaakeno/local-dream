@@ -707,6 +707,15 @@ class BackendService : Service() {
             )
 
             if (isMusicBackend(backendType)) {
+                if (modelId != "yue2_3b_q8" && modelId != "yue2_3b_bf16") {
+                    val message =
+                        "YuE2 NPU runtime only supports Q8_0 and BF16. " +
+                            "Refusing CPU/compatibility fallback for $modelId."
+                    BackendDiagnostics.append(this, "ERROR", message)
+                    updateState(BackendState.Error(message, config.modelId))
+                    return false
+                }
+
                 val backbone = File(modelsDir, "backbone.gguf")
                 val vae = File(modelsDir, "vae.gguf")
                 val invalid = when {
