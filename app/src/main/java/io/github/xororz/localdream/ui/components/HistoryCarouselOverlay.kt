@@ -1,5 +1,6 @@
 package io.github.xororz.localdream.ui.components
 
+import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
@@ -91,8 +92,17 @@ fun HistoryCarouselOverlay(
     val safePage = pagerState.currentPage.coerceIn(0, items.lastIndex)
     val currentItem = items[safePage]
     var promptExpanded by remember(currentItem.id) { mutableStateOf(false) }
+    var zoomedItemId by remember { mutableStateOf<Long?>(null) }
+    val zoomedBitmap = remember(zoomedItemId, itemIdsKey) {
+        zoomedItemId
+            ?.let { id -> items.firstOrNull { it.id == id } }
+            ?.let { item -> BitmapFactory.decodeFile(item.imageFile.absolutePath) }
+    }
 
-    BackHandler(enabled = deletingItemId == null, onBack = onDismiss)
+    BackHandler(
+        enabled = deletingItemId == null && zoomedItemId == null,
+        onBack = onDismiss,
+    )
 
     LaunchedEffect(initialItemId, itemIdsKey) {
         val target = items.indexOfFirst { it.id == initialItemId }
@@ -198,7 +208,11 @@ fun HistoryCarouselOverlay(
                         },
                 ) {
                     Surface(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable(enabled = !deleting) {
+                                zoomedItemId = item.id
+                            },
                         shape = RoundedCornerShape(22.dp),
                         color = Color.Transparent,
                         shadowElevation = 16.dp,
@@ -412,6 +426,21 @@ fun HistoryCarouselOverlay(
                     }
                 }
             }
+        }
+
+        if (zoomedItemId != null) {
+            ZoomableImageOverlay(
+                bitmap = zoomedBitmap,
+                onDismiss = { zoomedItemId = null },
+                showScaleIndicator = true,
+                topEndContent = {
+                    OverlayIconButton(
+                        icon = Icons.Default.Close,
+                        contentDescription = "Close zoom",
+                        onClick = { zoomedItemId = null },
+                    )
+                },
+            )
         }
     }
 }
