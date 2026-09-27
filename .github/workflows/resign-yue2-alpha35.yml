@@ -161,3 +161,5 @@ jobs:
           path: out/LocalDream-3.0.0-alpha.52-canonical.apk
           if-no-files-found: error
           retention-days: 14
+
+# signer-trigger: latest-yue2-head-9fd953207ec292f3e1e986e5d86757a1f24d6881
