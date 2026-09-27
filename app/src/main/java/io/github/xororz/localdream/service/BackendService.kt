@@ -1031,7 +1031,11 @@ class BackendService : Service() {
                 env["GGML_HEXAGON_NHVX"] = "0"
                 env["GGML_HEXAGON_MM_SELECT"] = "2"
                 env["GGML_HEXAGON_OPFUSION"] = "1"
-                env["GGML_HEXAGON_OPPOLL"] = "1"
+                // Do not busy-poll the AP while HTP is executing a long audio
+                // graph. Blocking DSPQueue waits keep compute 100% on HTP but
+                // stop the zero-timeout spin loop that wastes power/thermal
+                // headroom and can look like an endless NAR/VAE stall.
+                env["GGML_HEXAGON_OPPOLL"] = "0"
                 env["GGML_HEXAGON_OPBATCH"] = "1280"
                 env["GGML_HEXAGON_OPQUEUE"] = "32"
 
@@ -1061,7 +1065,7 @@ class BackendService : Service() {
 
                 val message =
                     "YuE2 HTP: backend=DSPQueue-native-0.5.0 selector=HTP0 session=physical-0 " +
-                        "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ queue=1280/32 " +
+                        "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ queue=1280/32 blocking-wait " +
                         "hmx=1 hvx=all vae=snake-fused+sin+col2im1d-native core=1024 " +
                         "runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
