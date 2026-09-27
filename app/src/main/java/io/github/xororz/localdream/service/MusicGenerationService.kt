@@ -257,6 +257,7 @@ class MusicGenerationService : Service() {
                     put("lm_seed", 0)
                     put("seed", 0)
                     put("steps", 1)
+                    put("ode_method", "dpmpp_2m")
                     put("lm_batch_size", 1)
                     put("synth_batch_size", 1)
                     put("cfg_scale", 1.0)
@@ -384,7 +385,10 @@ class MusicGenerationService : Service() {
             it in setOf("full", "melody", "off")
         } ?: "full"
         val duration = intent.getIntExtra("duration", 20).coerceIn(5, 20)
-        val steps = intent.getIntExtra("steps", 32).coerceIn(1, 64)
+        val steps = intent.getIntExtra("steps", 8).coerceIn(1, 64)
+        val odeMethod = intent.getStringExtra("ode_method")
+            ?.takeIf { it == "dpmpp_2m" || it == "midpoint" }
+            ?: "dpmpp_2m"
         val seed = intent.getLongExtra("seed", -1L)
         val temperature = intent.getFloatExtra("semantic_temperature", 1f)
             .coerceIn(0.5f, 1.5f)
@@ -418,13 +422,13 @@ class MusicGenerationService : Service() {
         vaeDecodeTileLatent = 0
         CrashDiagnostics.beginGenerationSession(
             this,
-            "YuE2 generate model=${modelId ?: "unknown"} duration=${duration}s steps=$steps cot=$cot",
+            "YuE2 generate model=${modelId ?: "unknown"} duration=${duration}s steps=$steps solver=$odeMethod cot=$cot",
         )
         BackendDiagnostics.append(
             this,
             "REQUEST",
             "generate model=${modelId ?: "unknown"} duration=${duration}s " +
-                "steps=$steps cot=$cot temp=$temperature topP=$topP cfg=$cfg",
+                "steps=$steps solver=$odeMethod cot=$cot temp=$temperature topP=$topP cfg=$cfg",
         )
         _state.value = MusicState.Generating(
             phase = "queued",
@@ -449,6 +453,7 @@ class MusicGenerationService : Service() {
                     put("lm_seed", seed)
                     put("seed", seed)
                     put("steps", steps)
+                    put("ode_method", odeMethod)
                     put("lm_batch_size", 1)
                     put("synth_batch_size", 1)
                     put("cfg_scale", cfg.toDouble())
@@ -488,7 +493,7 @@ class MusicGenerationService : Service() {
 
                 val logJob = launch {
                     try {
-                        followGenerationLogs(id, started, duration, steps)
+                        followGenerationLogs(id, started, duration, steps, odeMethod)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -649,6 +654,7 @@ class MusicGenerationService : Service() {
         started: Long,
         targetSeconds: Int,
         renderSteps: Int,
+        renderMethod: String,
     ) {
         followNativeLogs(id) { line ->
             if (
@@ -663,7 +669,7 @@ class MusicGenerationService : Service() {
                     .trim()
                     .take(700)
             }
-            phaseFromLog(line, started, targetSeconds, renderSteps)?.let { next ->
+            phaseFromLog(line, started, targetSeconds, renderSteps, renderMethod)?.let { next ->
                 _state.value = next
                 CrashDiagnostics.recordGeneration(
                     this@MusicGenerationService,
@@ -822,6 +828,7 @@ class MusicGenerationService : Service() {
         started: Long,
         targetSeconds: Int,
         renderSteps: Int,
+        renderMethod: String,
     ): MusicState.Generating? {
         fun state(
             phase: String,
@@ -914,8 +921,9 @@ class MusicGenerationService : Service() {
             val total = nar.groupValues[2].toInt().coerceAtLeast(1)
             val ms = nar.groupValues.getOrNull(3)?.toLongOrNull()
             val local = (step.toFloat() / total).coerceIn(0f, 1f)
+            val solverLabel = if (renderMethod == "dpmpp_2m") "DPM++ 2M" else "Midpoint"
             val detail = buildString {
-                append("Rendering acoustic latents · $step/$total")
+                append("Rendering acoustics · $solverLabel · $step/$total")
                 if (ms != null) {
                     append(" · ${ms} ms/step")
                     val etaMs = (total - step).coerceAtLeast(0).toLong() * ms
@@ -1079,8 +1087,12 @@ class MusicGenerationService : Service() {
             }
             line.contains("[Store] Load NAR") || line.contains("[NAR] Loaded") ->
                 state("loading_nar", "Acoustic renderer loaded on HTP", 0.57f)
-            line.contains("[NAR] Song") ->
-                state("flow", "Preparing $renderSteps-step acoustic flow", 0.58f)
+            line.contains("[NAR] Song") -> {
+                val solverLabel = if (renderMethod == "dpmpp_2m") "DPM++ 2M" else "Midpoint"
+                state("flow", "Preparing $renderSteps-step $solverLabel render", 0.58f)
+            }
+            line.contains("[NAR] Solver:") ->
+                state("flow", nativeDetail(line, "Acoustic solver ready"), 0.585f)
             line.contains("[NAR] Solved") ->
                 state("flow", nativeDetail(line, "Acoustic flow solved"), 0.89f)
             line.contains("[Store] Load VAE") || line.contains("[VAE] Loaded") ->
