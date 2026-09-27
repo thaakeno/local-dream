@@ -195,7 +195,14 @@ class PipelineSdxl : public PipelineQnn {
       releaseVaeEncoder();
     }
 
-    if (unet_ && unet_tokens_ == tokens) return;
+    // Native QNN conditioning buffers cache the quantized CLIP hidden states
+    // across denoising steps. Their source pointers are request-local, so clear
+    // the identity cache once at each generation boundary even when the UNet
+    // context itself remains hot.
+    if (unet_ && unet_tokens_ == tokens) {
+      unet_->resetSdxlStaticInputCache();
+      return;
+    }
     // The UNet is the spill-fill group head, so release its dependents first.
     vae_encoder_.reset();
     vae_decoder_.reset();
@@ -220,6 +227,7 @@ class PipelineSdxl : public PipelineQnn {
       throw std::runtime_error("Failed init QNN UNET");
     unet_ = std::move(unet);
     unet_tokens_ = tokens;
+    unet_->resetSdxlStaticInputCache();
     QNN_INFO("[lowram] SDXL UNET loaded");
   }
 
