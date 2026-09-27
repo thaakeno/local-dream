@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <inttypes.h>
 
+#include <algorithm>
 #include <Config.hpp>
 #include <QnnSampleApp.hpp>
 #include <QnnTypeMacros.hpp>
@@ -13,6 +14,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 #include "DataUtil.hpp"
