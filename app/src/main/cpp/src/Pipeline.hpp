@@ -55,6 +55,11 @@ struct GenerationRequest {
   unsigned seed = 0;
   std::string scheduler_type = "dpm";
   bool use_opencl = false;
+  // Strict SDXL mode: UNet/VAE are QNN/HTP and CLIP is forbidden from
+  // executing on MNN/CPU. Existing SDXL packages ship MNN CLIP, so a cache
+  // miss fails loudly instead of silently touching CPU. CFG=1 never needs
+  // negative conditioning, which makes distilled/DMD2 models especially fast.
+  bool npu_only = false;
   bool show_diffusion_process = false;
   int show_diffusion_stride = 1;
   int width = 512;
@@ -477,22 +482,39 @@ inline Conditioning Pipeline::encodePrompts(const GenerationRequest &req) {
                                                       : prompt_cache::kModeSdxlChunked)
                        : prompt_cache::kModeSd15);
 
-  bool neg_hit =
-      neg_cache_eligible &&
-      prompt_cache::load(cache_dir, req.negative_prompt, cache_mode,
-                         cond.seq_len, cond.hidden_dim, cond.pooled_dim,
-                         cond.negHidden(), cond.negPooled());
+  // At CFG=1 the QNN path executes only the conditional UNet pass.
+  // Do not waste CPU cycles, memory bandwidth or heat on negative CLIP that is
+  // mathematically unused by the denoiser.
+  const bool needs_uncond =
+      !(canSkipUncond() && std::fabs(req.cfg - 1.0f) < 1.0e-6f);
+
+  bool neg_hit = !needs_uncond ||
+      (neg_cache_eligible &&
+       prompt_cache::load(cache_dir, req.negative_prompt, cache_mode,
+                          cond.seq_len, cond.hidden_dim, cond.pooled_dim,
+                          cond.negHidden(), cond.negPooled()));
   bool pos_hit =
       pos_cache_eligible &&
       prompt_cache::load(cache_dir, req.prompt, cache_mode, cond.seq_len,
                          cond.hidden_dim, cond.pooled_dim, cond.posHidden(),
                          cond.posPooled());
 
-  if (neg_hit) QNN_INFO("Prompt cache hit (negative)");
+  if (needs_uncond && neg_hit) QNN_INFO("Prompt cache hit (negative)");
+  if (!needs_uncond) QNN_INFO("CFG=1 fast path: negative CLIP skipped");
   if (pos_hit) QNN_INFO("Prompt cache hit (positive)");
 
+  // Current downloadable SDXL packages carry CLIP-L/G as MNN models, not QNN
+  // contexts. NPU-only therefore means exactly what it says: never run those
+  // models on CPU. Prompt conditioning must already be cached. This is strict
+  // and intentional; it must never silently fall back.
+  if (req.npu_only && (!pos_hit || (needs_uncond && !neg_hit))) {
+    throw std::runtime_error(
+        "NPU-only: SDXL CLIP conditioning is not cached for this prompt. "
+        "Turn NPU-only off for one warm-up generation, then enable it again.");
+  }
+
   if (neg_hit && pos_hit) {
-    QNN_INFO("CLIP cache hit (both sides), skipping CLIP inference");
+    QNN_INFO("CLIP cache hit (all required sides), skipping CLIP inference");
     return cond;
   }
 
@@ -502,11 +524,11 @@ inline Conditioning Pipeline::encodePrompts(const GenerationRequest &req) {
   auto parsed_input_text = text_encoder_.decode(processed.ids);
   QNN_INFO("Parsed Input Text: %s", parsed_input_text.c_str());
 
-  encodeText(processed, !neg_hit, !pos_hit, cond);
+  encodeText(processed, needs_uncond && !neg_hit, !pos_hit, cond);
 
   // Persist freshly-computed CLIP outputs (per side). Sides that used a
   // TI embedding stay out of disk cache.
-  if (!neg_hit && neg_cache_eligible) {
+  if (needs_uncond && !neg_hit && neg_cache_eligible) {
     prompt_cache::save(cache_dir, req.negative_prompt, cache_mode, cond.seq_len,
                        cond.hidden_dim, cond.pooled_dim, cond.negHidden(),
                        cond.negPooled());
