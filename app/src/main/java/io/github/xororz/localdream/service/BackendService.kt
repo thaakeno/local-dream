@@ -67,7 +67,7 @@ class BackendService : Service() {
         private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
-        private const val MUSIC_RUNTIME_VERSION = "jz_fastrpc_6485ca781502_adaptive_pool_v2"
+        private const val MUSIC_RUNTIME_VERSION = "jz_fastrpc_883df324_v049_clean"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
@@ -82,14 +82,12 @@ class BackendService : Service() {
         private const val IDLE_GRACE_MS = 1500L
         private const val MAX_BACKEND_ERROR_CHARS = 700
 
-        // Keep checkpoint-native sampling intact, but do not reserve a desktop-sized
-        // KV cache for Local Dream's <=20 s mobile mode. The ABC planner can emit
-        // up to 4096 tokens and 20 s of semantic audio is at most 500 frames.
-        // 6144 therefore preserves the native 4096-token planner ceiling while
-        // leaving substantial prompt/semantic headroom, and cuts KV residency by
-        // 25% versus 8192 (896 MiB -> ~672 MiB for YuE2-3B). That matters because
-        // one Android HTP PD has a much tighter DSP VA window than system RAM.
-        private const val MUSIC_MAX_SEQ = 6144
+        // Local Dream caps a mobile score plan to <=1024 tokens and audio to
+        // <=20 s (500 semantic frames). 2560 keeps a 20 s planned song in one
+        // NAR chunk while cutting KV residency drastically versus 6144. That
+        // leaves the Q8 weights, KV and graph scratch inside SM8850's practical
+        // FastRPC address-space budget instead of running into ENORPCMEMORY.
+        private const val MUSIC_MAX_SEQ = 2560
 
         const val ACTION_STOP = "io.github.xororz.localdream.STOP_GENERATION"
         const val ACTION_RESTART = "io.github.xororz.localdream.RESTART_BACKEND"
@@ -192,6 +190,9 @@ class BackendService : Service() {
 
                 "dsp_register_rpcmem failed" in lower ||
                     "failed to init rpc mempool" in lower ||
+                    "ggml_htp_execute_batch failed" in lower ||
+                    "weight_inval reset failed" in lower ||
+                    "aee_enorpcmemory" in lower ||
                     "[load] fatal:" in lower ||
                     "[pipeline] fatal:" in lower ||
                     "failed to load libcdsprpc.so" in lower ||
@@ -771,9 +772,15 @@ class BackendService : Service() {
             )
 
             if (isMusicBackend(backendType)) {
-                if (modelId != "yue2_3b_q8" && modelId != "yue2_3b_bf16") {
+                if (modelId !in setOf(
+                        "yue2_3b_q5km",
+                        "yue2_3b_q6k",
+                        "yue2_3b_q8",
+                        "yue2_3b_bf16",
+                    )
+                ) {
                     val message =
-                        "YuE2 NPU runtime only supports Q8_0 and BF16. " +
+                        "YuE2 NPU runtime only accepts HTP-supported GGUF precisions. " +
                             "Refusing CPU/compatibility fallback for $modelId."
                     BackendDiagnostics.append(this, "ERROR", message)
                     updateState(BackendState.Error(message, config.modelId))
@@ -784,8 +791,8 @@ class BackendService : Service() {
                 val vae = File(modelsDir, "vae.gguf")
                 val invalid = when {
                     !backbone.isFile -> "YuE2 backbone.gguf is missing"
-                    backbone.length() < 3_000_000_000L && modelId == "yue2_3b_q8" ->
-                        "YuE2 Q8 backbone looks incomplete (${backbone.length()} bytes)"
+                    backbone.length() < 2_400_000_000L ->
+                        "YuE2 backbone looks incomplete (${backbone.length()} bytes)"
                     !vae.isFile -> "YuE2 vae.gguf is missing"
                     vae.length() < 450_000_000L ->
                         "YuE2 VAE looks incomplete (${vae.length()} bytes)"
@@ -868,7 +875,7 @@ class BackendService : Service() {
                         "--max-seq",
                         MUSIC_MAX_SEQ.toString(),
                         "--vae-core",
-                        "256",
+                        "512",
                         "--vae-halo",
                         "16",
                     )
@@ -1002,21 +1009,15 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (isMusicBackend(backendType)) {
-                // Session selection and GGML backend selection are different
-                // namespaces in the FastRPC backend. GGML_HEXAGON_DEVICES
-                // describes physical/virtual HTP sessions (e.g. HTP0:0),
-                // while the backend registry exposes the accelerator itself as
-                // HTP0. Never derive a GGML backend name from a session alias.
-                //
-                // ggml_backend_init_best() prefers GPU -> IGPU -> CPU, and the
-                // Hexagon backend reports itself as GPU. Leave GGML_BACKEND
-                // unset, let GGML select the accelerator by capability, and
-                // enforce HTP-only operation from the native load lines below.
+                // Session selection and backend selection are separate: the
+                // FastRPC session is HTP0:0 while the GGML device name is HTP0.
+                // Force that exact accelerator so YuE2 never silently selects
+                // another backend at module load time.
                 val musicHtpSessionSpec = "HTP0:0"
 
                 env["GGML_HEXAGON_DEVICES"] = musicHtpSessionSpec
-                env.remove("GGML_BACKEND")
-                env["LOCAL_DREAM_YUE2_BACKEND"] = "fastrpc-mempool"
+                env["GGML_BACKEND"] = "HTP0"
+                env["LOCAL_DREAM_YUE2_BACKEND"] = "fastrpc-mempool-0.4.9"
 
                 env["LD_LIBRARY_PATH"] = listOf(
                     nativeDir,
@@ -1043,7 +1044,7 @@ class BackendService : Service() {
                 )
 
                 val message =
-                    "YuE2 HTP: backend=FastRPC-mempool selector=best-accelerator " +
+                    "YuE2 HTP: backend=FastRPC-mempool-0.4.9 selector=HTP0 " +
                         "session=$musicHtpSessionSpec model=$modelId max_seq=$MUSIC_MAX_SEQ " +
                         "flashAttention=auto-v81 runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
@@ -1300,6 +1301,21 @@ class BackendService : Service() {
                                             detail = detail,
                                         ),
                                     )
+                                }
+                                updateState(BackendState.Error(detail, config.modelId))
+
+                                val lower = backendLine.lowercase()
+                                val fatalHtpExecution =
+                                    "ggml_htp_execute_batch failed" in lower ||
+                                        "weight_inval reset failed" in lower ||
+                                        "aee_enorpcmemory" in lower
+                                if (fatalHtpExecution && proc.isAlive) {
+                                    BackendDiagnostics.append(
+                                        this@BackendService,
+                                        "FATAL_HTP",
+                                        "Stopping YuE2 after unrecoverable HTP execution failure",
+                                    )
+                                    proc.destroy()
                                 }
                             }
                         }

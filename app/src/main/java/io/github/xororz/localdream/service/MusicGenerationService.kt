@@ -387,7 +387,20 @@ class MusicGenerationService : Service() {
         val topP = intent.getFloatExtra("semantic_top_p", 0.95f)
             .coerceIn(0.5f, 1f)
         val cfg = intent.getFloatExtra("cfg_scale", -1f).let { value ->
-            if (value < 0f) -1f else value.coerceIn(0.5f, 2f)
+            if (value < 0f) {
+                // Direct/off normally uses protocol CFG 1.01, which evaluates
+                // two AR branches for a 1% guidance delta. Mobile Direct uses
+                // the exact single-branch 1.00 path by default; 1.01 remains
+                // available explicitly from Tune.
+                if (cot == "off") 1.0f else -1f
+            } else {
+                value.coerceIn(0.5f, 2f)
+            }
+        }
+        val planMaxTokens = when (cot) {
+            "full" -> (duration * 48).coerceIn(384, 1024)
+            "melody" -> (duration * 36).coerceIn(256, 768)
+            else -> 0
         }
         val started = System.currentTimeMillis()
 
@@ -433,6 +446,14 @@ class MusicGenerationService : Service() {
                     put("cfg_scale", cfg.toDouble())
                     put("output_format", "mp3")
                     put("mp3_bitrate", 320)
+                    if (planMaxTokens > 0) {
+                        put(
+                            "abc_sampling",
+                            JSONObject().apply {
+                                put("max_tokens", planMaxTokens)
+                            },
+                        )
+                    }
                     put(
                         "semantic_sampling",
                         JSONObject().apply {
@@ -624,7 +645,10 @@ class MusicGenerationService : Service() {
         followNativeLogs(id) { line ->
             if (
                 line.contains("FATAL:", ignoreCase = true) ||
-                line.contains("[ ERROR ]", ignoreCase = true)
+                line.contains("[ ERROR ]", ignoreCase = true) ||
+                line.contains("ggml_htp_execute_batch failed", ignoreCase = true) ||
+                line.contains("weight_inval reset failed", ignoreCase = true) ||
+                line.contains("AEE_ENORPCMEMORY", ignoreCase = true)
             ) {
                 lastNativeFailure = line
                     .replace(Regex("""\s+"""), " ")
@@ -832,6 +856,8 @@ class MusicGenerationService : Service() {
                                 rate,
                             ),
                         )
+                        val eta = ((total - step).coerceAtLeast(0) / rate).toLong()
+                        if (eta > 0) append(" · ≤~${formatEta(eta)} left")
                     }
                 }
                 val local = (step.toFloat() / total).coerceIn(0f, 1f)
@@ -860,6 +886,8 @@ class MusicGenerationService : Service() {
                             rate,
                         ),
                     )
+                    val eta = ((frameTarget - step).coerceAtLeast(0) / rate).toLong()
+                    if (eta > 0) append(" · ~${formatEta(eta)} left")
                 }
             }
             return state(
@@ -880,7 +908,11 @@ class MusicGenerationService : Service() {
             val local = (step.toFloat() / total).coerceIn(0f, 1f)
             val detail = buildString {
                 append("Rendering acoustic latents · $step/$total")
-                if (ms != null) append(" · ${ms} ms/step")
+                if (ms != null) {
+                    append(" · ${ms} ms/step")
+                    val etaMs = (total - step).coerceAtLeast(0).toLong() * ms
+                    if (etaMs >= 1000L) append(" · ~${formatEta(etaMs / 1000L)} left")
+                }
             }
             return state(
                 "flow",
@@ -960,6 +992,13 @@ class MusicGenerationService : Service() {
                 state("finalizing", "Native HTP pipeline complete", 0.985f)
             else -> null
         }
+    }
+
+    private fun formatEta(seconds: Long): String {
+        val safe = seconds.coerceAtLeast(0)
+        val minutes = safe / 60
+        val remainder = safe % 60
+        return if (minutes > 0) "${minutes}m ${remainder}s" else "${remainder}s"
     }
 
     private fun nativeDetail(line: String, fallback: String): String {

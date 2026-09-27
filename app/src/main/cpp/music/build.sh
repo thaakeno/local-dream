@@ -8,12 +8,10 @@
 # leaves the hottest projection on CPU. The mempool backend keeps repacked
 # weights resident in one FastRPC pool and can execute that head on HTP.
 #
-# Both dependencies are pinned. Local Dream carries one narrow, version-locked
-# backend fix for Android HTP: FastRPC must retry the *complete* mempool
-# registration transaction when a large AP allocation does not fit in the DSP
-# process VA window. The patch is checked against the exact pinned revision and
-# the build fails on source drift; there is no runtime fallback or source
-# rewriting.
+# Both dependencies are pinned. YuE2 builds directly against the reviewed JZ
+# FastRPC/mempool backend revision below. Local Dream does not rewrite or patch
+# the backend source: the AP library and DSP skels are built from one exact
+# upstream commit and shipped as a matched set.
 set -euo pipefail
 
 : "${ANDROID_NDK_ROOT:?set ANDROID_NDK_ROOT}"
@@ -24,12 +22,9 @@ BUILD_DIR=build/android
 YUE2_DIR="$(cd ../3rdparty/yue2.cpp && pwd)"
 
 JZ_REPO="https://github.com/kan-linux/ggml-hexagon.git"
-JZ_COMMIT="6485ca781502e57975053b6b82c09a3e9492731d"
+JZ_COMMIT="883df3244370aefd54cfdb44ca804f5ed4827241"
 JZ_ROOT="$(pwd)/build/deps/ggml-hexagon"
 GGML_DIR="$JZ_ROOT/ggml"
-PATCH_DIR="$(pwd)/patches"
-MEMPOOL_PATCH="$PATCH_DIR/ggml-hexagon-adaptive-mempool.patch"
-DSP_MMAP_PATCH="$PATCH_DIR/ggml-hexagon-dsp-mmap-retry.patch"
 
 # Fetch exactly one reviewed backend revision. This is a normal pinned
 # dependency, not a source rewrite/monkey patch.
@@ -47,20 +42,12 @@ fi
 
 test "$(git -C "$JZ_ROOT" rev-parse HEAD)" = "$JZ_COMMIT"
 test -f "$GGML_DIR/CMakeLists.txt"
-test -s "$MEMPOOL_PATCH"
-test -s "$DSP_MMAP_PATCH"
 
-# Always start from the pinned dependency tree, then apply the reviewed patch
-# as a normal Git patch. --check makes dependency drift a hard build failure
-# instead of silently producing a different backend.
+# Start from the exact upstream tree every time. No Local Dream patchset is
+# applied here; any backend fix must exist in the pinned backend revision.
 git -C "$JZ_ROOT" reset --hard "$JZ_COMMIT"
 git -C "$JZ_ROOT" clean -fdx
-git -C "$JZ_ROOT" apply --check "$MEMPOOL_PATCH"
-git -C "$JZ_ROOT" apply "$MEMPOOL_PATCH"
-git -C "$JZ_ROOT" apply --check "$DSP_MMAP_PATCH"
-git -C "$JZ_ROOT" apply "$DSP_MMAP_PATCH"
-grep -q 'rpc mempool selected:' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp"
-grep -q 'HAP_mmap2 FAILED after retry' "$GGML_DIR/src/ggml-hexagon/htp/entry.c"
+grep -q 'GGML_HEXAGON_VERSION.*"0.4.9"' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp"
 
 rm -rf "$BUILD_DIR"
 
@@ -116,7 +103,8 @@ cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
 variant=fastrpc-mempool
-patchset=localdream-adaptive-mempool-v2
+version=0.4.9
+patchset=none
 EOF
 
 chmod +x "$JNI_DIR/libyue2_server.so"

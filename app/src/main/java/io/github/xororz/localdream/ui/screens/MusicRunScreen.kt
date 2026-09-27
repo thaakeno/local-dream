@@ -116,8 +116,8 @@ fun MusicRunScreen(
     val backendReady = backendState is BackendService.BackendState.Running &&
         servingModelId == modelId
     val precision = model?.variantPrecision.orEmpty()
-    val htpAccelerated = precision == "Q8_0" || precision == "BF16"
-    val q8FastPath = precision == "Q8_0"
+    val htpAccelerated = precision in setOf("Q5_K_M", "Q6_K", "Q8_0", "BF16")
+    val q8FastPath = precision in setOf("Q5_K_M", "Q6_K", "Q8_0", "BF16")
     val startupForModel = startupStatus?.takeIf { it.modelId == modelId }
     val backendError = (backendState as? BackendService.BackendState.Error)
         ?.takeIf { it.modelId == null || it.modelId == modelId }
@@ -453,7 +453,7 @@ fun MusicRunScreen(
                     is MusicState.Generating -> MusicProgressCard(
                         state = state,
                         precision = model?.variantPrecision ?: "GGUF",
-                        runtimeLabel = "HTP0 · FastRPC mempool",
+                        runtimeLabel = "HTP0 · FastRPC 0.4.9",
                         onCancel = {
                             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                             MusicGenerationService.stop(context)
@@ -1157,7 +1157,7 @@ private fun MusicGenerationConfigSheet(
                     }
                 }
                 Text(
-                    "Full plans melody + chords before audio tokens. Melody keeps a lighter plan; Direct skips the score.",
+                    "Full plans melody + chords before audio tokens. Melody keeps a lighter plan; Direct semantic skips only the score plan, not semantic token generation.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1223,7 +1223,7 @@ private fun MusicGenerationConfigSheet(
                     }
                 }
                 Text(
-                    "Auto keeps YuE2's protocol default: 1.00 for full/melody planning and 1.01 for direct mode.",
+                    "Auto uses 1.00 on mobile Direct for the fast single-branch path and 1.00 for planned modes. Pick 1.01 explicitly to reproduce reference Direct CFG.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1296,7 +1296,7 @@ private fun qualityLabel(steps: Int): String = when {
 private fun planningLabel(mode: String): String = when (mode) {
     "full" -> "Full plan"
     "melody" -> "Melody"
-    else -> "Direct"
+    else -> "Direct semantic"
 }
 
 private fun phaseLabel(phase: String): String = when (phase) {
