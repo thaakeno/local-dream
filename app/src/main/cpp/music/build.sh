@@ -52,7 +52,7 @@ grep -q 'HTP_OP_COL2IM_1D' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'GGML_OP_SIN' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'YUE2_STRICT_ACCELERATOR' "$YUE2_DIR/src/backend.h"
 grep -q 'YuE2 adaptive binary VTCM thread fit' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'vae_col2im_htp_lowered' "$YUE2_DIR/src/vae.h"
+grep -q 'col2im_fast_channel' "$(pwd)/native/col2im-ops.c"
 
 rm -rf "$BUILD_DIR"
 
@@ -106,7 +106,7 @@ cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
 variant=dspqueue-yue2-native
-integration=sin-hvx,col2im1d-htp,col2im-overlap-lowered,adaptive-binary-vtcm,strict-accelerator
+integration=sin-hvx,col2im1d-htp,col2im-channel-blocked,adaptive-binary-vtcm,strict-accelerator
 cpu_fallback=disabled
 EOF
 
