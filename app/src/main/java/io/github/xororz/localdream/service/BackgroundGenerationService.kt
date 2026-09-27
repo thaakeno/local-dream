@@ -17,6 +17,7 @@ import androidx.core.graphics.createBitmap
 import io.github.xororz.localdream.R
 import io.github.xororz.localdream.utils.Http
 import java.io.BufferedReader
+import java.io.EOFException
 import java.io.File
 import java.io.IOException
 import java.io.InputStreamReader
@@ -699,11 +700,30 @@ class BackgroundGenerationService : Service() {
                 )
                 updateState(GenerationState.Idle)
             } else {
-                Log.e("GenerationService", "generation error", e)
+                // When the native process aborts, OkHttp only sees the chunked
+                // response vanish and throws EOFException. Give the backend
+                // monitor a brief chance to publish the actual native error
+                // (for example dspqueue_read 0x2e) and surface that instead.
+                val backendFailure = if (e is EOFException) {
+                    withTimeoutOrNull(800L) {
+                        BackendService.backendState.first {
+                            it is BackendService.BackendState.Error
+                        }
+                    } as? BackendService.BackendState.Error
+                } else {
+                    BackendService.backendState.value as?
+                        BackendService.BackendState.Error
+                }
+                val surfacedMessage =
+                    backendFailure?.message
+                        ?: e.message
+                        ?: this@BackgroundGenerationService.getString(R.string.unknown_error)
+
+                Log.e("GenerationService", "generation error: $surfacedMessage", e)
                 CrashDiagnostics.recordGeneration(
                     this@BackgroundGenerationService,
                     "ERROR",
-                    "generation failed",
+                    "generation failed: $surfacedMessage",
                     e,
                 )
                 CrashDiagnostics.recordGenerationTelemetry(
@@ -713,14 +733,10 @@ class BackgroundGenerationService : Service() {
                 CrashDiagnostics.record(
                     this@BackgroundGenerationService,
                     "GENERATION_ERROR",
-                    "generation failed",
+                    "generation failed: $surfacedMessage",
                     e,
                 )
-                updateState(
-                    GenerationState.Error(
-                        e.message ?: this@BackgroundGenerationService.getString(R.string.unknown_error),
-                    ),
-                )
+                updateState(GenerationState.Error(surfacedMessage))
             }
             stopSelf()
         } finally {
