@@ -115,7 +115,7 @@ class QnnModel : public QnnSampleApp {
       return true;
     }
 
-    auto &client = QNN_TENSOR_GET_CLIENT_BUF(*input);
+    const auto client = QNN_TENSOR_GET_CLIENT_BUF(*input);
     for (const auto &variant : state.variants) {
       if (variant.source == source && variant.tokens == tokens &&
           variant.active_chunks == activeChunks &&
