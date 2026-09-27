@@ -44,6 +44,8 @@ class MusicGenerationService : Service() {
     private var synthCall: Call? = null
     private var logCall: Call? = null
     private var cancelRequested = false
+    private var scoreStageStartedAt = 0L
+    private var semanticStageStartedAt = 0L
 
     // Native /job only exposes running|done|failed|cancelled. Keep the last
     // fatal line from the SSE stream so a failed generation surfaces the real
@@ -391,6 +393,8 @@ class MusicGenerationService : Service() {
 
         cancelRequested = false
         lastNativeFailure = null
+        scoreStageStartedAt = 0L
+        semanticStageStartedAt = 0L
         CrashDiagnostics.beginGenerationSession(
             this,
             "YuE2 generate model=${modelId ?: "unknown"} duration=${duration}s steps=$steps cot=$cot",
@@ -803,80 +807,157 @@ class MusicGenerationService : Service() {
             targetSeconds,
         )
 
-        val ar = Regex("""\[AR] (ABC|semantic) (\d+)/(\d+)""").find(line)
+        // yue2.cpp calls the first AR stage "Score", not "ABC". Keep the
+        // parser aligned with the native runtime so the UI advances instead of
+        // sitting forever on "Loading composer".
+        val ar = Regex("""\[AR] (Score|Semantic) (\d+)/(\d+)""", RegexOption.IGNORE_CASE)
+            .find(line)
         if (ar != null) {
-            val kind = ar.groupValues[1]
+            val kind = ar.groupValues[1].lowercase()
             val step = ar.groupValues[2].toInt()
-            val total = ar.groupValues[3].toInt()
-            val local = (step.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f)
-            return if (kind == "ABC") {
-                state(
+            val total = ar.groupValues[3].toInt().coerceAtLeast(1)
+            val now = System.currentTimeMillis()
+
+            if (kind == "score") {
+                if (scoreStageStartedAt == 0L || step == 0) scoreStageStartedAt = now
+                val seconds = ((now - scoreStageStartedAt).coerceAtLeast(1L)) / 1000.0
+                val rate = if (step > 0) step / seconds else 0.0
+                val detail = buildString {
+                    append("Composing score · $step/$total")
+                    if (rate > 0.05) {
+                        append(
+                            String.format(
+                                java.util.Locale.US,
+                                " · %.1f tok/s",
+                                rate,
+                            ),
+                        )
+                    }
+                }
+                val local = (step.toFloat() / total).coerceIn(0f, 1f)
+                return state(
                     "planning",
-                    "Composing symbolic score · $step/$total",
+                    detail,
                     0.04f + local * 0.20f,
                     step,
                     total,
                 )
-            } else {
-                state(
-                    "semantic",
-                    "Writing semantic audio frames · $step/$total",
-                    0.24f + local * 0.31f,
-                    step,
-                    total,
-                )
             }
+
+            if (semanticStageStartedAt == 0L || step == 0) semanticStageStartedAt = now
+            val seconds = ((now - semanticStageStartedAt).coerceAtLeast(1L)) / 1000.0
+            val rate = if (step > 0) step / seconds else 0.0
+            val frameTarget = (targetSeconds * 25).coerceAtMost(total)
+            val denominator = frameTarget.coerceAtLeast(1)
+            val local = (step.toFloat() / denominator).coerceIn(0f, 1f)
+            val detail = buildString {
+                append("Writing semantic audio · $step/$frameTarget frames")
+                if (rate > 0.05) {
+                    append(
+                        String.format(
+                            java.util.Locale.US,
+                            " · %.1f frame/s",
+                            rate,
+                        ),
+                    )
+                }
+            }
+            return state(
+                "semantic",
+                detail,
+                0.24f + local * 0.31f,
+                step,
+                frameTarget,
+            )
         }
 
-        val nar = Regex("""\[NAR] Step (\d+)/(\d+)""").find(line)
+        val nar = Regex("""\[NAR] Step (\d+)/(\d+)(?:,\s*(\d+)\s*ms)?""")
+            .find(line)
         if (nar != null) {
             val step = nar.groupValues[1].toInt()
-            val total = nar.groupValues[2].toInt()
-            val local = (step.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f)
+            val total = nar.groupValues[2].toInt().coerceAtLeast(1)
+            val ms = nar.groupValues.getOrNull(3)?.toLongOrNull()
+            val local = (step.toFloat() / total).coerceIn(0f, 1f)
+            val detail = buildString {
+                append("Rendering acoustic latents · $step/$total")
+                if (ms != null) append(" · ${ms} ms/step")
+            }
             return state(
                 "flow",
-                "Rendering acoustic latents · $step/$total",
+                detail,
                 0.58f + local * 0.31f,
                 step,
                 total,
             )
         }
 
+        val scorePrefill = Regex("""\[AR] Score song \d+: (\d+) tokens prefilled, (\d+) ms""")
+            .find(line)
+        if (scorePrefill != null) {
+            scoreStageStartedAt = System.currentTimeMillis()
+            return state(
+                "planning",
+                "Score prompt ready · ${scorePrefill.groupValues[1]} tokens in ${scorePrefill.groupValues[2]} ms",
+                0.045f,
+            )
+        }
+
+        val semanticPrefill = Regex("""\[AR] Semantic song \d+: (\d+) tokens prefilled, (\d+) ms""", RegexOption.IGNORE_CASE)
+            .find(line)
+        if (semanticPrefill != null) {
+            semanticStageStartedAt = System.currentTimeMillis()
+            return state(
+                "semantic",
+                "Semantic prompt ready · ${semanticPrefill.groupValues[1]} tokens in ${semanticPrefill.groupValues[2]} ms",
+                0.245f,
+            )
+        }
+
         return when {
             line.contains("[Server] Job ") ->
-                state("starting", "Native pipeline accepted the job", 0.02f)
+                state("starting", "Native HTP pipeline accepted the job", 0.02f)
+            line.contains("[WeightCtx] Loaded") ->
+                state("loading_ar", nativeDetail(line, "Q8 weights loaded on HTP"), 0.03f)
             line.contains("[LM-KV] Allocated") ->
                 state("loading_ar", nativeDetail(line, "HTP KV cache allocated"), 0.035f)
             line.contains("[Store] Load LM") ->
                 state("loading_ar", "Composer loaded on HTP", 0.04f)
+            line.contains("[AR] Score prefill") -> {
+                scoreStageStartedAt = System.currentTimeMillis()
+                state("planning", nativeDetail(line, "Score prefill complete"), 0.045f)
+            }
             line.contains("[AR] Frame budget clamped") ->
                 state(
                     "semantic",
                     "$targetSeconds s target · up to ${targetSeconds * 25} semantic frames",
                     0.25f,
                 )
-            line.contains("[AR] ABC") ->
-                state("planning", "Composing melody and harmony", 0.05f)
-            line.contains("[AR] semantic") ->
+            line.contains("[AR] Semantic", ignoreCase = true) -> {
+                if (semanticStageStartedAt == 0L) semanticStageStartedAt = System.currentTimeMillis()
                 state(
                     "semantic",
                     "Writing up to ${targetSeconds * 25} semantic frames",
                     0.25f,
                 )
+            }
             line.contains("[Store] Load NAR") || line.contains("[NAR] Loaded") ->
-                state("loading_nar", "Acoustic renderer ready", 0.57f)
+                state("loading_nar", "Acoustic renderer loaded on HTP", 0.57f)
             line.contains("[NAR] Song") ->
                 state("flow", "Preparing $renderSteps-step acoustic flow", 0.58f)
+            line.contains("[NAR] Solved") ->
+                state("flow", nativeDetail(line, "Acoustic flow solved"), 0.89f)
             line.contains("[Store] Load VAE") || line.contains("[VAE] Loaded") ->
-                state("loading_vae", "Oobleck decoder ready", 0.90f)
+                state("loading_vae", "Oobleck decoder loaded", 0.90f)
             line.contains("[VAE] Track") || line.contains("[VAE] Graph") ->
                 state("decoding", "Decoding 48 kHz stereo audio", 0.92f)
+            line.contains("[VAE] Tiled decode") ->
+                state("decoding", nativeDetail(line, "Decoding audio tiles"), 0.93f)
             line.contains("[VAE] Decoded") ->
                 state("finalizing", "Audio decoded · encoding MP3", 0.96f)
             line.contains("[MP3] Encoding") ->
                 state("finalizing", "Encoding 320 kbps MP3", 0.98f)
             line.contains("[Pipeline] Done") ->
-                state("finalizing", "Native pipeline complete", 0.985f)
+                state("finalizing", "Native HTP pipeline complete", 0.985f)
             else -> null
         }
     }
