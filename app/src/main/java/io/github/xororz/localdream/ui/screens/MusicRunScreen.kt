@@ -1002,6 +1002,129 @@ private fun MusicStageStrip(
     }
 }
 
+private data class MusicDeviceTelemetry(
+    val batteryPercent: Int? = null,
+    val batteryTempC: Float? = null,
+    val voltageV: Float? = null,
+    val currentMa: Float? = null,
+    val powerW: Float? = null,
+    val thermal: String = "Unknown",
+    val thermalHeadroom: Float? = null,
+)
+
+@Composable
+private fun rememberMusicDeviceTelemetry(context: Context): MusicDeviceTelemetry {
+    val telemetry by produceState(initialValue = MusicDeviceTelemetry(), context) {
+        val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        while (true) {
+            val sticky = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val level = sticky?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = sticky?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+            val percent = if (level >= 0 && scale > 0) level * 100 / scale else null
+            val tempRaw = sticky?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+            val temp = tempRaw?.takeIf { it != Int.MIN_VALUE }?.div(10f)
+            val voltageMv = sticky?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, Int.MIN_VALUE)
+            val voltage = voltageMv?.takeIf { it != Int.MIN_VALUE }?.div(1000f)
+            val currentUa = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
+            val currentMa = currentUa.takeIf { it != Int.MIN_VALUE }?.div(1000f)
+            val watts = if (currentMa != null && voltage != null) {
+                abs(currentMa / 1000f * voltage)
+            } else {
+                null
+            }
+
+            val thermalStatus = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                when (powerManager.currentThermalStatus) {
+                    PowerManager.THERMAL_STATUS_NONE -> "Cool"
+                    PowerManager.THERMAL_STATUS_LIGHT -> "Light"
+                    PowerManager.THERMAL_STATUS_MODERATE -> "Moderate"
+                    PowerManager.THERMAL_STATUS_SEVERE -> "Severe"
+                    PowerManager.THERMAL_STATUS_CRITICAL -> "Critical"
+                    PowerManager.THERMAL_STATUS_EMERGENCY -> "Emergency"
+                    PowerManager.THERMAL_STATUS_SHUTDOWN -> "Shutdown"
+                    else -> "Unknown"
+                }
+            } else {
+                "Unknown"
+            }
+            val headroom = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                runCatching { powerManager.getThermalHeadroom(0) }
+                    .getOrNull()
+                    ?.takeIf { it.isFinite() }
+            } else {
+                null
+            }
+
+            value = MusicDeviceTelemetry(
+                batteryPercent = percent,
+                batteryTempC = temp,
+                voltageV = voltage,
+                currentMa = currentMa?.let(::abs),
+                powerW = watts,
+                thermal = thermalStatus,
+                thermalHeadroom = headroom,
+            )
+            delay(1000)
+        }
+    }
+    return telemetry
+}
+
+@Composable
+private fun MusicDeviceTelemetryCard(telemetry: MusicDeviceTelemetry) {
+    val primary = buildString {
+        telemetry.batteryPercent?.let { append("Battery \$it%") }
+        telemetry.batteryTempC?.let {
+            if (isNotEmpty()) append(" · ")
+            append(String.format(java.util.Locale.US, "%.1f°C", it))
+        }
+        telemetry.powerW?.let {
+            if (isNotEmpty()) append(" · ")
+            append(String.format(java.util.Locale.US, "%.1f W", it))
+        }
+        telemetry.currentMa?.let {
+            if (isNotEmpty()) append(" · ")
+            append(String.format(java.util.Locale.US, "%.0f mA", it))
+        }
+    }.ifBlank { "Battery telemetry unavailable" }
+
+    val secondary = buildString {
+        append("Thermal ")
+        append(telemetry.thermal)
+        telemetry.thermalHeadroom?.let {
+            append(" · headroom ")
+            append(String.format(java.util.Locale.US, "%.2f", it))
+        }
+        telemetry.voltageV?.let {
+            append(" · ")
+            append(String.format(java.util.Locale.US, "%.2f V", it))
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                primary,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                secondary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @Composable
 private fun MusicProgressCard(
     state: MusicState.Generating,
