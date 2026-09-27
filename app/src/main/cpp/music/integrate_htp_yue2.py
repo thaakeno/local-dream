@@ -315,10 +315,10 @@ replace_once(
 )
 
 vae = yue / "src/vae.h"
-// Keep yue2.cpp's compact GEMM + GGML_OP_COL2IM_1D graph. Local Dream
-// replaces that op with a native channel-blocked HTP kernel in col2im-ops.c.
-// The previous graph-level CONT/ADD/CONCAT lowering added more than 100 nodes
-// and turned waveform decode into a memory-movement bottleneck on SM8850.
+# Keep yue2.cpp's compact GEMM + GGML_OP_COL2IM_1D graph. Local Dream
+# replaces that op with a native channel-blocked HTP kernel in col2im-ops.c.
+# The previous graph-level CONT/ADD/CONCAT lowering added more than 100 nodes
+# and turned waveform decode into a memory-movement bottleneck on SM8850.
 
 replace_once(
     vae,
