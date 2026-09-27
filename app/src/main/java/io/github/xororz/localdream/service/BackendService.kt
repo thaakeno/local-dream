@@ -48,6 +48,7 @@ class BackendService : Service() {
     private var serving: BackendConfig? = null
     private var idleStopJob: Job? = null
     private lateinit var runtimeDir: File
+    private lateinit var musicRuntimeDir: File
 
     @Volatile
     private var runtimeDirReady = false
@@ -65,6 +66,8 @@ class BackendService : Service() {
         private const val EXECUTABLE_NAME = "libstable_diffusion_core.so"
         private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
         const val RUNTIME_DIR = "runtime_libs"
+        private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
+        private const val MUSIC_RUNTIME_VERSION = "jz_fastrpc_6485ca781502"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
@@ -451,7 +454,7 @@ class BackendService : Service() {
             .build()
     }
 
-    private fun stageDeviceFastRpcCompatibilityLibraries() {
+    private fun stageDeviceFastRpcCompatibilityLibraries(destination: File) {
         val names = listOf(
             "libcdsprpc.so",
             "libvmmem.so",
@@ -464,7 +467,7 @@ class BackendService : Service() {
         )
 
         names.forEach { name ->
-            val target = File(runtimeDir, name)
+            val target = File(destination, name)
 
             // Never keep an OEM transport copied from an older firmware build.
             // If the current firmware cannot be read we prefer the namespace
@@ -546,7 +549,7 @@ class BackendService : Service() {
                 // runtime directory when SELinux permits reading it. This is
                 // deliberately device-local: we never ship a mismatched OEM
                 // FastRPC binary in the APK.
-                stageDeviceFastRpcCompatibilityLibraries()
+                stageDeviceFastRpcCompatibilityLibraries(runtimeDir)
 
                 // The DiT engine's Hexagon skels share this directory: it is
                 // already on the DSP search path, and they are only useful on
@@ -572,8 +575,48 @@ class BackendService : Service() {
                         target.setExecutable(true, true)
                     }
                 }
+
+                // YuE2 uses a dedicated matched AP/DSP Hexagon runtime. Never
+                // mix its FastRPC/mempool skel with image-generation skels.
+                musicRuntimeDir = File(filesDir, MUSIC_RUNTIME_DIR)
+                val musicStamp = File(musicRuntimeDir, ".runtime_version")
+                if (
+                    musicRuntimeDir.exists() &&
+                    runCatching { musicStamp.readText() }.getOrNull() != MUSIC_RUNTIME_VERSION
+                ) {
+                    musicRuntimeDir.deleteRecursively()
+                }
+                if (!musicRuntimeDir.exists()) musicRuntimeDir.mkdirs()
+
+                val musicApkUpdateTime =
+                    packageManager.getPackageInfo(packageName, 0).lastUpdateTime
+                assets.list("yue2libs")?.forEach { fileName ->
+                    val target = File(musicRuntimeDir, fileName)
+                    val assetSize =
+                        assets.open("yue2libs/$fileName").use { it.available().toLong() }
+                    if (
+                        !target.exists() ||
+                        target.length() != assetSize ||
+                        target.lastModified() < musicApkUpdateTime
+                    ) {
+                        assets.open("yue2libs/$fileName").use { input ->
+                            target.outputStream().use { output -> input.copyTo(output) }
+                        }
+                    }
+                    target.setReadable(true, true)
+                    target.setExecutable(true, true)
+                }
+                musicStamp.writeText(MUSIC_RUNTIME_VERSION)
+                stageDeviceFastRpcCompatibilityLibraries(musicRuntimeDir)
+
+                BackendDiagnostics.append(
+                    this,
+                    "YUE2_RUNTIME",
+                    "dir=${musicRuntimeDir.absolutePath} " +
+                        "files=${musicRuntimeDir.list()?.sorted()?.joinToString()}",
+                )
             } catch (e: IOException) {
-                Log.e(TAG, "Failed to prepare QNN libraries from assets", e)
+                Log.e(TAG, "Failed to prepare QNN/YuE2 runtime assets", e)
                 throw RuntimeException("Failed to prepare QNN libraries from assets", e)
             }
 
@@ -755,7 +798,6 @@ class BackendService : Service() {
                         "256",
                         "--vae-halo",
                         "16",
-                        "--no-fa",
                     )
                 }
 
@@ -887,25 +929,20 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (isMusicBackend(backendType)) {
-                // Use one explicit virtual HTP session. This matches the current
-                // ggml Snapdragon launcher and avoids the ambiguity of the
-                // legacy HTP0 device naming.
+                // Dedicated FastRPC/mempool runtime. HTP0 is the GGML device;
+                // HTP0:0 selects physical HTP0 / virtual session 0.
                 env["GGML_HEXAGON_DEVICES"] = "HTP0:0"
-                env["GGML_BACKEND"] = "HTP0:0"
-                env["GGML_HEXAGON_OPPOLL"] = "1"
-                env["GGML_HEXAGON_HOSTBUF"] = "0"
+                env["GGML_BACKEND"] = "HTP0"
+                env["LOCAL_DREAM_YUE2_BACKEND"] = "fastrpc-mempool"
 
-                // Important on SM8850/Adreno 840: putting /vendor/lib64 on
-                // LD_LIBRARY_PATH can make libcdsprpc bypass its HAL fallback
-                // and HTP session creation fails. Keep only app/system paths.
                 env["LD_LIBRARY_PATH"] = listOf(
                     nativeDir,
-                    runtimeDir.absolutePath,
+                    musicRuntimeDir.absolutePath,
                     "/system/lib64",
                 ).joinToString(":")
 
                 val dspPath = listOf(
-                    runtimeDir.absolutePath,
+                    musicRuntimeDir.absolutePath,
                     "/vendor/lib/rfsa/adsp",
                     "/vendor/dsp/cdsp",
                     "/dsp",
@@ -913,19 +950,19 @@ class BackendService : Service() {
                 env["ADSP_LIBRARY_PATH"] = dspPath
                 env["DSP_LIBRARY_PATH"] = dspPath
 
-                val localFastRpc = File(runtimeDir, "libcdsprpc.so")
+                val localFastRpc = File(musicRuntimeDir, "libcdsprpc.so")
+                val mempoolSkel = File(musicRuntimeDir, "libggml-htp-v81.so")
                 BackendDiagnostics.append(
                     this,
                     "FASTRPC",
                     "localCopy=${localFastRpc.isFile} size=${localFastRpc.length()} " +
-                        "vendorExists=${File("/vendor/lib64/libcdsprpc.so").isFile}",
+                        "mempoolSkel=${mempoolSkel.isFile} skelSize=${mempoolSkel.length()}",
                 )
 
                 val message =
-                    "YuE2 HTP: device=HTP0:0 model=$modelId max_seq=$MUSIC_MAX_SEQ " +
-                        "keepLoaded=false flashAttention=false " +
-                        "LD_LIBRARY_PATH=${env["LD_LIBRARY_PATH"]} " +
-                        "ADSP_LIBRARY_PATH=$dspPath"
+                    "YuE2 HTP: backend=FastRPC-mempool device=HTP0 " +
+                        "session=HTP0:0 model=$modelId max_seq=$MUSIC_MAX_SEQ " +
+                        "flashAttention=auto-v81 runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
                 BackendDiagnostics.append(this, "ENV", message)
             }
@@ -980,11 +1017,11 @@ class BackendService : Service() {
             BackendDiagnostics.append(
                 this,
                 "PATHS",
-                "runtime=${runtimeDir.absolutePath} native=$nativeDir",
+                "runtime=${if (isMusicBackend(backendType)) musicRuntimeDir.absolutePath else runtimeDir.absolutePath} native=$nativeDir",
             )
 
             val processBuilder = ProcessBuilder(command).apply {
-                directory(File(nativeDir))
+                directory(if (isMusicBackend(backendType)) musicRuntimeDir else File(nativeDir))
                 redirectErrorStream(true)
                 environment().putAll(env)
             }
@@ -1116,6 +1153,10 @@ class BackendService : Service() {
                 CrashDiagnostics.flushGeneration(this@BackendService)
                 code
             } catch (e: Exception) {
+                if (!isLiveCrash(proc)) {
+                    Log.i(TAG, "backend monitor closed during intentional teardown: ${e.message}")
+                    return@Thread
+                }
                 Log.e(TAG, "monitor error", e)
                 BackendDiagnostics.appendThrowable(this@BackendService, "MONITOR_ERROR", e)
                 if (isLiveCrash(proc)) {
