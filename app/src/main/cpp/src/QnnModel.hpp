@@ -10,6 +10,7 @@
 #include <QnnSampleApp.hpp>
 #include <QnnTypeMacros.hpp>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <vector>
@@ -140,79 +141,98 @@ class QnnModel : public QnnSampleApp {
       QNN_ERROR("createPowerConfigId failed");
       return StatusCode::FAILURE;
     }
-    QnnHtpPerfInfrastructure_PowerConfig_t rpcControlLatency;
-    memset(&rpcControlLatency, 0, sizeof(rpcControlLatency));
+
+    // The old path permanently voted MAX/MAX/MAX plus 9.999 ms FastRPC busy
+    // polling. That is effectively burst mode for the entire lifetime of every
+    // QNN context and turns repeated SDXL generations into a heater. Qualcomm's
+    // own current QNN policy uses TURBO for high-performance and NOM_PLUS for
+    // balanced. Local Dream defaults to TURBO: almost all of the latency while
+    // materially reducing voltage/fabric power and avoiding thermal throttling.
+    //
+    // LOCALDREAM_QNN_POWER_MODE can override this for profiling:
+    //   efficient (default): TURBO, low polling
+    //   cool:              NOM_PLUS + DCVS
+    //   burst:             MAX clocks + 9999 us polling
+    const char *modeEnv = std::getenv("LOCALDREAM_QNN_POWER_MODE");
+    const std::string mode = modeEnv && *modeEnv ? modeEnv : "efficient";
+    const bool burst = mode == "burst";
+    const bool cool = mode == "cool" || mode == "balanced";
+
+    QnnHtpPerfInfrastructure_PowerConfig_t rpcControlLatency{};
     rpcControlLatency.option =
         QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_RPC_CONTROL_LATENCY;
-    rpcControlLatency.rpcControlLatencyConfig = 100;
+    rpcControlLatency.rpcControlLatencyConfig = burst ? 100 : 0;
     const QnnHtpPerfInfrastructure_PowerConfig_t *powerConfigs1[] = {
         &rpcControlLatency, NULL};
     perfInfraErr = perfInfra.setPowerConfig(powerConfigId, powerConfigs1);
     if (perfInfraErr != QNN_SUCCESS) {
-      QNN_ERROR("setPowerConfig failed");
+      QNN_ERROR("set RPC control latency failed");
       return StatusCode::FAILURE;
     }
 
-    QnnHtpPerfInfrastructure_PowerConfig_t rpcPollingTime;
-    memset(&rpcPollingTime, 0, sizeof(rpcPollingTime));
+    QnnHtpPerfInfrastructure_PowerConfig_t rpcPollingTime{};
     rpcPollingTime.option =
         QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_RPC_POLLING_TIME;
-    rpcPollingTime.rpcPollingTimeConfig = 9999;
+    // Busy-poll only in explicit burst mode. Zero lets FastRPC sleep instead of
+    // burning host CPU between HTP calls, which is a large thermal win over a
+    // multi-step SDXL loop.
+    rpcPollingTime.rpcPollingTimeConfig = burst ? 9999 : 0;
     const QnnHtpPerfInfrastructure_PowerConfig_t *powerConfigs2[] = {
         &rpcPollingTime, NULL};
     perfInfraErr = perfInfra.setPowerConfig(powerConfigId, powerConfigs2);
     if (perfInfraErr != QNN_SUCCESS) {
-      QNN_ERROR("setPowerConfig failed");
+      QNN_ERROR("set RPC polling failed");
       return StatusCode::FAILURE;
     }
 
-    QnnHtpPerfInfrastructure_PowerConfig_t powerConfig;
-    memset(&powerConfig, 0, sizeof(powerConfig));
+    const auto corner = burst
+        ? DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER
+        : (cool ? DCVS_VOLTAGE_VCORNER_NOM_PLUS
+                : DCVS_VOLTAGE_VCORNER_TURBO);
+
+    QnnHtpPerfInfrastructure_PowerConfig_t powerConfig{};
     powerConfig.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
-    powerConfig.dcvsV3Config.dcvsEnable = 1;
-    powerConfig.dcvsV3Config.setDcvsEnable = 1;
     powerConfig.dcvsV3Config.contextId = powerConfigId;
     powerConfig.dcvsV3Config.powerMode =
         QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
+    powerConfig.dcvsV3Config.setDcvsEnable = 1;
+    powerConfig.dcvsV3Config.dcvsEnable = cool ? 1 : 0;
     powerConfig.dcvsV3Config.setSleepLatency = 1;
-    powerConfig.dcvsV3Config.setBusParams = 1;
-    powerConfig.dcvsV3Config.setCoreParams = 1;
-    powerConfig.dcvsV3Config.sleepDisable = 0;
+    powerConfig.dcvsV3Config.sleepLatency = burst ? 40 : (cool ? 1000 : 100);
     powerConfig.dcvsV3Config.setSleepDisable = 1;
-    powerConfig.dcvsV3Config.sleepLatency = 40;
-    powerConfig.dcvsV3Config.busVoltageCornerMin =
-        DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.busVoltageCornerTarget =
-        DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.busVoltageCornerMax =
-        DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.coreVoltageCornerMin =
-        DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.coreVoltageCornerTarget =
-        DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.coreVoltageCornerMax =
-        DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+    powerConfig.dcvsV3Config.sleepDisable = 0;
+    powerConfig.dcvsV3Config.setBusParams = 1;
+    powerConfig.dcvsV3Config.busVoltageCornerMin = corner;
+    powerConfig.dcvsV3Config.busVoltageCornerTarget = corner;
+    powerConfig.dcvsV3Config.busVoltageCornerMax = corner;
+    powerConfig.dcvsV3Config.setCoreParams = 1;
+    powerConfig.dcvsV3Config.coreVoltageCornerMin = corner;
+    powerConfig.dcvsV3Config.coreVoltageCornerTarget = corner;
+    powerConfig.dcvsV3Config.coreVoltageCornerMax = corner;
     const QnnHtpPerfInfrastructure_PowerConfig_t *powerConfigs3[] = {
         &powerConfig, NULL};
     perfInfraErr = perfInfra.setPowerConfig(powerConfigId, powerConfigs3);
     if (perfInfraErr != QNN_SUCCESS) {
-      QNN_ERROR("setPowerConfig failed");
+      QNN_ERROR("set HTP power profile failed");
       return StatusCode::FAILURE;
     }
 
-    QnnHtpPerfInfrastructure_PowerConfig_t adaptivePollingTime;
-    memset(&adaptivePollingTime, 0, sizeof(adaptivePollingTime));
+    QnnHtpPerfInfrastructure_PowerConfig_t adaptivePollingTime{};
     adaptivePollingTime.option =
         QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_ADAPTIVE_POLLING_TIME;
-    adaptivePollingTime.adaptivePollingTimeConfig = 1000;
+    adaptivePollingTime.adaptivePollingTimeConfig = burst ? 0 : 1000;
     const QnnHtpPerfInfrastructure_PowerConfig_t *powerConfigs4[] = {
         &adaptivePollingTime, NULL};
     perfInfraErr = perfInfra.setPowerConfig(powerConfigId, powerConfigs4);
     if (perfInfraErr != QNN_SUCCESS) {
-      QNN_ERROR("setPowerConfig failed");
+      QNN_ERROR("set adaptive polling failed");
       return StatusCode::FAILURE;
     }
 
+    QNN_INFO("[HTP power] mode=%s corner=%s rpc_poll=%u us dcvs=%d",
+             mode.c_str(),
+             burst ? "MAX" : (cool ? "NOM_PLUS" : "TURBO"),
+             burst ? 9999u : 0u, cool ? 1 : 0);
     return StatusCode::SUCCESS;
   }
 
