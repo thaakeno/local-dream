@@ -50,7 +50,10 @@ grep -q '#include <dspqueue.h>' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 python3 "$(pwd)/integrate_htp_yue2.py" "$JZ_ROOT" "$YUE2_DIR" "$(pwd)/native"
 grep -q 'HTP_OP_COL2IM_1D' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_SNAKE' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
+grep -q 'HTP_OP_CHANNEL_BCAST_ADD' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'op_snake' "$GGML_DIR/src/ggml-hexagon/htp/main.c"
+grep -q 'op_channel_bcast_add' "$GGML_DIR/src/ggml-hexagon/htp/main.c"
+grep -q 'YUE2_CHANNEL_ADD_CHUNK_ELEMS' "$GGML_DIR/src/ggml-hexagon/htp/channel-bcast-add-ops.c"
 grep -q 'GGML_OP_SIN' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'YUE2_STRICT_ACCELERATOR' "$YUE2_DIR/src/backend.h"
 grep -q 'YuE2 adaptive binary VTCM thread fit' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
@@ -59,6 +62,10 @@ grep -q 'YUE2_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'op_snake' "$(pwd)/native/snake-ops.c"
 grep -q 'ode_method' "$YUE2_DIR/src/request.h"
 grep -q 'dpmpp_2m' "$YUE2_DIR/src/nar.h"
+grep -q 'COMFY_DPM_PLUS_PLUS_2M_SGM_UNIFORM' "$YUE2_DIR/src/nar.h"
+grep -q 'scheduler=sgm_uniform' "$YUE2_DIR/src/nar.h"
+grep -q 'GGML_PAD(max_kv_len, 64)' "$YUE2_DIR/src/qwen3-lm.h"
+grep -q 'GGML_PAD(kv_len, 64)' "$YUE2_DIR/src/qwen3-lm.h"
 grep -q 'r.ode_method.c_str()' "$YUE2_DIR/src/pipeline.h"
 
 rm -rf "$BUILD_DIR"
@@ -113,7 +120,7 @@ cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
 variant=dspqueue-yue2-native-0.5.0
-integration=snake-hvx-fused,sin-hvx,col2im1d-htp,col2im-channel-blocked,adaptive-binary-vtcm,dpmpp2m,strict-accelerator
+integration=snake-hvx-fused,sin-hvx,col2im1d-htp,col2im-channel-blocked,channel-bcast-add-hvx,adaptive-binary-vtcm,dpmpp2m-sgm-uniform,htp-kv-window64,strict-accelerator
 cpu_fallback=disabled
 EOF
 
