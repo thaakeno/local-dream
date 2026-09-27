@@ -29,6 +29,7 @@ JZ_ROOT="$(pwd)/build/deps/ggml-hexagon"
 GGML_DIR="$JZ_ROOT/ggml"
 PATCH_DIR="$(pwd)/patches"
 MEMPOOL_PATCH="$PATCH_DIR/ggml-hexagon-adaptive-mempool.patch"
+DSP_MMAP_PATCH="$PATCH_DIR/ggml-hexagon-dsp-mmap-retry.patch"
 
 # Fetch exactly one reviewed backend revision. This is a normal pinned
 # dependency, not a source rewrite/monkey patch.
@@ -47,6 +48,7 @@ fi
 test "$(git -C "$JZ_ROOT" rev-parse HEAD)" = "$JZ_COMMIT"
 test -f "$GGML_DIR/CMakeLists.txt"
 test -s "$MEMPOOL_PATCH"
+test -s "$DSP_MMAP_PATCH"
 
 # Always start from the pinned dependency tree, then apply the reviewed patch
 # as a normal Git patch. --check makes dependency drift a hard build failure
@@ -55,7 +57,10 @@ git -C "$JZ_ROOT" reset --hard "$JZ_COMMIT"
 git -C "$JZ_ROOT" clean -fdx
 git -C "$JZ_ROOT" apply --check "$MEMPOOL_PATCH"
 git -C "$JZ_ROOT" apply "$MEMPOOL_PATCH"
+git -C "$JZ_ROOT" apply --check "$DSP_MMAP_PATCH"
+git -C "$JZ_ROOT" apply "$DSP_MMAP_PATCH"
 grep -q 'rpc mempool selected:' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp"
+grep -q 'HAP_mmap2 FAILED after retry' "$GGML_DIR/src/ggml-hexagon/htp/entry.c"
 
 rm -rf "$BUILD_DIR"
 
@@ -111,7 +116,7 @@ cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
 variant=fastrpc-mempool
-patchset=localdream-adaptive-mempool-v1
+patchset=localdream-adaptive-mempool-v2
 EOF
 
 chmod +x "$JNI_DIR/libyue2_server.so"
