@@ -110,6 +110,7 @@ fun MusicRunScreen(
     var duration by rememberSaveable { mutableIntStateOf(20) }
     var planning by rememberSaveable { mutableStateOf("off") }
     var steps by rememberSaveable { mutableIntStateOf(8) }
+    var odeMethod by rememberSaveable { mutableStateOf("dpmpp_2m") }
     var seed by rememberSaveable { mutableLongStateOf(-1L) }
     var semanticTemperature by rememberSaveable { mutableFloatStateOf(1f) }
     var semanticTopP by rememberSaveable { mutableFloatStateOf(0.95f) }
@@ -354,7 +355,7 @@ fun MusicRunScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    "$duration s · ${qualityLabel(steps)} · ${planningLabel(planning)}",
+                                    "$duration s · ${qualityLabel(steps, odeMethod)} · ${planningLabel(planning)}",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold,
                                 )
@@ -393,6 +394,7 @@ fun MusicRunScreen(
                                         putExtra("cot", planning)
                                         putExtra("duration", duration)
                                         putExtra("steps", steps)
+                                        putExtra("ode_method", odeMethod)
                                         putExtra("seed", seed)
                                         putExtra("semantic_temperature", semanticTemperature)
                                         putExtra("semantic_top_p", semanticTopP)
@@ -594,6 +596,8 @@ fun MusicRunScreen(
             onPlanning = { planning = it },
             steps = steps,
             onSteps = { steps = it },
+            odeMethod = odeMethod,
+            onOdeMethod = { odeMethod = it },
             seed = seed,
             onSeed = { seed = it },
             temperature = semanticTemperature,
@@ -1283,6 +1287,8 @@ private fun MusicGenerationConfigSheet(
     onPlanning: (String) -> Unit,
     steps: Int,
     onSteps: (Int) -> Unit,
+    odeMethod: String,
+    onOdeMethod: (String) -> Unit,
     seed: Long,
     onSeed: (Long) -> Unit,
     temperature: Float,
@@ -1359,18 +1365,44 @@ private fun MusicGenerationConfigSheet(
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Render quality", style = MaterialTheme.typography.titleSmall)
+                Text("Acoustic solver", style = MaterialTheme.typography.titleSmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(8, 16, 32).forEach { option ->
+                    listOf(
+                        "dpmpp_2m" to "DPM++ 2M",
+                        "midpoint" to "Midpoint",
+                    ).forEach { (method, label) ->
+                        FilterChip(
+                            selected = odeMethod == method,
+                            onClick = { onOdeMethod(method) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+                Text(
+                    if (odeMethod == "dpmpp_2m") {
+                        "Fast second-order multistep solver: one HTP model evaluation per step. It reuses the previous velocity instead of doing midpoint's second probe."
+                    } else {
+                        "YuE2 reference solver. Midpoint performs two full NAR model evaluations per step, so 32 steps means 64 HTP evaluations."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Render steps", style = MaterialTheme.typography.titleSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(6, 8, 16, 32).forEach { option ->
                         FilterChip(
                             selected = steps == option,
                             onClick = { onSteps(option) },
                             label = {
                                 Text(
                                     when (option) {
-                                        8 -> "Fast · 8"
-                                        16 -> "Balanced · 16"
-                                        else -> "Reference · 32"
+                                        6 -> "6 · Max speed"
+                                        8 -> "8 · Fast"
+                                        16 -> "16 · Quality"
+                                        else -> "32 · Max"
                                     },
                                 )
                             },
@@ -1378,7 +1410,11 @@ private fun MusicGenerationConfigSheet(
                     }
                 }
                 Text(
-                    "8 is the mobile HTP fast path. 16 is balanced and 32 is the yue2.cpp reference render. This changes only the acoustic flow solver, not song duration.",
+                    if (odeMethod == "dpmpp_2m") {
+                        "8 is the mobile default. 16 keeps more refinement; 32 is the closest DPM++ setting to the 32-step reference while still using half as many NAR evaluations."
+                    } else {
+                        "32 reproduces the released YuE2 midpoint protocol. Lower midpoint counts are faster but are not the reference render."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1482,10 +1518,13 @@ private fun SettingSlider(
     }
 }
 
-private fun qualityLabel(steps: Int): String = when {
-    steps <= 8 -> "Fast"
-    steps >= 32 -> "Best"
-    else -> "Balanced"
+private fun qualityLabel(steps: Int, odeMethod: String): String = when {
+    odeMethod == "midpoint" && steps >= 32 -> "Reference midpoint"
+    odeMethod == "midpoint" -> "Midpoint · $steps"
+    steps <= 6 -> "Max speed · DPM++"
+    steps <= 8 -> "Fast · DPM++"
+    steps <= 16 -> "Quality · DPM++"
+    else -> "Max · DPM++"
 }
 
 private fun planningLabel(mode: String): String = when (mode) {
