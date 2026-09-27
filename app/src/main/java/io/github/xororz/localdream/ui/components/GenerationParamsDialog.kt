@@ -40,6 +40,8 @@ fun GenerationParamsDialog(
     onShare: () -> Unit,
     onSendToImg2img: () -> Unit,
     onReproduce: () -> Unit,
+    onUsePrompt: ((String) -> Unit)? = null,
+    onUseNegativePrompt: ((String) -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -137,8 +139,11 @@ fun GenerationParamsDialog(
                         stringResource(R.string.image_prompt),
                         style = MaterialTheme.typography.titleSmall,
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(params.prompt, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    PromptValueCard(
+                        text = params.prompt,
+                        onUse = onUsePrompt?.let { callback -> { callback(params.prompt) } },
+                    )
                 }
 
                 Column {
@@ -146,8 +151,13 @@ fun GenerationParamsDialog(
                         stringResource(R.string.negative_prompt),
                         style = MaterialTheme.typography.titleSmall,
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(params.negativePrompt, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    PromptValueCard(
+                        text = params.negativePrompt,
+                        onUse = onUseNegativePrompt?.let { callback ->
+                            { callback(params.negativePrompt) }
+                        },
+                    )
                 }
             }
         },
@@ -177,4 +187,61 @@ fun GenerationParamsDialog(
             }
         },
     )
+}
+
+
+@Composable
+private fun PromptValueCard(
+    text: String,
+    onUse: (() -> Unit)?,
+) {
+    var applied by remember(text) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val containerColor by animateColorAsState(
+        targetValue = if (applied) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        animationSpec = tween(durationMillis = 180),
+        label = "promptValueCardColor",
+    )
+
+    Surface(
+        onClick = {
+            onUse?.invoke()
+            applied = true
+            scope.launch {
+                delay(650)
+                applied = false
+            }
+        },
+        enabled = onUse != null,
+        color = containerColor,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+            if (onUse != null) {
+                Text(
+                    text = if (applied) "Applied" else "Use",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (applied) {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                )
+            }
+        }
+    }
 }
