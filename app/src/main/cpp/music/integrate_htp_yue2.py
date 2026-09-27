@@ -3,8 +3,8 @@
 
 The dependency revisions are pinned. This script fails on source drift and adds
 native HTP implementations for the Oobleck ops missing from upstream
-DSPQueue (SIN and COL2IM_1D), canonicalizes VAE binary inputs for native HTP,
-and enforces strict accelerator compute. There is no CPU compute fallback.
+DSPQueue (SIN and COL2IM_1D), adds adaptive VTCM fitting for native HTP
+binary broadcasts, canonicalizes VAE binary inputs, and enforces strict accelerator compute. There is no CPU compute fallback.
 """
 from pathlib import Path
 import shutil
@@ -116,6 +116,28 @@ replace_once(
     "        case GGML_OP_IM2COL:          return HTP_OP_IM2COL;",
     "        case GGML_OP_IM2COL:          return HTP_OP_IM2COL;\n        case GGML_OP_COL2IM_1D:       return HTP_OP_COL2IM_1D;",
     "host COL2IM remap",
+)
+
+replace_once(
+    host,
+    """    struct htp_binary_vtcm_layout L;
+    htp_binary_vtcm_layout_build(&L, kparams, sess->vtcm_size);
+    if (L.rows_per_buffer == 0 || L.total_bytes > sess->vtcm_size) {""",
+    """    // YuE2 adaptive binary VTCM thread fit.
+    // Large audio rows can exceed the 8 MiB VTCM budget when all HVX
+    // workers double-buffer a full row. The native scalar-broadcast kernel
+    // already supports [T,C] + [1,C], so reduce only this op's HTP worker
+    // count until the exact same kernel fits. No CPU fallback and no repeat.
+    struct htp_binary_vtcm_layout L;
+    while (kparams->n_threads > 0) {
+        htp_binary_vtcm_layout_build(&L, kparams, sess->vtcm_size);
+        if (L.rows_per_buffer != 0 && L.total_bytes <= sess->vtcm_size) {
+            break;
+        }
+        --kparams->n_threads;
+    }
+    if (kparams->n_threads == 0) {""",
+    "YuE2 adaptive binary VTCM thread fit",
 )
 
 backend_h = yue / "src/backend.h"
