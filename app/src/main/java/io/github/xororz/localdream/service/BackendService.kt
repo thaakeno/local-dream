@@ -67,7 +67,7 @@ class BackendService : Service() {
         private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
-        private const val MUSIC_RUNTIME_VERSION = "jz_fastrpc_6485ca781502"
+        private const val MUSIC_RUNTIME_VERSION = "jz_fastrpc_6485ca781502_adaptive_pool_v1"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
@@ -82,14 +82,14 @@ class BackendService : Service() {
         private const val IDLE_GRACE_MS = 1500L
         private const val MAX_BACKEND_ERROR_CHARS = 700
 
-        // yue2.cpp's checkpoint-native ABC planner can emit up to 4096
-        // tokens before the semantic stage begins. A 4096 KV cache is therefore
-        // invalid even for a short song: prefix + 4096 + EOS cannot fit.
-        // Upstream explicitly measures --max-seq 8192 as the reduced-memory
-        // profile; with Local Dream's <=20 s semantic budget (<=500 frames),
-        // 8192 keeps the native sampling defaults intact while remaining far
-        // below the full 24576-token checkpoint context.
-        private const val MUSIC_MAX_SEQ = 8192
+        // Keep checkpoint-native sampling intact, but do not reserve a desktop-sized
+        // KV cache for Local Dream's <=20 s mobile mode. The ABC planner can emit
+        // up to 4096 tokens and 20 s of semantic audio is at most 500 frames.
+        // 6144 therefore preserves the native 4096-token planner ceiling while
+        // leaving substantial prompt/semantic headroom, and cuts KV residency by
+        // 25% versus 8192 (896 MiB -> ~672 MiB for YuE2-3B). That matters because
+        // one Android HTP PD has a much tighter DSP VA window than system RAM.
+        private const val MUSIC_MAX_SEQ = 6144
 
         const val ACTION_STOP = "io.github.xororz.localdream.STOP_GENERATION"
         const val ACTION_RESTART = "io.github.xororz.localdream.RESTART_BACKEND"
@@ -190,7 +190,9 @@ class BackendService : Service() {
                 trimmed.startsWith("ERROR:", ignoreCase = true) ->
                     trimmed.substringAfter(':').trim()
 
-                "[load] fatal:" in lower ||
+                "dsp_register_rpcmem failed" in lower ||
+                    "failed to init rpc mempool" in lower ||
+                    "[load] fatal:" in lower ||
                     "[pipeline] fatal:" in lower ||
                     "failed to load libcdsprpc.so" in lower ||
                     "failed to open session" in lower ||
