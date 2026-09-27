@@ -1,4 +1,4 @@
-name: Re-sign YuE2 alpha.45 HTP build with existing Local Dream key
+name: Re-sign YuE2 alpha.46 HTP build with existing Local Dream key
 
 on:
   push:
@@ -14,7 +14,7 @@ permissions:
 jobs:
   resign:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - name: Restore existing Local Dream signing key
         id: signing-key-cache
@@ -30,18 +30,49 @@ jobs:
           test "${{ steps.signing-key-cache.outputs.cache-hit }}" = "true"
           test -s "$RUNNER_TEMP/localdream-ci.jks"
 
-      - name: Download YuE2 alpha.45 and alpha.34 reference
+      - name: Download YuE2 alpha.46 and alpha.34 reference
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euxo pipefail
+          build_run_id="36297625743"
           mkdir -p "$RUNNER_TEMP/yue2" "$RUNNER_TEMP/reference"
+
+          artifact_id=""
+          for attempt in $(seq 1 120); do
+            artifacts_json="$(curl -fsSL --retry 3 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$build_run_id/artifacts?per_page=100")"
+            artifact_id="$(printf '%s' "$artifacts_json" | jq -r '.artifacts[] | select(.name == "LocalDream-Qwen-FP8-Turbo") | .id' | head -n 1)"
+            if [ -n "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
+              break
+            fi
+
+            run_json="$(curl -fsSL --retry 3 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$build_run_id")"
+            status="$(printf '%s' "$run_json" | jq -r '.status')"
+            conclusion="$(printf '%s' "$run_json" | jq -r '.conclusion // ""')"
+            echo "alpha46 build: status=$status conclusion=$conclusion attempt=$attempt"
+            if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
+              echo "alpha46 build did not succeed" >&2
+              exit 1
+            fi
+            sleep 20
+          done
+          test -n "$artifact_id"
+          test "$artifact_id" != "null"
+
           curl -fL --retry 5 \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/10923617130/zip" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$artifact_id/zip" \
             -o "$RUNNER_TEMP/yue2.zip"
           curl -fL --retry 5 \
             -H "Authorization: Bearer $GH_TOKEN" \
@@ -66,7 +97,7 @@ jobs:
           test -s "$old_apk"
 
           mkdir -p "$GITHUB_WORKSPACE/out"
-          out_apk="$GITHUB_WORKSPACE/out/LocalDream-YuE2-3.0.0-alpha.45-HTP-compatible.apk"
+          out_apk="$GITHUB_WORKSPACE/out/LocalDream-YuE2-3.0.0-alpha.46-HTP-compatible.apk"
 
           "$apksigner_bin" sign \
             --ks "$RUNNER_TEMP/localdream-ci.jks" \
@@ -82,7 +113,7 @@ jobs:
           new_cert="$("$apksigner_bin" verify --print-certs "$out_apk" | sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1)"
 
           echo "alpha34 signer: $old_cert"
-          echo "alpha45 signer: $new_cert"
+          echo "alpha46 signer: $new_cert"
           test -n "$old_cert"
           test "$old_cert" = "$new_cert"
 
@@ -91,7 +122,7 @@ jobs:
       - name: Upload compatible APK
         uses: actions/upload-artifact@v6
         with:
-          name: LocalDream-YuE2-alpha45-HTP-compatible
-          path: out/LocalDream-YuE2-3.0.0-alpha.45-HTP-compatible.apk
+          name: LocalDream-YuE2-alpha46-HTP-compatible
+          path: out/LocalDream-YuE2-3.0.0-alpha.46-HTP-compatible.apk
           if-no-files-found: error
           retention-days: 14
