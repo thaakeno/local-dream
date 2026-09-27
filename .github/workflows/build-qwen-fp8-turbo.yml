@@ -155,6 +155,22 @@ jobs:
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
 
+      # The alpha.58 native cache is the exact same Xet/image/DiT source
+      # revision as this YuE2-only change. Reuse those immutable artifacts and
+      # rebuild only the music backend when the new full cache key is absent.
+      - name: Bootstrap unchanged alpha.58 native artifacts
+        id: native-bootstrap
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a
+            app/src/main/assets/ditlibs
+            app/src/main/assets/yue2libs
+            app/src/main/assets/qnnlibs
+            app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
+          key: localdream-native-e15a1da9bf69e7fc0e09d91594088a80058e21d5bd74d72fb5a11d630423944f
+
       - name: Build Android core and Hexagon DiT engine
         if: steps.native-cache.outputs.cache-hit != 'true'
         shell: bash
@@ -164,6 +180,7 @@ jobs:
           docker run --rm -i --platform linux/amd64 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$QNN_SDK_ROOT:/qnn:ro" \
+            -e REUSE_STABLE_NATIVE="${{ steps.native-bootstrap.outputs.cache-hit }}" \
             ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
             bash -s <<'CONTAINER_SCRIPT'
           set -euxo pipefail
@@ -224,12 +241,20 @@ jobs:
           rustup target list --installed --toolchain 1.88.0
           test -f /data/android-ndk-r28/build/cmake/android.toolchain.cmake
 
-          # Build the new Xet bridge first so bridge/toolchain errors fail fast.
-          bash /workspace/app/src/main/rust/xet_downloader/build.sh
           cd /workspace/app/src/main/cpp
-          bash build.sh
-          bash dit/build.sh
-          bash music/build.sh
+          if [ "${REUSE_STABLE_NATIVE:-false}" = "true" ]; then
+            echo "Reusing unchanged alpha.58 Xet/image/DiT native artifacts; rebuilding YuE2 only."
+            test -s /workspace/app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
+            test -s /workspace/app/src/main/jniLibs/arm64-v8a/libdit_engine.so
+            test -s /workspace/app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
+            bash music/build.sh
+          else
+            # Full cold build when the verified bootstrap cache is unavailable.
+            bash /workspace/app/src/main/rust/xet_downloader/build.sh
+            bash build.sh
+            bash dit/build.sh
+            bash music/build.sh
+          fi
           CONTAINER_SCRIPT
 
       - name: Verify staged native artifacts
