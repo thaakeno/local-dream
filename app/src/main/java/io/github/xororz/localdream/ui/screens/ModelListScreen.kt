@@ -103,8 +103,10 @@ import io.github.xororz.localdream.ui.theme.LocalThemeController
 import io.github.xororz.localdream.ui.theme.Motion
 import io.github.xororz.localdream.ui.theme.ThemePreset
 import io.github.xororz.localdream.ui.theme.scheme
+import io.github.xororz.localdream.utils.AppHaptics
 import io.github.xororz.localdream.utils.BackendDiagnostics
 import io.github.xororz.localdream.utils.CrashDiagnostics
+import io.github.xororz.localdream.utils.HapticSettings
 import io.github.xororz.localdream.utils.DownloadDiagnostics
 import io.github.xororz.localdream.utils.LogCapture
 import io.github.xororz.localdream.utils.SafeClipboard
@@ -221,6 +223,160 @@ private fun DownloadLogsDialog(onDismiss: () -> Unit) {
             }
         },
     )
+}
+
+@Composable
+private fun HapticsSettingsDialog(
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    var settings by remember { mutableStateOf(HapticSettings.read(context)) }
+
+    fun update(next: HapticSettings.Snapshot, preview: AppHaptics.Kind? = null) {
+        settings = next
+        HapticSettings.write(context, next)
+        preview?.let { AppHaptics.perform(context, it) }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Haptic feedback") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text(
+                    "Short device-tuned haptics. Generation pulses are throttled to meaningful " +
+                        "milestones so the phone does not buzz on every token.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                HapticToggleRow(
+                    title = "Haptics",
+                    subtitle = "Master switch",
+                    checked = settings.enabled,
+                    onCheckedChange = { update(settings.copy(enabled = it)) },
+                )
+                HorizontalDivider()
+                HapticToggleRow(
+                    title = "Buttons & cards",
+                    subtitle = "Subtle feedback when selecting or starting actions",
+                    checked = settings.interactions,
+                    enabled = settings.enabled,
+                    onCheckedChange = {
+                        update(
+                            settings.copy(interactions = it),
+                            if (it) AppHaptics.Kind.Interaction else null,
+                        )
+                    },
+                )
+                HapticToggleRow(
+                    title = "Generation stages",
+                    subtitle = "Pulse when YuE2 moves Score → Semantic → NAR → Decode",
+                    checked = settings.generationStages,
+                    enabled = settings.enabled,
+                    onCheckedChange = {
+                        update(
+                            settings.copy(generationStages = it),
+                            if (it) AppHaptics.Kind.Stage else null,
+                        )
+                    },
+                )
+                HapticToggleRow(
+                    title = "Progress pulses",
+                    subtitle = "Very light pulse at coarse progress milestones",
+                    checked = settings.progressPulses,
+                    enabled = settings.enabled,
+                    onCheckedChange = {
+                        update(
+                            settings.copy(progressPulses = it),
+                            if (it) AppHaptics.Kind.Progress else null,
+                        )
+                    },
+                )
+                HapticToggleRow(
+                    title = "Failures",
+                    subtitle = "Distinct feedback for native/runtime errors",
+                    checked = settings.failures,
+                    enabled = settings.enabled,
+                    onCheckedChange = {
+                        update(
+                            settings.copy(failures = it),
+                            if (it) AppHaptics.Kind.Failure else null,
+                        )
+                    },
+                )
+
+                Text(
+                    "Feel",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    HapticSettings.Style.entries.forEach { style ->
+                        FilterChip(
+                            selected = settings.style == style,
+                            enabled = settings.enabled,
+                            onClick = {
+                                update(
+                                    settings.copy(style = style),
+                                    AppHaptics.Kind.Stage,
+                                )
+                            },
+                            label = { Text(style.label) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        },
+    )
+}
+
+@Composable
+private fun HapticToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                },
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                    alpha = if (enabled) 1f else 0.45f,
+                ),
+            )
+        }
+        Switch(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = onCheckedChange,
+        )
+    }
 }
 
 @Composable
@@ -555,6 +711,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var showBackupDialog by remember { mutableStateOf(false) }
     var showCleanTempDialog by remember { mutableStateOf(false) }
     var showBackendLogsDialog by remember { mutableStateOf(false) }
+    var showHapticsDialog by remember { mutableStateOf(false) }
     var tempScanBytes by remember { mutableLongStateOf(0L) }
     var showEmbeddingManagerDialog by remember { mutableStateOf(false) }
     var showCustomModelDialog by remember { mutableStateOf(false) }
@@ -881,6 +1038,12 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     if (showBackendLogsDialog) {
         NativeBackendLogsDialog(
             onDismiss = { showBackendLogsDialog = false },
+        )
+    }
+
+    if (showHapticsDialog) {
+        HapticsSettingsDialog(
+            onDismiss = { showHapticsDialog = false },
         )
     }
 
@@ -2584,6 +2747,15 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                     }
                                 }
                             },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+
+                    item {
+                        SettingNavCard(
+                            icon = Icons.Default.Vibration,
+                            label = "Haptic feedback",
+                            onClick = { showHapticsDialog = true },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
