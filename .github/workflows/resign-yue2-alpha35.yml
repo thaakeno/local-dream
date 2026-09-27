@@ -1,4 +1,4 @@
-name: Re-sign Local Dream alpha.56 with existing canonical key
+name: Re-sign Local Dream alpha.58 with existing canonical key
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
           test "${{ steps.signing-key-cache.outputs.cache-hit }}" = "true"
           test -s "$RUNNER_TEMP/localdream-ci.jks"
 
-      - name: Download Local Dream alpha.56 and alpha.34 reference
+      - name: Download Local Dream alpha.58 and alpha.34 reference
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -72,10 +72,10 @@ jobs:
                 "https://api.github.com/repos/${{ github.repository }}/actions/runs/$build_run_id")"
               status="$(printf '%s' "$run_json" | jq -r '.status')"
               conclusion="$(printf '%s' "$run_json" | jq -r '.conclusion // ""')"
-              echo "alpha56 build run=$build_run_id sha=$target_sha status=$status conclusion=$conclusion attempt=$attempt"
+              echo "alpha58 build run=$build_run_id sha=$target_sha status=$status conclusion=$conclusion attempt=$attempt"
 
               if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
-                echo "alpha56 build failed for target SHA $target_sha" >&2
+                echo "alpha58 build failed for target SHA $target_sha" >&2
                 exit 1
               fi
 
@@ -132,7 +132,7 @@ jobs:
           test -s "$old_apk"
 
           mkdir -p "$GITHUB_WORKSPACE/out"
-          out_apk="$GITHUB_WORKSPACE/out/LocalDream-3.0.0-alpha.56-canonical.apk"
+          out_apk="$GITHUB_WORKSPACE/out/LocalDream-3.0.0-alpha.58-canonical.apk"
 
           "$apksigner_bin" sign \
             --ks "$RUNNER_TEMP/localdream-ci.jks" \
@@ -148,7 +148,7 @@ jobs:
           new_cert="$("$apksigner_bin" verify --print-certs "$out_apk" | sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1)"
 
           echo "alpha34 signer: $old_cert"
-          echo "alpha56 signer: $new_cert"
+          echo "alpha58 signer: $new_cert"
           test -n "$old_cert"
           test "$old_cert" = "$new_cert"
 
@@ -157,9 +157,9 @@ jobs:
       - name: Upload compatible APK
         uses: actions/upload-artifact@v6
         with:
-          name: LocalDream-alpha56-canonical
-          path: out/LocalDream-3.0.0-alpha.56-canonical.apk
+          name: LocalDream-alpha58-canonical
+          path: out/LocalDream-3.0.0-alpha.58-canonical.apk
           if-no-files-found: error
           retention-days: 14
 
-# signer-trigger: alpha56-62a7a523dd6c003ef6511f2c4b60abea022c8031
+# signer-trigger: alpha58-9b66114daddce76e7adcf774927236dec656a60b
