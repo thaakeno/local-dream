@@ -854,8 +854,6 @@ private fun MusicPreloadCard(
 
             MusicStageStrip(activePhase = state.phase, preload = true)
 
-            MusicStageStrip(activePhase = state.phase, preload = false)
-
             if (state.progress != null) {
                 SmoothLinearWavyProgressIndicator(
                     progress = state.progress,
@@ -1042,6 +1040,8 @@ private fun MusicProgressCard(
                     Text("Cancel")
                 }
             }
+
+            MusicStageStrip(activePhase = state.phase, preload = false)
 
             if (state.progress != null) {
                 SmoothLinearWavyProgressIndicator(
