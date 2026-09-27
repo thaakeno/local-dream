@@ -938,10 +938,17 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (isMusicBackend(backendType)) {
-                // Dedicated FastRPC/mempool runtime. HTP0 is the GGML device;
-                // HTP0:0 selects physical HTP0 / virtual session 0.
-                env["GGML_HEXAGON_DEVICES"] = "HTP0:0"
-                env["GGML_BACKEND"] = "HTP0"
+                // Dedicated FastRPC/mempool runtime. Keep the Hexagon
+                // device list as the single source of truth: ggml's forced
+                // backend lookup requires an exact enumerated device name
+                // (e.g. HTP0:0), so deriving GGML_BACKEND from this list
+                // prevents the device/session strings from drifting apart.
+                val musicHtpDevices = listOf("HTP0:0")
+                val musicHtpDeviceSpec = musicHtpDevices.joinToString(",")
+                val musicPrimaryBackend = musicHtpDevices.first()
+
+                env["GGML_HEXAGON_DEVICES"] = musicHtpDeviceSpec
+                env["GGML_BACKEND"] = musicPrimaryBackend
                 env["LOCAL_DREAM_YUE2_BACKEND"] = "fastrpc-mempool"
 
                 env["LD_LIBRARY_PATH"] = listOf(
@@ -969,8 +976,8 @@ class BackendService : Service() {
                 )
 
                 val message =
-                    "YuE2 HTP: backend=FastRPC-mempool device=HTP0 " +
-                        "session=HTP0:0 model=$modelId max_seq=$MUSIC_MAX_SEQ " +
+                    "YuE2 HTP: backend=FastRPC-mempool device=$musicPrimaryBackend " +
+                        "devices=$musicHtpDeviceSpec model=$modelId max_seq=$MUSIC_MAX_SEQ " +
                         "flashAttention=auto-v81 runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
                 BackendDiagnostics.append(this, "ENV", message)
