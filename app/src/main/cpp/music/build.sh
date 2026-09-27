@@ -19,7 +19,7 @@ BUILD_DIR=build/android
 YUE2_DIR="$(cd ../3rdparty/yue2.cpp && pwd)"
 
 JZ_REPO="https://github.com/kan-linux/ggml-hexagon.git"
-JZ_COMMIT="2b129ccfa03aea330d2d9ac4650a10de393dbe3a"
+JZ_COMMIT="7ac59a6e3ad851cd41af00f678effab0598ba9a8"
 JZ_ROOT="$(pwd)/build/deps/ggml-hexagon"
 GGML_DIR="$JZ_ROOT/ggml"
 
@@ -40,12 +40,17 @@ fi
 test "$(git -C "$JZ_ROOT" rev-parse HEAD)" = "$JZ_COMMIT"
 test -f "$GGML_DIR/CMakeLists.txt"
 
-# Start from the exact upstream tree every time. No Local Dream patchset is
-# applied here; any backend fix must exist in the pinned backend revision.
+# Start from the exact pinned tree, then compile Local Dream's maintained YuE2
+# HTP integration into both the AP backend and matched DSP skel. The integration
+# is fail-on-drift and there is no runtime rewrite or CPU compatibility path.
 git -C "$JZ_ROOT" reset --hard "$JZ_COMMIT"
 git -C "$JZ_ROOT" clean -fdx
 test -f "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q '#include <dspqueue.h>' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+python3 "$(pwd)/integrate_htp_yue2.py" "$JZ_ROOT" "$YUE2_DIR" "$(pwd)/native"
+grep -q 'HTP_OP_COL2IM_1D' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
+grep -q 'GGML_OP_SIN' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'YUE2_STRICT_ACCELERATOR' "$YUE2_DIR/src/backend.h"
 
 rm -rf "$BUILD_DIR"
 
@@ -98,8 +103,9 @@ rm -f "$ASSET_DIR/ggml-hexagon.cfg"
 cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
-variant=dspqueue
-patchset=none
+variant=dspqueue-yue2-native
+integration=sin-hvx,col2im1d-htp,strict-accelerator
+cpu_fallback=disabled
 EOF
 
 chmod +x "$JNI_DIR/libyue2_server.so"
