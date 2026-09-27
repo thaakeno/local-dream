@@ -11,6 +11,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -859,7 +861,9 @@ private fun MusicPreloadCard(
 
             MusicStageStrip(activePhase = state.phase, preload = true)
 
-            if (state.progress != null) {
+            if (state.phase == "decoding") {
+                MusicDecodeProgress(state)
+            } else if (state.progress != null) {
                 SmoothLinearWavyProgressIndicator(
                     progress = state.progress,
                     modifier = Modifier.fillMaxWidth(),
@@ -1204,6 +1208,46 @@ private fun MusicProgressCard(
 
             Text(
                 "$runtimeLabel · CPU offload disabled · $precision · ${state.targetSeconds * 25} frames · 48 kHz stereo",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MusicDecodeProgress(state: MusicState.Generating) {
+    val raw = when {
+        state.total > 0 -> (state.step.toFloat() / state.total).coerceIn(0f, 1f)
+        state.progress != null -> ((state.progress - 0.90f) / 0.07f).coerceIn(0f, 1f)
+        else -> 0f
+    }
+    val animated by animateFloatAsState(
+        targetValue = raw,
+        animationSpec = tween(durationMillis = 280),
+        label = "vaeDecodeProgress",
+    )
+
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        LinearProgressIndicator(
+            progress = { animated },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                if (state.total > 0) {
+                    "VAE tiles · ${state.step}/${state.total} complete"
+                } else {
+                    "VAE · HTP decode"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                "${(animated * 100f).toInt()}%",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
