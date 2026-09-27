@@ -1138,6 +1138,8 @@ private fun MusicProgressCard(
             delay(500)
         }
     }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val telemetry = rememberMusicDeviceTelemetry(context)
 
     ElevatedCard(
         shape = MaterialTheme.shapes.extraLarge,
@@ -1170,6 +1172,8 @@ private fun MusicProgressCard(
             }
 
             MusicStageStrip(activePhase = state.phase, preload = false)
+
+            MusicDeviceTelemetryCard(telemetry)
 
             if (state.progress != null) {
                 SmoothLinearWavyProgressIndicator(
