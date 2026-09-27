@@ -3,9 +3,10 @@
 
 The dependency revisions are pinned. This script fails on source drift and adds
 native HTP implementations for the Oobleck ops missing from upstream
-DSPQueue (SIN and COL2IM_1D), fuses Oobleck's five-node Snake activation into
-one HVX kernel, adds adaptive VTCM fitting for native HTP binary broadcasts,
-canonicalizes VAE binary inputs, and enforces strict accelerator compute.
+DSPQueue (SIN, COL2IM_1D and streaming channel-broadcast ADD), fuses Oobleck's
+five-node Snake activation into one HVX kernel, uses ComfyUI-compatible
+DPM-Solver++ 2M with the SGM-uniform flow schedule, trims HTP attention windows
+to native 64-key blocks, and enforces strict accelerator compute.
 There is no CPU compute fallback.
 """
 from pathlib import Path
@@ -31,32 +32,33 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
 shutil.copy2(overlay / "sin-ops.c", htp / "sin-ops.c")
 shutil.copy2(overlay / "col2im-ops.c", htp / "col2im-ops.c")
 shutil.copy2(overlay / "snake-ops.c", htp / "snake-ops.c")
+shutil.copy2(overlay / "channel-bcast-add-ops.c", htp / "channel-bcast-add-ops.c")
 
 replace_once(
     htp / "CMakeLists.txt",
     "    im2col-ops.c\n    roll-ops.c",
-    "    im2col-ops.c\n    col2im-ops.c\n    sin-ops.c\n    snake-ops.c\n    roll-ops.c",
+    "    im2col-ops.c\n    col2im-ops.c\n    sin-ops.c\n    snake-ops.c\n    channel-bcast-add-ops.c\n    roll-ops.c",
     "HTP source list",
 )
 
 replace_once(
     htp / "htp-ops.h",
     "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n\n    HTP_OP_INVALID",
-    "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n    HTP_OP_SIN,\n    HTP_OP_COL2IM_1D,\n    HTP_OP_SNAKE,\n\n    HTP_OP_INVALID",
+    "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n    HTP_OP_SIN,\n    HTP_OP_COL2IM_1D,\n    HTP_OP_SNAKE,\n    HTP_OP_CHANNEL_BCAST_ADD,\n\n    HTP_OP_INVALID",
     "HTP op enum",
 )
 
 replace_once(
     htp / "htp-ctx.h",
     "int op_im2col(struct htp_ops_context * octx);\nint op_allreduce",
-    "int op_im2col(struct htp_ops_context * octx);\nint op_col2im_1d(struct htp_ops_context * octx);\nint op_sin(struct htp_ops_context * octx);\nint op_snake(struct htp_ops_context * octx);\nint op_allreduce",
+    "int op_im2col(struct htp_ops_context * octx);\nint op_col2im_1d(struct htp_ops_context * octx);\nint op_sin(struct htp_ops_context * octx);\nint op_snake(struct htp_ops_context * octx);\nint op_channel_bcast_add(struct htp_ops_context * octx);\nint op_allreduce",
     "HTP op declarations",
 )
 
 replace_once(
     htp / "main.c",
     "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_ROLL:",
-    "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_COL2IM_1D:\n            return op_col2im_1d(octx);\n\n        case HTP_OP_SIN:\n            return op_sin(octx);\n\n        case HTP_OP_SNAKE:\n            return op_snake(octx);\n\n        case HTP_OP_ROLL:",
+    "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_COL2IM_1D:\n            return op_col2im_1d(octx);\n\n        case HTP_OP_SIN:\n            return op_sin(octx);\n\n        case HTP_OP_SNAKE:\n            return op_snake(octx);\n\n        case HTP_OP_CHANNEL_BCAST_ADD:\n            return op_channel_bcast_add(octx);\n\n        case HTP_OP_ROLL:",
     "HTP dispatch",
 )
 
@@ -119,6 +121,69 @@ replace_once(
     "        case GGML_OP_IM2COL:          return HTP_OP_IM2COL;",
     "        case GGML_OP_IM2COL:          return HTP_OP_IM2COL;\n        case GGML_OP_COL2IM_1D:       return HTP_OP_COL2IM_1D;",
     "host COL2IM remap",
+)
+
+
+# Large Oobleck bias adds are [T,C] + [1,C]. DSPQueue's generic binary
+# implementation stages complete rows in VTCM, which cannot represent the
+# ~3.84 MiB rows reached by a 20 s full-graph decode on an 8 MiB HTP. Route
+# exactly this geometry to a streaming HVX op over HTP-mapped memory.
+channel_add_helper = r"""
+static bool ggml_hexagon_is_yue2_channel_bcast_add(const struct ggml_tensor * op) {
+    if (!op || op->op != GGML_OP_ADD || op->type != GGML_TYPE_F32) {
+        return false;
+    }
+    const struct ggml_tensor * src0 = op->src[0];
+    const struct ggml_tensor * src1 = op->src[1];
+    if (!src0 || !src1 || src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32) {
+        return false;
+    }
+    return src0->ne[0] > 1 && src0->ne[1] > 0 &&
+           src0->ne[2] == 1 && src0->ne[3] == 1 &&
+           op->ne[0] == src0->ne[0] && op->ne[1] == src0->ne[1] &&
+           op->ne[2] == 1 && op->ne[3] == 1 &&
+           src1->ne[0] == 1 && src1->ne[1] == src0->ne[1] &&
+           src1->ne[2] == 1 && src1->ne[3] == 1 &&
+           ggml_is_contiguous(src0) && ggml_is_contiguous(src1) &&
+           ggml_is_contiguous(op) &&
+           !ggml_is_permuted(src0) && !ggml_is_permuted(src1) &&
+           !ggml_is_permuted(op);
+}
+
+"""
+replace_once(
+    host,
+    "static htp_op_code op_remap_to_htp(const ggml_tensor * t) {",
+    channel_add_helper + "static htp_op_code op_remap_to_htp(const ggml_tensor * t) {",
+    "YuE2 channel-broadcast ADD helper",
+)
+
+replace_once(
+    host,
+    "        case GGML_OP_ADD:             return HTP_OP_ADD;",
+    "        case GGML_OP_ADD:             return ggml_hexagon_is_yue2_channel_bcast_add(t) ? HTP_OP_CHANNEL_BCAST_ADD : HTP_OP_ADD;",
+    "YuE2 channel-broadcast ADD remap",
+)
+
+replace_once(
+    host,
+    """        case GGML_OP_MUL:
+        case GGML_OP_ADD:
+        case GGML_OP_SUB:
+        case GGML_OP_DIV:
+            supp = ggml_hexagon_supported_binary(sess, op);
+            break;""",
+    """        case GGML_OP_MUL:
+        case GGML_OP_SUB:
+        case GGML_OP_DIV:
+            supp = ggml_hexagon_supported_binary(sess, op);
+            break;
+
+        case GGML_OP_ADD:
+            supp = ggml_hexagon_is_yue2_channel_bcast_add(op) ||
+                   ggml_hexagon_supported_binary(sess, op);
+            break;""",
+    "YuE2 channel-broadcast ADD support",
 )
 
 
@@ -289,11 +354,10 @@ replace_once(
     """    struct htp_binary_vtcm_layout L;
     htp_binary_vtcm_layout_build(&L, kparams, sess->vtcm_size);
     if (L.rows_per_buffer == 0 || L.total_bytes > sess->vtcm_size) {""",
-    """    // YuE2 adaptive binary VTCM thread fit.
-    // Large audio rows can exceed the 8 MiB VTCM budget when all HVX
-    // workers double-buffer a full row. The native scalar-broadcast kernel
-    // already supports [T,C] + [1,C], so reduce only this op's HTP worker
-    // count until the exact same kernel fits. No CPU fallback and no repeat.
+    """    // Adaptive generic binary VTCM thread fit. Very wide YuE2 channel-bias
+    // adds use the dedicated streaming op above; for other supported binary
+    // geometries, reduce only this op's worker count until its exact kernel
+    // fits. No CPU fallback and no semantic rewrite.
     struct htp_binary_vtcm_layout L;
     while (kparams->n_threads > 0) {
         htp_binary_vtcm_layout_build(&L, kparams, sess->vtcm_size);
@@ -435,6 +499,21 @@ static bool backend_strict_pin_graph(ggml_backend_sched_t sched,
 
 qwen = yue / "src/qwen3-lm.h"
 qtext = qwen.read_text()
+
+# HTP flash-attention consumes 64-key blocks. The upstream 256-token padding
+# exists for CUDA graph shape stability, but on DSP it makes semantic decoding
+# attend over up to 255 masked keys that can never contribute. Keep identical
+# masking semantics while using the native HTP block granularity.
+for old, new, label in [
+    ("GGML_PAD(kv_len, 256)", "GGML_PAD(kv_len, 64)", "prefill HTP KV window"),
+    ("GGML_PAD(max_kv_len, 256)", "GGML_PAD(max_kv_len, 64)", "decode HTP KV window"),
+]:
+    if qtext.count(old) != 1:
+        raise RuntimeError(f"{label}: expected one source anchor, found {qtext.count(old)}")
+    qtext = qtext.replace(old, new, 1)
+qtext = qtext.replace("rounded up to 256", "rounded up to 64")
+qtext = qtext.replace("spans of 256 decode steps", "spans of 64 decode steps")
+
 needle = "    ggml_backend_sched_graph_compute(m->sched, gf);"
 if qtext.count(needle) < 1:
     raise RuntimeError("qwen graph compute anchor missing")
@@ -460,19 +539,18 @@ qwen.write_text(qtext)
 
 # Local Dream mobile acoustic solver.
 #
-# Upstream yue2.cpp's release solver is midpoint: every nominal step performs
-# two complete NAR velocity evaluations. Add the tested second-order multistep
-# alternative used by YuE2_WebUI. On the same uniform t grid it uses Euler for
-# the first step and the Adams-Bashforth 2 correction (3/2 current - 1/2
-# previous) afterwards, so every step needs exactly one NAR graph evaluation.
-# Midpoint remains available for bitwise protocol/reference comparisons.
+# Midpoint remains the release/reference protocol. The fast path below ports
+# ComfyUI/k-diffusion's actual DPM-Solver++(2M) update and pairs it with
+# ComfyUI's sgm_uniform scheduler for a discrete-flow/CONST model. YuE2 predicts
+# flow velocity v, so the denoised estimate consumed by DPM++ is x0=x-sigma*v.
+# This is not the old uniform-grid Adams-Bashforth approximation.
 request_h = yue / "src/request.h"
 replace_once(
     request_h,
     """    int     steps;    // 32, midpoint steps of the flow matching ODE
 """,
     """    int     steps;       // acoustic ODE steps
-    std::string ode_method;  // "midpoint" or "dpmpp_2m"
+    std::string ode_method;  // "midpoint" or "dpmpp_2m" (ComfyUI + sgm_uniform)
 """,
     "DPM++ 2M request field",
 )
@@ -528,6 +606,7 @@ replace_once(
                       const DebugDumper *  dbg,""",
     "DPM++ 2M solver signature",
 )
+
 replace_once(
     nar_h,
     """    size_t             count = (size_t) n->latent_dim * T_lat * M;
@@ -537,7 +616,8 @@ replace_once(
 
     debug_dump_2d(dbg, "noise", state, T_lat, n->latent_dim);
     Timer solve_timer;""",
-    """    size_t count = (size_t) n->latent_dim * T_lat * M;
+    """    // COMFY_DPM_PLUS_PLUS_2M_SGM_UNIFORM
+    size_t count = (size_t) n->latent_dim * T_lat * M;
     const bool midpoint = strcmp(method, "midpoint") == 0;
     const bool dpmpp_2m = strcmp(method, "dpmpp_2m") == 0;
     if (!midpoint && !dpmpp_2m) {
@@ -548,28 +628,34 @@ replace_once(
     std::vector<float> first(count);
     std::vector<float> mid;
     std::vector<float> second;
-    std::vector<float> previous;
+    std::vector<float> denoised;
+    std::vector<float> old_denoised;
     if (midpoint) {
         mid.resize(count);
         second.resize(count);
     } else {
-        previous.resize(count);
+        denoised.resize(count);
+        old_denoised.resize(count);
     }
 
-    float dt = 1.0f / (float) steps;
-    bool  have_previous = false;
+    const float dt = 1.0f / (float) steps;
+    bool  have_old_denoised = false;
+    float previous_sigma = 0.0f;
     int   evaluations = 0;
     char  name[64];
 
-    fprintf(stderr, "[NAR] Solver: %s, steps=%d, evaluations=%d\\n",
-            method, steps, midpoint ? steps * 2 : steps);
+    fprintf(stderr, "[NAR] Solver: %s, scheduler=%s, steps=%d, evaluations=%d\\n",
+            method, midpoint ? "reference_uniform" : "sgm_uniform",
+            steps, midpoint ? steps * 2 : steps);
     debug_dump_2d(dbg, "noise", state, T_lat, n->latent_dim);
     Timer solve_timer;""",
     "DPM++ 2M solver setup",
 )
+
 replace_once(
     nar_h,
-    """        if (!nar_velocity(n, kv, state, T_lat, M, ar_len, kv_set, nar_logit_clamped(t), first.data())) {
+    """        float t = 1.0f - (float) step * dt;
+        if (!nar_velocity(n, kv, state, T_lat, M, ar_len, kv_set, nar_logit_clamped(t), first.data())) {
             return false;
         }
         if (dbg->enabled && step == 0) {
@@ -592,15 +678,15 @@ replace_once(
         snprintf(name, sizeof(name), "nar_step%d_xt", step);
         debug_dump_2d(dbg, name, state, T_lat, n->latent_dim);
         fprintf(stderr, "[NAR] Step %d/%d, %.0f ms\\n", step + 1, steps, step_timer.ms());""",
-    """        if (!nar_velocity(n, kv, state, T_lat, M, ar_len, kv_set, nar_logit_clamped(t), first.data())) {
-            return false;
-        }
-        ++evaluations;
-        if (dbg->enabled && step == 0) {
-            nar_dump_named(n, dbg);
-        }
-
-        if (midpoint) {
+    """        if (midpoint) {
+            const float t = 1.0f - (float) step * dt;
+            if (!nar_velocity(n, kv, state, T_lat, M, ar_len, kv_set, nar_logit_clamped(t), first.data())) {
+                return false;
+            }
+            ++evaluations;
+            if (dbg->enabled && step == 0) {
+                nar_dump_named(n, dbg);
+            }
             for (size_t i = 0; i < count; i++) {
                 mid[i] = state[i] - first[i] * (dt * 0.5f);
             }
@@ -612,42 +698,114 @@ replace_once(
             for (size_t i = 0; i < count; i++) {
                 state[i] -= second[i] * dt;
             }
-        } else if (!have_previous) {
-            // First multistep point has no history: exact Euler bootstrap.
-            for (size_t i = 0; i < count; i++) {
-                state[i] -= first[i] * dt;
-            }
-        } else {
-            // Uniform-grid second-order multistep correction used by the
-            // validated YuE2_WebUI DPM++ 2M path.
-            for (size_t i = 0; i < count; i++) {
-                state[i] -= (first[i] * 1.5f - previous[i] * 0.5f) * dt;
-            }
-        }
 
-        snprintf(name, sizeof(name), "nar_step%d_first", step);
-        debug_dump_2d(dbg, name, first.data(), T_lat, n->latent_dim);
-        if (midpoint) {
+            snprintf(name, sizeof(name), "nar_step%d_first", step);
+            debug_dump_2d(dbg, name, first.data(), T_lat, n->latent_dim);
             snprintf(name, sizeof(name), "nar_step%d_second", step);
             debug_dump_2d(dbg, name, second.data(), T_lat, n->latent_dim);
+        } else {
+            // ComfyUI normal_scheduler(..., sgm=True) for ModelSamplingDiscreteFlow:
+            // linearly space the model-sampling timestep from sigma_max to
+            // sigma_min (the 1/1000 endpoint), map each through the flow shift,
+            // then append an exact final zero.
+            const float shift = n->timestep_shift;
+            const auto flow_shift = [shift](float t) {
+                return shift * t / (1.0f + (shift - 1.0f) * t);
+            };
+            const auto flow_unshift = [shift](float sigma) {
+                const float denom = shift - (shift - 1.0f) * sigma;
+                return sigma / denom;
+            };
+
+            const float sigma_max = flow_shift(1.0f);
+            const float sigma_min = flow_shift(0.001f);
+            const float scheduler_t =
+                sigma_max + (sigma_min - sigma_max) * ((float) step / (float) steps);
+            const float sigma = flow_shift(scheduler_t);
+            const float sigma_next = (step + 1 == steps)
+                ? 0.0f
+                : flow_shift(
+                    sigma_max + (sigma_min - sigma_max) * ((float) (step + 1) / (float) steps));
+
+            if (!(sigma > 0.0f) || !(sigma_next >= 0.0f) || !(sigma_next < sigma)) {
+                fprintf(stderr, "[NAR] FATAL: invalid sgm_uniform sigma pair %.9f -> %.9f\\n",
+                        (double) sigma, (double) sigma_next);
+                return false;
+            }
+
+            const float raw_t = flow_unshift(sigma);
+            if (!(raw_t > 0.0f) || !(raw_t <= 1.0f)) {
+                fprintf(stderr, "[NAR] FATAL: invalid YuE2 flow timestep %.9f for sigma %.9f\\n",
+                        (double) raw_t, (double) sigma);
+                return false;
+            }
+            if (!nar_velocity(n, kv, state, T_lat, M, ar_len, kv_set,
+                              nar_logit_clamped(raw_t), first.data())) {
+                return false;
+            }
+            ++evaluations;
+            if (dbg->enabled && step == 0) {
+                nar_dump_named(n, dbg);
+            }
+
+            // ComfyUI CONST flow model: denoised = model_input - model_output*sigma.
+            for (size_t i = 0; i < count; i++) {
+                denoised[i] = state[i] - first[i] * sigma;
+            }
+
+            if (sigma_next == 0.0f) {
+                memcpy(state, denoised.data(), count * sizeof(float));
+            } else {
+                const float ratio = sigma_next / sigma;
+                float current_coeff = 1.0f;
+                float old_coeff = 0.0f;
+                if (have_old_denoised) {
+                    const float h = logf(sigma / sigma_next);
+                    const float h_last = logf(previous_sigma / sigma);
+                    if (!(h > 0.0f) || !(h_last > 0.0f)) {
+                        fprintf(stderr, "[NAR] FATAL: invalid DPM++ log-time interval\\n");
+                        return false;
+                    }
+                    const float r = h_last / h;
+                    if (!(r > 0.0f)) {
+                        fprintf(stderr, "[NAR] FATAL: invalid DPM++ history ratio %.9f\\n", (double) r);
+                        return false;
+                    }
+                    old_coeff = 1.0f / (2.0f * r);
+                    current_coeff = 1.0f + old_coeff;
+                }
+
+                const float denoised_mix = 1.0f - ratio; // -expm1(-h), stable here
+                for (size_t i = 0; i < count; i++) {
+                    const float d = current_coeff * denoised[i] - old_coeff * old_denoised[i];
+                    state[i] = ratio * state[i] + denoised_mix * d;
+                }
+            }
+
+            memcpy(old_denoised.data(), denoised.data(), count * sizeof(float));
+            previous_sigma = sigma;
+            have_old_denoised = true;
+
+            snprintf(name, sizeof(name), "nar_step%d_first", step);
+            debug_dump_2d(dbg, name, first.data(), T_lat, n->latent_dim);
+            snprintf(name, sizeof(name), "nar_step%d_denoised", step);
+            debug_dump_2d(dbg, name, denoised.data(), T_lat, n->latent_dim);
         }
+
         snprintf(name, sizeof(name), "nar_step%d_xt", step);
         debug_dump_2d(dbg, name, state, T_lat, n->latent_dim);
-
-        if (dpmpp_2m) {
-            previous.swap(first);
-            have_previous = true;
-        }
         fprintf(stderr, "[NAR] Step %d/%d, %.0f ms\\n", step + 1, steps, step_timer.ms());""",
     "DPM++ 2M solver step",
 )
+
 replace_once(
     nar_h,
     """    fprintf(stderr, "[NAR] Solved: T_lat=%d, %d variations, %d steps, %.0f ms (%.1f ms/step)\\n", T_lat, M, steps,
             solve_timer.ms(), solve_timer.ms() / steps);""",
     """    fprintf(stderr,
-            "[NAR] Solved (%s): T_lat=%d, %d variations, %d steps, %d evaluations, %.0f ms (%.1f ms/step)\\n",
-            method, T_lat, M, steps, evaluations, solve_timer.ms(), solve_timer.ms() / steps);""",
+            "[NAR] Solved (%s/%s): T_lat=%d, %d variations, %d steps, %d evaluations, %.0f ms (%.1f ms/step)\\n",
+            method, midpoint ? "reference_uniform" : "sgm_uniform",
+            T_lat, M, steps, evaluations, solve_timer.ms(), solve_timer.ms() / steps);""",
     "DPM++ 2M solver summary",
 )
 
