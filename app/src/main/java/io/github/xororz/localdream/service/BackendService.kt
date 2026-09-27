@@ -163,6 +163,20 @@ class BackendService : Service() {
             val lower = trimmed.lowercase()
             val errorMarker = "[ ERROR ]"
             val message = when {
+                // Qwen's text encoder reports this capability line during
+                // startup even for a pure text-to-image request (Img2Img=0,
+                // no references). It is not a backend failure. A real
+                // reference-image failure will still be returned by /generate.
+                "no vision weights detected, vision disabled" in lower -> return null
+
+                // FastRPC/DSPQueue transport failures abort the process and are
+                // the useful root cause; surface these ahead of the resulting
+                // HTTP EOF seen by the Android client.
+                "dspqueue_read failed" in lower ||
+                    "dspqueue_write failed" in lower ||
+                    "dspqueue" in lower && "failed" in lower ->
+                    trimmed
+
                 errorMarker in trimmed -> {
                     val payload = trimmed.substringAfter(errorMarker).trim()
                     val detailMarker = " - "
@@ -659,6 +673,54 @@ class BackendService : Service() {
         }
     }
 
+    private data class HexagonQueueProfile(
+        val label: String,
+        val transformerBytes: Long,
+        val opBatch: Int,
+        val opQueue: Int,
+    )
+
+    /**
+     * Pick a conservative Hexagon DSP queue shape from the transformer
+     * footprint rather than from a model id / SoC allow-list.
+     *
+     * The current ggml-hexagon defaults (1280 ops, queue depth 32) are very
+     * aggressive for multi-gigabyte Qwen graphs and can end in FastRPC
+     * dspqueue error 0x2e under sustained denoising. Smaller in-flight queues
+     * trade a little host-side overlap for dramatically lower DSP queue
+     * pressure without changing a single model weight, scheduler step, or
+     * sampling parameter.
+     */
+    private fun qwenHexagonQueueProfile(modelsDir: File): HexagonQueueProfile {
+        val transformer = sequenceOf(
+            File(modelsDir, "dit.gguf"),
+            File(modelsDir, "dit.safetensors"),
+        ).firstOrNull { it.isFile }
+
+        val bytes = transformer?.length() ?: 0L
+        val gib = 1024L * 1024L * 1024L
+        return when {
+            bytes >= 6L * gib -> HexagonQueueProfile(
+                label = "large-safe",
+                transformerBytes = bytes,
+                opBatch = 512,
+                opQueue = 8,
+            )
+            bytes >= 4L * gib -> HexagonQueueProfile(
+                label = "balanced",
+                transformerBytes = bytes,
+                opBatch = 768,
+                opQueue = 12,
+            )
+            else -> HexagonQueueProfile(
+                label = "standard",
+                transformerBytes = bytes,
+                opBatch = 1024,
+                opQueue = 16,
+            )
+        }
+    }
+
     private fun startBackend(config: BackendConfig): Boolean {
         val modelId = config.modelId
         val backendType = config.backendType
@@ -1000,10 +1062,24 @@ class BackendService : Service() {
                     env["GGML_HEXAGON_DEVICES"] =
                         if (resolvedMode == "dual") "HTP0:0,HTP0:1" else "HTP0:0"
                     env["LOCAL_DREAM_HTP_MODE"] = resolvedMode
-                    Log.i(
-                        TAG,
-                        "Qwen HTP sessions: requested=${config.htpMode}, resolved=$resolvedMode, devices=${env["GGML_HEXAGON_DEVICES"]}",
-                    )
+
+                    // FastRPC's DSPQueue can fail with 0x2e when too many ops
+                    // remain in flight on a large graph. Keep polling enabled
+                    // and derive queue pressure from the actual transformer
+                    // footprint instead of hardcoding precision/model names.
+                    val queueProfile = qwenHexagonQueueProfile(modelsDir)
+                    env["GGML_HEXAGON_OPPOLL"] = "1"
+                    env["GGML_HEXAGON_OPBATCH"] = queueProfile.opBatch.toString()
+                    env["GGML_HEXAGON_OPQUEUE"] = queueProfile.opQueue.toString()
+                    val transformerGiB =
+                        queueProfile.transformerBytes.toDouble() / (1024.0 * 1024.0 * 1024.0)
+                    val queueMessage =
+                        "Qwen HTP sessions: requested=${config.htpMode}, resolved=$resolvedMode, " +
+                            "devices=${env["GGML_HEXAGON_DEVICES"]}, queue=${queueProfile.label} " +
+                            "transformer=${String.format(java.util.Locale.US, "%.2f", transformerGiB)}GiB " +
+                            "opbatch=${queueProfile.opBatch} opqueue=${queueProfile.opQueue} oppoll=1"
+                    Log.i(TAG, queueMessage)
+                    BackendDiagnostics.append(this, "QWEN_HTP", queueMessage)
                 }
                 // ggml-hexagon asks FastRPC for its skel by bare name, so both
                 // the runtime directory holding the skels and the platform
