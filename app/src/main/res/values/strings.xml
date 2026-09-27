@@ -494,6 +494,7 @@
     <string name="download_current_file">Current file</string>
     <string name="xet_network_transfer">Xet network transfer</string>
     <string name="download_starting">Starting download…</string>
+    <string name="download_finalizing">Finishing installation…</string>
     <string name="download_open_details">Open download details</string>
     <string name="download_minimize">Minimize</string>
     <string name="download_speed">Download speed</string>
