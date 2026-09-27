@@ -823,14 +823,11 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 }
 
                 is ModelDownloadService.DownloadState.Success -> {
-                    val completed = modelRepository.models.find { it.id == state.modelId }
-                    if (completed?.catalogFamily == "qwen21") {
-                        // A transformer or LoRA downloaded for one selection can
-                        // immediately satisfy every other Qwen combination.
-                        modelRepository.refreshAllModels()
-                    } else {
-                        modelRepository.refreshModelState(state.modelId)
-                    }
+                    // Always rescan the catalog after install. Direct/custom
+                    // downloads are not present in the current in-memory list,
+                    // so a per-id refresh cannot discover them and previously
+                    // made them appear only after force-closing the app.
+                    modelRepository.refreshAllModels()
                     downloadingModel = null
                     currentProgress = null
                     currentSpeedBytesPerSecond = 0L
@@ -2932,6 +2929,7 @@ private fun DownloadMiniCard(
                 Text(
                     text = when {
                         paused -> stringResource(R.string.download_paused)
+                        confirmedProgress >= 0.999f -> stringResource(R.string.download_finalizing)
                         (if (usingXet) networkBytesPerSecond else bytesPerSecond) > 0L -> buildString {
                             val displaySpeed =
                                 if (usingXet && networkBytesPerSecond > 0L) {
@@ -2940,7 +2938,7 @@ private fun DownloadMiniCard(
                                     bytesPerSecond
                                 }
                             append(formatDownloadSpeed(displaySpeed))
-                            etaSeconds?.let {
+                            etaSeconds?.takeIf { it > 0L }?.let {
                                 append("  •  ")
                                 append(formatDownloadEta(it))
                                 append(" left")
@@ -3120,7 +3118,7 @@ private fun DownloadDetailsSheet(
                         }
                     }
 
-                    etaSeconds?.let {
+                    etaSeconds?.takeIf { it > 0L }?.let {
                         Column(
                             modifier = Modifier.weight(1f),
                             horizontalAlignment = Alignment.End,
