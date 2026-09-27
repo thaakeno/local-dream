@@ -1217,37 +1217,55 @@ private fun MusicProgressCard(
 
 @Composable
 private fun MusicDecodeProgress(state: MusicState.Generating) {
-    val raw = when {
+    val completed = when {
         state.total > 0 -> (state.step.toFloat() / state.total).coerceIn(0f, 1f)
         state.progress != null -> ((state.progress - 0.90f) / 0.07f).coerceIn(0f, 1f)
         else -> 0f
     }
     val animated by animateFloatAsState(
-        targetValue = raw,
-        animationSpec = tween(durationMillis = 280),
+        targetValue = completed,
+        animationSpec = tween(durationMillis = 320),
         label = "vaeDecodeProgress",
     )
+    val hasActiveTile = state.total > 0 && state.step < state.total
+    val activeTile = if (state.total > 0) (state.step + 1).coerceAtMost(state.total) else 0
 
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        LinearProgressIndicator(
-            progress = { animated },
-            modifier = Modifier.fillMaxWidth(),
-        )
+        // A VAE tile is one native HTP graph invocation, so there is no honest
+        // percentage inside a tile. Keep the line visibly moving while HTP is
+        // executing it, then animate the real completed-tile progress at each
+        // native milestone instead of inventing timer-based progress.
+        if (hasActiveTile) {
+            SmoothIndeterminateLinearWavyProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            SmoothLinearWavyProgressIndicator(
+                progress = animated,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                if (state.total > 0) {
-                    "VAE tiles · ${state.step}/${state.total} complete"
-                } else {
-                    "VAE · HTP decode"
+                when {
+                    state.total > 0 && hasActiveTile ->
+                        "HTP decoder · tile $activeTile/${state.total} running"
+                    state.total > 0 ->
+                        "HTP decoder · ${state.step}/${state.total} tiles complete"
+                    else -> "VAE · HTP decode"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
             )
             Text(
-                "${(animated * 100f).toInt()}%",
+                if (state.total > 0) {
+                    "${(completed * 100f).toInt()}% complete"
+                } else {
+                    "Native graph"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
