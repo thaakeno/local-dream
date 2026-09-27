@@ -315,89 +315,10 @@ replace_once(
 )
 
 vae = yue / "src/vae.h"
-replace_once(
-    vae,
-    """// ConvTranspose1d via GEMM + col2im (replaces naive ggml_conv_transpose_1d)""",
-    """// HTP-friendly COL2IM lowering for Oobleck ConvTranspose1d.
-static struct ggml_tensor * vae_col2im_htp_lowered(struct ggml_context * ctx,
-                                                   struct ggml_tensor *  col,
-                                                   int                   stride,
-                                                   int                   oc,
-                                                   int                   padding) {
-    const int64_t T   = col->ne[1];
-    const int64_t KOC = col->ne[0];
-    GGML_ASSERT(stride > 0 && oc > 0 && T > 1 && KOC % oc == 0);
-
-    const int64_t K = KOC / oc;
-    GGML_ASSERT(K == 2 * stride);
-
-    // Oobleck uses K = 2*stride.  Split every GEMM row into two
-    // stride-wide halves.  The exact transpose-convolution overlap is:
-    // block(i) = first(i) + second(i-1), with cropped edge blocks.
-    //
-    // Materialization uses CONT, which the Hexagon backend routes through its
-    // DMA copy engine; the overlap itself is one native HTP ADD.  This avoids
-    // the old scalar COL2IM DDR scatter loop entirely.
-    struct ggml_tensor * c3 = ggml_reshape_3d(ctx, col, K, oc, T);
-
-    struct ggml_tensor * a3 = ggml_view_3d(
-        ctx, c3, stride, oc, T, c3->nb[1], c3->nb[2], 0);
-    struct ggml_tensor * b3 = ggml_view_3d(
-        ctx, c3, stride, oc, T, c3->nb[1], c3->nb[2],
-        (size_t) stride * c3->nb[0]);
-
-    struct ggml_tensor * a = ggml_cont(ctx, ggml_permute(ctx, a3, 0, 2, 1, 3));
-    struct ggml_tensor * b = ggml_cont(ctx, ggml_permute(ctx, b3, 0, 2, 1, 3));
-    a = ggml_reshape_2d(ctx, a, stride * T, oc);
-    b = ggml_reshape_2d(ctx, b, stride * T, oc);
-
-    const int64_t edge = stride - padding;
-    GGML_ASSERT(edge > 0);
-
-    struct ggml_tensor * head = ggml_cont(
-        ctx,
-        ggml_view_2d(
-            ctx, a, edge, oc, a->nb[1],
-            (size_t) padding * a->nb[0]));
-
-    const int64_t mid_ne0 = (T - 1) * stride;
-    struct ggml_tensor * amid = ggml_cont(
-        ctx,
-        ggml_view_2d(
-            ctx, a, mid_ne0, oc, a->nb[1],
-            (size_t) stride * a->nb[0]));
-    struct ggml_tensor * bmid = ggml_cont(
-        ctx,
-        ggml_view_2d(ctx, b, mid_ne0, oc, b->nb[1], 0));
-    struct ggml_tensor * mid = ggml_add(ctx, amid, bmid);
-
-    struct ggml_tensor * tail = ggml_cont(
-        ctx,
-        ggml_view_2d(
-            ctx, b, edge, oc, b->nb[1],
-            (size_t) ((T - 1) * stride) * b->nb[0]));
-
-    struct ggml_tensor * out = ggml_concat(ctx, head, mid, 0);
-    out = ggml_concat(ctx, out, tail, 0);
-
-    const int64_t expected = (T - 1) * stride + K - 2 * padding;
-    GGML_ASSERT(out->ne[0] == expected && out->ne[1] == oc);
-    return out;
-}
-
-// ConvTranspose1d via GEMM + HTP-native overlap lowering""",
-    "VAE HTP COL2IM lowering",
-)
-
-replace_once(
-    vae,
-    """    // Step 3: col2im_1d scatter-add (F32 path, no BF16 casts)
-    struct ggml_tensor * y = ggml_col2im_1d(ctx, col, stride, oc, padding);""",
-    """    // Step 3: exact overlap-add lowering through DMA/HVX-friendly
-    // standard HTP ops.  No CPU fallback and no scalar DDR scatter kernel.
-    struct ggml_tensor * y = vae_col2im_htp_lowered(ctx, col, stride, oc, padding);""",
-    "VAE use HTP COL2IM lowering",
-)
+// Keep yue2.cpp's compact GEMM + GGML_OP_COL2IM_1D graph. Local Dream
+// replaces that op with a native channel-blocked HTP kernel in col2im-ops.c.
+// The previous graph-level CONT/ADD/CONCAT lowering added more than 100 nodes
+// and turned waveform decode into a memory-movement bottleneck on SM8850.
 
 replace_once(
     vae,
