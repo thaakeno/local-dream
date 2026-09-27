@@ -457,6 +457,246 @@ qtext = qtext.replace(
 )
 qwen.write_text(qtext)
 
+
+# Local Dream mobile acoustic solver.
+#
+# Upstream yue2.cpp's release solver is midpoint: every nominal step performs
+# two complete NAR velocity evaluations. Add the tested second-order multistep
+# alternative used by YuE2_WebUI. On the same uniform t grid it uses Euler for
+# the first step and the Adams-Bashforth 2 correction (3/2 current - 1/2
+# previous) afterwards, so every step needs exactly one NAR graph evaluation.
+# Midpoint remains available for bitwise protocol/reference comparisons.
+request_h = yue / "src/request.h"
+replace_once(
+    request_h,
+    """    int     steps;    // 32, midpoint steps of the flow matching ODE
+""",
+    """    int     steps;       // acoustic ODE steps
+    std::string ode_method;  // "midpoint" or "dpmpp_2m"
+""",
+    "DPM++ 2M request field",
+)
+
+request_cpp = yue / "src/request.cpp"
+replace_once(
+    request_cpp,
+    """    r->steps            = 32;
+    r->lm_batch_size    = 1;""",
+    """    r->steps            = 32;
+    r->ode_method       = "midpoint";
+    r->lm_batch_size    = 1;""",
+    "DPM++ 2M request default",
+)
+replace_once(
+    request_cpp,
+    """    if ((v = yyjson_obj_get(obj, "steps")) && yyjson_is_int(v)) {
+        r->steps = yyjson_get_int(v);
+    }
+    if ((v = yyjson_obj_get(obj, "lm_batch_size")) && yyjson_is_int(v)) {""",
+    """    if ((v = yyjson_obj_get(obj, "steps")) && yyjson_is_int(v)) {
+        r->steps = yyjson_get_int(v);
+    }
+    if ((v = yyjson_obj_get(obj, "ode_method")) && yyjson_is_str(v)) {
+        r->ode_method = yy_str(v);
+    }
+    if ((v = yyjson_obj_get(obj, "lm_batch_size")) && yyjson_is_int(v)) {""",
+    "DPM++ 2M request parse",
+)
+replace_once(
+    request_cpp,
+    """    if (!sparse || r->steps != d.steps) {
+        yyjson_mut_obj_add_int(doc, root, "steps", r->steps);
+    }
+    if (!sparse || r->lm_batch_size != d.lm_batch_size) {""",
+    """    if (!sparse || r->steps != d.steps) {
+        yyjson_mut_obj_add_int(doc, root, "steps", r->steps);
+    }
+    if (!sparse || r->ode_method != d.ode_method) {
+        yyjson_mut_obj_add_strncpy(doc, root, "ode_method", r->ode_method.c_str(), r->ode_method.size());
+    }
+    if (!sparse || r->lm_batch_size != d.lm_batch_size) {""",
+    "DPM++ 2M request serialize",
+)
+
+nar_h = yue / "src/nar.h"
+replace_once(
+    nar_h,
+    """                      int                  steps,
+                      const DebugDumper *  dbg,""",
+    """                      int                  steps,
+                      const char *         method,
+                      const DebugDumper *  dbg,""",
+    "DPM++ 2M solver signature",
+)
+replace_once(
+    nar_h,
+    """    size_t             count = (size_t) n->latent_dim * T_lat * M;
+    std::vector<float> first(count), mid(count), second(count);
+    float              dt = 1.0f / (float) steps;
+    char               name[64];
+
+    debug_dump_2d(dbg, "noise", state, T_lat, n->latent_dim);
+    Timer solve_timer;""",
+    """    size_t count = (size_t) n->latent_dim * T_lat * M;
+    const bool midpoint = strcmp(method, "midpoint") == 0;
+    const bool dpmpp_2m = strcmp(method, "dpmpp_2m") == 0;
+    if (!midpoint && !dpmpp_2m) {
+        fprintf(stderr, "[NAR] FATAL: unknown ODE method %s\\n", method ? method : "<null>");
+        return false;
+    }
+
+    std::vector<float> first(count);
+    std::vector<float> mid;
+    std::vector<float> second;
+    std::vector<float> previous;
+    if (midpoint) {
+        mid.resize(count);
+        second.resize(count);
+    } else {
+        previous.resize(count);
+    }
+
+    float dt = 1.0f / (float) steps;
+    bool  have_previous = false;
+    int   evaluations = 0;
+    char  name[64];
+
+    fprintf(stderr, "[NAR] Solver: %s, steps=%d, evaluations=%d\\n",
+            method, steps, midpoint ? steps * 2 : steps);
+    debug_dump_2d(dbg, "noise", state, T_lat, n->latent_dim);
+    Timer solve_timer;""",
+    "DPM++ 2M solver setup",
+)
+replace_once(
+    nar_h,
+    """        if (!nar_velocity(n, kv, state, T_lat, M, ar_len, kv_set, nar_logit_clamped(t), first.data())) {
+            return false;
+        }
+        if (dbg->enabled && step == 0) {
+            nar_dump_named(n, dbg);
+        }
+        for (size_t i = 0; i < count; i++) {
+            mid[i] = state[i] - first[i] * (dt * 0.5f);
+        }
+        if (!nar_velocity(n, kv, mid.data(), T_lat, M, ar_len, kv_set, nar_logit_clamped(t - dt * 0.5f),
+                          second.data())) {
+            return false;
+        }
+        for (size_t i = 0; i < count; i++) {
+            state[i] -= second[i] * dt;
+        }
+        snprintf(name, sizeof(name), "nar_step%d_first", step);
+        debug_dump_2d(dbg, name, first.data(), T_lat, n->latent_dim);
+        snprintf(name, sizeof(name), "nar_step%d_second", step);
+        debug_dump_2d(dbg, name, second.data(), T_lat, n->latent_dim);
+        snprintf(name, sizeof(name), "nar_step%d_xt", step);
+        debug_dump_2d(dbg, name, state, T_lat, n->latent_dim);
+        fprintf(stderr, "[NAR] Step %d/%d, %.0f ms\\n", step + 1, steps, step_timer.ms());""",
+    """        if (!nar_velocity(n, kv, state, T_lat, M, ar_len, kv_set, nar_logit_clamped(t), first.data())) {
+            return false;
+        }
+        ++evaluations;
+        if (dbg->enabled && step == 0) {
+            nar_dump_named(n, dbg);
+        }
+
+        if (midpoint) {
+            for (size_t i = 0; i < count; i++) {
+                mid[i] = state[i] - first[i] * (dt * 0.5f);
+            }
+            if (!nar_velocity(n, kv, mid.data(), T_lat, M, ar_len, kv_set, nar_logit_clamped(t - dt * 0.5f),
+                              second.data())) {
+                return false;
+            }
+            ++evaluations;
+            for (size_t i = 0; i < count; i++) {
+                state[i] -= second[i] * dt;
+            }
+        } else if (!have_previous) {
+            // First multistep point has no history: exact Euler bootstrap.
+            for (size_t i = 0; i < count; i++) {
+                state[i] -= first[i] * dt;
+            }
+        } else {
+            // Uniform-grid second-order multistep correction used by the
+            // validated YuE2_WebUI DPM++ 2M path.
+            for (size_t i = 0; i < count; i++) {
+                state[i] -= (first[i] * 1.5f - previous[i] * 0.5f) * dt;
+            }
+        }
+
+        snprintf(name, sizeof(name), "nar_step%d_first", step);
+        debug_dump_2d(dbg, name, first.data(), T_lat, n->latent_dim);
+        if (midpoint) {
+            snprintf(name, sizeof(name), "nar_step%d_second", step);
+            debug_dump_2d(dbg, name, second.data(), T_lat, n->latent_dim);
+        }
+        snprintf(name, sizeof(name), "nar_step%d_xt", step);
+        debug_dump_2d(dbg, name, state, T_lat, n->latent_dim);
+
+        if (dpmpp_2m) {
+            previous.swap(first);
+            have_previous = true;
+        }
+        fprintf(stderr, "[NAR] Step %d/%d, %.0f ms\\n", step + 1, steps, step_timer.ms());""",
+    "DPM++ 2M solver step",
+)
+replace_once(
+    nar_h,
+    """    fprintf(stderr, "[NAR] Solved: T_lat=%d, %d variations, %d steps, %.0f ms (%.1f ms/step)\\n", T_lat, M, steps,
+            solve_timer.ms(), solve_timer.ms() / steps);""",
+    """    fprintf(stderr,
+            "[NAR] Solved (%s): T_lat=%d, %d variations, %d steps, %d evaluations, %.0f ms (%.1f ms/step)\\n",
+            method, T_lat, M, steps, evaluations, solve_timer.ms(), solve_timer.ms() / steps);""",
+    "DPM++ 2M solver summary",
+)
+
+pipeline_h = yue / "src/pipeline.h"
+replace_once(
+    pipeline_h,
+    """    if (r.steps < 1 || r.lm_batch_size < 1 || r.synth_batch_size < 1) {
+        fprintf(stderr, "[Pipeline] FATAL: steps and batch sizes must be positive\\n");
+        return false;
+    }""",
+    """    if (r.steps < 1 || r.lm_batch_size < 1 || r.synth_batch_size < 1) {
+        fprintf(stderr, "[Pipeline] FATAL: steps and batch sizes must be positive\\n");
+        return false;
+    }
+    if (r.ode_method != "midpoint" && r.ode_method != "dpmpp_2m") {
+        fprintf(stderr, "[Pipeline] FATAL: ode_method must be midpoint or dpmpp_2m\\n");
+        return false;
+    }""",
+    "DPM++ 2M pipeline validation",
+)
+replace_once(
+    pipeline_h,
+    """            if (!nar_solve(nar, &p->kv, block.data(), frames, M, ar_len, i, r.steps, dbg, cancelled, cancel_data)) {""",
+    """            if (!nar_solve(nar, &p->kv, block.data(), frames, M, ar_len, i, r.steps,
+                           r.ode_method.c_str(), dbg, cancelled, cancel_data)) {""",
+    "DPM++ 2M pipeline call",
+)
+
+server_cpp = yue / "tools/yue-server.cpp"
+replace_once(
+    server_cpp,
+    """    if (r->steps < 1) {
+        res.status = 400;
+        res.set_content(json_string("error", "steps must be positive"), "application/json");
+        return false;
+    }""",
+    """    if (r->steps < 1) {
+        res.status = 400;
+        res.set_content(json_string("error", "steps must be positive"), "application/json");
+        return false;
+    }
+    if (r->ode_method != "midpoint" && r->ode_method != "dpmpp_2m") {
+        res.status = 400;
+        res.set_content(json_string("error", "ode_method must be midpoint or dpmpp_2m"), "application/json");
+        return false;
+    }""",
+    "DPM++ 2M server validation",
+)
+
 replace_once(
     yue / "src/nar.h",
     """    ggml_backend_sched_reset(n->sched);
