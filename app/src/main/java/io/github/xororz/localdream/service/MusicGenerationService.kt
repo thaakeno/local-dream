@@ -1092,7 +1092,7 @@ class MusicGenerationService : Service() {
             line.contains("[VAE] Track") ->
                 state(
                     "decoding",
-                    "Preparing exact HTP waveform tiles",
+                    "Preparing HTP waveform decoder",
                     0.90f,
                     0,
                     vaeDecodeTileTotal,
