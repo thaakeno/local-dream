@@ -1228,6 +1228,7 @@ private fun MusicDecodeProgress(state: MusicState.Generating) {
         label = "vaeDecodeProgress",
     )
     val hasActiveTile = state.total > 0 && state.step < state.total
+    val runningNativeGraph = state.total <= 0
     val activeTile = if (state.total > 0) (state.step + 1).coerceAtMost(state.total) else 0
 
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -1235,7 +1236,7 @@ private fun MusicDecodeProgress(state: MusicState.Generating) {
         // percentage inside a tile. Keep the line visibly moving while HTP is
         // executing it, then animate the real completed-tile progress at each
         // native milestone instead of inventing timer-based progress.
-        if (hasActiveTile) {
+        if (hasActiveTile || runningNativeGraph) {
             SmoothIndeterminateLinearWavyProgressIndicator(
                 modifier = Modifier.fillMaxWidth(),
             )
