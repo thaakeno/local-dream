@@ -22,6 +22,10 @@ env:
   BUILD_UPSTREAM_REPOSITORY: 'xororz/local-dream'
   BUILD_IS_FORK: 'true'
 
+permissions:
+  contents: read
+  actions: write
+
 concurrency:
   group: qwen-fp8-turbo-${{ github.ref }}
   cancel-in-progress: true
@@ -366,3 +370,12 @@ jobs:
           path: app/build/outputs/apk/basic/debug/*.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Dispatch canonical signer
+        if: github.ref_name == 'yue2-text-music'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fL --retry 3             -X POST             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/repos/${{ github.repository }}/actions/workflows/resign-yue2-alpha35.yml/dispatches"             -d '{"ref":"qwen-fp8-turbo"}'
