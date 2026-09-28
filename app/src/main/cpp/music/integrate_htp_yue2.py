@@ -710,7 +710,9 @@ replace_once(
     """        std::vector<int>            open = yue2_build_prompt_ids(encode, cot, r.style, r.lyrics, nullptr);
         std::vector<Yue2Generation> plans;""",
     """        const std::string planning_style = r.instrumental
-            ? localdream_instrumental_style(r.style)
+            ? localdream_instrumental_style(r.style) +
+                " Target duration approximately " +
+                std::to_string((int) std::lround(r.duration)) + " seconds."
             : r.style;
         const std::string planning_lyrics = r.instrumental && r.lyrics.empty()
             ? (r.duration <= 30.0f
