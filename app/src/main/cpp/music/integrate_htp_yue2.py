@@ -1023,6 +1023,105 @@ replace_once(
     "instrumental LoRA chunk activation",
 )
 
+# Exact eager NAR attention tiling for long songs. The score softmax is
+# independent per query row, so slicing query rows and concatenating their
+# contexts is mathematically identical to one giant score matrix. This ports
+# audio.cpp #642's strategy with a phone-sized score-tile budget.
+nar_h = yue / "src/nar.h"
+replace_once(
+    nar_h,
+    """// NAR attention: fresh Q/K/V for the latent block of every variation,
+""",
+    """static struct ggml_tensor * nar_attn_f32_tiled(
+        struct ggml_context * ctx,
+        struct ggml_tensor * q,
+        struct ggml_tensor * k,
+        struct ggml_tensor * v,
+        struct ggml_tensor * mask,
+        float scale) {
+    const int64_t steps = q->ne[1];
+    const int64_t kv_steps = k->ne[1];
+    const int64_t heads = q->ne[2];
+    const int64_t batch = q->ne[3];
+
+    // Keep one eager F32 score tile around 96 MiB on mobile. The rows are
+    // balanced to avoid a tiny slow tail. A short song stays one tile.
+    const int64_t bytes_per_row =
+        kv_steps * heads * batch * (int64_t) sizeof(float);
+    const int64_t target_bytes = 96LL * 1024LL * 1024LL;
+    const int64_t max_rows = std::max<int64_t>(
+        1, target_bytes / std::max<int64_t>(1, bytes_per_row));
+    const int64_t tiles = std::max<int64_t>(
+        1, (steps + max_rows - 1) / max_rows);
+    const int64_t rows_base = steps / tiles;
+    const int64_t wider = steps % tiles;
+
+    struct ggml_tensor * vt = ggml_cont(ctx, ggml_transpose(ctx, v));
+    struct ggml_tensor * joined = nullptr;
+    int64_t first = 0;
+
+    for (int64_t tile = 0; tile < tiles; ++tile) {
+        const int64_t rows = rows_base + (tile < wider ? 1 : 0);
+        struct ggml_tensor * q_tile = q;
+        struct ggml_tensor * mask_tile = mask;
+
+        if (tiles > 1) {
+            q_tile = ggml_cont(
+                ctx,
+                ggml_view_4d(
+                    ctx, q,
+                    q->ne[0], rows, q->ne[2], q->ne[3],
+                    q->nb[1], q->nb[2], q->nb[3],
+                    (size_t) first * q->nb[1]));
+            if (mask) {
+                mask_tile = ggml_cont(
+                    ctx,
+                    ggml_view_2d(
+                        ctx, mask,
+                        mask->ne[0], rows, mask->nb[1],
+                        (size_t) first * mask->nb[1]));
+            }
+        }
+
+        struct ggml_tensor * scores = ggml_mul_mat(ctx, k, q_tile);
+        ggml_mul_mat_set_prec(scores, GGML_PREC_F32);
+        struct ggml_tensor * weights =
+            ggml_soft_max_ext(ctx, scores, mask_tile, scale, 0.0f);
+        struct ggml_tensor * context = ggml_mul_mat(ctx, vt, weights);
+        ggml_mul_mat_set_prec(context, GGML_PREC_F32);
+        joined = joined ? ggml_concat(ctx, joined, context, 1) : context;
+        first += rows;
+    }
+
+    if (tiles > 1) {
+        fprintf(stderr,
+                "[NAR] Exact eager attention tiling: %lld query rows, %lld key rows, %lld tiles, <=%.1f MiB scores/tile\\n",
+                (long long) steps, (long long) kv_steps, (long long) tiles,
+                (double) target_bytes / (1024.0 * 1024.0));
+    }
+
+    return ggml_cont(ctx, ggml_permute(ctx, joined, 0, 2, 1, 3));
+}
+
+// NAR attention: fresh Q/K/V for the latent block of every variation,
+""",
+    "exact NAR attention tiling helper",
+)
+
+replace_once(
+    nar_h,
+    """    float                scale = 1.0f / sqrtf((float) D);
+    struct ggml_tensor * attn  = use_flash_attn ? ggml_flash_attn_ext(ctx, q, k_full, v_full, mask, scale, 0.0f, 0.0f) :
+                                                  qwen3_attn_f32(ctx, q, k_full, v_full, mask, scale);
+""",
+    """    float scale = 1.0f / sqrtf((float) D);
+    struct ggml_tensor * attn = use_flash_attn
+        ? ggml_flash_attn_ext(ctx, q, k_full, v_full, mask, scale, 0.0f, 0.0f)
+        : nar_attn_f32_tiled(ctx, q, k_full, v_full, mask, scale);
+""",
+    "exact NAR attention tiling call",
+)
+
 # Local Dream mobile acoustic solver.
 #
 # Midpoint remains the release/reference protocol. The fast path below ports
