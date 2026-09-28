@@ -146,7 +146,7 @@ cmake -S "$YUE2_DIR" -B "$FAST_BUILD_DIR" -G Ninja \
     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
 
-cmake --build "$FAST_BUILD_DIR" --target yue-transport-bench htp-v79 htp-v81 -j "$(nproc)"
+cmake --build "$FAST_BUILD_DIR" --target yue-transport-bench htp-mempool-v79 htp-mempool-v81 -j "$(nproc)"
 cp "$FAST_BUILD_DIR/yue-transport-bench" "$JNI_DIR/libyue2_bench_fastrpc.so"
 
 for arch in v79 v81; do
