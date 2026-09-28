@@ -707,6 +707,23 @@ replace_once(
 
 replace_once(
     pipeline_h,
+    """        std::vector<int>            open = yue2_build_prompt_ids(encode, cot, r.style, r.lyrics, nullptr);
+        std::vector<Yue2Generation> plans;""",
+    """        const std::string planning_style = r.instrumental
+            ? std::string("Instrumental, ") + r.style +
+                ", no vocals, no singing, no choir, no spoken words"
+            : r.style;
+        const std::string planning_lyrics = r.instrumental && r.lyrics.empty()
+            ? std::string("[Intro]\\n\\n[Verse]\\n\\n[Chorus]\\n\\n[Outro]\\n")
+            : r.lyrics;
+        std::vector<int>            open =
+            yue2_build_prompt_ids(encode, cot, planning_style, planning_lyrics, nullptr);
+        std::vector<Yue2Generation> plans;""",
+    "instrumental planner prompt",
+)
+
+replace_once(
+    pipeline_h,
     """    std::vector<std::vector<int>> prefixes(B);
     for (int i = 0; i < B; i++) {
         prefixes[i] = yue2_build_prompt_ids(encode, cot, r.style, r.lyrics, has_score ? &abc_ids[i] : nullptr);
@@ -727,12 +744,15 @@ replace_once(
     }
 
     const std::string effective_style = r.instrumental
-        ? std::string("Instrumental, no vocals, no singing, no humming. ") + r.style
+        ? std::string("Instrumental, ") + r.style +
+            ", no vocals, no singing, no choir, no spoken words"
         : r.style;
-    const std::string effective_lyrics = r.instrumental ? std::string() : r.lyrics;
 
     std::vector<std::vector<int>> prefixes(B);
     for (int i = 0; i < B; i++) {
+        const std::string effective_lyrics = r.instrumental && has_score
+            ? localdream_instrumental_lyric_tags(scores[i])
+            : r.lyrics;
         prefixes[i] = yue2_build_prompt_ids(
             encode, cot, effective_style, effective_lyrics,
             has_score ? &abc_ids[i] : nullptr);
