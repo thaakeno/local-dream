@@ -490,31 +490,18 @@ static std::string localdream_instrumental_style(const std::string & raw_style) 
         style.pop_back();
     }
 
-    auto lower = [](std::string value) {
-        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-            return static_cast<char>(std::tolower(c));
-        });
-        return value;
-    };
+    std::string lowered = style;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
 
-    std::string lowered = lower(style);
+    // The instrumental LoRA was trained with ordinary YuE2 style tags and
+    // section captions in the lyrics channel. Do not poison that distribution
+    // with a stack of negative prose; the adapter + score transfer enforce the
+    // no-vocal path.
     if (lowered.rfind("instrumental", 0) != 0) {
         style = "Instrumental, " + style;
-        lowered = lower(style);
     }
-
-    const std::array<const char *, 4> conditions = {
-        "no vocals", "no singing", "no choir", "no spoken words"
-    };
-    for (const char * condition : conditions) {
-        if (lowered.find(condition) == std::string::npos) {
-            style += ", ";
-            style += condition;
-            lowered += ", ";
-            lowered += condition;
-        }
-    }
-    style += ".";
     return style;
 }
 
