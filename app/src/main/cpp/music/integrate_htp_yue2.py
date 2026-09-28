@@ -1309,6 +1309,108 @@ replace_once(
     "phase-sized KV generation reserve",
 )
 
+# Let symbolic planning stop on a complete score boundary once it already
+# covers the requested audio duration. Waiting for the model's natural ABC_END
+# can make a 5 s request write a full song and spend hundreds of unnecessary
+# autoregressive HTP steps.
+generate_h = yue / "src/generate.h"
+replace_once(
+    generate_h,
+    """                          std::vector<Yue2Generation> *         out,
+                          bool (*cancelled)(void *) = nullptr,
+                          void * cancel_data        = nullptr) {""",
+    """                          std::vector<Yue2Generation> *         out,
+                          bool (*cancelled)(void *) = nullptr,
+                          void * cancel_data        = nullptr,
+                          bool (*stop_sequence)(int, const std::vector<int> &, void *) = nullptr,
+                          void * stop_data = nullptr) {""",
+    "AR target-stop callback signature",
+)
+
+replace_once(
+    generate_h,
+    """                } else {
+                    g.tokens.push_back(token);
+                    if ((int) g.tokens.size() >= s.max_tokens) {
+                        owed[i] = 2;
+                    }
+                }""",
+    """                } else {
+                    g.tokens.push_back(token);
+                    if (stop_sequence && stop_sequence(i, g.tokens, stop_data)) {
+                        g.truncated = false;
+                        owed[i] = 2;
+                        fprintf(stderr, "[AR] %s song %d: target reached at step %d\\n", label, i, step);
+                    } else if ((int) g.tokens.size() >= s.max_tokens) {
+                        owed[i] = 2;
+                    }
+                }""",
+    "AR target-stop callback body",
+)
+
+replace_once(
+    pipeline_h,
+    """// Renders lm_batch_size songs times synth_batch_size variations, song-major:
+""",
+    """struct LocalDreamPlanStop {
+    BPETokenizer * tok = nullptr;
+    double target_seconds = 0.0;
+};
+
+static bool localdream_plan_target_reached(
+        int song,
+        const std::vector<int> & tokens,
+        void * opaque) {
+    (void) song;
+    auto * stop = static_cast<LocalDreamPlanStop *>(opaque);
+    if (!stop || !stop->tok || tokens.size() < 48 || stop->target_seconds <= 0.0) {
+        return false;
+    }
+
+    // A valid parse here means the token stream itself ends on a complete
+    // native Vocal+Ins score group, so stopping never invents or repairs ABC.
+    try {
+        const std::string abc = bpe_decode(stop->tok, tokens);
+        const double seconds = nominal_seconds(parse(abc));
+        if (seconds + 0.02 >= stop->target_seconds) {
+            fprintf(stderr,
+                    "[Instrumental] Planned score reached %.2fs target with %.2fs at %zu tokens\\n",
+                    stop->target_seconds, seconds, tokens.size());
+            return true;
+        }
+    } catch (const std::exception &) {
+        // Most intermediate token boundaries are intentionally incomplete.
+    }
+    return false;
+}
+
+// Renders lm_batch_size songs times synth_batch_size variations, song-major:
+""",
+    "instrumental plan target-stop helper",
+)
+
+replace_once(
+    pipeline_h,
+    """        std::vector<int>            open =
+            yue2_build_prompt_ids(encode, cot, planning_style, planning_lyrics, nullptr);
+        std::vector<Yue2Generation> plans;
+        if (!yue2_generate(lm, &p->kv, std::vector<std::vector<int>>(B, open), {}, 1.0f, r.abc_sampling, r.lm_seed,
+                           YUE2_PHASE_ABC, &plans, cancelled, cancel_data)) {
+            return false;
+        }""",
+    """        std::vector<int>            open =
+            yue2_build_prompt_ids(encode, cot, planning_style, planning_lyrics, nullptr);
+        std::vector<Yue2Generation> plans;
+        LocalDreamPlanStop plan_stop = { tok, r.instrumental ? (double) r.duration : 0.0 };
+        if (!yue2_generate(lm, &p->kv, std::vector<std::vector<int>>(B, open), {}, 1.0f, r.abc_sampling, r.lm_seed,
+                           YUE2_PHASE_ABC, &plans, cancelled, cancel_data,
+                           r.instrumental ? localdream_plan_target_reached : nullptr,
+                           r.instrumental ? &plan_stop : nullptr)) {
+            return false;
+        }""",
+    "instrumental plan target-stop call",
+)
+
 # Local Dream mobile acoustic solver.
 #
 # Midpoint remains the release/reference protocol. The fast path below ports
