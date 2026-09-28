@@ -714,7 +714,11 @@ replace_once(
                 ", no vocals, no singing, no choir, no spoken words"
             : r.style;
         const std::string planning_lyrics = r.instrumental && r.lyrics.empty()
-            ? std::string("[Intro]\\n\\n[Verse]\\n\\n[Chorus]\\n\\n[Outro]\\n")
+            ? (r.duration <= 30.0f
+                ? std::string("[intro]\\n[verse]\\n[outro]\\n")
+                : r.duration <= 90.0f
+                    ? std::string("[intro]\\n[verse]\\n[chorus]\\n[outro]\\n")
+                    : std::string("[intro]\\n[verse]\\n[chorus]\\n[bridge]\\n[chorus]\\n[outro]\\n"))
             : r.lyrics;
         std::vector<int>            open =
             yue2_build_prompt_ids(encode, cot, planning_style, planning_lyrics, nullptr);
