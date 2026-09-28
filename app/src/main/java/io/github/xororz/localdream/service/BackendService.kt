@@ -1041,6 +1041,18 @@ class BackendService : Service() {
                 env["YUE2_STRICT_ACCELERATOR"] = "1"
                 env["LOCAL_DREAM_YUE2_BACKEND"] = "$musicTransport-native-0.7.0-37f752"
 
+                val instrumentalLora = File(modelsDir, "instrumental_lora.gguf")
+                if (instrumentalLora.isFile && instrumentalLora.length() > 1_000_000L) {
+                    env["YUE2_AR_LORA"] = instrumentalLora.absolutePath
+                    BackendDiagnostics.append(
+                        this,
+                        "AR_LORA",
+                        "installed=true size=${instrumentalLora.length()} path=${instrumentalLora.absolutePath}",
+                    )
+                } else {
+                    BackendDiagnostics.append(this, "AR_LORA", "installed=false")
+                }
+
                 // SM8850: keep HMX/HVX enabled. YuE2's full 20 s Oobleck
                 // graph is unusually long-lived and wide: sending the old
                 // 1280-op / 32-deep DSPQueue profile leaves too much work in
