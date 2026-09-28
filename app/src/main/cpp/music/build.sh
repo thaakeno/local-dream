@@ -127,7 +127,7 @@ rm -f "$ASSET_DIR/ggml-hexagon.cfg"
 cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
-variant=dspqueue-yue2-native-0.5.0
+variant=dspqueue-yue2-native-0.6.0
 integration=snake-hvx-fused,sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-channel-blocked,channel-bcast-addmul-hvx,adaptive-binary-vtcm,dpmpp2m-sgm-uniform,htp-kv-window64,strict-accelerator
 cpu_fallback=disabled
 EOF
