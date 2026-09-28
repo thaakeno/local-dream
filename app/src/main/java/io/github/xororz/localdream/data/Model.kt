@@ -473,6 +473,9 @@ data class Model(
             return packageFiles.all { entry ->
                 val remote = entry.substringBefore('|')
                 val local = entry.substringAfter('|', remote.substringAfterLast('/'))
+                if (marker == "YUE2" && local.endsWith(".safetensors")) {
+                    return@all true
+                }
                 File(modelDir, local).let { it.isFile && it.length() > 0L }
             }
         }

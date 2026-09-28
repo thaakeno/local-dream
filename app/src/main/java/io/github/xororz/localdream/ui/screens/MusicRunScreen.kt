@@ -1474,16 +1474,22 @@ private fun MusicGenerationConfigSheet(
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Render steps", style = MaterialTheme.typography.titleSmall)
+                    val standardStepOptions = listOf(
+                        6 to "6 · Speed",
+                        8 to "8 · Fast",
+                        16 to "16 · Fast Quality",
+                        32 to "32 · Reference",
+                    )
+                    val stepOptions = if (standardStepOptions.none { it.first == steps }) {
+                        standardStepOptions + (steps to "$steps · Active")
+                    } else {
+                        standardStepOptions
+                    }
                     Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        listOf(
-                            6 to "6 · Speed",
-                            8 to "8 · Fast",
-                            16 to "16 · Fast Quality",
-                            32 to "32 · Reference",
-                        ).forEach { (option, label) ->
+                        stepOptions.forEach { (option, label) ->
                             FilterChip(
                                 selected = steps == option,
                                 onClick = { onSteps(option) },

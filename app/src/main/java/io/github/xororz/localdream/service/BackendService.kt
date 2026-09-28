@@ -857,9 +857,7 @@ class BackendService : Service() {
                     //
                     // Core=256 keeps each Oobleck upsampling tile strictly within
                     // SM8850's 8 MB VTCM, avoiding catastrophic spilling to DDR.
-                    val loraFile = File(modelsDir, "ar_lora_inst_v3abc.safetensors").takeIf { it.exists() }
-                        ?: File(modelsDir, "instrumental_lora.safetensors").takeIf { it.exists() }
-                    val musicArgs = mutableListOf(
+                    mutableListOf(
                         executableFile.absolutePath,
                         "--model",
                         File(modelsDir, "backbone.gguf").absolutePath,
@@ -878,10 +876,6 @@ class BackendService : Service() {
                         "--vae-halo",
                         "16",
                     )
-                    if (loraFile != null) {
-                        musicArgs += listOf("--lora", loraFile.absolutePath)
-                    }
-                    musicArgs
                 }
 
                 else -> mutableListOf(

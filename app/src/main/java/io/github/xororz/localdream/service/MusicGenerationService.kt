@@ -395,10 +395,14 @@ class MusicGenerationService : Service() {
             style.contains("no vocal", ignoreCase = true)
 
         val lyrics = if (isInstrumentalPrompt && (rawLyrics.isBlank() || rawLyrics.trim() == "[instrumental]")) {
-            // Proven HuggingFace / Mothersuperior instrumental LoRA format:
-            // Explicit section tags instruct the ABC composer to plan structured
-            // movement without emitting vocal syllables or V: Vocal score tracks.
-            "[Intro - Instrumental]\n[Verse - Instrumental]\n[Outro - Instrumental]"
+            // Proven HuggingFace (mrfakename/yue2-3b & hugging-apps/yue2-instrumental-cot-lora)
+            // clean untimed section tags without internal text notes, instructing the symbolic
+            // planner to compose structured instrumental movements without vocal tracks.
+            when {
+                duration <= 30 -> "[intro]\n[verse]\n[outro]"
+                duration <= 90 -> "[intro]\n[verse]\n[chorus]\n[outro]"
+                else -> "[intro]\n[verse]\n[chorus]\n[bridge]\n[chorus]\n[outro]"
+            }
         } else {
             rawLyrics
         }
