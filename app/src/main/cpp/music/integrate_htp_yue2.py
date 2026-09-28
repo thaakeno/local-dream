@@ -54,6 +54,7 @@ shutil.copy2(overlay / "col2im-ops.c", htp / "col2im-ops.c")
 shutil.copy2(overlay / "snake-ops.c", htp / "snake-ops.c")
 shutil.copy2(overlay / "channel-bcast-add-ops.c", htp / "channel-bcast-add-ops.c")
 shutil.copy2(overlay / "instrumental-transfer.h", yue / "src/instrumental-transfer.h")
+shutil.copy2(overlay / "ar-lora.h", yue / "src/ar-lora.h")
 
 replace_once(
     htp / "CMakeLists.txt",
@@ -738,6 +739,9 @@ replace_once(
 """,
     "instrumental score transfer",
 )
+
+qwen_enc = yue / "src/qwen3-enc.h"
+qwen_lm = yue / "src/qwen3-lm.h"
 
 # Local Dream mobile acoustic solver.
 #
