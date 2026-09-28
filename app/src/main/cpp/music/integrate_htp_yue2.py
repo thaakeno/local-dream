@@ -4,7 +4,7 @@
 The dependency revisions are pinned. This script fails on source drift and adds
 native HTP implementations for the Oobleck ops missing from upstream
 DSPQueue (SIN, COL2IM_1D and streaming channel-broadcast ADD/MUL), fuses
-Oobleck's five-node Snake activation into one HVX kernel, uses ComfyUI-compatible
+Oobleck Snake and transpose-conv bias into native HTP kernels, uses ComfyUI-compatible
 DPM-Solver++ 2M with the SGM-uniform flow schedule, trims HTP attention windows
 to native 64-key blocks, and enforces strict accelerator compute.
 There is no CPU compute fallback.
@@ -44,21 +44,21 @@ replace_once(
 replace_once(
     htp / "htp-ops.h",
     "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n\n    HTP_OP_INVALID",
-    "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n    HTP_OP_SIN,\n    HTP_OP_COL2IM_1D,\n    HTP_OP_SNAKE,\n    HTP_OP_CHANNEL_BCAST_ADD,\n    HTP_OP_CHANNEL_BCAST_MUL,\n\n    HTP_OP_INVALID",
+    "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n    HTP_OP_SIN,\n    HTP_OP_COL2IM_1D,\n    HTP_OP_COL2IM_1D_BIAS,\n    HTP_OP_SNAKE,\n    HTP_OP_CHANNEL_BCAST_ADD,\n    HTP_OP_CHANNEL_BCAST_MUL,\n\n    HTP_OP_INVALID",
     "HTP op enum",
 )
 
 replace_once(
     htp / "htp-ctx.h",
     "int op_im2col(struct htp_ops_context * octx);\nint op_allreduce",
-    "int op_im2col(struct htp_ops_context * octx);\nint op_col2im_1d(struct htp_ops_context * octx);\nint op_sin(struct htp_ops_context * octx);\nint op_snake(struct htp_ops_context * octx);\nint op_channel_bcast_add(struct htp_ops_context * octx);\nint op_channel_bcast_mul(struct htp_ops_context * octx);\nint op_allreduce",
+    "int op_im2col(struct htp_ops_context * octx);\nint op_col2im_1d(struct htp_ops_context * octx);\nint op_col2im_1d_bias(struct htp_ops_context * octx);\nint op_sin(struct htp_ops_context * octx);\nint op_snake(struct htp_ops_context * octx);\nint op_channel_bcast_add(struct htp_ops_context * octx);\nint op_channel_bcast_mul(struct htp_ops_context * octx);\nint op_allreduce",
     "HTP op declarations",
 )
 
 replace_once(
     htp / "main.c",
     "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_ROLL:",
-    "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_COL2IM_1D:\n            return op_col2im_1d(octx);\n\n        case HTP_OP_SIN:\n            return op_sin(octx);\n\n        case HTP_OP_SNAKE:\n            return op_snake(octx);\n\n        case HTP_OP_CHANNEL_BCAST_ADD:\n            return op_channel_bcast_add(octx);\n\n        case HTP_OP_CHANNEL_BCAST_MUL:\n            return op_channel_bcast_mul(octx);\n\n        case HTP_OP_ROLL:",
+    "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_COL2IM_1D:\n            return op_col2im_1d(octx);\n\n        case HTP_OP_COL2IM_1D_BIAS:\n            return op_col2im_1d_bias(octx);\n\n        case HTP_OP_SIN:\n            return op_sin(octx);\n\n        case HTP_OP_SNAKE:\n            return op_snake(octx);\n\n        case HTP_OP_CHANNEL_BCAST_ADD:\n            return op_channel_bcast_add(octx);\n\n        case HTP_OP_CHANNEL_BCAST_MUL:\n            return op_channel_bcast_mul(octx);\n\n        case HTP_OP_ROLL:",
     "HTP dispatch",
 )
 
@@ -200,6 +200,82 @@ replace_once(
     "YuE2 channel-broadcast binary support",
 )
 
+# Oobleck transpose-conv is emitted as COL2IM_1D followed immediately by a
+# [T,C] + [1,C] bias. Fuse that pair in the DSPQueue batch so the native
+# COL2IM kernel applies the bias while each sample is already in a register.
+# This removes one complete waveform-sized DDR pass per upsampling block.
+col2im_bias_fusion = r"""
+    bool try_fuse_yue2_col2im_bias(const htp_opnode & node) {
+        if ((node.opcode != HTP_OP_ADD &&
+             node.opcode != HTP_OP_CHANNEL_BCAST_ADD) ||
+            n_ops == 0) {
+            return false;
+        }
+
+        htp_opnode & col = ops[n_ops - 1];
+        if (col.opcode != HTP_OP_COL2IM_1D) {
+            return false;
+        }
+
+        const ggml_tensor * col_out = col.dst();
+        const ggml_tensor * out = node.dst();
+        if (!col_out || !out || !ggml_hexagon_tensor_is_fuseable(col_out)) {
+            return false;
+        }
+
+        const ggml_tensor * bias = nullptr;
+        if (node.src0() == col_out ||
+            (node.src0() && node.src0()->data == col_out->data)) {
+            bias = node.src1();
+        } else if (node.src1() == col_out ||
+                   (node.src1() && node.src1()->data == col_out->data)) {
+            bias = node.src0();
+        }
+
+        if (!bias || bias->type != GGML_TYPE_F32 ||
+            col_out->type != GGML_TYPE_F32 || out->type != GGML_TYPE_F32 ||
+            bias->ne[0] != 1 || bias->ne[1] != col_out->ne[1] ||
+            bias->ne[2] != 1 || bias->ne[3] != 1 ||
+            !ggml_is_contiguous(bias) || !ggml_is_contiguous(col_out) ||
+            !ggml_is_contiguous(out) || !ggml_are_same_shape(col_out, out)) {
+            return false;
+        }
+
+        const ggml_tensor * src = col.src0();
+        if (!src || !try_fuse_common({src, bias, out})) {
+            return false;
+        }
+
+        col.opcode = HTP_OP_COL2IM_1D_BIAS;
+        col.name = "YUE2_COL2IM_BIAS";
+        col.inputs.clear();
+        col.inputs.push_back(src);
+        col.inputs.push_back(bias);
+        col.outputs.clear();
+        col.outputs.push_back(out);
+        col.fused.push_back(node.node);
+
+        htp_op_desc & o = h_ops[n_ops - 1];
+        o.opcode = HTP_OP_COL2IM_1D_BIAS;
+        // Preserve o.params: they already hold stride/out-channels/padding
+        // from the original COL2IM node.
+        o.src[0] = add_tensor(src);
+        o.src[1] = add_tensor(bias);
+        for (unsigned int k = 2; k < HTP_OP_MAX_INPUTS; ++k) {
+            o.src[k] = 0xffff;
+        }
+        o.dst[0] = add_tensor(out);
+        for (unsigned int k = 1; k < HTP_OP_MAX_OUTPUTS; ++k) {
+            o.dst[k] = 0xffff;
+        }
+
+        HEX_VERBOSE("ggml-hex: %s fused YuE2 COL2IM+bias (#%u)\n",
+                    sess->c_name(), n_ops - 1);
+        return true;
+    }
+
+"""
+
 # Oobleck Snake is emitted by yue2.cpp as:
 #   MUL(x, alpha) -> SIN -> SQR -> MUL(inv_beta) -> ADD(x)
 # Collapse the chain inside the DSPQueue batch builder so one HTP invocation
@@ -334,8 +410,9 @@ replace_once(
     host,
     """    bool try_fuse(const htp_opnode & node) {
         if (!opt_opfusion) return false;""",
-    snake_fusion + """    bool try_fuse(const htp_opnode & node) {
+    col2im_bias_fusion + snake_fusion + """    bool try_fuse(const htp_opnode & node) {
         if (!opt_opfusion) return false;
+        if (try_fuse_yue2_col2im_bias(node)) return true;
         if (try_fuse_yue2_snake(node)) return true;""",
     "YuE2 fused Snake batch pattern",
 )
@@ -360,7 +437,8 @@ replace_once(
                 }
             } else if ((graph->nodes[i]->op == GGML_OP_MUL ||
                         graph->nodes[i]->op == GGML_OP_SIN ||
-                        graph->nodes[i]->op == GGML_OP_SQR) &&
+                        graph->nodes[i]->op == GGML_OP_SQR ||
+                        graph->nodes[i]->op == GGML_OP_COL2IM_1D) &&
                        ggml_node_has_n_uses(graph, i, 1)) {
                 // YuE2 Oobleck Snake intermediates are single-consumer. Mark
                 // them so the DSPQueue pattern fusion can safely collapse
