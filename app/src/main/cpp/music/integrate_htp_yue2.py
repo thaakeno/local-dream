@@ -541,6 +541,7 @@ static bool backend_strict_pin_graph(ggml_backend_sched_t sched,
     }
 
     int pinned = 0;
+    int unsupported = 0;
     const int n_nodes = ggml_graph_n_nodes(graph);
     for (int i = 0; i < n_nodes; ++i) {
         struct ggml_tensor * node = ggml_graph_node(graph, i);
@@ -548,11 +549,13 @@ static bool backend_strict_pin_graph(ggml_backend_sched_t sched,
             continue;
         }
         if (!ggml_backend_supports_op(accelerator, node)) {
+            ++unsupported;
             const struct ggml_tensor * s0 = node->src[0];
             const struct ggml_tensor * s1 = node->src[1];
             fprintf(stderr,
-                    "[%s] FATAL: HTP unsupported node %d op=%s name=%s; CPU fallback blocked\\n",
-                    label, i, ggml_op_desc(node), node->name[0] ? node->name : "<unnamed>");
+                    "[%s] UNSUPPORTED[%d] node=%d op=%s name=%s; CPU fallback blocked\\n",
+                    label, unsupported, i, ggml_op_desc(node),
+                    node->name[0] ? node->name : "<unnamed>");
             fprintf(stderr,
                     "[%s] node shape=[%lld,%lld,%lld,%lld] type=%s nb=[%zu,%zu,%zu,%zu]\\n",
                     label,
@@ -580,10 +583,17 @@ static bool backend_strict_pin_graph(ggml_backend_sched_t sched,
                         s1->nb[0], s1->nb[1], s1->nb[2], s1->nb[3],
                         (int) ggml_is_contiguous(s1), (int) ggml_is_permuted(s1));
             }
-            return false;
+            continue;
         }
         ggml_backend_sched_set_tensor_backend(sched, node, accelerator);
         ++pinned;
+    }
+
+    if (unsupported != 0) {
+        fprintf(stderr,
+                "[%s] FATAL: strict HTP preflight found %d unsupported compute nodes out of %d; CPU fallback blocked\\n",
+                label, unsupported, n_nodes);
+        return false;
     }
 
     if (getenv("YUE2_LOG_DEBUG")) {
