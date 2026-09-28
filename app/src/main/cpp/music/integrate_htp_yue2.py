@@ -715,7 +715,8 @@ replace_once(
     """    if (r.instrumental && has_score) {
         for (int i = 0; i < B; ++i) {
             try {
-                scores[i] = localdream_instrumental_transfer_abc(scores[i]);
+                scores[i] = localdream_instrumental_transfer_abc(
+                    scores[i], truncated[i], (double) r.duration);
             } catch (const std::exception & e) {
                 fprintf(stderr, "[Instrumental] FATAL: score transfer failed: %s\\n", e.what());
                 return false;
