@@ -1783,6 +1783,145 @@ private fun MusicTrackActions(
     }
 }
 
+private data class MusicPromptTemplate(
+    val title: String,
+    val instrumental: Boolean,
+    val style: String,
+)
+
+private val instrumentalPromptTemplates = listOf(
+    MusicPromptTemplate(
+        "Solo piano",
+        true,
+        "Solo acoustic piano, intimate contemporary classical, lyrical melody, warm natural room, gentle rubato, soft dynamics, sparse pedal, close-miked",
+    ),
+    MusicPromptTemplate(
+        "Jazz trio",
+        true,
+        "Instrumental jazz trio, warm grand piano, upright bass, brushed drums, relaxed swing, late-night club ambience, conversational improvisation, natural dynamics",
+    ),
+    MusicPromptTemplate(
+        "Chamber strings",
+        true,
+        "Instrumental chamber strings, lyrical violin lead, viola and cello counterlines, slow-building arrangement, restrained percussion, wide natural hall, expressive dynamics",
+    ),
+    MusicPromptTemplate(
+        "Ambient electronic",
+        true,
+        "Instrumental ambient electronica, soft analog pads, clean electric piano, restrained sub bass, subtle pulse, spacious stereo field, gradual harmonic movement",
+    ),
+)
+
+private val songPromptTemplates = listOf(
+    MusicPromptTemplate(
+        "Indie rock",
+        false,
+        "English, indie rock, restrained male vocal, clean electric guitars, melodic bass, live drums, intimate verses, wider chorus, dry modern production, 104 BPM",
+    ),
+    MusicPromptTemplate(
+        "Alt R&B",
+        false,
+        "English, alternative R&B, expressive female vocal, Rhodes piano, warm synth bass, tight electronic drums, sparse verses, layered chorus harmonies, polished intimate production, 88 BPM",
+    ),
+    MusicPromptTemplate(
+        "Synth-pop",
+        false,
+        "English, synth-pop, clear lead vocal, bright analog synths, punchy bass, crisp electronic drums, strong melodic chorus, clean modern mix, 118 BPM",
+    ),
+    MusicPromptTemplate(
+        "Acoustic folk",
+        false,
+        "English, contemporary folk, natural lead vocal, fingerpicked acoustic guitar, upright bass, light percussion, close room ambience, intimate verse-led arrangement, 82 BPM",
+    ),
+)
+
+@Composable
+private fun PromptTemplatePicker(
+    instrumental: Boolean,
+    onModeChange: (Boolean) -> Unit,
+    onApply: (MusicPromptTemplate) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Prompt starters",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Compact YuE2-style prompts you can edit after applying.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(
+                    Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = instrumental,
+                    onClick = { onModeChange(true) },
+                    label = { Text("Instrumental") },
+                    modifier = Modifier.weight(1f),
+                )
+                FilterChip(
+                    selected = !instrumental,
+                    onClick = { onModeChange(false) },
+                    label = { Text("Songs") },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+
+            val templates = if (instrumental) instrumentalPromptTemplates else songPromptTemplates
+            templates.chunked(2).forEach { rowTemplates ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    rowTemplates.forEach { template ->
+                        OutlinedButton(
+                            onClick = { onApply(template) },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text(template.title)
+                        }
+                    }
+                    if (rowTemplates.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+
+            Text(
+                if (instrumental) {
+                    "Instrumental mode handles the no-vocal workflow itself, so describe the music rather than stacking negative instructions."
+                } else {
+                    "For songs, keep the style line coherent and put section structure in Lyrics with tags such as [Verse], [Chorus], [Bridge] and [Outro]."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MusicHistorySheet(
