@@ -743,6 +743,286 @@ replace_once(
 qwen_enc = yue / "src/qwen3-enc.h"
 qwen_lm = yue / "src/qwen3-lm.h"
 
+# Functional AR LoRA. Base quantized weights remain immutable and each
+# adapter projection evaluates W*x + scale*B*(A*x) on the same HTP backend.
+replace_once(
+    qwen_enc,
+    """#include "gguf-weights.h"
+""",
+    """#include "gguf-weights.h"
+#include "ar-lora.h"
+""",
+    "AR LoRA include",
+)
+
+replace_once(
+    qwen_enc,
+    """    struct ggml_tensor * down_proj;  // [FFN, H]
+};""",
+    """    struct ggml_tensor * down_proj;  // [FFN, H]
+
+    Yue2LoraPair lora_q;
+    Yue2LoraPair lora_k;
+    Yue2LoraPair lora_v;
+    Yue2LoraPair lora_o;
+    Yue2LoraPair lora_gate;
+    Yue2LoraPair lora_up;
+    Yue2LoraPair lora_down;
+    bool lora_enabled = false;
+};""",
+    "AR LoRA layer bindings",
+)
+
+replace_once(
+    qwen_enc,
+    """static struct ggml_tensor * qwen3_build_mlp(struct ggml_context * ctx,
+                                            Qwen3Layer *          ly,
+                                            struct ggml_tensor *  x,  // [H, S]
+                                            int                   S) {
+    (void) S;
+    struct ggml_tensor * ff;
+    if (ly->gate_up) {
+        struct ggml_tensor * gu = qwen3_linear(ctx, ly->gate_up, x);
+        ff                      = ggml_swiglu(ctx, gu);
+    } else {
+        struct ggml_tensor * gate = qwen3_linear(ctx, ly->gate_proj, x);
+        struct ggml_tensor * up   = qwen3_linear(ctx, ly->up_proj, x);
+        ff                        = ggml_swiglu_split(ctx, gate, up);
+    }
+    return qwen3_linear(ctx, ly->down_proj, ff);
+}""",
+    """static struct ggml_tensor * qwen3_build_mlp(struct ggml_context * ctx,
+                                            Qwen3Layer *          ly,
+                                            struct ggml_tensor *  x,  // [H, S]
+                                            int                   S) {
+    struct ggml_tensor * ff;
+    if (ly->gate_up) {
+        struct ggml_tensor * gu = qwen3_linear(ctx, ly->gate_up, x);
+        if (ly->lora_enabled &&
+            (yue2_lora_pair_ready(ly->lora_gate) || yue2_lora_pair_ready(ly->lora_up))) {
+            const int64_t F = gu->ne[0] / 2;
+            struct ggml_tensor * gate = ggml_view_2d(ctx, gu, F, S, gu->nb[1], 0);
+            struct ggml_tensor * up = ggml_view_2d(ctx, gu, F, S, gu->nb[1], (size_t) F * gu->nb[0]);
+            gate = yue2_lora_apply(ctx, gate, ly->lora_gate, x, true);
+            up = yue2_lora_apply(ctx, up, ly->lora_up, x, true);
+            ff = ggml_swiglu_split(ctx, gate, up);
+        } else {
+            ff = ggml_swiglu(ctx, gu);
+        }
+    } else {
+        struct ggml_tensor * gate = qwen3_linear(ctx, ly->gate_proj, x);
+        struct ggml_tensor * up   = qwen3_linear(ctx, ly->up_proj, x);
+        gate = yue2_lora_apply(ctx, gate, ly->lora_gate, x, ly->lora_enabled);
+        up = yue2_lora_apply(ctx, up, ly->lora_up, x, ly->lora_enabled);
+        ff = ggml_swiglu_split(ctx, gate, up);
+    }
+    struct ggml_tensor * out = qwen3_linear(ctx, ly->down_proj, ff);
+    return yue2_lora_apply(ctx, out, ly->lora_down, ff, ly->lora_enabled);
+}""",
+    "AR LoRA MLP",
+)
+
+replace_once(
+    qwen_lm,
+    """    WeightCtx            wctx;
+    ggml_backend_t       backend;""",
+    """    WeightCtx            wctx;
+    WeightCtx            lora_wctx;
+    bool                 lora_loaded;
+    bool                 lora_enabled;
+    ggml_backend_t       backend;""",
+    "AR LoRA model storage",
+)
+
+replace_once(
+    qwen_lm,
+    """    wctx_alloc(&m->wctx, m->backend);
+    gf_close(&gf);
+
+    // Persistent graph arenas""",
+    """    wctx_alloc(&m->wctx, m->backend);
+    gf_close(&gf);
+
+    const char * lora_path = getenv("YUE2_AR_LORA");
+    if (lora_path && lora_path[0]) {
+        GGUFModel lf;
+        if (!gf_load(&lf, lora_path)) {
+            fprintf(stderr, "[AR-LoRA] FATAL: cannot load %s\\n", lora_path);
+            return false;
+        }
+        if (strcmp(gf_get_str(lf, "general.architecture"), "yue2_lora") != 0 ||
+            strcmp(gf_get_str(lf, "yue2.component"), "generation-adapter") != 0 ||
+            strcmp(gf_get_str(lf, "yue2.adapter.type"), "lora") != 0) {
+            fprintf(stderr, "[AR-LoRA] FATAL: incompatible adapter metadata\\n");
+            gf_close(&lf);
+            return false;
+        }
+        const int64_t rank_key = gguf_find_key(lf.gguf, "yue2.adapter.rank");
+        const int64_t alpha_key = gguf_find_key(lf.gguf, "yue2.adapter.alpha");
+        if (rank_key < 0 || alpha_key < 0) {
+            fprintf(stderr, "[AR-LoRA] FATAL: rank/alpha metadata missing\\n");
+            gf_close(&lf);
+            return false;
+        }
+        const uint32_t rank = gguf_get_val_u32(lf.gguf, rank_key);
+        const float alpha = gguf_get_val_f32(lf.gguf, alpha_key);
+        if (rank == 0 || !isfinite(alpha) || alpha <= 0.0f) {
+            fprintf(stderr, "[AR-LoRA] FATAL: invalid rank/alpha\\n");
+            gf_close(&lf);
+            return false;
+        }
+        const float scale = alpha / (float) rank;
+
+        wctx_init(&m->lora_wctx, c.n_layers * 14 + 8);
+        bool complete = true;
+        for (int i = 0; i < c.n_layers; ++i) {
+            char pfx[128];
+            snprintf(pfx, sizeof(pfx), "model.layers.%d", i);
+            Qwen3Layer & ly = m->layers[i];
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".self_attn.q_proj", &ly.lora_q, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".self_attn.k_proj", &ly.lora_k, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".self_attn.v_proj", &ly.lora_v, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".self_attn.o_proj", &ly.lora_o, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".mlp.gate_proj", &ly.lora_gate, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".mlp.up_proj", &ly.lora_up, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".mlp.down_proj", &ly.lora_down, scale);
+        }
+        if (!complete || !wctx_alloc(&m->lora_wctx, m->backend)) {
+            fprintf(stderr, "[AR-LoRA] FATAL: adapter targets incomplete or allocation failed\\n");
+            gf_close(&lf);
+            return false;
+        }
+        gf_close(&lf);
+        m->lora_loaded = true;
+        fprintf(stderr, "[AR-LoRA] Loaded instrumental adapter: rank=%u alpha=%.6g scale=%.6g, %d layers\\n",
+                rank, (double) alpha, (double) scale, c.n_layers);
+    }
+
+    // Persistent graph arenas""",
+    "AR LoRA load",
+)
+
+replace_once(
+    qwen_lm,
+    """    // Reshape to heads: [X*D, S] -> [D, X, S]
+    q = ggml_reshape_3d(ctx, q, D, Nh, S);""",
+    """    q = yue2_lora_apply(ctx, q, ly->lora_q, x, ly->lora_enabled);
+    k = yue2_lora_apply(ctx, k, ly->lora_k, x, ly->lora_enabled);
+    v = yue2_lora_apply(ctx, v, ly->lora_v, x, ly->lora_enabled);
+
+    // Reshape to heads: [X*D, S] -> [D, X, S]
+    q = ggml_reshape_3d(ctx, q, D, Nh, S);""",
+    "AR LoRA prefill QKV",
+)
+
+replace_once(
+    qwen_lm,
+    """    // O projection
+    return qwen3_linear(ctx, ly->o_proj, attn);
+}""",
+    """    // O projection
+    struct ggml_tensor * out = qwen3_linear(ctx, ly->o_proj, attn);
+    return yue2_lora_apply(ctx, out, ly->lora_o, attn, ly->lora_enabled);
+}""",
+    "AR LoRA prefill O",
+)
+
+replace_once(
+    qwen_lm,
+    """            // Reshape to heads: [D, Heads, N]
+            q = ggml_reshape_3d(ctx, q, D, Nh, N);""",
+    """            q = yue2_lora_apply(ctx, q, ly->lora_q, norm, ly->lora_enabled);
+            k = yue2_lora_apply(ctx, k, ly->lora_k, norm, ly->lora_enabled);
+            v = yue2_lora_apply(ctx, v, ly->lora_v, norm, ly->lora_enabled);
+
+            // Reshape to heads: [D, Heads, N]
+            q = ggml_reshape_3d(ctx, q, D, Nh, N);""",
+    "AR LoRA batch QKV",
+)
+
+replace_once(
+    qwen_lm,
+    """            struct ggml_tensor * attn_out = qwen3_linear(ctx, ly->o_proj, attn_cat);
+            hidden                        = ggml_add(ctx, hidden, attn_out);""",
+    """            struct ggml_tensor * attn_out = qwen3_linear(ctx, ly->o_proj, attn_cat);
+            attn_out = yue2_lora_apply(ctx, attn_out, ly->lora_o, attn_cat, ly->lora_enabled);
+            hidden   = ggml_add(ctx, hidden, attn_out);""",
+    "AR LoRA batch O",
+)
+
+replace_once(
+    qwen_lm,
+    """// Build self-attention with KV cache write + read.""",
+    """static bool qw3lm_set_lora_enabled(Qwen3LM * m, bool requested) {
+    const bool enabled = requested && m->lora_loaded;
+    if (requested && !m->lora_loaded) {
+        fprintf(stderr, "[AR-LoRA] Instrumental adapter not installed; transformed-score base AR remains active\\n");
+    }
+    if (m->lora_enabled == enabled) {
+        return enabled;
+    }
+    if (m->batch_graph.graph.sched_allocated) {
+        static_graph_release(&m->batch_graph.graph, m->sched);
+    }
+    m->batch_graph.built = false;
+    m->lora_enabled = enabled;
+    for (int i = 0; i < m->cfg.n_layers; ++i) {
+        m->layers[i].lora_enabled = enabled;
+    }
+    fprintf(stderr, "[AR-LoRA] %s\\n", enabled ? "enabled" : "disabled");
+    return enabled;
+}
+
+// Build self-attention with KV cache write + read.""",
+    "AR LoRA toggle",
+)
+
+replace_once(
+    qwen_lm,
+    """    backend_release(m->backend, m->cpu_backend);
+    wctx_free(&m->wctx);
+    *m = {};""",
+    """    backend_release(m->backend, m->cpu_backend);
+    if (m->lora_wctx.ctx) {
+        wctx_free(&m->lora_wctx);
+    }
+    wctx_free(&m->wctx);
+    *m = {};""",
+    "AR LoRA free",
+)
+
+replace_once(
+    pipeline_h,
+    """        lm = require_lm(p);
+        if (!lm) {
+            return false;
+        }
+        lm_hold.emplace(p->store, lm);""",
+    """        lm = require_lm(p);
+        if (!lm) {
+            return false;
+        }
+        qw3lm_set_lora_enabled(lm, r.instrumental);
+        lm_hold.emplace(p->store, lm);""",
+    "instrumental LoRA initial activation",
+)
+
+replace_once(
+    pipeline_h,
+    """                Qwen3LM * lm_chunk = require_lm(p);
+                if (!lm_chunk) {
+                    return false;
+                }
+                ModelHandle lm_chunk_hold(p->store, lm_chunk);""",
+    """                Qwen3LM * lm_chunk = require_lm(p);
+                if (!lm_chunk) {
+                    return false;
+                }
+                qw3lm_set_lora_enabled(lm_chunk, r.instrumental);
+                ModelHandle lm_chunk_hold(p->store, lm_chunk);""",
+    "instrumental LoRA chunk activation",
+)
+
 # Local Dream mobile acoustic solver.
 #
 # Midpoint remains the release/reference protocol. The fast path below ports
