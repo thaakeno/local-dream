@@ -1666,7 +1666,7 @@ private fun MusicGenerationConfigSheet(
                                         action = BackendService.ACTION_STOP
                                     },
                                 )
-                                delay(BackendService.IDLE_GRACE_MS_FOR_UI + 250L)
+                                delay(1800L)
                                 try {
                                     runCatching { MusicTransportBenchmark.run(context) }
                                         .onSuccess { result ->
