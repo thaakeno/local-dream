@@ -381,6 +381,7 @@ class MusicGenerationService : Service() {
     private fun startGeneration(intent: Intent) {
         val style = intent.getStringExtra("style")?.trim().orEmpty()
         val lyrics = intent.getStringExtra("lyrics").orEmpty()
+        val instrumental = intent.getBooleanExtra("instrumental", false)
         val modelId = intent.getStringExtra("modelId")
         if (style.isBlank() && lyrics.isBlank()) {
             _state.value = MusicState.Error("Describe the music or enter lyrics.", modelId)
@@ -395,7 +396,11 @@ class MusicGenerationService : Service() {
         // YuE2's released protocol uses symbolic planning for new songs.
         // Auto therefore resolves to full planning; direct remains an explicit
         // expert option for users who intentionally want score-free generation.
-        val cot = if (requestedCot == "auto") "full" else requestedCot
+        val cot = when {
+            instrumental && requestedCot == "off" -> "full"
+            requestedCot == "auto" -> "full"
+            else -> requestedCot
+        }
         val outputFormat = intent.getStringExtra("output_format")?.takeIf {
             it in setOf("wav32", "wav24", "wav16", "mp3")
         } ?: "wav16"
@@ -446,7 +451,7 @@ class MusicGenerationService : Service() {
             this,
             "REQUEST",
             "generate model=${modelId ?: "unknown"} duration=${duration}s " +
-                "steps=$steps solver=$odeMethod cot=$cot format=$outputFormat temp=$temperature topP=$topP cfg=$cfg",
+                "steps=$steps solver=$odeMethod cot=$cot instrumental=$instrumental format=$outputFormat temp=$temperature topP=$topP cfg=$cfg",
         )
         _state.value = MusicState.Generating(
             phase = "queued",
@@ -465,7 +470,8 @@ class MusicGenerationService : Service() {
             try {
                 val payload = JSONObject().apply {
                     put("style", style)
-                    put("lyrics", lyrics)
+                    put("lyrics", if (instrumental) "" else lyrics)
+                    put("instrumental", instrumental)
                     put("cot", cot)
                     put("duration", duration.toDouble())
                     put("lm_seed", seed)
