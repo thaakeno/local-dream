@@ -518,6 +518,78 @@ static std::string localdream_instrumental_style(const std::string & raw_style) 
     return style;
 }
 
+static std::string localdream_time_tag(int seconds) {
+    seconds = std::max(0, seconds);
+    char out[16];
+    snprintf(out, sizeof(out), "%d:%02d", seconds / 60, seconds % 60);
+    return out;
+}
+
+static std::string localdream_instrumental_plan_tags(double seconds_raw) {
+    const int total = std::max(5, (int) (seconds_raw + 0.5));
+    struct Section { const char * name; int start; int end; };
+    std::vector<Section> sections;
+
+    auto at = [total](double fraction) {
+        return std::clamp((int) (fraction * (double) total + 0.5), 0, total);
+    };
+    auto push = [&](const char * name, int start, int end) {
+        start = std::clamp(start, 0, total);
+        end = std::clamp(end, start + 1, total);
+        if (end > start) sections.push_back({ name, start, end });
+    };
+
+    if (total <= 15) {
+        const int a = std::max(1, at(0.20));
+        const int b = std::max(a + 1, at(0.80));
+        push("intro", 0, a);
+        push("verse", a, b);
+        push("outro", b, total);
+    } else if (total <= 60) {
+        const int a = at(0.15);
+        const int b = at(0.55);
+        const int c = at(0.85);
+        push("intro", 0, a);
+        push("verse", a, b);
+        push("chorus", b, c);
+        push("outro", c, total);
+    } else if (total <= 100) {
+        const int a = at(0.10);
+        const int b = at(0.38);
+        const int c = at(0.64);
+        const int d = at(0.82);
+        push("intro", 0, a);
+        push("verse", a, b);
+        push("chorus", b, c);
+        push("bridge", c, d);
+        push("outro", d, total);
+    } else {
+        const int a = at(0.10);
+        const int b = at(0.34);
+        const int c = at(0.54);
+        const int d = at(0.70);
+        const int e = at(0.90);
+        push("intro", 0, a);
+        push("verse", a, b);
+        push("chorus", b, c);
+        push("bridge", c, d);
+        push("chorus", d, e);
+        push("outro", e, total);
+    }
+
+    std::string out;
+    for (const auto & section : sections) {
+        out += "[";
+        out += section.name;
+        out += " ";
+        out += localdream_time_tag(section.start);
+        out += "-";
+        out += localdream_time_tag(section.end);
+        out += "]\n";
+    }
+    return out;
+}
+
 static std::string localdream_instrumental_lyric_tags(const std::string & abc) {
     std::string out;
     for (const auto & raw : split_lines(abc)) {
