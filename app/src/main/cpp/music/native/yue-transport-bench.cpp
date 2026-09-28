@@ -116,7 +116,7 @@ int main() {
     double checksum = 0.0;
     for (float v : out) checksum += v;
 
-#if defined(GGML_HEXAGON_USE_MEMPOOL)
+#if defined(YUE2_TRANSPORT_FASTRPC) && YUE2_TRANSPORT_FASTRPC
     const char * transport = "fastrpc";
 #else
     const char * transport = "dspqueue";
