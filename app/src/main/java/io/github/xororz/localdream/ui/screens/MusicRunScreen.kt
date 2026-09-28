@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -429,13 +430,6 @@ fun MusicRunScreen(
 
                     PromptTemplatePicker(
                         instrumental = instrumental,
-                        onModeChange = { selectedInstrumental ->
-                            instrumental = selectedInstrumental
-                            if (instrumental) {
-                                lyrics = ""
-                                if (planning == "off") planning = "full"
-                            }
-                        },
                         onApply = { template ->
                             style = template.style
                             instrumental = template.instrumental
@@ -1890,82 +1884,55 @@ private val songPromptTemplates = listOf(
 @Composable
 private fun PromptTemplatePicker(
     instrumental: Boolean,
-    onModeChange: (Boolean) -> Unit,
     onApply: (MusicPromptTemplate) -> Unit,
 ) {
+    val templates = if (instrumental) instrumentalPromptTemplates else songPromptTemplates
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Prompt starters",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        "Compact YuE2-style prompts you can edit after applying.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Icon(
-                    Icons.Default.AutoAwesome,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
+            Text(
+                if (instrumental) "Instrumental prompt starters" else "Song prompt starters",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "Tap one to fill the style prompt, then edit anything you want.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
+            LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(end = 6.dp),
             ) {
-                FilterChip(
-                    selected = instrumental,
-                    onClick = { onModeChange(true) },
-                    label = { Text("Instrumental") },
-                    modifier = Modifier.weight(1f),
-                )
-                FilterChip(
-                    selected = !instrumental,
-                    onClick = { onModeChange(false) },
-                    label = { Text("Songs") },
-                    modifier = Modifier.weight(1f),
-                )
-            }
-
-            val templates = if (instrumental) instrumentalPromptTemplates else songPromptTemplates
-            templates.chunked(2).forEach { rowTemplates ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    rowTemplates.forEach { template ->
-                        OutlinedButton(
-                            onClick = { onApply(template) },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text(template.title)
-                        }
-                    }
-                    if (rowTemplates.size == 1) Spacer(Modifier.weight(1f))
+                items(
+                    items = templates,
+                    key = { it.title },
+                ) { template ->
+                    AssistChip(
+                        onClick = { onApply(template) },
+                        label = {
+                            Text(
+                                template.title,
+                                maxLines = 1,
+                            )
+                        },
+                    )
                 }
             }
 
             Text(
                 if (instrumental) {
-                    "Instrumental mode handles the no-vocal workflow itself, so describe the music rather than stacking negative instructions."
+                    "Describe the music itself. Instrumental mode handles the no-vocal conditioning."
                 } else {
-                    "For songs, keep the style line coherent and put section structure in Lyrics with tags such as [Verse], [Chorus], [Bridge] and [Outro]."
+                    "Put genre, voice, instruments and production here; keep [Verse] / [Chorus] structure in Lyrics."
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
