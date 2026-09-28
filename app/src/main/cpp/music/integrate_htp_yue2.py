@@ -710,8 +710,7 @@ replace_once(
     """        std::vector<int>            open = yue2_build_prompt_ids(encode, cot, r.style, r.lyrics, nullptr);
         std::vector<Yue2Generation> plans;""",
     """        const std::string planning_style = r.instrumental
-            ? std::string("Instrumental, ") + r.style +
-                ", no vocals, no singing, no choir, no spoken words"
+            ? localdream_instrumental_style(r.style)
             : r.style;
         const std::string planning_lyrics = r.instrumental && r.lyrics.empty()
             ? (r.duration <= 30.0f
@@ -748,8 +747,7 @@ replace_once(
     }
 
     const std::string effective_style = r.instrumental
-        ? std::string("Instrumental, ") + r.style +
-            ", no vocals, no singing, no choir, no spoken words"
+        ? localdream_instrumental_style(r.style)
         : r.style;
 
     std::vector<std::vector<int>> prefixes(B);
