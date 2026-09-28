@@ -53,6 +53,7 @@ shutil.copy2(overlay / "sin-ops.c", htp / "sin-ops.c")
 shutil.copy2(overlay / "col2im-ops.c", htp / "col2im-ops.c")
 shutil.copy2(overlay / "snake-ops.c", htp / "snake-ops.c")
 shutil.copy2(overlay / "channel-bcast-add-ops.c", htp / "channel-bcast-add-ops.c")
+shutil.copy2(overlay / "instrumental-transfer.h", yue / "src/instrumental-transfer.h")
 
 replace_once(
     htp / "CMakeLists.txt",
@@ -666,6 +667,78 @@ qtext = qtext.replace(
 qwen.write_text(qtext)
 
 
+# Official YuE2 instrumental path: plan normally, then move Vocal melody
+# into the Ins lane before semantic generation. This mirrors the released
+# yue2-music skill instead of relying on a negative prompt alone.
+pipeline_h = yue / "src/pipeline.h"
+replace_once(
+    pipeline_h,
+    """#include "request.h"
+""",
+    """#include "request.h"
+#include "instrumental-transfer.h"
+""",
+    "instrumental transfer include",
+)
+
+replace_once(
+    pipeline_h,
+    """    if (r.steps < 1 || r.lm_batch_size < 1 || r.synth_batch_size < 1) {
+        fprintf(stderr, "[Pipeline] FATAL: steps and batch sizes must be positive\\n");
+        return false;
+    }
+""",
+    """    if (r.steps < 1 || r.lm_batch_size < 1 || r.synth_batch_size < 1) {
+        fprintf(stderr, "[Pipeline] FATAL: steps and batch sizes must be positive\\n");
+        return false;
+    }
+    if (r.instrumental && cot == YUE2_COT_OFF) {
+        fprintf(stderr, "[Pipeline] FATAL: instrumental mode requires melody/full planning\\n");
+        return false;
+    }
+    if (r.instrumental && !r.lyrics.empty()) {
+        fprintf(stderr, "[Pipeline] FATAL: instrumental mode requires empty lyrics\\n");
+        return false;
+    }
+""",
+    "instrumental validation",
+)
+
+replace_once(
+    pipeline_h,
+    """    std::vector<std::vector<int>> prefixes(B);
+    for (int i = 0; i < B; i++) {
+        prefixes[i] = yue2_build_prompt_ids(encode, cot, r.style, r.lyrics, has_score ? &abc_ids[i] : nullptr);
+    }
+""",
+    """    if (r.instrumental && has_score) {
+        for (int i = 0; i < B; ++i) {
+            try {
+                scores[i] = localdream_instrumental_transfer_abc(scores[i]);
+            } catch (const std::exception & e) {
+                fprintf(stderr, "[Instrumental] FATAL: score transfer failed: %s\\n", e.what());
+                return false;
+            }
+            abc_ids[i] = encode(scores[i]);
+            fprintf(stderr, "[Instrumental] Song %d: Vocal melody transferred to Ins before semantic inference\\n", i);
+        }
+    }
+
+    const std::string effective_style = r.instrumental
+        ? std::string("Instrumental, no vocals, no singing, no humming. ") + r.style
+        : r.style;
+    const std::string effective_lyrics = r.instrumental ? std::string() : r.lyrics;
+
+    std::vector<std::vector<int>> prefixes(B);
+    for (int i = 0; i < B; i++) {
+        prefixes[i] = yue2_build_prompt_ids(
+            encode, cot, effective_style, effective_lyrics,
+            has_score ? &abc_ids[i] : nullptr);
+    }
+""",
+    "instrumental score transfer",
+)
+
 # Local Dream mobile acoustic solver.
 #
 # Midpoint remains the release/reference protocol. The fast path below ports
@@ -684,7 +757,62 @@ replace_once(
     "DPM++ 2M request field",
 )
 
+replace_once(
+    request_h,
+    """    std::string style;   // ""
+    std::string lyrics;  // ""
+""",
+    """    std::string style;   // ""
+    std::string lyrics;  // ""
+    bool instrumental;   // official no-vocal score transfer path
+""",
+    "instrumental request field",
+)
+
 request_cpp = yue / "src/request.cpp"
+replace_once(
+    request_cpp,
+    """    r->style  = "";
+    r->lyrics = "";
+    r->abc    = "";
+""",
+    """    r->style        = "";
+    r->lyrics       = "";
+    r->instrumental = false;
+    r->abc          = "";
+""",
+    "instrumental request default",
+)
+replace_once(
+    request_cpp,
+    """    if ((v = yyjson_obj_get(obj, "lyrics")) && yyjson_is_str(v)) {
+        r->lyrics = yy_str(v);
+    }
+""",
+    """    if ((v = yyjson_obj_get(obj, "lyrics")) && yyjson_is_str(v)) {
+        r->lyrics = yy_str(v);
+    }
+    if ((v = yyjson_obj_get(obj, "instrumental")) && yyjson_is_bool(v)) {
+        r->instrumental = yyjson_get_bool(v);
+    }
+""",
+    "instrumental request parse",
+)
+replace_once(
+    request_cpp,
+    """    if (!sparse || r->lyrics != d.lyrics) {
+        yyjson_mut_obj_add_strncpy(doc, root, "lyrics", r->lyrics.c_str(), r->lyrics.size());
+    }
+""",
+    """    if (!sparse || r->lyrics != d.lyrics) {
+        yyjson_mut_obj_add_strncpy(doc, root, "lyrics", r->lyrics.c_str(), r->lyrics.size());
+    }
+    if (!sparse || r->instrumental != d.instrumental) {
+        yyjson_mut_obj_add_bool(doc, root, "instrumental", r->instrumental);
+    }
+""",
+    "instrumental request serialize",
+)
 replace_once(
     request_cpp,
     """    r->steps            = 32;
