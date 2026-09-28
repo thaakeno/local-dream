@@ -335,6 +335,27 @@ double nominal_seconds(const Parsed & parsed) {
 // A token-budget stop may land in the middle of the next native ABC group.
 // We do not invent or repair notes. For a truncated planner result only, keep
 // the longest prefix that already passes the strict Vocal+Ins parser.
+double complete_native_seconds(const std::string & abc) {
+    const auto lines = split_lines(abc);
+    std::string candidate;
+    double best_seconds = 0.0;
+
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (i > 0) candidate += '\n';
+        candidate += lines[i];
+
+        const auto line = trim(lines[i]);
+        if (line.empty() || line.back() != '|') continue;
+
+        try {
+            best_seconds = std::max(best_seconds, nominal_seconds(parse(candidate)));
+        } catch (const std::exception &) {
+            // A partial Vocal/Ins pair is expected while the AR planner writes.
+        }
+    }
+    return best_seconds;
+}
+
 std::string complete_native_prefix(const std::string & abc, double required_seconds) {
     const auto lines = split_lines(abc);
     std::string candidate;
