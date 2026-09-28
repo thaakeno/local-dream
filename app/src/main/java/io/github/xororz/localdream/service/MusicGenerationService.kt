@@ -1048,7 +1048,7 @@ class MusicGenerationService : Service() {
             vaeDecodeStartedAt = System.currentTimeMillis()
             return state(
                 "decoding",
-                "VAE decode · $total exact HTP tiles · core $core + halo $halo",
+                "VAE decode · $total tiles · core $core + halo $halo",
                 0.90f,
                 0,
                 total,
@@ -1069,7 +1069,7 @@ class MusicGenerationService : Service() {
             val local = (completed.toFloat() / total).coerceIn(0f, 1f)
             return state(
                 "decoding",
-                "HTP tile $step/$total · $latent latent frames · decoding",
+                "Tile $step/$total · $latent latent frames · decoding",
                 0.90f + local * 0.07f,
                 completed,
                 total,
@@ -1122,9 +1122,9 @@ class MusicGenerationService : Service() {
             return state(
                 "decoding",
                 if (vaeDecodeTileTotal > 0) {
-                    "HTP tile $active/$total · $nodes-node decoder graph · $latent latent frames"
+                    "Tile $active/$total · $nodes-node decoder graph · $latent latent frames"
                 } else {
-                    "HTP decoder graph · $nodes nodes · $latent latent frames"
+                    "Decoder graph · $nodes nodes · $latent latent frames"
                 },
                 0.90f + (completed.toFloat() / total) * 0.07f,
                 completed,

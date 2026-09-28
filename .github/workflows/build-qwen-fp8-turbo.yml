@@ -367,13 +367,13 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v6
         with:
-          name: LocalDream-YuE2-Fast-alpha62
+          name: LocalDream-YuE2-Fast-alpha63
           path: app/build/outputs/apk/basic/debug/*.apk
           if-no-files-found: error
           retention-days: 14
 
       - name: Dispatch canonical signer
-        if: github.ref_name == 'yue2-text-music'
+        if: github.ref_name == 'yue2-text-music' || github.ref_name == 'yue2-fast-instrumental-htp'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
