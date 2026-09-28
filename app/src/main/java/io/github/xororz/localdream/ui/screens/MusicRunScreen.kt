@@ -1656,25 +1656,39 @@ private fun MusicGenerationConfigSheet(
                             benchmarkRunning = true
                             benchmarkError = null
                             scope.launch {
-                                runCatching { MusicTransportBenchmark.run(context) }
-                                    .onSuccess { result ->
-                                        benchmarkResult = result
-                                        selectedTransport =
-                                            if (result.fastRpc.medianMs < result.dspQueue.medianMs) {
-                                                "fastrpc"
-                                            } else {
-                                                "dspqueue"
-                                            }
-                                        context.getSharedPreferences(
-                                            "yue2_runtime",
-                                            Context.MODE_PRIVATE,
-                                        ).edit()
-                                            .putString("transport", selectedTransport)
-                                            .apply()
-                                        onTransportSelected()
-                                    }
-                                    .onFailure { benchmarkError = it.message ?: "Benchmark failed" }
-                                benchmarkRunning = false
+                                // The benchmark needs exclusive ownership of the
+                                // physical HTP session. Running it beside the live
+                                // YuE2 server makes the second transport fail to
+                                // create its context, which previously looked like
+                                // a FastRPC benchmark failure.
+                                context.startService(
+                                    Intent(context, BackendService::class.java).apply {
+                                        action = BackendService.ACTION_STOP
+                                    },
+                                )
+                                delay(BackendService.IDLE_GRACE_MS_FOR_UI + 250L)
+                                try {
+                                    runCatching { MusicTransportBenchmark.run(context) }
+                                        .onSuccess { result ->
+                                            benchmarkResult = result
+                                            selectedTransport =
+                                                if (result.fastRpc.medianMs < result.dspQueue.medianMs) {
+                                                    "fastrpc"
+                                                } else {
+                                                    "dspqueue"
+                                                }
+                                            context.getSharedPreferences(
+                                                "yue2_runtime",
+                                                Context.MODE_PRIVATE,
+                                            ).edit()
+                                                .putString("transport", selectedTransport)
+                                                .apply()
+                                        }
+                                        .onFailure { benchmarkError = it.message ?: "Benchmark failed" }
+                                } finally {
+                                    benchmarkRunning = false
+                                    onTransportSelected()
+                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
