@@ -1930,7 +1930,8 @@ private fun PromptTemplatePicker(
                     items = templates,
                     key = { it.title },
                 ) { template ->
-                    AssistChip(
+                    FilterChip(
+                        selected = false,
                         onClick = { onApply(template) },
                         label = {
                             Text(
