@@ -462,6 +462,22 @@ std::string write_bars(const Segment & segment, const std::vector<Span> & notes,
 
 } // namespace
 
+static std::string localdream_instrumental_lyric_tags(const std::string & abc) {
+    std::string out;
+    for (const auto & raw : split_lines(abc)) {
+        const auto line = trim(raw);
+        if (line.rfind("% ", 0) != 0 || line.size() <= 2) continue;
+        std::string label = trim(line.substr(2));
+        if (label.empty()) continue;
+        label[0] = static_cast<char>(
+            std::toupper(static_cast<unsigned char>(label[0])));
+        if (!out.empty()) out += "\n\n";
+        out += "[" + label + "]";
+    }
+    if (!out.empty()) out += "\n";
+    return out;
+}
+
 static std::string localdream_instrumental_transfer_abc(
     const std::string & abc,
     bool planner_truncated = false,
