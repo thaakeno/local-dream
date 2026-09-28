@@ -135,15 +135,34 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/out"
           out_apk="$GITHUB_WORKSPACE/out/LocalDream-yue2-canonical.apk"
 
+          zipalign_bin="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign -perm -u+x | sort -V | tail -n 1)"
+          test -x "$zipalign_bin"
+          aligned_apk="$RUNNER_TEMP/yue2-aligned.apk"
+
+          # Re-align before re-signing, then explicitly emit both v2 and v3.
+          # The previous implicit apksigner defaults produced v3-only APKs on
+          # Build Tools 37, which some OEM package installers report only as
+          # "package appears to be invalid" during an in-place update.
+          "$zipalign_bin" -f -p 4 "$src_apk" "$aligned_apk"
+
           "$apksigner_bin" sign \
             --ks "$RUNNER_TEMP/localdream-ci.jks" \
             --ks-key-alias localdream \
             --ks-pass pass:android \
             --key-pass pass:android \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
             --out "$out_apk" \
-            "$src_apk"
+            "$aligned_apk"
 
           "$apksigner_bin" verify --verbose --print-certs "$out_apk"
+          "$zipalign_bin" -c -v 4 "$out_apk"
+
+          verify_text="$("$apksigner_bin" verify --verbose "$out_apk")"
+          printf '%s\n' "$verify_text"
+          printf '%s\n' "$verify_text" | grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true'
+          printf '%s\n' "$verify_text" | grep -q 'Verified using v3 scheme (APK Signature Scheme v3): true'
 
           old_cert="$("$apksigner_bin" verify --print-certs "$old_apk" | sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1)"
           new_cert="$("$apksigner_bin" verify --print-certs "$out_apk" | sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1)"
