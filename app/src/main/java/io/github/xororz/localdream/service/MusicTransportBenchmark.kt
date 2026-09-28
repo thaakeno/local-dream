@@ -140,7 +140,7 @@ object MusicTransportBenchmark {
         if (process.exitValue() != 0) {
             error(
                 "$transport benchmark failed (${process.exitValue()}): " +
-                    output.lineSequence().takeLast(8).joinToString(" | "),
+                    output.lineSequence().toList().takeLast(8).joinToString(" | "),
             )
         }
 
