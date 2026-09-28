@@ -35,14 +35,12 @@ replace_once(
     "# yue-server: HTTP server (single slot job queue + embedded webui)",
     """# Local Dream: representative HTP transport benchmark. The identical graph
 # is compiled against either DSPQueue or FastRPC/mempool for a fair on-device A/B.
-if(EXISTS "\${CMAKE_SOURCE_DIR}/tools/yue-transport-bench.cpp")
-    add_executable(yue-transport-bench tools/yue-transport-bench.cpp)
-    link_ggml_backends(yue-transport-bench)
-    if(GGML_HEXAGON_USE_MEMPOOL)
-        target_compile_definitions(yue-transport-bench PRIVATE YUE2_TRANSPORT_FASTRPC=1)
-    else()
-        target_compile_definitions(yue-transport-bench PRIVATE YUE2_TRANSPORT_FASTRPC=0)
-    endif()
+add_executable(yue-transport-bench tools/yue-transport-bench.cpp)
+link_ggml_backends(yue-transport-bench)
+if(GGML_HEXAGON_USE_MEMPOOL)
+    target_compile_definitions(yue-transport-bench PRIVATE YUE2_TRANSPORT_FASTRPC=1)
+else()
+    target_compile_definitions(yue-transport-bench PRIVATE YUE2_TRANSPORT_FASTRPC=0)
 endif()
 
 # yue-server: HTTP server (single slot job queue + embedded webui)""",
