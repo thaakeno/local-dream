@@ -1,10 +1,11 @@
-// Local Dream YuE2 native HTP channel-broadcast ADD.
+// Local Dream YuE2 native HTP channel-broadcast binary ops.
 //
-// Handles the Oobleck decoder's exact [T,C] + [1,C] bias geometry without
-// staging a multi-megabyte time row in VTCM. The tensors stay in HTP-mapped
-// memory and each worker streams bounded time chunks with HVX vector adds.
-// This is a first-class HTP op: unsupported shapes are rejected and strict
-// accelerator mode will fail preflight rather than falling back to CPU.
+// Handles Oobleck's exact [T,C] op [1,C] channel-broadcast geometry without
+// staging a multi-megabyte time row in VTCM. ADD covers conv biases/residual
+// biases and MUL covers Snake alpha/inv-beta. The tensors stay in HTP-mapped
+// memory and each worker streams bounded time chunks with HVX. These are
+// first-class HTP ops: unsupported shapes are rejected and strict accelerator
+// mode fails rather than falling back to CPU.
 #include <HAP_farf.h>
 #include <stdint.h>
 
@@ -25,12 +26,26 @@ static inline HVX_Vector yue2_add_f32(HVX_Vector a, HVX_Vector b) {
 #endif
 }
 
+static inline HVX_Vector yue2_mul_f32(HVX_Vector a, HVX_Vector b) {
+#if __HVX_ARCH__ < 79
+    return Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(a, b));
+#else
+    return Q6_Vsf_vmpy_VsfVsf(a, b);
+#endif
+}
+
+enum yue2_channel_binary_kind {
+    YUE2_CHANNEL_BINARY_ADD = 0,
+    YUE2_CHANNEL_BINARY_MUL = 1,
+};
+
 struct htp_channel_add_context {
     struct htp_ops_context * octx;
     uint32_t time;
     uint32_t channels;
     uint32_t chunks_per_row;
     uint32_t total_jobs;
+    enum yue2_channel_binary_kind kind;
 };
 
 static void channel_add_thread(unsigned int nth, unsigned int ith, void * data) {
@@ -63,19 +78,30 @@ static void channel_add_thread(unsigned int nth, unsigned int ith, void * data) 
         const HVX_Vector vb = hvx_vec_splat_f32(bias[ch]);
 
         uint32_t t = start;
-        for (; t + VLEN_FP32 <= end; t += VLEN_FP32) {
-            const HVX_Vector vx = *(const HVX_UVector *) (in + t);
-            *(HVX_UVector *) (out + t) = yue2_add_f32(vx, vb);
-        }
-        for (; t < end; ++t) {
-            out[t] = in[t] + bias[ch];
+        if (c->kind == YUE2_CHANNEL_BINARY_ADD) {
+            for (; t + VLEN_FP32 <= end; t += VLEN_FP32) {
+                const HVX_Vector vx = *(const HVX_UVector *) (in + t);
+                *(HVX_UVector *) (out + t) = yue2_add_f32(vx, vb);
+            }
+            for (; t < end; ++t) {
+                out[t] = in[t] + bias[ch];
+            }
+        } else {
+            for (; t + VLEN_FP32 <= end; t += VLEN_FP32) {
+                const HVX_Vector vx = *(const HVX_UVector *) (in + t);
+                *(HVX_UVector *) (out + t) = yue2_mul_f32(vx, vb);
+            }
+            for (; t < end; ++t) {
+                out[t] = in[t] * bias[ch];
+            }
         }
     }
 
     htp_trace_event_stop(tr, HTP_TRACE_EVT_HVX_COMP, (uint16_t) ith);
 }
 
-int op_channel_bcast_add(struct htp_ops_context * octx) {
+static int op_channel_bcast_binary(struct htp_ops_context * octx,
+                                   enum yue2_channel_binary_kind kind) {
     const struct htp_tensor * src0 = octx->src[0];
     const struct htp_tensor * src1 = octx->src[1];
     const struct htp_tensor * dst  = octx->dst;
@@ -124,7 +150,16 @@ int op_channel_bcast_add(struct htp_ops_context * octx) {
         .channels = channels,
         .chunks_per_row = chunks,
         .total_jobs = total_jobs,
+        .kind = kind,
     };
     work_queue_run(octx->ctx->work_queue, channel_add_thread, &c, n_threads);
     return HTP_STATUS_OK;
+}
+
+int op_channel_bcast_add(struct htp_ops_context * octx) {
+    return op_channel_bcast_binary(octx, YUE2_CHANNEL_BINARY_ADD);
+}
+
+int op_channel_bcast_mul(struct htp_ops_context * octx) {
+    return op_channel_bcast_binary(octx, YUE2_CHANNEL_BINARY_MUL);
 }
