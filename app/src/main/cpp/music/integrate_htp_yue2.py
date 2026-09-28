@@ -1259,9 +1259,9 @@ replace_once(
 
 replace_once(
     qwen_lm,
-    """    const int kv_pad_raw = (int) GGML_PAD(max_kv_len, 256);
+    """    const int kv_pad_raw = (int) GGML_PAD(max_kv_len, 64);
     const int n_kv_pad   = kv_pad_raw < kv->cfg.max_seq_len ? kv_pad_raw : kv->cfg.max_seq_len;""",
-    """    const int kv_pad_raw = (int) GGML_PAD(max_kv_len, 256);
+    """    const int kv_pad_raw = (int) GGML_PAD(max_kv_len, 64);
     const int n_kv_pad   = kv_pad_raw < kv->capacity ? kv_pad_raw : kv->capacity;""",
     "batch KV padding physical capacity",
 )
