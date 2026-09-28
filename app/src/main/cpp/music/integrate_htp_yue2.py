@@ -21,6 +21,7 @@ yue = Path(sys.argv[2])
 overlay = Path(sys.argv[3])
 htp = jz / "ggml/src/ggml-hexagon/htp"
 host = jz / "ggml/src/ggml-hexagon/ggml-hexagon.cpp"
+yue_cmake = yue / "CMakeLists.txt"
 
 def replace_once(path: Path, old: str, new: str, label: str) -> None:
     text = path.read_text()
@@ -28,6 +29,25 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
     if count != 1:
         raise RuntimeError(f"{label}: expected one source anchor, found {count} in {path}")
     path.write_text(text.replace(old, new, 1))
+
+replace_once(
+    yue_cmake,
+    "# yue-server: HTTP server (single slot job queue + embedded webui)",
+    """# Local Dream: representative HTP transport benchmark. The identical graph
+# is compiled against either DSPQueue or FastRPC/mempool for a fair on-device A/B.
+if(EXISTS "\${CMAKE_SOURCE_DIR}/tools/yue-transport-bench.cpp")
+    add_executable(yue-transport-bench tools/yue-transport-bench.cpp)
+    link_ggml_backends(yue-transport-bench)
+    if(GGML_HEXAGON_USE_MEMPOOL)
+        target_compile_definitions(yue-transport-bench PRIVATE YUE2_TRANSPORT_FASTRPC=1)
+    else()
+        target_compile_definitions(yue-transport-bench PRIVATE YUE2_TRANSPORT_FASTRPC=0)
+    endif()
+endif()
+
+# yue-server: HTTP server (single slot job queue + embedded webui)""",
+    "transport benchmark target",
+)
 
 shutil.copy2(overlay / "sin-ops.c", htp / "sin-ops.c")
 shutil.copy2(overlay / "col2im-ops.c", htp / "col2im-ops.c")
