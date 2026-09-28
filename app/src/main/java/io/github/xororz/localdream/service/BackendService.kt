@@ -65,9 +65,10 @@ class BackendService : Service() {
         private const val TAG = "BackendService"
         private const val EXECUTABLE_NAME = "libstable_diffusion_core.so"
         private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
+        private const val MUSIC_FASTRPC_EXECUTABLE_NAME = "libyue2_server_fastrpc.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
-        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_37f752_yue2_dpmpp_v6"
+        private const val MUSIC_RUNTIME_VERSION = "hexagon_dual_37f752_yue2_v7"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
@@ -82,12 +83,11 @@ class BackendService : Service() {
         private const val IDLE_GRACE_MS = 1500L
         private const val MAX_BACKEND_ERROR_CHARS = 700
 
-        // Local Dream caps a mobile score plan to <=1024 tokens and audio to
-        // <=20 s (500 semantic frames). 2560 keeps a 20 s planned song in one
-        // NAR chunk while cutting KV residency drastically versus 6144. That
-        // leaves the Q8 weights, KV and graph scratch inside SM8850's practical
-        // FastRPC address-space budget instead of running into ENORPCMEMORY.
-        private const val MUSIC_MAX_SEQ = 2560
+        // Four minutes at YuE2's 25 semantic frames/s is 6000 frames. 8192
+        // leaves room for the score/prompt prefix while avoiding the official
+        // 24576 desktop context's excessive mobile KV residency. NAR and VAE
+        // still process bounded chunks/tiles; this is the AR context ceiling.
+        private const val MUSIC_MAX_SEQ = 8192
 
         const val ACTION_STOP = "io.github.xororz.localdream.STOP_GENERATION"
         const val ACTION_RESTART = "io.github.xororz.localdream.RESTART_BACKEND"
@@ -794,7 +794,7 @@ class BackendService : Service() {
                     backbone.length() < 2_400_000_000L ->
                         "YuE2 backbone looks incomplete (${backbone.length()} bytes)"
                     !vae.isFile -> "YuE2 vae.gguf is missing"
-                    vae.length() < 450_000_000L ->
+                    vae.length() < 200_000_000L ->
                         "YuE2 VAE looks incomplete (${vae.length()} bytes)"
                     else -> null
                 }
@@ -810,9 +810,43 @@ class BackendService : Service() {
                 }
             }
 
+            val musicTransport = if (isMusicBackend(backendType)) {
+                getSharedPreferences("yue2_runtime", MODE_PRIVATE)
+                    .getString("transport", "dspqueue")
+                    ?.takeIf { it == "dspqueue" || it == "fastrpc" }
+                    ?: "dspqueue"
+            } else {
+                "dspqueue"
+            }
+
+            if (isMusicBackend(backendType)) {
+                for (arch in listOf("v79", "v81")) {
+                    val selected = File(
+                        musicRuntimeDir,
+                        "libggml-htp-$arch-" +
+                            if (musicTransport == "fastrpc") "fastrpc.so" else "dspqueue.so",
+                    )
+                    val canonical = File(musicRuntimeDir, "libggml-htp-$arch.so")
+                    if (!selected.isFile) {
+                        val message = "YuE2 $musicTransport skel missing for $arch"
+                        BackendDiagnostics.append(this, "ERROR", message)
+                        updateState(BackendState.Error(message, config.modelId))
+                        return false
+                    }
+                    selected.copyTo(canonical, overwrite = true)
+                    canonical.setReadable(true, true)
+                    canonical.setExecutable(true, true)
+                }
+            }
+
             val executableFile = File(
                 nativeDir,
-                if (isMusicBackend(backendType)) MUSIC_EXECUTABLE_NAME else EXECUTABLE_NAME,
+                when {
+                    isMusicBackend(backendType) && musicTransport == "fastrpc" ->
+                        MUSIC_FASTRPC_EXECUTABLE_NAME
+                    isMusicBackend(backendType) -> MUSIC_EXECUTABLE_NAME
+                    else -> EXECUTABLE_NAME
+                },
             )
 
             if (!executableFile.exists()) {
@@ -844,25 +878,11 @@ class BackendService : Service() {
                 }
 
                 isMusicBackend(backendType) -> {
-                    // YuE2 is deliberately stage-swapped on mobile. Upstream's
-                    // --keep-loaded mode is meant for devices with a generous
-                    // accelerator memory budget; it keeps AR + NAR + VAE
-                    // resident together and is a bad fit for a phone.
-                    //
-                    // The ABC planner's native budget is 4096 tokens. The KV
-                    // cache must include the prompt prefix and EOS too, so a
-                    // 4096 context is structurally impossible. Use yue2.cpp's
-                    // documented reduced-memory 8192-token profile; our <=20 s
-                    // semantic stage is then clamped to <=500 frames by
-                    // upstream itself, while the full 4096 ABC budget remains
-                    // available for quality.
-                    //
-                    // A <=20 s request is at most 500 semantic frames, so core=1024
-                    // deliberately runs one VAE graph. The Hexagon backend now has
-                    // bounded streaming F32 ADD/MUL for Oobleck's very wide rows,
-                    // fused Snake, native SIN and native COL2IM, so the full graph
-                    // no longer depends on impossible multi-megabyte VTCM row staging.
-                    // Longer clips still use yue2.cpp's exact halo-tiled decoder.
+                    // Stage-swap AR -> NAR -> VAE so only one heavy module
+                    // is resident. 8192 tokens cover a four-minute semantic
+                    // stream plus its plan/prompt prefix. VAE uses fixed
+                    // 192-frame exact-halo tiles for bounded tensors, cache
+                    // locality and real decode progress.
                     mutableListOf(
                         executableFile.absolutePath,
                         "--model",
@@ -878,7 +898,7 @@ class BackendService : Service() {
                         "--max-seq",
                         MUSIC_MAX_SEQ.toString(),
                         "--vae-core",
-                        "1024",
+                        "192",
                         "--vae-halo",
                         "16",
                     )
@@ -1019,7 +1039,7 @@ class BackendService : Service() {
                 env.remove("GGML_HEXAGON_DEVICES")
                 env["GGML_BACKEND"] = "HTP0"
                 env["YUE2_STRICT_ACCELERATOR"] = "1"
-                env["LOCAL_DREAM_YUE2_BACKEND"] = "dspqueue-native-0.6.0-37f752"
+                env["LOCAL_DREAM_YUE2_BACKEND"] = "$musicTransport-native-0.7.0-37f752"
 
                 // SM8850: keep HMX/HVX enabled. YuE2's full 20 s Oobleck
                 // graph is unusually long-lived and wide: sending the old
@@ -1035,10 +1055,11 @@ class BackendService : Service() {
                 env["GGML_HEXAGON_NHVX"] = "0"
                 env["GGML_HEXAGON_MM_SELECT"] = "2"
                 env["GGML_HEXAGON_OPFUSION"] = "1"
-                // Block for completions rather than busy-spinning the AP.
-                env["GGML_HEXAGON_OPPOLL"] = "0"
-                env["GGML_HEXAGON_OPBATCH"] = "64"
-                env["GGML_HEXAGON_OPQUEUE"] = "8"
+                if (musicTransport == "dspqueue") {
+                    env["GGML_HEXAGON_OPPOLL"] = "0"
+                    env["GGML_HEXAGON_OPBATCH"] = "64"
+                    env["GGML_HEXAGON_OPQUEUE"] = "8"
+                }
 
                 env["LD_LIBRARY_PATH"] = listOf(
                     nativeDir,
@@ -1064,10 +1085,13 @@ class BackendService : Service() {
                         "mempoolSkel=${mempoolSkel.isFile} skelSize=${mempoolSkel.length()}",
                 )
 
+                val queueLabel =
+                    if (musicTransport == "dspqueue") "64/8 blocking-wait" else "mempool-fastrpc"
                 val message =
-                    "YuE2 HTP: backend=DSPQueue-native-0.6.0 selector=HTP0 session=physical-0 " +
-                        "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ queue=64/8 blocking-wait " +
-                        "hmx=1 hvx=all vae=snake-fused+sin+col2im1d+bias-native+stream-addmul core=1024 " +
+                    "YuE2 HTP: backend=$musicTransport-native-0.7.0 selector=HTP0 session=physical-0 " +
+                        "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ transport=$musicTransport " +
+                        "queue=$queueLabel hmx=1 hvx=all " +
+                        "vae=parity-gated+snake-fused+sin+col2im1d+bias-native+stream-addmul core=192 " +
                         "runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
                 BackendDiagnostics.append(this, "ENV", message)
