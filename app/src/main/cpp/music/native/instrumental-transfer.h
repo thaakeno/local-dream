@@ -108,6 +108,8 @@ struct Voice {
 
 struct Parsed {
     std::uint32_t unit_denominator = 32;
+    std::uint32_t bpm = 120;
+    std::uint64_t total_ticks = 0;
     std::array<Voice, 2> voices;
     std::vector<std::vector<std::string>> line_segments;  // per line; empty for non-music
 };
@@ -172,6 +174,8 @@ Parsed parse(const std::string & abc) {
             denominator = positive(line.substr(slash + 1));
         } else if (line.rfind("L:1/", 0) == 0) {
             result.unit_denominator = positive(line.substr(4));
+        } else if (line.rfind("Q:1/4=", 0) == 0) {
+            result.bpm = positive(line.substr(6));
         } else if (line.rfind("K:", 0) == 0) {
             key = trim(line.substr(2));
         }
@@ -317,7 +321,56 @@ Parsed parse(const std::string & abc) {
     }
     if (state[0].tick != state[1].tick) throw std::invalid_argument("Vocal and Ins lanes differ in length");
     if (state[0].tied || state[1].tied) throw std::invalid_argument("ABC score ends in an open tie");
+    result.total_ticks = state[0].tick;
     return result;
+}
+
+double nominal_seconds(const Parsed & parsed) {
+    // kWholeTicks=3840 -> 960 ticks per quarter note.
+    return (double) parsed.total_ticks * 60.0 /
+           (960.0 * (double) std::max<std::uint32_t>(1, parsed.bpm));
+}
+
+// A token-budget stop may land in the middle of the next native ABC group.
+// We do not invent or repair notes. For a truncated planner result only, keep
+// the longest prefix that already passes the strict Vocal+Ins parser.
+std::string complete_native_prefix(const std::string & abc, double required_seconds) {
+    const auto lines = split_lines(abc);
+    std::string candidate;
+    std::string best;
+    double best_seconds = 0.0;
+
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (i > 0) candidate += '\n';
+        candidate += lines[i];
+
+        const auto line = trim(lines[i]);
+        if (line.empty() || line.back() != '|') continue;
+
+        try {
+            const auto parsed = parse(candidate);
+            best = candidate;
+            best_seconds = nominal_seconds(parsed);
+        } catch (const std::exception &) {
+            // Only a complete native Vocal+Ins group parses successfully.
+        }
+    }
+
+    if (best.empty()) {
+        throw std::invalid_argument("planner truncated before one complete Vocal/Ins score group");
+    }
+    if (required_seconds > 0.0 && best_seconds + 0.02 < required_seconds) {
+        char message[192];
+        snprintf(
+            message, sizeof(message),
+            "planner truncated at %.2fs of valid score, below requested %.2fs",
+            best_seconds, required_seconds);
+        throw std::invalid_argument(message);
+    }
+    fprintf(stderr,
+            "[Instrumental] Cropped unfinished planner tail; %.2fs of strict-valid score retained\n",
+            best_seconds);
+    return best;
 }
 
 // Explicit spelling, as SheetSage2 writes it: flats in flat keys, sharps
@@ -409,11 +462,22 @@ std::string write_bars(const Segment & segment, const std::vector<Span> & notes,
 
 } // namespace
 
-static std::string localdream_instrumental_transfer_abc(const std::string & abc) {
-    const auto parsed = parse(abc);
+static std::string localdream_instrumental_transfer_abc(
+    const std::string & abc,
+    bool planner_truncated = false,
+    double required_seconds = 0.0) {
+    std::string normalized = abc;
+    Parsed parsed;
+    try {
+        parsed = parse(normalized);
+    } catch (const std::exception &) {
+        if (!planner_truncated) throw;
+        normalized = complete_native_prefix(abc, required_seconds);
+        parsed = parse(normalized);
+    }
     const auto & vocal = parsed.voices[0];
     const auto & ins = parsed.voices[1];
-    if (vocal.notes.empty()) return abc;  // nothing to move
+    if (vocal.notes.empty()) return normalized;  // nothing to move
 
     // Vocal priority: keep every Vocal note, and trim Ins notes around them.
     std::vector<Span> merged = vocal.notes;
@@ -475,7 +539,7 @@ static std::string localdream_instrumental_transfer_abc(const std::string & abc)
         line_changed[segment.line] = true;
     }
 
-    const auto lines = split_lines(abc);
+    const auto lines = split_lines(normalized);
     std::string out;
     for (std::size_t li = 0; li < lines.size(); ++li) {
         if (li > 0) out += '\n';
