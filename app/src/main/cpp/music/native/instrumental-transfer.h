@@ -463,6 +463,40 @@ std::string write_bars(const Segment & segment, const std::vector<Span> & notes,
 
 } // namespace
 
+static std::string localdream_instrumental_style(const std::string & raw_style) {
+    std::string style = trim(raw_style);
+    while (!style.empty() && (style.back() == '.' || style.back() == ',' || style.back() == ' ')) {
+        style.pop_back();
+    }
+
+    auto lower = [](std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return value;
+    };
+
+    std::string lowered = lower(style);
+    if (lowered.rfind("instrumental", 0) != 0) {
+        style = "Instrumental, " + style;
+        lowered = lower(style);
+    }
+
+    const std::array<const char *, 4> conditions = {
+        "no vocals", "no singing", "no choir", "no spoken words"
+    };
+    for (const char * condition : conditions) {
+        if (lowered.find(condition) == std::string::npos) {
+            style += ", ";
+            style += condition;
+            lowered += ", ";
+            lowered += condition;
+        }
+    }
+    style += ".";
+    return style;
+}
+
 static std::string localdream_instrumental_lyric_tags(const std::string & abc) {
     std::string out;
     for (const auto & raw : split_lines(abc)) {
