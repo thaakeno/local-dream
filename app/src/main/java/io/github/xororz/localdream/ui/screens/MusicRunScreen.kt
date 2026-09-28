@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
@@ -64,6 +65,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -80,12 +82,16 @@ import io.github.xororz.localdream.service.MusicGenerationService
 import io.github.xororz.localdream.service.MusicGenerationService.MusicState
 import io.github.xororz.localdream.service.MusicHistoryItem
 import io.github.xororz.localdream.service.MusicHistoryStore
+import io.github.xororz.localdream.service.MusicTransportBenchmark
+import io.github.xororz.localdream.service.MusicTransportBenchmarkResult
 import io.github.xororz.localdream.ui.components.MusicPlayerCard
 import io.github.xororz.localdream.ui.components.SmoothIndeterminateLinearWavyProgressIndicator
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
 import io.github.xororz.localdream.utils.AppHaptics
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import android.widget.Toast
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -110,10 +116,10 @@ fun MusicRunScreen(
     var lyrics by rememberSaveable {
         mutableStateOf("")
     }
-    var duration by rememberSaveable { mutableIntStateOf(20) }
+    var duration by rememberSaveable { mutableIntStateOf(120) }
     var planning by rememberSaveable { mutableStateOf("full") }
     var steps by rememberSaveable { mutableIntStateOf(32) }
-    var odeMethod by rememberSaveable { mutableStateOf("dpmpp_2m") }
+    var odeMethod by rememberSaveable { mutableStateOf("midpoint") }
     var outputFormat by rememberSaveable { mutableStateOf("wav16") }
     var history by remember { mutableStateOf(MusicHistoryStore.load(context)) }
     var seed by rememberSaveable { mutableLongStateOf(-1L) }
@@ -121,6 +127,7 @@ fun MusicRunScreen(
     var semanticTopP by rememberSaveable { mutableFloatStateOf(0.95f) }
     var cfgScale by rememberSaveable { mutableFloatStateOf(-1f) }
     var showConfig by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
     var showScore by remember { mutableStateOf(false) }
     var lastHapticPhase by remember { mutableStateOf<String?>(null) }
     var lastProgressBucket by remember { mutableIntStateOf(-1) }
@@ -247,6 +254,15 @@ fun MusicRunScreen(
                     IconButton(
                         onClick = {
                             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                            history = MusicHistoryStore.load(context)
+                            showHistory = true
+                        },
+                    ) {
+                        Icon(Icons.Default.History, contentDescription = "Music history")
+                    }
+                    IconButton(
+                        onClick = {
+                            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                             showConfig = true
                         },
                     ) {
@@ -361,7 +377,7 @@ fun MusicRunScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    "$duration s · ${qualityLabel(steps, odeMethod)} · ${planningLabel(planning)}",
+                                    "${durationLabel(duration)} · ${qualityLabel(steps, odeMethod)} · ${planningLabel(planning)}",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold,
                                 )
@@ -600,21 +616,13 @@ fun MusicRunScreen(
                     }
                 }
             }
-            if (history.isNotEmpty()) {
-                MusicHistorySection(
-                    items = history.filterNot {
-                        val current = musicState as? MusicState.Complete
-                        current != null && it.id == current.historyId
-                    },
-                    onHistoryChanged = { history = MusicHistoryStore.load(context) },
-                )
-            }
             Spacer(Modifier.size(22.dp))
         }
     }
 
     if (showConfig) {
         MusicGenerationConfigSheet(
+            modelId = modelId,
             duration = duration,
             onDuration = { duration = it },
             planning = planning,
@@ -633,8 +641,28 @@ fun MusicRunScreen(
             onCfgScale = { cfgScale = it },
             outputFormat = outputFormat,
             onOutputFormat = { outputFormat = it },
+            onTransportSelected = {
+                context.startForegroundService(
+                    Intent(context, BackendService::class.java).apply {
+                        action = BackendService.ACTION_RESTART
+                        putExtra("modelId", modelId)
+                        putExtra("backendType", "yue2")
+                        putExtra("width", 512)
+                        putExtra("height", 512)
+                        putExtra("htp_mode", "single")
+                    },
+                )
+            },
             onDismiss = { showConfig = false },
         )
+    if (showHistory) {
+        MusicHistorySheet(
+            items = history,
+            onDismiss = { showHistory = false },
+            onHistoryChanged = { history = MusicHistoryStore.load(context) },
+        )
+    }
+
     }
 }
 
@@ -1308,6 +1336,7 @@ private fun MusicDecodeProgress(state: MusicState.Generating) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MusicGenerationConfigSheet(
+    modelId: String,
     duration: Int,
     onDuration: (Int) -> Unit,
     planning: String,
@@ -1326,18 +1355,30 @@ private fun MusicGenerationConfigSheet(
     onCfgScale: (Float) -> Unit,
     outputFormat: String,
     onOutputFormat: (String) -> Unit,
+    onTransportSelected: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
     var seedText by remember(seed) { mutableStateOf(if (seed < 0) "" else seed.toString()) }
+    var benchmarkRunning by remember { mutableStateOf(false) }
+    var benchmarkResult by remember { mutableStateOf<MusicTransportBenchmarkResult?>(null) }
+    var benchmarkError by remember { mutableStateOf<String?>(null) }
+    var selectedTransport by remember {
+        mutableStateOf(
+            context.getSharedPreferences("yue2_runtime", Context.MODE_PRIVATE)
+                .getString("transport", "dspqueue") ?: "dspqueue",
+        )
+    }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
+                .verticalScroll(rememberScrollState())
                 .padding(bottom = 30.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(
@@ -1359,7 +1400,7 @@ private fun MusicGenerationConfigSheet(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        "Reference YuE2 controls, capped to 20 seconds for mobile.",
+                        "Reference-quality YuE2 controls · up to 4 minutes",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -1367,27 +1408,34 @@ private fun MusicGenerationConfigSheet(
 
             SettingSlider(
                 title = "Duration",
-                valueText = "$duration seconds",
+                valueText = durationLabel(duration),
                 value = duration.toFloat(),
-                range = 5f..20f,
-                steps = 14,
-                onValue = { onDuration(it.toInt()) },
-                supporting = "YuE2 emits 25 semantic frames per second. Maximum is intentionally 20s.",
+                range = 5f..240f,
+                steps = 46,
+                onValue = { raw ->
+                    val snapped = ((raw / 5f).roundToInt() * 5).coerceIn(5, 240)
+                    onDuration(snapped)
+                },
+                supporting = "Default 2:00. YuE2 generates 25 semantic frames/s; long tracks use chunked acoustic and decoder stages instead of one giant graph.",
             )
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Symbolic planning", style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     listOf("full", "melody", "off").forEach { mode ->
                         FilterChip(
                             selected = planning == mode,
                             onClick = { onPlanning(mode) },
                             label = { Text(planningLabel(mode)) },
+                            modifier = Modifier.weight(1f),
                         )
                     }
                 }
                 Text(
-                    "Full plan is the YuE2 default for new songs and is recommended for strict instrumental prompts. Direct is kept as an expert score-free mode.",
+                    "Full plan is the normal instrumental path. The instrumental adapter is trained for score-first generation; Direct remains an expert comparison mode.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1395,23 +1443,27 @@ private fun MusicGenerationConfigSheet(
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Acoustic solver", style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     listOf(
-                        "dpmpp_2m" to "DPM++ 2M · SGM",
-                        "midpoint" to "Midpoint",
+                        "midpoint" to "Midpoint · reference",
+                        "dpmpp_2m" to "DPM++ 2M · fast",
                     ).forEach { (method, label) ->
                         FilterChip(
                             selected = odeMethod == method,
                             onClick = { onOdeMethod(method) },
                             label = { Text(label) },
+                            modifier = Modifier.weight(1f),
                         )
                     }
                 }
                 Text(
-                    if (odeMethod == "dpmpp_2m") {
-                        "ComfyUI-compatible DPM++ 2M with the SGM-uniform flow schedule: one HTP model evaluation per step, using the denoised-history correction instead of midpoint's second probe."
+                    if (odeMethod == "midpoint") {
+                        "Reference YuE2 flow solver. Use this to judge quality and parity."
                     } else {
-                        "YuE2 reference solver. Midpoint performs two full NAR model evaluations per step, so 32 steps means 64 HTP evaluations."
+                        "Experimental one-evaluation-per-step fast path. Kept separate from the reference-quality default."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1420,29 +1472,29 @@ private fun MusicGenerationConfigSheet(
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Render steps", style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(6, 8, 16, 32).forEach { option ->
-                        FilterChip(
-                            selected = steps == option,
-                            onClick = { onSteps(option) },
-                            label = {
-                                Text(
-                                    when (option) {
-                                        6 -> "6 · Max speed"
-                                        8 -> "8 · Fast"
-                                        16 -> "16 · Quality"
-                                        else -> "32 · Max"
-                                    },
-                                )
-                            },
-                        )
+                listOf(
+                    listOf(6 to "6 · Max speed", 8 to "8 · Fast"),
+                    listOf(16 to "16 · Balanced", 32 to "32 · Quality"),
+                ).forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        row.forEach { (option, label) ->
+                            FilterChip(
+                                selected = steps == option,
+                                onClick = { onSteps(option) },
+                                label = { Text(label) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
                     }
                 }
                 Text(
-                    if (odeMethod == "dpmpp_2m") {
-                        "32 is the quality default: independent YuE2 tests put 32-step DPM++ close to the released midpoint latent while 6–8 steps change the acoustic latent much more. Fast presets remain available."
+                    if (odeMethod == "midpoint") {
+                        "32-step Midpoint is the reference-quality default. 16 is the practical fast preset."
                     } else {
-                        "32 reproduces the released YuE2 midpoint protocol. Lower midpoint counts are faster but are not the reference render."
+                        "DPM++ is experimental until same-seed latent parity is proven against Midpoint."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1451,24 +1503,103 @@ private fun MusicGenerationConfigSheet(
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Audio output", style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(
-                        "wav16" to "WAV · lossless",
-                        "wav32" to "WAV32 · debug",
-                        "mp3" to "MP3 · 320k",
-                    ).forEach { (format, label) ->
-                        FilterChip(
-                            selected = outputFormat == format,
-                            onClick = { onOutputFormat(format) },
-                            label = { Text(label) },
-                        )
+                listOf(
+                    listOf("wav16" to "WAV16 · lossless", "wav32" to "WAV32 · parity"),
+                    listOf("mp3" to "MP3 · 320k"),
+                ).forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        row.forEach { (format, label) ->
+                            FilterChip(
+                                selected = outputFormat == format,
+                                onClick = { onOutputFormat(format) },
+                                label = { Text(label) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        repeat(2 - row.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
                 Text(
-                    "WAV is the default so neural decoder quality is not confused with MP3 encoding. WAV32 preserves float output for parity checks; WAV16 has the widest Android playback compatibility.",
+                    "WAV16 is the normal default. WAV32 is reserved for decoder parity/debugging so MP3 never masks neural waveform problems.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            Surface(
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        "HTP transport",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Selected: " + if (selectedTransport == "fastrpc") "FastRPC" else "DSPQueue",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    benchmarkResult?.let { result ->
+                        Text(
+                            "DSPQueue " + String.format(java.util.Locale.US, "%.1f ms", result.dspQueue.medianMs) +
+                                " · FastRPC " + String.format(java.util.Locale.US, "%.1f ms", result.fastRpc.medianMs) +
+                                " · winner " + result.faster +
+                                " (" + String.format(java.util.Locale.US, "%.2fx", result.speedup) + ")",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    benchmarkError?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Button(
+                        enabled = !benchmarkRunning,
+                        onClick = {
+                            benchmarkRunning = true
+                            benchmarkError = null
+                            scope.launch {
+                                runCatching { MusicTransportBenchmark.run(context) }
+                                    .onSuccess { result ->
+                                        benchmarkResult = result
+                                        selectedTransport =
+                                            if (result.fastRpc.medianMs < result.dspQueue.medianMs) {
+                                                "fastrpc"
+                                            } else {
+                                                "dspqueue"
+                                            }
+                                        context.getSharedPreferences(
+                                            "yue2_runtime",
+                                            Context.MODE_PRIVATE,
+                                        ).edit()
+                                            .putString("transport", selectedTransport)
+                                            .apply()
+                                        onTransportSelected()
+                                    }
+                                    .onFailure { benchmarkError = it.message ?: "Benchmark failed" }
+                                benchmarkRunning = false
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (benchmarkRunning) "Benchmarking…" else "Benchmark DSPQueue vs FastRPC")
+                    }
+                    Text(
+                        "Runs the same deterministic native graph on both transports, verifies matching checksums, saves the faster backend, then restarts YuE2.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             SettingSlider(
@@ -1478,7 +1609,7 @@ private fun MusicGenerationConfigSheet(
                 range = 0.5f..1.5f,
                 steps = 19,
                 onValue = onTemperature,
-                supporting = "YuE2 reference default 1.00. Lower is more conservative; higher explores more token choices.",
+                supporting = "YuE2 reference default 1.00.",
             )
             SettingSlider(
                 title = "Top-p",
@@ -1487,28 +1618,24 @@ private fun MusicGenerationConfigSheet(
                 range = 0.5f..1f,
                 steps = 9,
                 onValue = onTopP,
-                supporting = "Reference semantic default 0.95. Top-k stays at the official 100.",
+                supporting = "Reference semantic default 0.95. Top-k stays at 100.",
             )
+
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Semantic CFG", style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(
-                        -1f to "Auto",
-                        1.0f to "1.00",
-                        1.01f to "1.01",
-                    ).forEach { (value, label) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(-1f to "Auto", 1.0f to "1.00", 1.01f to "1.01").forEach { (value, label) ->
                         FilterChip(
                             selected = cfgScale == value,
                             onClick = { onCfgScale(value) },
                             label = { Text(label) },
+                            modifier = Modifier.weight(1f),
                         )
                     }
                 }
-                Text(
-                    "Auto uses 1.00 on mobile Direct for the fast single-branch path and 1.00 for planned modes. Pick 1.01 explicitly to reproduce reference Direct CFG.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
 
             OutlinedTextField(
@@ -1520,7 +1647,7 @@ private fun MusicGenerationConfigSheet(
                 label = { Text("Seed") },
                 placeholder = { Text("Random") },
                 supportingText = {
-                    Text("Blank = random. One seed drives both the score/token draw and acoustic noise.")
+                    Text("Blank = random. One seed drives score/token sampling and acoustic noise.")
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1585,6 +1712,83 @@ private fun MusicTrackActions(
                 onHistoryChanged()
             },
         ) { Text("Delete") }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MusicHistorySheet(
+    items: List<MusicHistoryItem>,
+    onDismiss: () -> Unit,
+    onHistoryChanged: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.History,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(
+                        "Music history",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "On-device tracks · prompt, seeds and render settings stay with each song",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            if (items.isEmpty()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Text(
+                        "No generated tracks yet.",
+                        modifier = Modifier.padding(20.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                items.forEach { item ->
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        MusicPlayerCard(
+                            file = item.file,
+                            title = item.style.take(56).ifBlank { "YuE2 generation" },
+                            subtitle = durationLabel(item.targetSeconds) + " · " +
+                                outputFormatLabel(item.format) + " · " +
+                                String.format(java.util.Locale.US, "%.1f s render", item.elapsedMillis / 1000.0),
+                        )
+                        MusicTrackActions(item, onHistoryChanged)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun durationLabel(seconds: Int): String {
+    val minutes = seconds / 60
+    val rest = seconds % 60
+    return if (minutes > 0) {
+        String.format(java.util.Locale.US, "%d:%02d", minutes, rest)
+    } else {
+        "$seconds s"
     }
 }
 
@@ -1665,7 +1869,8 @@ private fun SettingSlider(
 }
 
 private fun qualityLabel(steps: Int, odeMethod: String): String = when {
-    odeMethod == "midpoint" && steps >= 32 -> "Reference midpoint"
+    odeMethod == "midpoint" && steps >= 32 -> "Quality · Midpoint"
+    odeMethod == "midpoint" && steps >= 16 -> "Fast · Midpoint"
     odeMethod == "midpoint" -> "Midpoint · $steps"
     steps <= 6 -> "Max speed · DPM++"
     steps <= 8 -> "Fast · DPM++"
