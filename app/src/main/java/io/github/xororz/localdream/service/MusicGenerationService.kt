@@ -398,12 +398,12 @@ class MusicGenerationService : Service() {
         val cot = if (requestedCot == "auto") "full" else requestedCot
         val outputFormat = intent.getStringExtra("output_format")?.takeIf {
             it in setOf("wav32", "wav24", "wav16", "mp3")
-        } ?: "wav32"
-        val duration = intent.getIntExtra("duration", 20).coerceIn(5, 20)
-        val steps = intent.getIntExtra("steps", 8).coerceIn(1, 64)
+        } ?: "wav16"
+        val duration = intent.getIntExtra("duration", 120).coerceIn(5, 240)
+        val steps = intent.getIntExtra("steps", 32).coerceIn(1, 64)
         val odeMethod = intent.getStringExtra("ode_method")
             ?.takeIf { it == "dpmpp_2m" || it == "midpoint" }
-            ?: "dpmpp_2m"
+            ?: "midpoint"
         val seed = intent.getLongExtra("seed", -1L)
         val temperature = intent.getFloatExtra("semantic_temperature", 1f)
             .coerceIn(0.5f, 1.5f)
@@ -420,9 +420,12 @@ class MusicGenerationService : Service() {
                 value.coerceIn(0.5f, 2f)
             }
         }
+        // Keep enough score budget for multi-minute section plans without
+        // letting ABC consume the entire 8192-token runtime context. In practice
+        // instrumental CoT usually stops well before these caps.
         val planMaxTokens = when (cot) {
-            "full" -> (duration * 48).coerceIn(384, 1024)
-            "melody" -> (duration * 36).coerceIn(256, 768)
+            "full" -> (duration * 24).coerceIn(384, 2048)
+            "melody" -> (duration * 18).coerceIn(256, 1536)
             else -> 0
         }
         val started = System.currentTimeMillis()
