@@ -116,7 +116,7 @@ fun MusicRunScreen(
     val musicState by MusicGenerationService.state.collectAsState()
 
     var style by rememberSaveable {
-        mutableStateOf("solo acoustic piano, instrumental, gentle expressive melody, warm intimate tone, no vocals")
+        mutableStateOf("Solo acoustic piano, intimate contemporary classical, lyrical melody, warm natural room, gentle rubato, soft dynamics, close-miked")
     }
     var lyrics by rememberSaveable {
         mutableStateOf("")
