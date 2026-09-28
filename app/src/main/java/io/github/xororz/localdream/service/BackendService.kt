@@ -67,7 +67,7 @@ class BackendService : Service() {
         private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
-        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_37f752_yue2_dpmpp_v5"
+        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_37f752_yue2_dpmpp_v6"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
@@ -1021,20 +1021,24 @@ class BackendService : Service() {
                 env["YUE2_STRICT_ACCELERATOR"] = "1"
                 env["LOCAL_DREAM_YUE2_BACKEND"] = "dspqueue-native-0.6.0-37f752"
 
-                // SM8850: keep HMX/HVX enabled and use the current upstream
-                // queue depth. Strict YuE2 scheduling means unsupported graph
-                // nodes are errors instead of hidden HTP -> CPU transfers.
+                // SM8850: keep HMX/HVX enabled. YuE2's full 20 s Oobleck
+                // graph is unusually long-lived and wide: sending the old
+                // 1280-op / 32-deep DSPQueue profile leaves too much work in
+                // flight and reproduces FastRPC/DSPQueue 0x2e after ~20 s.
+                // On SM8850/v81, measured ggml-hexagon sweeps show 4-64 ops
+                // per message retain throughput while avoiding the oversized
+                // in-flight batches. Use 64 ops and an 8-batch queue so the
+                // DSP is continuously fed without accumulating 32 responses.
+                // Strict YuE2 scheduling remains unchanged: every compute op
+                // is still HTP-native and CPU fallback stays forbidden.
                 env["GGML_HEXAGON_NHMX"] = "1"
                 env["GGML_HEXAGON_NHVX"] = "0"
                 env["GGML_HEXAGON_MM_SELECT"] = "2"
                 env["GGML_HEXAGON_OPFUSION"] = "1"
-                // Do not busy-poll the AP while HTP is executing a long audio
-                // graph. Blocking DSPQueue waits keep compute 100% on HTP but
-                // stop the zero-timeout spin loop that wastes power/thermal
-                // headroom and can look like an endless NAR/VAE stall.
+                // Block for completions rather than busy-spinning the AP.
                 env["GGML_HEXAGON_OPPOLL"] = "0"
-                env["GGML_HEXAGON_OPBATCH"] = "1280"
-                env["GGML_HEXAGON_OPQUEUE"] = "32"
+                env["GGML_HEXAGON_OPBATCH"] = "64"
+                env["GGML_HEXAGON_OPQUEUE"] = "8"
 
                 env["LD_LIBRARY_PATH"] = listOf(
                     nativeDir,
@@ -1062,7 +1066,7 @@ class BackendService : Service() {
 
                 val message =
                     "YuE2 HTP: backend=DSPQueue-native-0.6.0 selector=HTP0 session=physical-0 " +
-                        "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ queue=1280/32 blocking-wait " +
+                        "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ queue=64/8 blocking-wait " +
                         "hmx=1 hvx=all vae=snake-fused+sin+col2im1d+bias-native+stream-addmul core=1024 " +
                         "runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
