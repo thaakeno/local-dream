@@ -1147,6 +1147,16 @@ replace_once(
     "exact NAR attention tiling call",
 )
 
+replace_once(
+    qwen_lm,
+    """#include <cmath>
+""",
+    """#include <algorithm>
+#include <cmath>
+""",
+    "phase-sized KV algorithm include",
+)
+
 # Phase-sized KV cache. Allocating the full 8192-row cache for a 5-second
 # plan consumed ~896 MiB on HTP and pushed SM8850 DSPQueue over the same
 # footprint-sensitive 0x2e failure boundary seen upstream. Reserve only the
