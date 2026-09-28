@@ -394,6 +394,8 @@ class MusicGenerationService : Service() {
             style.contains("no vocals", ignoreCase = true) ||
             style.contains("no vocal", ignoreCase = true)
 
+        val duration = intent.getIntExtra("duration", 60).coerceIn(10, 240)
+
         val lyrics = if (isInstrumentalPrompt && (rawLyrics.isBlank() || rawLyrics.trim() == "[instrumental]")) {
             // Proven HuggingFace (mrfakename/yue2-3b & hugging-apps/yue2-instrumental-cot-lora)
             // clean untimed section tags without internal text notes, instructing the symbolic
@@ -418,7 +420,6 @@ class MusicGenerationService : Service() {
         val outputFormat = intent.getStringExtra("output_format")?.takeIf {
             it in setOf("wav16", "wav32", "wav24", "mp3")
         } ?: "wav16"
-        val duration = intent.getIntExtra("duration", 60).coerceIn(10, 240)
         val steps = intent.getIntExtra("steps", 32).coerceIn(1, 64)
         val odeMethod = intent.getStringExtra("ode_method")
             ?.takeIf { it == "dpmpp_2m" || it == "midpoint" }
