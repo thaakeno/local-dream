@@ -78,12 +78,15 @@ import io.github.xororz.localdream.navigation.popBackStackIfResumed
 import io.github.xororz.localdream.service.BackendService
 import io.github.xororz.localdream.service.MusicGenerationService
 import io.github.xororz.localdream.service.MusicGenerationService.MusicState
+import io.github.xororz.localdream.service.MusicHistoryItem
+import io.github.xororz.localdream.service.MusicHistoryStore
 import io.github.xororz.localdream.ui.components.MusicPlayerCard
 import io.github.xororz.localdream.ui.components.SmoothIndeterminateLinearWavyProgressIndicator
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
 import io.github.xororz.localdream.utils.AppHaptics
 import kotlinx.coroutines.delay
 import kotlin.math.abs
+import android.widget.Toast
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -108,9 +111,11 @@ fun MusicRunScreen(
         mutableStateOf("")
     }
     var duration by rememberSaveable { mutableIntStateOf(20) }
-    var planning by rememberSaveable { mutableStateOf("off") }
-    var steps by rememberSaveable { mutableIntStateOf(8) }
+    var planning by rememberSaveable { mutableStateOf("full") }
+    var steps by rememberSaveable { mutableIntStateOf(32) }
     var odeMethod by rememberSaveable { mutableStateOf("dpmpp_2m") }
+    var outputFormat by rememberSaveable { mutableStateOf("wav16") }
+    var history by remember { mutableStateOf(MusicHistoryStore.load(context)) }
     var seed by rememberSaveable { mutableLongStateOf(-1L) }
     var semanticTemperature by rememberSaveable { mutableFloatStateOf(1f) }
     var semanticTopP by rememberSaveable { mutableFloatStateOf(0.95f) }
@@ -151,6 +156,7 @@ fun MusicRunScreen(
             }
 
             is MusicState.Complete -> {
+                history = MusicHistoryStore.load(context)
                 if (lastTerminalHaptic != "complete") {
                     AppHaptics.perform(context, AppHaptics.Kind.Success)
                     lastTerminalHaptic = "complete"
@@ -362,7 +368,9 @@ fun MusicRunScreen(
                                 Text(
                                     buildString {
                                         append(model?.variantPrecision ?: "GGUF")
-                                        append(" · 48 kHz stereo · 320 kbps MP3 · ")
+                                        append(" · 48 kHz stereo · ")
+                                        append(outputFormatLabel(outputFormat))
+                                        append(" · ")
                                         append(if (htpAccelerated) "Hexagon HTP" else "NPU unavailable")
                                     },
                                     style = MaterialTheme.typography.labelMedium,
@@ -399,6 +407,7 @@ fun MusicRunScreen(
                                         putExtra("semantic_temperature", semanticTemperature)
                                         putExtra("semantic_top_p", semanticTopP)
                                         putExtra("cfg_scale", cfgScale)
+                                        putExtra("output_format", outputFormat)
                                     },
                             )
                         },
@@ -473,8 +482,15 @@ fun MusicRunScreen(
                             MusicPlayerCard(
                                 file = state.file,
                                 title = "YuE2 generation",
-                                subtitle = "48 kHz stereo · ${state.targetSeconds}s target · ${state.elapsedMillis / 1000f}s generated",
+                                subtitle = "48 kHz stereo · ${state.targetSeconds}.0 s audio · generated in " +
+                                    String.format(java.util.Locale.US, "%.1f s", state.elapsedMillis / 1000.0),
                             )
+                            history.firstOrNull { it.id == state.historyId }?.let { item ->
+                                MusicTrackActions(
+                                    item = item,
+                                    onHistoryChanged = { history = MusicHistoryStore.load(context) },
+                                )
+                            }
                             if (state.score.isNotBlank()) {
                                 ElevatedCard(
                                     modifier = Modifier.fillMaxWidth(),
@@ -584,6 +600,15 @@ fun MusicRunScreen(
                     }
                 }
             }
+            if (history.isNotEmpty()) {
+                MusicHistorySection(
+                    items = history.filterNot {
+                        val current = musicState as? MusicState.Complete
+                        current != null && it.id == current.historyId
+                    },
+                    onHistoryChanged = { history = MusicHistoryStore.load(context) },
+                )
+            }
             Spacer(Modifier.size(22.dp))
         }
     }
@@ -606,6 +631,8 @@ fun MusicRunScreen(
             onTopP = { semanticTopP = it },
             cfgScale = cfgScale,
             onCfgScale = { cfgScale = it },
+            outputFormat = outputFormat,
+            onOutputFormat = { outputFormat = it },
             onDismiss = { showConfig = false },
         )
     }
@@ -1297,6 +1324,8 @@ private fun MusicGenerationConfigSheet(
     onTopP: (Float) -> Unit,
     cfgScale: Float,
     onCfgScale: (Float) -> Unit,
+    outputFormat: String,
+    onOutputFormat: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var seedText by remember(seed) { mutableStateOf(if (seed < 0) "" else seed.toString()) }
@@ -1358,7 +1387,7 @@ private fun MusicGenerationConfigSheet(
                     }
                 }
                 Text(
-                    "Full plans melody + chords before audio tokens. Melody keeps a lighter plan; Direct semantic skips only the score plan, not semantic token generation.",
+                    "Full plan is the YuE2 default for new songs and is recommended for strict instrumental prompts. Direct is kept as an expert score-free mode.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1411,10 +1440,32 @@ private fun MusicGenerationConfigSheet(
                 }
                 Text(
                     if (odeMethod == "dpmpp_2m") {
-                        "8 is the mobile default. 6 is the aggressive fast preset; 16 and 32 spend more evaluations on refinement. DPM++ uses one NAR evaluation per step."
+                        "32 is the quality default: independent YuE2 tests put 32-step DPM++ close to the released midpoint latent while 6–8 steps change the acoustic latent much more. Fast presets remain available."
                     } else {
                         "32 reproduces the released YuE2 midpoint protocol. Lower midpoint counts are faster but are not the reference render."
                     },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Audio output", style = MaterialTheme.typography.titleSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        "wav16" to "WAV · lossless",
+                        "wav32" to "WAV32 · debug",
+                        "mp3" to "MP3 · 320k",
+                    ).forEach { (format, label) ->
+                        FilterChip(
+                            selected = outputFormat == format,
+                            onClick = { onOutputFormat(format) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+                Text(
+                    "WAV is the default so neural decoder quality is not confused with MP3 encoding. WAV32 preserves float output for parity checks; WAV16 has the widest Android playback compatibility.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1485,6 +1536,101 @@ private fun MusicGenerationConfigSheet(
     }
 }
 
+
+@Composable
+private fun MusicTrackActions(
+    item: MusicHistoryItem,
+    onHistoryChanged: () -> Unit,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        OutlinedButton(
+            onClick = {
+                runCatching { MusicHistoryStore.exportToMusic(context, item) }
+                    .onSuccess {
+                        Toast.makeText(context, "Saved to Music/Local Dream", Toast.LENGTH_SHORT).show()
+                    }
+                    .onFailure {
+                        Toast.makeText(context, "Save failed: ${it.message}", Toast.LENGTH_LONG).show()
+                    }
+            },
+            modifier = Modifier.weight(1f),
+        ) { Text("Save") }
+        OutlinedButton(
+            onClick = {
+                runCatching {
+                    val uri = MusicHistoryStore.exportToMusic(context, item)
+                    context.startActivity(
+                        Intent.createChooser(
+                            Intent(Intent.ACTION_SEND).apply {
+                                type = MusicHistoryStore.mimeType(item.format)
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            },
+                            "Share track",
+                        ),
+                    )
+                }.onFailure {
+                    Toast.makeText(context, "Share failed: ${it.message}", Toast.LENGTH_LONG).show()
+                }
+            },
+            modifier = Modifier.weight(1f),
+        ) { Text("Share") }
+        TextButton(
+            onClick = {
+                MusicHistoryStore.delete(context, item.id)
+                onHistoryChanged()
+            },
+        ) { Text("Delete") }
+    }
+}
+
+@Composable
+private fun MusicHistorySection(
+    items: List<MusicHistoryItem>,
+    onHistoryChanged: () -> Unit,
+) {
+    if (items.isEmpty()) return
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            "Music history",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "Generated tracks stay on-device with their prompt, seeds and render settings.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        items.take(12).forEach { item ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                MusicPlayerCard(
+                    file = item.file,
+                    title = item.style.take(56).ifBlank { "YuE2 generation" },
+                    subtitle = "${item.targetSeconds}.0 s · ${outputFormatLabel(item.format)} · " +
+                        String.format(java.util.Locale.US, "%.1f s render", item.elapsedMillis / 1000.0),
+                )
+                MusicTrackActions(item, onHistoryChanged)
+            }
+        }
+    }
+}
+
+private fun outputFormatLabel(format: String): String = when (format) {
+    "wav32" -> "WAV32 float"
+    "wav24" -> "WAV24"
+    "wav16" -> "WAV16 lossless"
+    else -> "320 kbps MP3"
+}
+
 @Composable
 private fun SettingSlider(
     title: String,
@@ -1523,8 +1669,8 @@ private fun qualityLabel(steps: Int, odeMethod: String): String = when {
     odeMethod == "midpoint" -> "Midpoint · $steps"
     steps <= 6 -> "Max speed · DPM++"
     steps <= 8 -> "Fast · DPM++"
-    steps <= 16 -> "Quality · DPM++"
-    else -> "Max · DPM++"
+    steps <= 16 -> "Balanced · DPM++"
+    else -> "Quality · DPM++"
 }
 
 private fun planningLabel(mode: String): String = when (mode) {
