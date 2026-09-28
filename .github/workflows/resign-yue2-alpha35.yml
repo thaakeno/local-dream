@@ -1,6 +1,7 @@
-name: Re-sign Local Dream alpha.58 with existing canonical key
+name: Re-sign latest YuE2 build with canonical Local Dream key
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - qwen-fp8-turbo
@@ -30,7 +31,7 @@ jobs:
           test "${{ steps.signing-key-cache.outputs.cache-hit }}" = "true"
           test -s "$RUNNER_TEMP/localdream-ci.jks"
 
-      - name: Download Local Dream alpha.58 and alpha.34 reference
+      - name: Download latest YuE2 build and canonical reference
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -72,10 +73,10 @@ jobs:
                 "https://api.github.com/repos/${{ github.repository }}/actions/runs/$build_run_id")"
               status="$(printf '%s' "$run_json" | jq -r '.status')"
               conclusion="$(printf '%s' "$run_json" | jq -r '.conclusion // ""')"
-              echo "alpha58 build run=$build_run_id sha=$target_sha status=$status conclusion=$conclusion attempt=$attempt"
+              echo "YuE2 build run=$build_run_id sha=$target_sha status=$status conclusion=$conclusion attempt=$attempt"
 
               if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
-                echo "alpha58 build failed for target SHA $target_sha" >&2
+                echo "YuE2 build failed for target SHA $target_sha" >&2
                 exit 1
               fi
 
@@ -132,7 +133,7 @@ jobs:
           test -s "$old_apk"
 
           mkdir -p "$GITHUB_WORKSPACE/out"
-          out_apk="$GITHUB_WORKSPACE/out/LocalDream-3.0.0-alpha.58-canonical.apk"
+          out_apk="$GITHUB_WORKSPACE/out/LocalDream-yue2-canonical.apk"
 
           "$apksigner_bin" sign \
             --ks "$RUNNER_TEMP/localdream-ci.jks" \
@@ -147,19 +148,23 @@ jobs:
           old_cert="$("$apksigner_bin" verify --print-certs "$old_apk" | sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1)"
           new_cert="$("$apksigner_bin" verify --print-certs "$out_apk" | sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1)"
 
-          echo "alpha34 signer: $old_cert"
-          echo "alpha58 signer: $new_cert"
-          test -n "$old_cert"
-          test "$old_cert" = "$new_cert"
+          echo "reference signer: $old_cert"
+          echo "YuE2 signer:      $new_cert"
+          expected="4231f002da1066b9055386ceae442394262070545a7a2202d414c8efba724af7"
+          old_norm="$(printf '%s' "$old_cert" | tr -d ':' | tr 'A-F' 'a-f')"
+          new_norm="$(printf '%s' "$new_cert" | tr -d ':' | tr 'A-F' 'a-f')"
+          test -n "$old_norm"
+          test "$old_norm" = "$expected"
+          test "$new_norm" = "$expected"
 
           ls -lh "$out_apk"
 
       - name: Upload compatible APK
         uses: actions/upload-artifact@v6
         with:
-          name: LocalDream-alpha58-canonical
-          path: out/LocalDream-3.0.0-alpha.58-canonical.apk
+          name: LocalDream-yue2-canonical
+          path: out/LocalDream-yue2-canonical.apk
           if-no-files-found: error
           retention-days: 14
 
-# signer-trigger: alpha58-9b66114daddce76e7adcf774927236dec656a60b
+# signer-trigger: latest-yue2-canonical
