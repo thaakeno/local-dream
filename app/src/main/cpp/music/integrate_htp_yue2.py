@@ -1145,6 +1145,168 @@ replace_once(
     "exact NAR attention tiling call",
 )
 
+# Phase-sized KV cache. Allocating the full 8192-row cache for a 5-second
+# plan consumed ~896 MiB on HTP and pushed SM8850 DSPQueue over the same
+# footprint-sensitive 0x2e failure boundary seen upstream. Reserve only the
+# rows the current AR phase can actually touch, then grow/rebuild between
+# planning and semantic generation when needed.
+replace_once(
+    qwen_lm,
+    """    int                   n_sets;
+};""",
+    """    int                   n_sets;
+    int                   capacity;  // rows physically allocated per set
+};""",
+    "phase-sized KV capacity field",
+)
+
+replace_once(
+    qwen_lm,
+    """    kv->buf    = nullptr;
+    kv->ctx    = nullptr;
+    kv->n_sets = 0;
+}""",
+    """    kv->buf      = nullptr;
+    kv->ctx      = nullptr;
+    kv->n_sets   = 0;
+    kv->capacity = 0;
+}""",
+    "phase-sized KV free",
+)
+
+replace_once(
+    qwen_lm,
+    """static bool qw3lm_kv_alloc(Qw3lmKvCache * kv, int n_sets) {
+    const Qwen3LMConfig & cfg = kv->cfg;
+    int                   D   = cfg.head_dim;
+    int                   Nkv = cfg.n_kv_heads;
+    int                   L   = cfg.n_layers;
+    int                   S   = cfg.max_seq_len;
+
+    qw3lm_kv_free(kv);
+    kv->n_sets = n_sets;""",
+    """static bool qw3lm_kv_alloc(Qw3lmKvCache * kv, int n_sets, int capacity) {
+    const Qwen3LMConfig & cfg = kv->cfg;
+    int                   D   = cfg.head_dim;
+    int                   Nkv = cfg.n_kv_heads;
+    int                   L   = cfg.n_layers;
+    int                   S   = (int) GGML_PAD(std::max(1, capacity), 64);
+    if (S > cfg.max_seq_len) {
+        fprintf(stderr, "[LM-KV] FATAL: requested capacity %d > max_seq %d\\n", S, cfg.max_seq_len);
+        return false;
+    }
+
+    qw3lm_kv_free(kv);
+    kv->n_sets   = n_sets;
+    kv->capacity = S;""",
+    "phase-sized KV alloc signature",
+)
+
+replace_once(
+    qwen_lm,
+    """static bool qw3lm_kv_sets(Qw3lmKvCache * kv, int n_sets) {
+    if (n_sets <= kv->n_sets) {
+        return true;
+    }
+    return qw3lm_kv_alloc(kv, n_sets);
+}""",
+    """static bool qw3lm_kv_reserve(Qw3lmKvCache * kv, int n_sets, int capacity) {
+    const int wanted = (int) GGML_PAD(std::max(1, capacity), 64);
+    if (n_sets <= kv->n_sets && wanted <= kv->capacity) {
+        return true;
+    }
+    return qw3lm_kv_alloc(kv, n_sets, wanted);
+}
+
+static bool qw3lm_kv_sets(Qw3lmKvCache * kv, int n_sets) {
+    const int capacity = kv->capacity > 0 ? kv->capacity : kv->cfg.max_seq_len;
+    return qw3lm_kv_reserve(kv, n_sets, capacity);
+}""",
+    "phase-sized KV reserve",
+)
+
+replace_once(
+    qwen_lm,
+    """    const int max_seq = kv->cfg.max_seq_len;""",
+    """    const int max_seq = kv->capacity;""",
+    "prefill uses physical KV capacity",
+)
+
+replace_once(
+    qwen_lm,
+    """        if (kl > kv->cfg.max_seq_len) {
+            fprintf(stderr, "[LM-Batch] FATAL: kv_len %d > max_seq %d (set %d)\\n", kl, kv->cfg.max_seq_len, kv_sets[i]);
+            exit(1);
+        }""",
+    """        if (kl > kv->capacity) {
+            fprintf(stderr, "[LM-Batch] FATAL: kv_len %d > capacity %d (set %d)\\n", kl, kv->capacity, kv_sets[i]);
+            exit(1);
+        }""",
+    "batch physical KV bound",
+)
+
+replace_once(
+    qwen_lm,
+    """    const int kv_pad_raw = (int) GGML_PAD(max_kv_len, 256);
+    const int n_kv_pad   = kv_pad_raw < kv->cfg.max_seq_len ? kv_pad_raw : kv->cfg.max_seq_len;""",
+    """    const int kv_pad_raw = (int) GGML_PAD(max_kv_len, 256);
+    const int n_kv_pad   = kv_pad_raw < kv->capacity ? kv_pad_raw : kv->capacity;""",
+    "batch KV padding physical capacity",
+)
+
+replace_once(
+    qwen_lm,
+    """            struct ggml_tensor * k_sets = ggml_view_4d(ctx, kv->k4[l], D, kv->cfg.max_seq_len, Nkv, N, kv->k4[l]->nb[1],
+                                                       kv->k4[l]->nb[2], kv->k4[l]->nb[3], off_s0);
+            struct ggml_tensor * v_sets = ggml_view_4d(ctx, kv->v4[l], D, kv->cfg.max_seq_len, Nkv, N, kv->v4[l]->nb[1],
+                                                       kv->v4[l]->nb[2], kv->v4[l]->nb[3], off_s0);""",
+    """            struct ggml_tensor * k_sets = ggml_view_4d(ctx, kv->k4[l], D, kv->capacity, Nkv, N, kv->k4[l]->nb[1],
+                                                       kv->k4[l]->nb[2], kv->k4[l]->nb[3], off_s0);
+            struct ggml_tensor * v_sets = ggml_view_4d(ctx, kv->v4[l], D, kv->capacity, Nkv, N, kv->v4[l]->nb[1],
+                                                       kv->v4[l]->nb[2], kv->v4[l]->nb[3], off_s0);""",
+    "batch KV set views physical capacity",
+)
+
+generate_h = yue / "src/generate.h"
+replace_once(
+    generate_h,
+    """    // Every set holds its prefix, the budget and the end token
+    for (int i = 0; i < B; i++) {
+        size_t longest = guided && negatives[i].size() > prefixes[i].size() ? negatives[i].size() : prefixes[i].size();
+        if ((int) longest + s.max_tokens + 1 > context) {
+            fprintf(stderr, "[AR] FATAL: prefix %zu + budget %d + end exceeds context %d\\n", longest, s.max_tokens,
+                    context);
+            return false;
+        }
+    }
+
+    const int N = guided ? 2 * B : B;
+    if (!qw3lm_kv_sets(kv, N)) {
+        return false;
+    }""",
+    """    // Every set holds its prefix, the budget and the end token. Reserve
+    // only that phase footprint instead of mapping the server-wide max_seq.
+    int required_capacity = 1;
+    for (int i = 0; i < B; i++) {
+        size_t longest = guided && negatives[i].size() > prefixes[i].size() ? negatives[i].size() : prefixes[i].size();
+        const int needed = (int) longest + s.max_tokens + 1;
+        if (needed > context) {
+            fprintf(stderr, "[AR] FATAL: prefix %zu + budget %d + end exceeds context %d\\n", longest, s.max_tokens,
+                    context);
+            return false;
+        }
+        required_capacity = std::max(required_capacity, needed);
+    }
+
+    const int N = guided ? 2 * B : B;
+    if (!qw3lm_kv_reserve(kv, N, required_capacity)) {
+        return false;
+    }
+    fprintf(stderr, "[LM-KV] Phase reserve: %d/%d rows (%s)\\n",
+            kv->capacity, context, phase == YUE2_PHASE_ABC ? "score" : "semantic");""",
+    "phase-sized KV generation reserve",
+)
+
 # Local Dream mobile acoustic solver.
 #
 # Midpoint remains the release/reference protocol. The fast path below ports
