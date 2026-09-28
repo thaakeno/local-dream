@@ -121,6 +121,7 @@ for arch in v79 v81; do
         exit 1
     fi
     cp "$skel" "$ASSET_DIR/libggml-htp-${arch}.so"
+    cp "$skel" "$ASSET_DIR/libggml-htp-${arch}-dspqueue.so"
 done
 
 # Build the exact same benchmark graph against the coherent FastRPC/mempool
