@@ -1930,55 +1930,87 @@ private fun MusicHistorySheet(
     onHistoryChanged: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp)
-                .padding(bottom = 28.dp),
+                .fillMaxHeight(0.92f),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                start = 18.dp,
+                end = 18.dp,
+                bottom = 28.dp,
+            ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.History,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.width(10.dp))
-                Column {
-                    Text(
-                        "Music history",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.SemiBold,
+            item(key = "header") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Default.History,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
                     )
-                    Text(
-                        "On-device tracks · prompt, seeds and render settings stay with each song",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Music history",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            if (items.isEmpty()) {
+                                "Generated tracks stay on this device."
+                            } else {
+                                "${items.size} track${if (items.size == 1) "" else "s"} · newest first · saved locally"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close history")
+                    }
                 }
             }
 
             if (items.isEmpty()) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Text(
-                        "No generated tracks yet.",
-                        modifier = Modifier.padding(20.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                item(key = "empty") {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                "No tracks yet",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Finished YuE2 generations will appear here automatically with their prompt and render settings.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
                 }
             } else {
-                items.forEach { item ->
+                items(
+                    items = items,
+                    key = { it.id },
+                ) { item ->
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         MusicPlayerCard(
                             file = item.file,
-                            title = item.style.take(56).ifBlank { "YuE2 generation" },
+                            title = item.style.take(72).ifBlank { "YuE2 generation" },
                             subtitle = durationLabel(item.targetSeconds) + " · " +
                                 outputFormatLabel(item.format) + " · " +
+                                item.solver.replace('_', ' ').uppercase() + " · " +
+                                "${item.steps} steps · " +
                                 String.format(java.util.Locale.US, "%.1f s render", item.elapsedMillis / 1000.0),
                         )
                         MusicTrackActions(item, onHistoryChanged)
