@@ -712,7 +712,7 @@ replace_once(
     """        const std::string planning_style = r.instrumental
             ? localdream_instrumental_style(r.style) +
                 " Target duration approximately " +
-                std::to_string((int) std::lround(r.duration)) + " seconds."
+                std::to_string((int) (r.duration + 0.5f)) + " seconds."
             : r.style;
         const std::string planning_lyrics = r.instrumental && r.lyrics.empty()
             ? (r.duration <= 30.0f
