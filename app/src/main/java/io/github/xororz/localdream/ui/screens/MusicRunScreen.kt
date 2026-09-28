@@ -91,8 +91,10 @@ import io.github.xororz.localdream.ui.components.MusicPlayerCard
 import io.github.xororz.localdream.ui.components.SmoothIndeterminateLinearWavyProgressIndicator
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
 import io.github.xororz.localdream.utils.AppHaptics
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import android.widget.Toast
@@ -1738,46 +1740,73 @@ private fun MusicTrackActions(
     onHistoryChanged: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busyAction by remember(item.id) { mutableStateOf<String?>(null) }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         OutlinedButton(
+            enabled = busyAction == null,
             onClick = {
-                runCatching { MusicHistoryStore.exportToMusic(context, item) }
-                    .onSuccess {
-                        Toast.makeText(context, "Saved to Music/Local Dream", Toast.LENGTH_SHORT).show()
+                busyAction = "save"
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching { MusicHistoryStore.exportToMusic(context, item) }
                     }
-                    .onFailure {
-                        Toast.makeText(context, "Save failed: ${it.message}", Toast.LENGTH_LONG).show()
-                    }
-            },
-            modifier = Modifier.weight(1f),
-        ) { Text("Save") }
-        OutlinedButton(
-            onClick = {
-                runCatching {
-                    val uri = MusicHistoryStore.exportToMusic(context, item)
-                    context.startActivity(
-                        Intent.createChooser(
-                            Intent(Intent.ACTION_SEND).apply {
-                                type = MusicHistoryStore.mimeType(item.format)
-                                putExtra(Intent.EXTRA_STREAM, uri)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            },
-                            "Share track",
-                        ),
-                    )
-                }.onFailure {
-                    Toast.makeText(context, "Share failed: ${it.message}", Toast.LENGTH_LONG).show()
+                    result
+                        .onSuccess {
+                            Toast.makeText(context, "Saved to Music/Local Dream", Toast.LENGTH_SHORT).show()
+                        }
+                        .onFailure {
+                            Toast.makeText(context, "Save failed: ${it.message}", Toast.LENGTH_LONG).show()
+                        }
+                    busyAction = null
                 }
             },
             modifier = Modifier.weight(1f),
-        ) { Text("Share") }
-        TextButton(
+        ) { Text(if (busyAction == "save") "Saving…" else "Save") }
+
+        OutlinedButton(
+            enabled = busyAction == null,
             onClick = {
-                MusicHistoryStore.delete(context, item.id)
-                onHistoryChanged()
+                busyAction = "share"
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching { MusicHistoryStore.exportToMusic(context, item) }
+                    }
+                    result
+                        .onSuccess { uri ->
+                            context.startActivity(
+                                Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND).apply {
+                                        type = MusicHistoryStore.mimeType(item.format)
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    },
+                                    "Share track",
+                                ),
+                            )
+                        }
+                        .onFailure {
+                            Toast.makeText(context, "Share failed: ${it.message}", Toast.LENGTH_LONG).show()
+                        }
+                    busyAction = null
+                }
+            },
+            modifier = Modifier.weight(1f),
+        ) { Text(if (busyAction == "share") "Preparing…" else "Share") }
+
+        TextButton(
+            enabled = busyAction == null,
+            onClick = {
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        MusicHistoryStore.delete(context, item.id)
+                    }
+                    onHistoryChanged()
+                }
             },
         ) { Text("Delete") }
     }
