@@ -116,6 +116,7 @@ fun MusicRunScreen(
     var lyrics by rememberSaveable {
         mutableStateOf("")
     }
+    var instrumental by rememberSaveable { mutableStateOf(true) }
     var duration by rememberSaveable { mutableIntStateOf(120) }
     var planning by rememberSaveable { mutableStateOf("full") }
     var steps by rememberSaveable { mutableIntStateOf(32) }
@@ -356,13 +357,49 @@ fun MusicRunScreen(
                     )
                     OutlinedTextField(
                         value = lyrics,
-                        onValueChange = { lyrics = it.take(6000) },
+                        onValueChange = {
+                            lyrics = it.take(6000)
+                            if (lyrics.isNotBlank()) instrumental = false
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Lyrics · optional") },
                         supportingText = {
                             Text("Use [Verse] / [Chorus] labels, or leave empty for instrumental generation.")
                         },
                         minLines = 5,
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(
+                            selected = instrumental,
+                            onClick = {
+                                instrumental = true
+                                if (planning == "off") planning = "full"
+                            },
+                            label = { Text("Instrumental") },
+                            leadingIcon = {
+                                Icon(Icons.Default.MusicNote, contentDescription = null)
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                        FilterChip(
+                            selected = !instrumental,
+                            onClick = { instrumental = false },
+                            label = { Text("Vocals / lyrics") },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    Text(
+                        if (instrumental) {
+                            "Instrumental mode uses Full planning, moves the planned Vocal melody into the instrument lane before semantic generation, and uses the installed instrumental adapter when available."
+                        } else {
+                            "Vocal mode keeps YuE2's planned Vocal lane. Add structured lyrics above or let the model compose from the style."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
                     Surface(
@@ -377,7 +414,8 @@ fun MusicRunScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    "${durationLabel(duration)} · ${qualityLabel(steps, odeMethod)} · ${planningLabel(planning)}",
+                                    "${durationLabel(duration)} · ${qualityLabel(steps, odeMethod)} · " +
+                                        (if (instrumental) "Instrumental" else planningLabel(planning)),
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold,
                                 )
@@ -415,7 +453,8 @@ fun MusicRunScreen(
                                         putExtra("modelId", modelId)
                                         putExtra("style", style)
                                         putExtra("lyrics", lyrics)
-                                        putExtra("cot", planning)
+                                        putExtra("instrumental", instrumental)
+                                        putExtra("cot", if (instrumental && planning == "off") "full" else planning)
                                         putExtra("duration", duration)
                                         putExtra("steps", steps)
                                         putExtra("ode_method", odeMethod)
