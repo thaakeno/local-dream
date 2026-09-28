@@ -106,6 +106,7 @@ fun MusicRunScreen(
     navController: NavController,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val uiScope = rememberCoroutineScope()
     val repository = remember { ModelRepository.getInstance(context) }
     LaunchedEffect(Unit) { repository.ensureLoaded() }
     val model = repository.models.firstOrNull { it.id == modelId }
@@ -127,7 +128,8 @@ fun MusicRunScreen(
     var steps by rememberSaveable { mutableIntStateOf(32) }
     var odeMethod by rememberSaveable { mutableStateOf("midpoint") }
     var outputFormat by rememberSaveable { mutableStateOf("wav16") }
-    var history by remember { mutableStateOf(MusicHistoryStore.load(context)) }
+    var history by remember { mutableStateOf<List<MusicHistoryItem>>(emptyList()) }
+    var historyLoading by remember { mutableStateOf(true) }
     var seed by rememberSaveable { mutableLongStateOf(-1L) }
     var semanticTemperature by rememberSaveable { mutableFloatStateOf(1f) }
     var semanticTopP by rememberSaveable { mutableFloatStateOf(0.95f) }
@@ -147,6 +149,11 @@ fun MusicRunScreen(
     val startupForModel = startupStatus?.takeIf { it.modelId == modelId }
     val backendError = (backendState as? BackendService.BackendState.Error)
         ?.takeIf { it.modelId == null || it.modelId == modelId }
+
+    LaunchedEffect(Unit) {
+        history = withContext(Dispatchers.IO) { MusicHistoryStore.load(context) }
+        historyLoading = false
+    }
 
     LaunchedEffect(musicState) {
         when (val state = musicState) {
@@ -169,7 +176,8 @@ fun MusicRunScreen(
             }
 
             is MusicState.Complete -> {
-                history = MusicHistoryStore.load(context)
+                history = withContext(Dispatchers.IO) { MusicHistoryStore.load(context) }
+                historyLoading = false
                 if (lastTerminalHaptic != "complete") {
                     AppHaptics.perform(context, AppHaptics.Kind.Success)
                     lastTerminalHaptic = "complete"
@@ -260,8 +268,14 @@ fun MusicRunScreen(
                     IconButton(
                         onClick = {
                             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                            history = MusicHistoryStore.load(context)
                             showHistory = true
+                            historyLoading = true
+                            uiScope.launch {
+                                history = withContext(Dispatchers.IO) {
+                                    MusicHistoryStore.load(context)
+                                }
+                                historyLoading = false
+                            }
                         },
                     ) {
                         Icon(Icons.Default.History, contentDescription = "Music history")
@@ -730,8 +744,17 @@ fun MusicRunScreen(
     if (showHistory) {
         MusicHistorySheet(
             items = history,
+            loading = historyLoading,
             onDismiss = { showHistory = false },
-            onHistoryChanged = { history = MusicHistoryStore.load(context) },
+            onHistoryChanged = {
+                historyLoading = true
+                uiScope.launch {
+                    history = withContext(Dispatchers.IO) {
+                        MusicHistoryStore.load(context)
+                    }
+                    historyLoading = false
+                }
+            },
         )
     }
 }
@@ -1955,6 +1978,7 @@ private fun PromptTemplatePicker(
 @Composable
 private fun MusicHistorySheet(
     items: List<MusicHistoryItem>,
+    loading: Boolean,
     onDismiss: () -> Unit,
     onHistoryChanged: () -> Unit,
 ) {
@@ -2003,7 +2027,30 @@ private fun MusicHistorySheet(
                 }
             }
 
-            if (items.isEmpty()) {
+            if (loading) {
+                item(key = "loading") {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(20.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            SmoothIndeterminateLinearWavyProgressIndicator(
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "Loading tracks…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            } else if (items.isEmpty()) {
                 item(key = "empty") {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
