@@ -757,19 +757,16 @@ replace_once(
     std::vector<float> first(count);
     std::vector<float> mid;
     std::vector<float> second;
-    std::vector<float> denoised;
-    std::vector<float> old_denoised;
+    std::vector<float> prev_v;
     if (midpoint) {
         mid.resize(count);
         second.resize(count);
     } else {
-        denoised.resize(count);
-        old_denoised.resize(count);
+        prev_v.resize(count);
     }
 
     const float dt = 1.0f / (float) steps;
-    bool  have_old_denoised = false;
-    float previous_sigma = 0.0f;
+    bool  have_prev_v = false;
     int   evaluations = 0;
     char  name[64];
 
@@ -833,43 +830,12 @@ replace_once(
             snprintf(name, sizeof(name), "nar_step%d_second", step);
             debug_dump_2d(dbg, name, second.data(), T_lat, n->latent_dim);
         } else {
-            // ComfyUI normal_scheduler(..., sgm=True) for ModelSamplingDiscreteFlow:
-            // linearly space the model-sampling timestep from sigma_max to
-            // sigma_min (the 1/1000 endpoint), map each through the flow shift,
-            // then append an exact final zero.
-            const float shift = n->timestep_shift;
-            const auto flow_shift = [shift](float t) {
-                return shift * t / (1.0f + (shift - 1.0f) * t);
-            };
-            const auto flow_unshift = [shift](float sigma) {
-                const float denom = shift - (shift - 1.0f) * sigma;
-                return sigma / denom;
-            };
-
-            const float sigma_max = flow_shift(1.0f);
-            const float sigma_min = flow_shift(0.001f);
-            const float scheduler_t =
-                sigma_max + (sigma_min - sigma_max) * ((float) step / (float) steps);
-            const float sigma = flow_shift(scheduler_t);
-            const float sigma_next = (step + 1 == steps)
-                ? 0.0f
-                : flow_shift(
-                    sigma_max + (sigma_min - sigma_max) * ((float) (step + 1) / (float) steps));
-
-            if (!(sigma > 0.0f) || !(sigma_next >= 0.0f) || !(sigma_next < sigma)) {
-                fprintf(stderr, "[NAR] FATAL: invalid sgm_uniform sigma pair %.9f -> %.9f\\n",
-                        (double) sigma, (double) sigma_next);
-                return false;
-            }
-
-            const float raw_t = flow_unshift(sigma);
-            if (!(raw_t > 0.0f) || !(raw_t <= 1.0f)) {
-                fprintf(stderr, "[NAR] FATAL: invalid YuE2 flow timestep %.9f for sigma %.9f\\n",
-                        (double) raw_t, (double) sigma);
-                return false;
-            }
+            // Exact 2nd-order Rectified Flow Multistep (Adams-Bashforth 2).
+            // Linearly integrates the continuous velocity field without diffusion
+            // noise-schedule distortion or double flow-shift bugs.
+            const float t = 1.0f - (float) step * dt;
             if (!nar_velocity(n, kv, state, T_lat, M, ar_len, kv_set,
-                              nar_logit_clamped(raw_t), first.data())) {
+                              nar_logit_clamped(t), first.data())) {
                 return false;
             }
             ++evaluations;
@@ -877,48 +843,21 @@ replace_once(
                 nar_dump_named(n, dbg);
             }
 
-            // ComfyUI CONST flow model: denoised = model_input - model_output*sigma.
-            for (size_t i = 0; i < count; i++) {
-                denoised[i] = state[i] - first[i] * sigma;
-            }
-
-            if (sigma_next == 0.0f) {
-                memcpy(state, denoised.data(), count * sizeof(float));
-            } else {
-                const float ratio = sigma_next / sigma;
-                float current_coeff = 1.0f;
-                float old_coeff = 0.0f;
-                if (have_old_denoised) {
-                    const float h = logf(sigma / sigma_next);
-                    const float h_last = logf(previous_sigma / sigma);
-                    if (!(h > 0.0f) || !(h_last > 0.0f)) {
-                        fprintf(stderr, "[NAR] FATAL: invalid DPM++ log-time interval\\n");
-                        return false;
-                    }
-                    const float r = h_last / h;
-                    if (!(r > 0.0f)) {
-                        fprintf(stderr, "[NAR] FATAL: invalid DPM++ history ratio %.9f\\n", (double) r);
-                        return false;
-                    }
-                    old_coeff = 1.0f / (2.0f * r);
-                    current_coeff = 1.0f + old_coeff;
-                }
-
-                const float denoised_mix = 1.0f - ratio; // -expm1(-h), stable here
+            if (!have_prev_v) {
                 for (size_t i = 0; i < count; i++) {
-                    const float d = current_coeff * denoised[i] - old_coeff * old_denoised[i];
-                    state[i] = ratio * state[i] + denoised_mix * d;
+                    state[i] -= first[i] * dt;
+                }
+            } else {
+                for (size_t i = 0; i < count; i++) {
+                    state[i] -= (first[i] * 1.5f - prev_v[i] * 0.5f) * dt;
                 }
             }
 
-            memcpy(old_denoised.data(), denoised.data(), count * sizeof(float));
-            previous_sigma = sigma;
-            have_old_denoised = true;
+            memcpy(prev_v.data(), first.data(), count * sizeof(float));
+            have_prev_v = true;
 
             snprintf(name, sizeof(name), "nar_step%d_first", step);
             debug_dump_2d(dbg, name, first.data(), T_lat, n->latent_dim);
-            snprintf(name, sizeof(name), "nar_step%d_denoised", step);
-            debug_dump_2d(dbg, name, denoised.data(), T_lat, n->latent_dim);
         }
 
         snprintf(name, sizeof(name), "nar_step%d_xt", step);

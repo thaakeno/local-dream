@@ -1033,9 +1033,9 @@ private fun Yue2VariantSheet(
                                 Text(
                                     when (selected.variantPrecision) {
                                         "BF16" ->
-                                            "BF16 is the tensor data type; GGUF is only the model file/container format."
+                                            "BF16 tensor data type · F16 Oobleck VAE · Mothersuperior instrumental LoRA."
                                         else ->
-                                            "GGUF container · quantized backbone · F32 Oobleck waveform decoder"
+                                            "GGUF container · quantized backbone · F16 Oobleck waveform decoder · Instrumental LoRA"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1050,7 +1050,10 @@ private fun Yue2VariantSheet(
                             }
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             FamilyStatusPill(
                                 if (selected.variantPrecision == "BF16") {
                                     "BF16 weights"
@@ -1060,15 +1063,16 @@ private fun Yue2VariantSheet(
                                 true,
                             )
                             FamilyStatusPill("GGUF container")
-                            FamilyStatusPill("F32 VAE")
+                            FamilyStatusPill("F16 VAE")
+                            FamilyStatusPill("Instrumental LoRA")
                         }
 
                         Text(
                             when (selected.variantPrecision) {
                                 "Q8_0" ->
-                                    "Near-lossless upstream default and the recommended Local Dream mobile path because Q8_0 is implemented by the Hexagon backend."
+                                    "Near-lossless upstream default and the recommended Local Dream mobile path on Hexagon HTP. Includes F16 VAE and instrumental LoRA for piano and vocal-free tracks."
                                 else ->
-                                    "Full BF16 backbone stored inside a GGUF container. Kept as the high-memory reference option and supported by the Hexagon backend."
+                                    "Full BF16 backbone stored inside a GGUF container. High-memory reference option supported on Hexagon HTP."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

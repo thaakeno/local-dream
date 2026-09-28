@@ -34,6 +34,20 @@ data class MusicTransportBenchmarkResult(
 object MusicTransportBenchmark {
     private const val TIMEOUT_SECONDS = 45L
     private const val RESULT_PREFIX = "BENCH_JSON "
+    private const val PREFS_NAME = "music_transport_prefs"
+    private const val KEY_PREFERRED_TRANSPORT = "preferred_transport"
+
+    fun getPreferredTransport(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_PREFERRED_TRANSPORT, "dspqueue") ?: "dspqueue"
+    }
+
+    fun setPreferredTransport(context: Context, transport: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_PREFERRED_TRANSPORT, transport)
+            .apply()
+    }
 
     private fun htpArch(): String? {
         val soc = Build.SOC_MODEL.orEmpty().uppercase()

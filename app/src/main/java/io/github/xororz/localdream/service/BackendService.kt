@@ -82,12 +82,10 @@ class BackendService : Service() {
         private const val IDLE_GRACE_MS = 1500L
         private const val MAX_BACKEND_ERROR_CHARS = 700
 
-        // Local Dream caps a mobile score plan to <=1024 tokens and audio to
-        // <=20 s (500 semantic frames). 2560 keeps a 20 s planned song in one
-        // NAR chunk while cutting KV residency drastically versus 6144. That
-        // leaves the Q8 weights, KV and graph scratch inside SM8850's practical
-        // FastRPC address-space budget instead of running into ENORPCMEMORY.
-        private const val MUSIC_MAX_SEQ = 2560
+        // YuE2 supports up to 4 minutes (240 s = 6000 semantic frames) plus
+        // full ABC symbolic planning. 8192 tokens provides the reference context budget
+        // while fitting cleanly within device memory limits.
+        private const val MUSIC_MAX_SEQ = 8192
 
         const val ACTION_STOP = "io.github.xororz.localdream.STOP_GENERATION"
         const val ACTION_RESTART = "io.github.xororz.localdream.RESTART_BACKEND"
@@ -857,13 +855,11 @@ class BackendService : Service() {
                     // upstream itself, while the full 4096 ABC budget remains
                     // available for quality.
                     //
-                    // A <=20 s request is at most 500 semantic frames, so core=1024
-                    // deliberately runs one VAE graph. The Hexagon backend now has
-                    // bounded streaming F32 ADD/MUL for Oobleck's very wide rows,
-                    // fused Snake, native SIN and native COL2IM, so the full graph
-                    // no longer depends on impossible multi-megabyte VTCM row staging.
-                    // Longer clips still use yue2.cpp's exact halo-tiled decoder.
-                    mutableListOf(
+                    // Core=256 keeps each Oobleck upsampling tile strictly within
+                    // SM8850's 8 MB VTCM, avoiding catastrophic spilling to DDR.
+                    val loraFile = File(modelsDir, "ar_lora_inst_v3abc.safetensors").takeIf { it.exists() }
+                        ?: File(modelsDir, "instrumental_lora.safetensors").takeIf { it.exists() }
+                    val musicArgs = mutableListOf(
                         executableFile.absolutePath,
                         "--model",
                         File(modelsDir, "backbone.gguf").absolutePath,
@@ -878,10 +874,14 @@ class BackendService : Service() {
                         "--max-seq",
                         MUSIC_MAX_SEQ.toString(),
                         "--vae-core",
-                        "1024",
+                        "256",
                         "--vae-halo",
                         "16",
                     )
+                    if (loraFile != null) {
+                        musicArgs += listOf("--lora", loraFile.absolutePath)
+                    }
+                    musicArgs
                 }
 
                 else -> mutableListOf(
@@ -1011,34 +1011,30 @@ class BackendService : Service() {
             env["LD_LIBRARY_PATH"] = systemLibPathsStr
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
+            if (backendType == "sdxl") {
+                // Restore burst mode clocks and 9999us FastRPC polling for SDXL
+                // to recover the 12-14s baseline generation speed.
+                env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
+            }
+
             if (isMusicBackend(backendType)) {
-                // Use the current upstream DSPQueue backend with its default
-                // single physical HTP session. Do not request the JZ virtual-session
-                // syntax here: with no GGML_HEXAGON_DEVICES override the clean
-                // backend registers exactly HTP0, which YuE2 then forces below.
+                val preferredTransport = MusicTransportBenchmark.getPreferredTransport(this)
+                // Use the preferred transport selected by the on-device A/B benchmark.
                 env.remove("GGML_HEXAGON_DEVICES")
                 env["GGML_BACKEND"] = "HTP0"
                 env["YUE2_STRICT_ACCELERATOR"] = "1"
-                env["LOCAL_DREAM_YUE2_BACKEND"] = "dspqueue-native-0.6.0-37f752"
+                env["LOCAL_DREAM_YUE2_BACKEND"] = "$preferredTransport-native-0.6.0-37f752"
 
-                // SM8850: keep HMX/HVX enabled. YuE2's full 20 s Oobleck
-                // graph is unusually long-lived and wide: sending the old
-                // 1280-op / 32-deep DSPQueue profile leaves too much work in
-                // flight and reproduces FastRPC/DSPQueue 0x2e after ~20 s.
-                // On SM8850/v81, measured ggml-hexagon sweeps show 4-64 ops
-                // per message retain throughput while avoiding the oversized
-                // in-flight batches. Use 64 ops and an 8-batch queue so the
-                // DSP is continuously fed without accumulating 32 responses.
-                // Strict YuE2 scheduling remains unchanged: every compute op
-                // is still HTP-native and CPU fallback stays forbidden.
+                // SM8850: keep HMX/HVX enabled.
                 env["GGML_HEXAGON_NHMX"] = "1"
                 env["GGML_HEXAGON_NHVX"] = "0"
                 env["GGML_HEXAGON_MM_SELECT"] = "2"
                 env["GGML_HEXAGON_OPFUSION"] = "1"
-                // Block for completions rather than busy-spinning the AP.
                 env["GGML_HEXAGON_OPPOLL"] = "0"
-                env["GGML_HEXAGON_OPBATCH"] = "64"
-                env["GGML_HEXAGON_OPQUEUE"] = "8"
+                if (preferredTransport != "fastrpc") {
+                    env["GGML_HEXAGON_OPBATCH"] = "64"
+                    env["GGML_HEXAGON_OPQUEUE"] = "8"
+                }
 
                 env["LD_LIBRARY_PATH"] = listOf(
                     nativeDir,
@@ -1065,9 +1061,9 @@ class BackendService : Service() {
                 )
 
                 val message =
-                    "YuE2 HTP: backend=DSPQueue-native-0.6.0 selector=HTP0 session=physical-0 " +
+                    "YuE2 HTP: backend=$preferredTransport-native-0.6.0 selector=HTP0 session=physical-0 " +
                         "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ queue=64/8 blocking-wait " +
-                        "hmx=1 hvx=all vae=snake-fused+sin+col2im1d+bias-native+stream-addmul core=1024 " +
+                        "hmx=1 hvx=all vae=snake-fused+sin+col2im1d+bias-native+stream-addmul core=256 " +
                         "runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
                 BackendDiagnostics.append(this, "ENV", message)

@@ -228,7 +228,7 @@ class QnnModel : public QnnSampleApp {
     //   cool:              NOM_PLUS + DCVS
     //   burst:             MAX clocks + 9999 us polling
     const char *modeEnv = std::getenv("LOCALDREAM_QNN_POWER_MODE");
-    const std::string mode = modeEnv && *modeEnv ? modeEnv : "efficient";
+    const std::string mode = modeEnv && *modeEnv ? modeEnv : "burst";
     const bool burst = mode == "burst";
     const bool cool = mode == "cool" || mode == "balanced";
 

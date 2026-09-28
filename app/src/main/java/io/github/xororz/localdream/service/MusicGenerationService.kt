@@ -380,12 +380,27 @@ class MusicGenerationService : Service() {
 
     private fun startGeneration(intent: Intent) {
         val style = intent.getStringExtra("style")?.trim().orEmpty()
-        val lyrics = intent.getStringExtra("lyrics").orEmpty()
+        val rawLyrics = intent.getStringExtra("lyrics").orEmpty()
         val modelId = intent.getStringExtra("modelId")
-        if (style.isBlank() && lyrics.isBlank()) {
+        if (style.isBlank() && rawLyrics.isBlank()) {
             _state.value = MusicState.Error("Describe the music or enter lyrics.", modelId)
             finishService()
             return
+        }
+
+        val isInstrumentalPrompt = rawLyrics.isBlank() ||
+            rawLyrics.contains("instrumental", ignoreCase = true) ||
+            style.contains("instrumental", ignoreCase = true) ||
+            style.contains("no vocals", ignoreCase = true) ||
+            style.contains("no vocal", ignoreCase = true)
+
+        val lyrics = if (isInstrumentalPrompt && (rawLyrics.isBlank() || rawLyrics.trim() == "[instrumental]")) {
+            // Proven HuggingFace / Mothersuperior instrumental LoRA format:
+            // Explicit section tags instruct the ABC composer to plan structured
+            // movement without emitting vocal syllables or V: Vocal score tracks.
+            "[Intro - Instrumental]\n[Verse - Instrumental]\n[Outro - Instrumental]"
+        } else {
+            rawLyrics
         }
 
         workJob?.cancel()
@@ -397,13 +412,13 @@ class MusicGenerationService : Service() {
         // expert option for users who intentionally want score-free generation.
         val cot = if (requestedCot == "auto") "full" else requestedCot
         val outputFormat = intent.getStringExtra("output_format")?.takeIf {
-            it in setOf("wav32", "wav24", "wav16", "mp3")
-        } ?: "wav32"
-        val duration = intent.getIntExtra("duration", 20).coerceIn(5, 20)
-        val steps = intent.getIntExtra("steps", 8).coerceIn(1, 64)
+            it in setOf("wav16", "wav32", "wav24", "mp3")
+        } ?: "wav16"
+        val duration = intent.getIntExtra("duration", 60).coerceIn(10, 240)
+        val steps = intent.getIntExtra("steps", 32).coerceIn(1, 64)
         val odeMethod = intent.getStringExtra("ode_method")
             ?.takeIf { it == "dpmpp_2m" || it == "midpoint" }
-            ?: "dpmpp_2m"
+            ?: "midpoint"
         val seed = intent.getLongExtra("seed", -1L)
         val temperature = intent.getFloatExtra("semantic_temperature", 1f)
             .coerceIn(0.5f, 1.5f)
@@ -421,8 +436,8 @@ class MusicGenerationService : Service() {
             }
         }
         val planMaxTokens = when (cot) {
-            "full" -> (duration * 48).coerceIn(384, 1024)
-            "melody" -> (duration * 36).coerceIn(256, 768)
+            "full" -> (duration * 48).coerceIn(384, 4096)
+            "melody" -> (duration * 36).coerceIn(256, 3072)
             else -> 0
         }
         val started = System.currentTimeMillis()

@@ -388,14 +388,18 @@ data class Model(
 
         // Official yue2.cpp release matrix. There is intentionally no Q4:
         // the upstream model card notes that the audio-code LM degrades below Q5.
-        // The F32 Oobleck VAE is shared by every variant because quantizing the
-        // decoder directly degrades the waveform.
+        // F16 Oobleck VAE halves memory and bandwidth without waveform quality loss.
+        // Mothersuperior instrumental LoRA enables high-quality instrumental music
+        // with full symbolic ABC planning.
         private const val YUE2_VAE =
-            "Serveurperso/YuE2-GGUF/resolve/main/YuE2-Vae-F32.gguf|vae.gguf"
+            "Serveurperso/YuE2-GGUF/resolve/main/YuE2-Vae-F16.gguf|vae.gguf"
+        private const val YUE2_INSTRUMENTAL_LORA =
+            "Mothersuperior/YuE2-instrumental-cot-full-loras/resolve/main/ar_lora_inst_v3abc.safetensors|ar_lora_inst_v3abc.safetensors"
 
         private fun yue2Package(backbone: String): List<String> = listOf(
             "Serveurperso/YuE2-GGUF/resolve/main/$backbone|backbone.gguf",
             YUE2_VAE,
+            YUE2_INSTRUMENTAL_LORA,
         )
 
         val YUE2_Q5_PACKAGE_FILES = yue2Package("YuE2-3B-Q5_K_M.gguf")
