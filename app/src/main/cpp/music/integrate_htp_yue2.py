@@ -3,8 +3,8 @@
 
 The dependency revisions are pinned. This script fails on source drift and adds
 native HTP implementations for the Oobleck ops missing from upstream
-DSPQueue (SIN, COL2IM_1D and streaming channel-broadcast ADD), fuses Oobleck's
-five-node Snake activation into one HVX kernel, uses ComfyUI-compatible
+DSPQueue (SIN, COL2IM_1D and streaming channel-broadcast ADD/MUL), fuses
+Oobleck's five-node Snake activation into one HVX kernel, uses ComfyUI-compatible
 DPM-Solver++ 2M with the SGM-uniform flow schedule, trims HTP attention windows
 to native 64-key blocks, and enforces strict accelerator compute.
 There is no CPU compute fallback.
@@ -44,21 +44,21 @@ replace_once(
 replace_once(
     htp / "htp-ops.h",
     "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n\n    HTP_OP_INVALID",
-    "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n    HTP_OP_SIN,\n    HTP_OP_COL2IM_1D,\n    HTP_OP_SNAKE,\n    HTP_OP_CHANNEL_BCAST_ADD,\n\n    HTP_OP_INVALID",
+    "    HTP_OP_ROLL,\n    HTP_OP_ARGMAX,\n    HTP_OP_SIN,\n    HTP_OP_COL2IM_1D,\n    HTP_OP_SNAKE,\n    HTP_OP_CHANNEL_BCAST_ADD,\n    HTP_OP_CHANNEL_BCAST_MUL,\n\n    HTP_OP_INVALID",
     "HTP op enum",
 )
 
 replace_once(
     htp / "htp-ctx.h",
     "int op_im2col(struct htp_ops_context * octx);\nint op_allreduce",
-    "int op_im2col(struct htp_ops_context * octx);\nint op_col2im_1d(struct htp_ops_context * octx);\nint op_sin(struct htp_ops_context * octx);\nint op_snake(struct htp_ops_context * octx);\nint op_channel_bcast_add(struct htp_ops_context * octx);\nint op_allreduce",
+    "int op_im2col(struct htp_ops_context * octx);\nint op_col2im_1d(struct htp_ops_context * octx);\nint op_sin(struct htp_ops_context * octx);\nint op_snake(struct htp_ops_context * octx);\nint op_channel_bcast_add(struct htp_ops_context * octx);\nint op_channel_bcast_mul(struct htp_ops_context * octx);\nint op_allreduce",
     "HTP op declarations",
 )
 
 replace_once(
     htp / "main.c",
     "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_ROLL:",
-    "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_COL2IM_1D:\n            return op_col2im_1d(octx);\n\n        case HTP_OP_SIN:\n            return op_sin(octx);\n\n        case HTP_OP_SNAKE:\n            return op_snake(octx);\n\n        case HTP_OP_CHANNEL_BCAST_ADD:\n            return op_channel_bcast_add(octx);\n\n        case HTP_OP_ROLL:",
+    "        case HTP_OP_IM2COL:\n            return op_im2col(octx);\n\n        case HTP_OP_COL2IM_1D:\n            return op_col2im_1d(octx);\n\n        case HTP_OP_SIN:\n            return op_sin(octx);\n\n        case HTP_OP_SNAKE:\n            return op_snake(octx);\n\n        case HTP_OP_CHANNEL_BCAST_ADD:\n            return op_channel_bcast_add(octx);\n\n        case HTP_OP_CHANNEL_BCAST_MUL:\n            return op_channel_bcast_mul(octx);\n\n        case HTP_OP_ROLL:",
     "HTP dispatch",
 )
 
@@ -124,13 +124,15 @@ replace_once(
 )
 
 
-# Large Oobleck bias adds are [T,C] + [1,C]. DSPQueue's generic binary
-# implementation stages complete rows in VTCM, which cannot represent the
-# ~3.84 MiB rows reached by a 20 s full-graph decode on an 8 MiB HTP. Route
-# exactly this geometry to a streaming HVX op over HTP-mapped memory.
+# Oobleck emits huge contiguous [T,C] op [1,C] channel broadcasts.
+# DSPQueue's generic binary path stages full rows in VTCM. At the final
+# 48 kHz stages one row is ~3.84 MiB, so even one generic worker cannot fit.
+# Route both ADD (bias) and MUL (Snake alpha / inv-beta) through bounded
+# streaming HVX kernels over HTP-mapped memory.
 channel_add_helper = r"""
-static bool ggml_hexagon_is_yue2_channel_bcast_add(const struct ggml_tensor * op) {
-    if (!op || op->op != GGML_OP_ADD || op->type != GGML_TYPE_F32) {
+static bool ggml_hexagon_is_yue2_channel_bcast(const struct ggml_tensor * op) {
+    if (!op || (op->op != GGML_OP_ADD && op->op != GGML_OP_MUL) ||
+        op->type != GGML_TYPE_F32) {
         return false;
     }
     const struct ggml_tensor * src0 = op->src[0];
@@ -155,14 +157,14 @@ replace_once(
     host,
     "static htp_op_code op_remap_to_htp(const ggml_tensor * t) {",
     channel_add_helper + "static htp_op_code op_remap_to_htp(const ggml_tensor * t) {",
-    "YuE2 channel-broadcast ADD helper",
+    "YuE2 channel-broadcast binary helper",
 )
 
 replace_once(
     host,
     "        case GGML_OP_ADD:             return HTP_OP_ADD;",
-    "        case GGML_OP_ADD:             return ggml_hexagon_is_yue2_channel_bcast_add(t) ? HTP_OP_CHANNEL_BCAST_ADD : HTP_OP_ADD;",
-    "YuE2 channel-broadcast ADD remap",
+    "        case GGML_OP_ADD:             return ggml_hexagon_is_yue2_channel_bcast(t) ? HTP_OP_CHANNEL_BCAST_ADD : HTP_OP_ADD;\n        case GGML_OP_MUL:             return ggml_hexagon_is_yue2_channel_bcast(t) ? HTP_OP_CHANNEL_BCAST_MUL : HTP_OP_MUL;",
+    "YuE2 channel-broadcast binary remap",
 )
 
 replace_once(
@@ -173,19 +175,18 @@ replace_once(
         case GGML_OP_DIV:
             supp = ggml_hexagon_supported_binary(sess, op);
             break;""",
-    """        case GGML_OP_MUL:
-        case GGML_OP_SUB:
+    """        case GGML_OP_SUB:
         case GGML_OP_DIV:
             supp = ggml_hexagon_supported_binary(sess, op);
             break;
 
         case GGML_OP_ADD:
-            supp = ggml_hexagon_is_yue2_channel_bcast_add(op) ||
+        case GGML_OP_MUL:
+            supp = ggml_hexagon_is_yue2_channel_bcast(op) ||
                    ggml_hexagon_supported_binary(sess, op);
             break;""",
-    "YuE2 channel-broadcast ADD support",
+    "YuE2 channel-broadcast binary support",
 )
-
 
 # Oobleck Snake is emitted by yue2.cpp as:
 #   MUL(x, alpha) -> SIN -> SQR -> MUL(inv_beta) -> ADD(x)
@@ -354,8 +355,8 @@ replace_once(
     """    struct htp_binary_vtcm_layout L;
     htp_binary_vtcm_layout_build(&L, kparams, sess->vtcm_size);
     if (L.rows_per_buffer == 0 || L.total_bytes > sess->vtcm_size) {""",
-    """    // Adaptive generic binary VTCM thread fit. Very wide YuE2 channel-bias
-    // adds use the dedicated streaming op above; for other supported binary
+    """    // Adaptive generic binary VTCM thread fit. Very wide YuE2 channel
+    // broadcasts use the dedicated streaming ops above; for other supported binary
     // geometries, reduce only this op's worker count until its exact kernel
     // fits. No CPU fallback and no semantic rewrite.
     struct htp_binary_vtcm_layout L;
