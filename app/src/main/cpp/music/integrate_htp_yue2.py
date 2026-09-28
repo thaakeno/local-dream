@@ -124,11 +124,10 @@ replace_once(
 )
 
 
-# Oobleck emits huge contiguous [T,C] op [1,C] channel broadcasts.
-# DSPQueue's generic binary path stages full rows in VTCM. At the final
-# 48 kHz stages one row is ~3.84 MiB, so even one generic worker cannot fit.
-# Route both ADD (bias) and MUL (Snake alpha / inv-beta) through bounded
-# streaming HVX kernels over HTP-mapped memory.
+# Oobleck emits huge contiguous F32 binary rows. DSPQueue's generic binary
+# path stages full rows in VTCM. At the final 48 kHz stages one row is
+# ~3.84 MiB, so even one generic worker cannot fit. Route channel broadcasts
+# and very wide equal-shape residuals through bounded streaming HVX kernels.
 channel_add_helper = r"""
 static bool ggml_hexagon_is_yue2_channel_bcast(const struct ggml_tensor * op) {
     if (!op || (op->op != GGML_OP_ADD && op->op != GGML_OP_MUL) ||
@@ -140,16 +139,29 @@ static bool ggml_hexagon_is_yue2_channel_bcast(const struct ggml_tensor * op) {
     if (!src0 || !src1 || src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32) {
         return false;
     }
-    return src0->ne[0] > 1 && src0->ne[1] > 0 &&
-           src0->ne[2] == 1 && src0->ne[3] == 1 &&
-           op->ne[0] == src0->ne[0] && op->ne[1] == src0->ne[1] &&
-           op->ne[2] == 1 && op->ne[3] == 1 &&
-           src1->ne[0] == 1 && src1->ne[1] == src0->ne[1] &&
-           src1->ne[2] == 1 && src1->ne[3] == 1 &&
-           ggml_is_contiguous(src0) && ggml_is_contiguous(src1) &&
-           ggml_is_contiguous(op) &&
-           !ggml_is_permuted(src0) && !ggml_is_permuted(src1) &&
-           !ggml_is_permuted(op);
+    if (src0->ne[0] <= 1 || src0->ne[1] <= 0 ||
+        src0->ne[2] != 1 || src0->ne[3] != 1 ||
+        op->ne[0] != src0->ne[0] || op->ne[1] != src0->ne[1] ||
+        op->ne[2] != 1 || op->ne[3] != 1 ||
+        !ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) ||
+        !ggml_is_contiguous(op) ||
+        ggml_is_permuted(src0) || ggml_is_permuted(src1) ||
+        ggml_is_permuted(op)) {
+        return false;
+    }
+
+    const bool channel_broadcast =
+        src1->ne[0] == 1 && src1->ne[1] == src0->ne[1] &&
+        src1->ne[2] == 1 && src1->ne[3] == 1;
+    const bool same_shape =
+        src1->ne[0] == src0->ne[0] && src1->ne[1] == src0->ne[1] &&
+        src1->ne[2] == 1 && src1->ne[3] == 1;
+
+    // Broadcasts are the Snake/bias form. Equal-shape residuals stay on the
+    // normal VTCM kernel until the time row is >= 1 MiB; past that point the
+    // generic double-buffer layout is no longer robust on an 8 MiB v81 HTP.
+    const bool wide_residual = same_shape && src0->ne[0] >= 262144;
+    return channel_broadcast || wide_residual;
 }
 
 """
@@ -196,7 +208,9 @@ replace_once(
 # of the decoder's dozens of Snake activations.
 snake_fusion = r"""
     bool try_fuse_yue2_snake(const htp_opnode & node) {
-        if (node.opcode != HTP_OP_ADD || n_ops < 4) return false;
+        if ((node.opcode != HTP_OP_ADD &&
+             node.opcode != HTP_OP_CHANNEL_BCAST_ADD) ||
+            n_ops < 4) return false;
 
         const unsigned int base = n_ops - 4;
         htp_opnode & mul_alpha = ops[base + 0];
@@ -204,10 +218,16 @@ snake_fusion = r"""
         htp_opnode & sqr_node  = ops[base + 2];
         htp_opnode & mul_beta  = ops[base + 3];
 
-        if (mul_alpha.opcode != HTP_OP_MUL ||
-            sin_node.opcode  != HTP_OP_SIN ||
-            sqr_node.opcode  != HTP_OP_SQR ||
-            mul_beta.opcode  != HTP_OP_MUL) {
+        const bool mul_alpha_ok =
+            mul_alpha.opcode == HTP_OP_MUL ||
+            mul_alpha.opcode == HTP_OP_CHANNEL_BCAST_MUL;
+        const bool mul_beta_ok =
+            mul_beta.opcode == HTP_OP_MUL ||
+            mul_beta.opcode == HTP_OP_CHANNEL_BCAST_MUL;
+        if (!mul_alpha_ok ||
+            sin_node.opcode != HTP_OP_SIN ||
+            sqr_node.opcode != HTP_OP_SQR ||
+            !mul_beta_ok) {
             return false;
         }
 
