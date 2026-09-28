@@ -429,8 +429,14 @@ class MusicGenerationService : Service() {
         // letting ABC consume the entire 8192-token runtime context. In practice
         // instrumental CoT usually stops well before these caps.
         val planMaxTokens = when (cot) {
-            "full" -> (duration * 24).coerceIn(384, 2048)
-            "melody" -> (duration * 18).coerceIn(256, 1536)
+            // A 384-token floor was too small even for simple 5 s tests: the
+            // planner often reached the cap in the middle of an ABC group.
+            // Keep a healthy minimum so normal plans can terminate on ABC_END;
+            // if a rare long plan still truncates, native code now retains only
+            // the last strictly valid Vocal+Ins prefix instead of parsing a
+            // half-written measure.
+            "full" -> (duration * 24).coerceIn(1024, 2048)
+            "melody" -> (duration * 18).coerceIn(768, 1536)
             else -> 0
         }
         val started = System.currentTimeMillis()
