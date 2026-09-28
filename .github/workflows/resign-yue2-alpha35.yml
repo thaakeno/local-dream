@@ -167,4 +167,4 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-# signer-trigger: latest-yue2-canonical
+# signer-trigger: alpha60-canonical-now
