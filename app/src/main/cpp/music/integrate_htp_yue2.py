@@ -1558,35 +1558,6 @@ vtext = vtext.replace("return ggml_add(ctx, skip, x);",
                       "return vae_htp_add(ctx, skip, x);")
 vae.write_text(vtext)
 
-# Emit exact decoder tile milestones so Android can show real progress.
-replace_once(
-    vae,
-    """        int tile_T = vae_ggml_compute(m, latent, right - left, left);
-        if (tile_T < 0) {""",
-    """        fprintf(stderr, "[VAE] Tile %d/%d begin: latent=%d\\n",
-                i + 1, num_tiles, right - left);
-        Timer tile_timer;
-        int tile_T = vae_ggml_compute(m, latent, right - left, left);
-        if (tile_T < 0) {""",
-    "VAE tile begin progress",
-)
-replace_once(
-    vae,
-    """        ggml_backend_tensor_get(m->graph_output, audio_out + max_T_audio + out_start, (tile_T + crop) * sizeof(float),
-                                core_len * sizeof(float));
-    }
-
-    // Compact ch1""",
-    """        ggml_backend_tensor_get(m->graph_output, audio_out + max_T_audio + out_start, (tile_T + crop) * sizeof(float),
-                                core_len * sizeof(float));
-        fprintf(stderr, "[VAE] Tile %d/%d done: %.0f ms\\n",
-                i + 1, num_tiles, tile_timer.ms());
-    }
-
-    // Compact ch1""",
-    "VAE tile done progress",
-)
-
 # Whole-decoder parity gate. The CPU decoder exists only as a one-shot
 # validator. Generation remains strict HTP-only: a parity failure aborts
 # instead of silently falling back.
@@ -1764,9 +1735,23 @@ replace_once(
             fprintf(stderr, "[VAE] FATAL: tile %d decode failed\\n", i);
             return -1;
         }
-        fprintf(stderr, "[VAE] Tile %d/%d done: %.0f ms\\n", i + 1, num_tiles, tile_timer.ms());
 """,
-    "VAE tile progress",
+    "VAE tile progress begin",
+)
+replace_once(
+    vae,
+    """        ggml_backend_tensor_get(m->graph_output, audio_out + max_T_audio + out_start, (tile_T + crop) * sizeof(float),
+                                core_len * sizeof(float));
+    }
+
+    // Compact ch1""",
+    """        ggml_backend_tensor_get(m->graph_output, audio_out + max_T_audio + out_start, (tile_T + crop) * sizeof(float),
+                                core_len * sizeof(float));
+        fprintf(stderr, "[VAE] Tile %d/%d done: %.0f ms\\n", i + 1, num_tiles, tile_timer.ms());
+    }
+
+    // Compact ch1""",
+    "VAE tile progress done",
 )
 
 print("Local Dream YuE2 native HTP integration applied")
