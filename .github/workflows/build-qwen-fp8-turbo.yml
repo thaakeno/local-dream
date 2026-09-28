@@ -270,7 +270,7 @@ jobs:
           test -s app/src/main/assets/yue2libs/libggml-htp-v79.so
           test -s app/src/main/assets/yue2libs/libggml-htp-v81.so
           grep -q 'commit=37f752b77fc4d661e2552128f42cb811d7bdb628' app/src/main/assets/yue2libs/backend-version.txt
-          grep -q 'variant=dspqueue-yue2-native-0.5.0' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'variant=dspqueue-yue2-native-0.6.0' app/src/main/assets/yue2libs/backend-version.txt
           grep -q '^integration=' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'snake-hvx-fused' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/yue2libs/backend-version.txt
