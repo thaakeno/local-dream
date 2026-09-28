@@ -1,8 +1,9 @@
 // Local Dream YuE2 native HTP channel-broadcast binary ops.
 //
-// Handles Oobleck's exact [T,C] op [1,C] channel-broadcast geometry without
-// staging a multi-megabyte time row in VTCM. ADD covers conv biases/residual
-// biases and MUL covers Snake alpha/inv-beta. The tensors stay in HTP-mapped
+// Handles Oobleck's huge contiguous F32 binary rows without
+// staging a multi-megabyte row in VTCM. It supports [T,C] op [1,C] channel
+// broadcasts plus wide [T,C] op [T,C] residuals. ADD covers conv/residual
+// bias paths and MUL covers Snake alpha/inv-beta. The tensors stay in HTP-mapped
 // memory and each worker streams bounded time chunks with HVX. These are
 // first-class HTP ops: unsupported shapes are rejected and strict accelerator
 // mode fails rather than falling back to CPU.
@@ -46,6 +47,7 @@ struct htp_channel_add_context {
     uint32_t chunks_per_row;
     uint32_t total_jobs;
     enum yue2_channel_binary_kind kind;
+    int channel_broadcast;
 };
 
 static void channel_add_thread(unsigned int nth, unsigned int ith, void * data) {
@@ -74,25 +76,36 @@ static void channel_add_thread(unsigned int nth, unsigned int ith, void * data) 
         }
 
         const float * in = src0 + (size_t) ch * c->time;
+        const float * rhs = c->channel_broadcast
+            ? NULL
+            : bias + (size_t) ch * c->time;
         float * out = dst + (size_t) ch * c->time;
-        const HVX_Vector vb = hvx_vec_splat_f32(bias[ch]);
+        const HVX_Vector vb = c->channel_broadcast
+            ? hvx_vec_splat_f32(bias[ch])
+            : hvx_vec_splat_f32(0.0f);
 
         uint32_t t = start;
         if (c->kind == YUE2_CHANNEL_BINARY_ADD) {
             for (; t + VLEN_FP32 <= end; t += VLEN_FP32) {
                 const HVX_Vector vx = *(const HVX_UVector *) (in + t);
-                *(HVX_UVector *) (out + t) = yue2_add_f32(vx, vb);
+                const HVX_Vector vr = c->channel_broadcast
+                    ? vb
+                    : *(const HVX_UVector *) (rhs + t);
+                *(HVX_UVector *) (out + t) = yue2_add_f32(vx, vr);
             }
             for (; t < end; ++t) {
-                out[t] = in[t] + bias[ch];
+                out[t] = in[t] + (c->channel_broadcast ? bias[ch] : rhs[t]);
             }
         } else {
             for (; t + VLEN_FP32 <= end; t += VLEN_FP32) {
                 const HVX_Vector vx = *(const HVX_UVector *) (in + t);
-                *(HVX_UVector *) (out + t) = yue2_mul_f32(vx, vb);
+                const HVX_Vector vr = c->channel_broadcast
+                    ? vb
+                    : *(const HVX_UVector *) (rhs + t);
+                *(HVX_UVector *) (out + t) = yue2_mul_f32(vx, vr);
             }
             for (; t < end; ++t) {
-                out[t] = in[t] * bias[ch];
+                out[t] = in[t] * (c->channel_broadcast ? bias[ch] : rhs[t]);
             }
         }
     }
@@ -115,9 +128,21 @@ static int op_channel_bcast_binary(struct htp_ops_context * octx,
     if (src0->ne[0] == 0 || src0->ne[1] == 0 ||
         src0->ne[2] != 1 || src0->ne[3] != 1 ||
         dst->ne[0] != src0->ne[0] || dst->ne[1] != src0->ne[1] ||
-        dst->ne[2] != 1 || dst->ne[3] != 1 ||
-        src1->ne[0] != 1 || src1->ne[1] != src0->ne[1] ||
-        src1->ne[2] != 1 || src1->ne[3] != 1) {
+        dst->ne[2] != 1 || dst->ne[3] != 1) {
+        return HTP_STATUS_INVAL_PARAMS;
+    }
+
+    const int channel_broadcast =
+        src1->ne[0] == 1 &&
+        src1->ne[1] == src0->ne[1] &&
+        src1->ne[2] == 1 &&
+        src1->ne[3] == 1;
+    const int same_shape =
+        src1->ne[0] == src0->ne[0] &&
+        src1->ne[1] == src0->ne[1] &&
+        src1->ne[2] == 1 &&
+        src1->ne[3] == 1;
+    if (!channel_broadcast && !same_shape) {
         return HTP_STATUS_INVAL_PARAMS;
     }
 
@@ -125,7 +150,9 @@ static int op_channel_bcast_binary(struct htp_ops_context * octx,
         src1->nb[0] != sizeof(float) ||
         src0->nb[1] != src0->ne[0] * sizeof(float) ||
         dst->nb[1] != dst->ne[0] * sizeof(float) ||
-        src1->nb[1] != sizeof(float)) {
+        (channel_broadcast
+            ? src1->nb[1] != sizeof(float)
+            : src1->nb[1] != src1->ne[0] * sizeof(float))) {
         return HTP_STATUS_NO_SUPPORT;
     }
 
@@ -151,6 +178,7 @@ static int op_channel_bcast_binary(struct htp_ops_context * octx,
         .chunks_per_row = chunks,
         .total_jobs = total_jobs,
         .kind = kind,
+        .channel_broadcast = channel_broadcast,
     };
     work_queue_run(octx->ctx->work_queue, channel_add_thread, &c, n_threads);
     return HTP_STATUS_OK;
