@@ -67,7 +67,7 @@ class BackendService : Service() {
         private const val MUSIC_EXECUTABLE_NAME = "libyue2_server.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
-        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_37f752_yue2_dpmpp_v4"
+        private const val MUSIC_RUNTIME_VERSION = "hexagon_dspqueue_37f752_yue2_dpmpp_v5"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
@@ -857,15 +857,12 @@ class BackendService : Service() {
                     // upstream itself, while the full 4096 ABC budget remains
                     // available for quality.
                     //
-                    // Keep VAE tiles bounded to 96 semantic frames. Every supported 5-20 s
-                    // generation is therefore decoded in 2-6 exact halo tiles instead
-                    // of one giant blocking graph. This improves HTP locality, exposes
-                    // real decode progress/cancellation checkpoints, and preserves the
-                    // same full-receptive-field output through the existing halo crop.
-                    //
-                    // FLASH_ATTN_EXT currently has a documented correctness bug
-                    // on Snapdragon Hexagon v75, so use the plain attention path
-                    // and still offload supported matmuls to HTP.
+                    // A <=20 s request is at most 500 semantic frames, so core=1024
+                    // deliberately runs one VAE graph. The Hexagon backend now has
+                    // bounded streaming F32 ADD/MUL for Oobleck's very wide rows,
+                    // fused Snake, native SIN and native COL2IM, so the full graph
+                    // no longer depends on impossible multi-megabyte VTCM row staging.
+                    // Longer clips still use yue2.cpp's exact halo-tiled decoder.
                     mutableListOf(
                         executableFile.absolutePath,
                         "--model",
@@ -1022,7 +1019,7 @@ class BackendService : Service() {
                 env.remove("GGML_HEXAGON_DEVICES")
                 env["GGML_BACKEND"] = "HTP0"
                 env["YUE2_STRICT_ACCELERATOR"] = "1"
-                env["LOCAL_DREAM_YUE2_BACKEND"] = "dspqueue-native-0.5.0-37f752"
+                env["LOCAL_DREAM_YUE2_BACKEND"] = "dspqueue-native-0.6.0-37f752"
 
                 // SM8850: keep HMX/HVX enabled and use the current upstream
                 // queue depth. Strict YuE2 scheduling means unsupported graph
@@ -1064,9 +1061,9 @@ class BackendService : Service() {
                 )
 
                 val message =
-                    "YuE2 HTP: backend=DSPQueue-native-0.5.0 selector=HTP0 session=physical-0 " +
+                    "YuE2 HTP: backend=DSPQueue-native-0.6.0 selector=HTP0 session=physical-0 " +
                         "strict=1 model=$modelId max_seq=$MUSIC_MAX_SEQ queue=1280/32 blocking-wait " +
-                        "hmx=1 hvx=all vae=snake-fused+sin+col2im1d-native+channel-bcast-add core=1024 " +
+                        "hmx=1 hvx=all vae=snake-fused+sin+col2im1d-native+stream-addmul core=1024 " +
                         "runtime=${musicRuntimeDir.absolutePath}"
                 Log.i(TAG, message)
                 BackendDiagnostics.append(this, "ENV", message)
