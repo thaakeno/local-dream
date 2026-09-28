@@ -18,8 +18,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -352,7 +355,13 @@ fun MusicRunScreen(
                         onValueChange = { style = it.take(1000) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Style prompt") },
-                        placeholder = { Text("genre, mood, vocals, instruments, production…") },
+                        placeholder = { Text("genre, voice, instruments, groove, production…") },
+                        supportingText = {
+                            Text(
+                                "YuE2 works best with one coherent comma-separated style: genre, " +
+                                    "voice for songs, 2–4 instruments, groove/tempo and production."
+                            )
+                        },
                         minLines = 3,
                     )
                     OutlinedTextField(
@@ -400,6 +409,26 @@ fun MusicRunScreen(
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    PromptTemplatePicker(
+                        instrumental = instrumental,
+                        onModeChange = { selectedInstrumental ->
+                            instrumental = selectedInstrumental
+                            if (instrumental) {
+                                lyrics = ""
+                                if (planning == "off") planning = "full"
+                            }
+                        },
+                        onApply = { template ->
+                            style = template.style
+                            instrumental = template.instrumental
+                            if (template.instrumental) {
+                                lyrics = ""
+                                if (planning == "off") planning = "full"
+                            }
+                            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                        },
                     )
 
                     Surface(
@@ -694,14 +723,14 @@ fun MusicRunScreen(
             },
             onDismiss = { showConfig = false },
         )
+    }
+
     if (showHistory) {
         MusicHistorySheet(
             items = history,
             onDismiss = { showHistory = false },
             onHistoryChanged = { history = MusicHistoryStore.load(context) },
         )
-    }
-
     }
 }
 
