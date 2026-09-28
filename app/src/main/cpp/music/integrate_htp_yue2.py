@@ -174,8 +174,8 @@ replace_once(
 
 replace_once(
     host,
-    "        case GGML_OP_ADD:             return HTP_OP_ADD;",
-    "        case GGML_OP_ADD:             return ggml_hexagon_is_yue2_channel_bcast(t) ? HTP_OP_CHANNEL_BCAST_ADD : HTP_OP_ADD;\n        case GGML_OP_MUL:             return ggml_hexagon_is_yue2_channel_bcast(t) ? HTP_OP_CHANNEL_BCAST_MUL : HTP_OP_MUL;",
+    "        case GGML_OP_MUL:             return HTP_OP_MUL;\n        case GGML_OP_ADD:             return HTP_OP_ADD;",
+    "        case GGML_OP_MUL:             return ggml_hexagon_is_yue2_channel_bcast(t) ? HTP_OP_CHANNEL_BCAST_MUL : HTP_OP_MUL;\n        case GGML_OP_ADD:             return ggml_hexagon_is_yue2_channel_bcast(t) ? HTP_OP_CHANNEL_BCAST_ADD : HTP_OP_ADD;",
     "YuE2 channel-broadcast binary remap",
 )
 
