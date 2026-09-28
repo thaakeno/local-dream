@@ -180,6 +180,14 @@ class MusicGenerationService : Service() {
             val acousticSeed: Long,
             val targetSeconds: Int,
             val elapsedMillis: Long,
+            val format: String,
+            val style: String,
+            val lyrics: String,
+            val solver: String,
+            val steps: Int,
+            val planning: String,
+            val modelId: String,
+            val historyId: String,
         ) : MusicState()
 
         data class Error(val message: String, val modelId: String? = null) : MusicState()
@@ -381,9 +389,16 @@ class MusicGenerationService : Service() {
         }
 
         workJob?.cancel()
-        val cot = intent.getStringExtra("cot")?.takeIf {
-            it in setOf("full", "melody", "off")
-        } ?: "full"
+        val requestedCot = intent.getStringExtra("cot")?.takeIf {
+            it in setOf("full", "melody", "off", "auto")
+        } ?: "auto"
+        // YuE2's released protocol uses symbolic planning for new songs.
+        // Auto therefore resolves to full planning; direct remains an explicit
+        // expert option for users who intentionally want score-free generation.
+        val cot = if (requestedCot == "auto") "full" else requestedCot
+        val outputFormat = intent.getStringExtra("output_format")?.takeIf {
+            it in setOf("wav32", "wav24", "wav16", "mp3")
+        } ?: "wav32"
         val duration = intent.getIntExtra("duration", 20).coerceIn(5, 20)
         val steps = intent.getIntExtra("steps", 8).coerceIn(1, 64)
         val odeMethod = intent.getStringExtra("ode_method")
@@ -428,7 +443,7 @@ class MusicGenerationService : Service() {
             this,
             "REQUEST",
             "generate model=${modelId ?: "unknown"} duration=${duration}s " +
-                "steps=$steps solver=$odeMethod cot=$cot temp=$temperature topP=$topP cfg=$cfg",
+                "steps=$steps solver=$odeMethod cot=$cot format=$outputFormat temp=$temperature topP=$topP cfg=$cfg",
         )
         _state.value = MusicState.Generating(
             phase = "queued",
@@ -457,8 +472,8 @@ class MusicGenerationService : Service() {
                     put("lm_batch_size", 1)
                     put("synth_batch_size", 1)
                     put("cfg_scale", cfg.toDouble())
-                    put("output_format", "mp3")
-                    put("mp3_bitrate", 320)
+                    put("output_format", outputFormat)
+                    if (outputFormat == "mp3") put("mp3_bitrate", 320)
                     if (planMaxTokens > 0) {
                         put(
                             "abc_sampling",
@@ -508,7 +523,18 @@ class MusicGenerationService : Service() {
                     }
                 }
                 try {
-                    pollUntilComplete(id, started, duration)
+                    pollUntilComplete(
+                        id = id,
+                        started = started,
+                        targetSeconds = duration,
+                        style = style,
+                        lyrics = lyrics,
+                        outputFormat = outputFormat,
+                        solver = odeMethod,
+                        steps = steps,
+                        planning = cot,
+                        modelId = modelId.orEmpty(),
+                    )
                 } finally {
                     logCall?.cancel()
                     logJob.cancel()
@@ -571,11 +597,21 @@ class MusicGenerationService : Service() {
         id: String,
         started: Long,
         targetSeconds: Int,
+        style: String,
+        lyrics: String,
+        outputFormat: String,
+        solver: String,
+        steps: Int,
+        planning: String,
+        modelId: String,
     ) {
         while (!cancelRequested) {
             when (jobStatus(id)) {
                 "done" -> {
-                    fetchResult(id, started, targetSeconds)
+                    fetchResult(
+                        id, started, targetSeconds, style, lyrics,
+                        outputFormat, solver, steps, planning, modelId,
+                    )
                     return
                 }
                 "failed" -> throw IllegalStateException(
@@ -590,10 +626,21 @@ class MusicGenerationService : Service() {
         }
     }
 
-    private fun fetchResult(id: String, started: Long, targetSeconds: Int) {
+    private fun fetchResult(
+        id: String,
+        started: Long,
+        targetSeconds: Int,
+        style: String,
+        lyrics: String,
+        outputFormat: String,
+        solver: String,
+        steps: Int,
+        planning: String,
+        modelId: String,
+    ) {
         _state.value = MusicState.Generating(
             phase = "result",
-            detail = "Collecting encoded track",
+            detail = "Collecting lossless track",
             progress = 0.99f,
             startedAtMillis = started,
             targetSeconds = targetSeconds,
@@ -608,12 +655,33 @@ class MusicGenerationService : Service() {
                 ?.trim('"')
                 ?: "yue2-batch-boundary"
             val parsed = parseSingleTrackMultipart(bytes, boundary)
+            val createdAt = System.currentTimeMillis()
+            val ext = MusicHistoryStore.extension(outputFormat)
             val outDir = File(filesDir, "music").apply { mkdirs() }
-            val out = File(outDir, "yue2-${System.currentTimeMillis()}.mp3")
+            val out = File(outDir, "yue2-$createdAt.$ext")
             out.writeBytes(parsed.audio)
 
             val replay = runCatching { JSONObject(parsed.replayJson) }.getOrNull()
             val elapsed = System.currentTimeMillis() - started
+            val historyId = "yue2-$createdAt"
+            val history = MusicHistoryItem(
+                id = historyId,
+                filePath = out.absolutePath,
+                style = style,
+                lyrics = lyrics,
+                score = replay?.optString("abc").orEmpty(),
+                lmSeed = replay?.optLong("lm_seed", -1L) ?: -1L,
+                acousticSeed = replay?.optLong("seed", -1L) ?: -1L,
+                targetSeconds = targetSeconds,
+                elapsedMillis = elapsed,
+                createdAtMillis = createdAt,
+                format = outputFormat,
+                solver = solver,
+                steps = steps,
+                planning = planning,
+                modelId = modelId,
+            )
+            MusicHistoryStore.add(this, history)
             CrashDiagnostics.recordGeneration(
                 this,
                 "COMPLETE",
@@ -626,6 +694,14 @@ class MusicGenerationService : Service() {
                 acousticSeed = replay?.optLong("seed", -1L) ?: -1L,
                 targetSeconds = targetSeconds,
                 elapsedMillis = elapsed,
+                format = outputFormat,
+                style = style,
+                lyrics = lyrics,
+                solver = solver,
+                steps = steps,
+                planning = planning,
+                modelId = modelId,
+                historyId = historyId,
             )
             notifyPhase("Music ready")
         }
@@ -1099,7 +1175,7 @@ class MusicGenerationService : Service() {
                 state("loading_vae", "Oobleck decoder loaded", 0.90f)
             line.contains("[VAE] Tiled decode done") || line.contains("[VAE] Decoded") -> {
                 vaeDecodeTileStep = vaeDecodeTileTotal
-                state("finalizing", nativeDetail(line, "Audio decoded · encoding MP3"), 0.975f)
+                state("finalizing", nativeDetail(line, "Audio decoded · writing output"), 0.975f)
             }
             line.contains("[VAE] Track") ->
                 state(
@@ -1110,7 +1186,7 @@ class MusicGenerationService : Service() {
                     vaeDecodeTileTotal,
                 )
             line.contains("[MP3] Encoding") ->
-                state("finalizing", "Encoding 320 kbps MP3", 0.98f)
+                state("finalizing", "Encoding MP3", 0.98f)
             line.contains("[Pipeline] Done") ->
                 state("finalizing", "Native HTP pipeline complete", 0.985f)
             else -> null
@@ -1200,14 +1276,15 @@ class MusicGenerationService : Service() {
             when {
                 headers.contains("application/json", ignoreCase = true) ->
                     replay = data.copyOfRange(bodyStart, bodyEnd).toString(Charsets.UTF_8)
-                headers.contains("audio/mpeg", ignoreCase = true) ->
+                headers.contains("audio/mpeg", ignoreCase = true) ||
+                    headers.contains("audio/wav", ignoreCase = true) ->
                     audio = data.copyOfRange(bodyStart, bodyEnd)
             }
             cursor = next
         }
         return ParsedTrack(
             replayJson = replay,
-            audio = audio ?: throw IllegalStateException("YuE2 result had no MP3 track"),
+            audio = audio ?: throw IllegalStateException("YuE2 result had no audio track"),
         )
     }
 
