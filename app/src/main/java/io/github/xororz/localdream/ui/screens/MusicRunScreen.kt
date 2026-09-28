@@ -1853,22 +1853,22 @@ private val instrumentalPromptTemplates = listOf(
     MusicPromptTemplate(
         "Solo piano",
         true,
-        "Solo acoustic piano, intimate contemporary classical, lyrical melody, warm natural room, gentle rubato, soft dynamics, sparse pedal, close-miked",
+        "contemporary classical, solo acoustic piano, lyrical melody, warm intimate room, gentle rubato, soft dynamics, natural resonance, 72 BPM",
     ),
     MusicPromptTemplate(
         "Jazz trio",
         true,
-        "Instrumental jazz trio, warm grand piano, upright bass, brushed drums, relaxed swing, late-night club ambience, conversational improvisation, natural dynamics",
+        "jazz trio, warm grand piano, upright bass, brushed drums, relaxed swing, late-night club ambience, conversational improvisation, 92 BPM",
     ),
     MusicPromptTemplate(
         "Chamber strings",
         true,
-        "Instrumental chamber strings, lyrical violin lead, viola and cello counterlines, slow-building arrangement, restrained percussion, wide natural hall, expressive dynamics",
+        "chamber music, lyrical violin lead, viola and cello counterlines, slow-building arrangement, natural hall ambience, expressive dynamics, 68 BPM",
     ),
     MusicPromptTemplate(
         "Ambient electronic",
         true,
-        "Instrumental ambient electronica, soft analog pads, clean electric piano, restrained sub bass, subtle pulse, spacious stereo field, gradual harmonic movement",
+        "ambient electronica, soft analog pads, clean electric piano, restrained sub bass, subtle pulse, spacious stereo field, gradual harmonic movement, 80 BPM",
     ),
 )
 
