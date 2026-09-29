@@ -1177,7 +1177,8 @@ inline GenerationResult Pipeline::generateImpl(
     if (sdxl_) {
       QNN_INFO("[SDXL CFG] mode=%s cfg=%.3f steps=%d apg=%d",
                req.legacy_path ? "legacy-path" : "parallel-exact",
-               req.cfg, sampling_steps, req.apg_quality ? 1 : 0);
+               req.cfg, sampling_steps,
+               (req.apg_quality && !req.legacy_path) ? 1 : 0);
     }
 
     for (int i = start_step; i < (int)timesteps.size(); ++i) {
@@ -1220,7 +1221,7 @@ inline GenerationResult Pipeline::generateImpl(
           const float *uncond = unet_out_latents.data();
           const float *txt = uncond + single_latent_size;
 
-          if (!req.apg_quality) {
+          if (!req.apg_quality || req.legacy_path) {
             // Bit-for-bit reference equation used by the old Local Dream path.
             for (int k = 0; k < single_latent_size; ++k) {
               dst[k] = uncond[k] + req.cfg * (txt[k] - uncond[k]);
