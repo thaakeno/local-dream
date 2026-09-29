@@ -1,4 +1,4 @@
-# trigger: fast-v140-final-bc4d3f2
+# trigger: fast-v140-upload-fix
 name: Re-sign YuE2 Fast APK with canonical Local Dream key
 
 on:
@@ -114,6 +114,6 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: LocalDream-YuE2-Fast-canonical-alpha63-yue2fast4-v140
-          path: out/LocalDream_YuE2_Fast_3.0.0-alpha.63-yue2fast.3-v139-canonical.apk
+          path: out/LocalDream_YuE2_Fast_3.0.0-alpha.63-yue2fast.4-v140-canonical.apk
           if-no-files-found: error
           retention-days: 14
