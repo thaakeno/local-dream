@@ -114,6 +114,6 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: LocalDream-YuE2-Fast-canonical-alpha63-yue2fast5-v141
-          path: out/LocalDream_YuE2_Fast_3.0.0-alpha.63-yue2fast.4-v140-canonical.apk
+          path: out/LocalDream_YuE2_Fast_3.0.0-alpha.63-yue2fast.5-v141-canonical.apk
           if-no-files-found: error
           retention-days: 14
