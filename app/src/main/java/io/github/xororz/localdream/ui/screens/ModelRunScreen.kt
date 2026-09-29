@@ -2407,8 +2407,14 @@ fun ModelRunScreen(
                                     },
                                     onLegacyPathChange = { enabled ->
                                         sdxlLegacyPath = enabled
+                                        if (enabled) sdxlApgQuality = false
                                         preferences.edit()
                                             .putBoolean("sdxl_legacy_path_$modelId", enabled)
+                                            .apply {
+                                                if (enabled) {
+                                                    putBoolean("sdxl_apg_quality_$modelId", false)
+                                                }
+                                            }
                                             .apply()
                                     },
                                     onApgQualityChange = { enabled ->
