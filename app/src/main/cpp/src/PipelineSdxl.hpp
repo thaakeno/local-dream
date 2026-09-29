@@ -2,6 +2,8 @@
 #define PIPELINESDXL_HPP
 
 #include <MNN/Interpreter.hpp>
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <future>
