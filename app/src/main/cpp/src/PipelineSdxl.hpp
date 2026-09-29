@@ -113,6 +113,7 @@ class PipelineSdxl : public PipelineQnn {
     }
 
     if (qnn_runtime::initializeApp("UNET", unet_) != EXIT_SUCCESS) return false;
+    unet_->logSdxlGraphProbeOnce("UNET");
     unet_tokens_ = preloadedContextLength();
     if (sf_bytes) group_head = unet_->getContextHandle();
     logSpillFill("UNET", unet_);
@@ -225,6 +226,7 @@ class PipelineSdxl : public PipelineQnn {
     if (qnn_runtime::initializeApp("UNET", unet, patched ? patched->buffer.get() : nullptr,
                                     patched ? patched->size : 0) != EXIT_SUCCESS)
       throw std::runtime_error("Failed init QNN UNET");
+    unet->logSdxlGraphProbeOnce("UNET");
     unet_ = std::move(unet);
     unet_tokens_ = tokens;
     unet_->resetSdxlStaticInputCache();
@@ -241,17 +243,26 @@ class PipelineSdxl : public PipelineQnn {
     float *latents_in = const_cast<float *>(latents_batch2);
     float *time_ids = cond.time_ids.data();
 
-    if (!skip_uncond &&
-        StatusCode::SUCCESS != unet_->executeUnetGraphsSDXL(
-                                   latents_in, ts, cond.negHidden(),
-                                   cond.negPooled(), time_ids, out_batch2, cond.seq_len, cond.negative_chunks))
-      throw std::runtime_error("QNN UNET SDXL exec failed (uncond)");
+    if (!skip_uncond) {
+      const auto uncond_start = std::chrono::high_resolution_clock::now();
+      if (StatusCode::SUCCESS != unet_->executeUnetGraphsSDXL(
+                                     latents_in, ts, cond.negHidden(),
+                                     cond.negPooled(), time_ids, out_batch2,
+                                     cond.seq_len, cond.negative_chunks))
+        throw std::runtime_error("QNN UNET SDXL exec failed (uncond)");
+      QNN_INFO("[SDXL CFG] t=%d uncond=%.3fms", ts,
+               elapsedMs(uncond_start));
+    }
 
+    const auto cond_start = std::chrono::high_resolution_clock::now();
     if (StatusCode::SUCCESS !=
         unet_->executeUnetGraphsSDXL(
             latents_in + single_latent_size, ts, cond.posHidden(),
-            cond.posPooled(), time_ids + 6, out_batch2 + single_latent_size, cond.seq_len, cond.positive_chunks))
+            cond.posPooled(), time_ids + 6, out_batch2 + single_latent_size,
+            cond.seq_len, cond.positive_chunks))
       throw std::runtime_error("QNN UNET SDXL exec failed (cond)");
+    QNN_INFO("[SDXL CFG] t=%d cond=%.3fms skip_uncond=%d", ts,
+             elapsedMs(cond_start), skip_uncond ? 1 : 0);
   }
 
   void endDenoise() override {
