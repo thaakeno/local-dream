@@ -60,6 +60,10 @@ struct GenerationRequest {
   // miss fails loudly instead of silently touching CPU. CFG=1 never needs
   // negative conditioning, which makes distilled/DMD2 models especially fast.
   bool npu_only = false;
+  // SDXL A/B reference mode. Both paths use real two-pass CFG; this flag
+  // explicitly selects the old reference path so future optimizations can be
+  // tested without silently changing denoising semantics.
+  bool legacy_exact_cfg = false;
   bool show_diffusion_process = false;
   int show_diffusion_stride = 1;
   int width = 512;
@@ -982,33 +986,8 @@ inline GenerationResult Pipeline::generateImpl(
     const GenerationPhaseCallback &phase_callback) {
   if (req.prompt.empty()) throw std::invalid_argument("Prompt empty");
 
-  // Migrate the exact legacy Local Dream SDXL fallback negative prompt at
-  // runtime too. Existing per-model preferences may still contain it even
-  // after the Kotlin default was fixed, so merely changing Model.kt would not
-  // help already-installed models.
-  if (sdxl_) {
-    static const std::string kLegacySdxlNegative =
-        "lowres, bad anatomy, bad hands, missing fingers, extra fingers, "
-        "bad arms, missing legs, missing arms, poorly drawn face, bad face, "
-        "fused face, cloned face, three crus, fused feet, fused thigh, "
-        "extra crus, ugly fingers, horn, huge eyes, worst face, 2girl, "
-        "long fingers, disconnected limbs,";
-    const bool exact_legacy =
-        req.negative_prompt == kLegacySdxlNegative;
-    const bool legacy_variant =
-        req.negative_prompt.size() > 180 &&
-        req.negative_prompt.find("three crus") != std::string::npos &&
-        req.negative_prompt.find("fused face") != std::string::npos &&
-        req.negative_prompt.find("huge eyes") != std::string::npos &&
-        req.negative_prompt.find("disconnected limbs") != std::string::npos;
-    if (exact_legacy || legacy_variant) {
-      req.negative_prompt =
-          "low quality, blurry, deformed, distorted, artifacts";
-      QNN_INFO(
-          "[SDXL quality] replaced legacy overlong fallback negative prompt");
-    }
-  }
-
+  // Never rewrite user/model conditioning here. Exact A/B tests require the
+  // prompt and negative prompt to reach CLIP unchanged.
   if (safety_interpreter_ && !safety_session_)
     throw std::runtime_error("SafetyChecker missing");
   if (req.img2img && !supportsImg2Img())
@@ -1188,115 +1167,14 @@ inline GenerationResult Pipeline::generateImpl(
     std::vector<float> unet_out_latents(batch_size * single_latent_size);
     xt::xarray<float> noise_pred = xt::zeros<float>(shape);
 
-    // SDXL one-pass quality guidance.
-    //
-    // Previous experiments either reused a stale noise-space CFG delta or
-    // switched to plain conditional sampling when cond/uncond cosine became
-    // large. Both are fast but can deform faces because cosine similarity is
-    // not a reliable "guidance is no longer useful" test.
-    //
-    // Keep exactly one UNet evaluation per denoise step for the common
-    // low-CFG SDXL path. Approximate CFG in *conditioning space* instead:
-    // move the positive CLIP conditioning a short distance away from the
-    // negative conditioning, then norm-clamp every token so the move changes
-    // direction without exploding activation magnitude. This is the cheap
-    // training-free analogue of text-embedding guidance / DICE-style
-    // sharpening. Apply it only in the noise interval where SDXL guidance is
-    // useful; outside that interval run the untouched conditional embedding.
-    //
-    // The interval is expressed in sigma, not step index, so it works with
-    // arbitrary user-selected step counts and all supported schedulers.
-    const bool sdxl_quality_fast =
-        sdxl_ && !unet_tiled && canSkipUncond() && req.cfg > 1.0f;
-    constexpr float kSdxlGuidanceSigmaLo = 0.28f;
-    constexpr float kSdxlGuidanceSigmaHi = 5.42f;
-
-    Conditioning guided_cond = cond;
-    Conditioning blended_cond = cond;
-    float semantic_alpha = 0.0f;
-    float padding_gain = 0.0f;
-    if (sdxl_quality_fast) {
-      // DICE's SDXL analysis finds most useful sharpening in CLIP padding
-      // positions. Preserve the real prompt tokens almost exactly, and spend
-      // the stronger one-pass boost on padding instead. This is deliberately
-      // step-count agnostic and derived only from the user's CFG strength.
-      semantic_alpha =
-          std::clamp(0.04f * (req.cfg - 1.0f), 0.0f, 0.12f);
-      padding_gain =
-          std::clamp(0.12f * (req.cfg - 1.0f), 0.0f, 0.25f);
-
-      const int positive_content_tokens =
-          std::max(0, text_encoder_.tokenizeInfo(req.prompt).count - 2);
-      constexpr double kEps = 1.0e-20;
-
-      for (int v = 0; v < cond.seq_len; ++v) {
-        const int chunk = v / 77;
-        const int pos_in_chunk = v % 77;
-        const int remaining = positive_content_tokens - chunk * 75;
-        const int content_in_chunk = std::clamp(remaining, 0, 75);
-        const int eos_pos = 1 + content_in_chunk;
-        const bool is_padding = pos_in_chunk > eos_pos;
-
-        const float *p = cond.posHidden() + (size_t)v * cond.hidden_dim;
-        const float *n = cond.negHidden() + (size_t)v * cond.hidden_dim;
-        float *o = guided_cond.posHidden() + (size_t)v * cond.hidden_dim;
-
-        if (is_padding) {
-          // Padding amplification is the zero-parameter DICE ablation that
-          // carries most of the detail benefit. It cannot inject negative-
-          // prompt semantics because it only scales the positive feature.
-          const float scale = 1.0f + padding_gain;
-          for (int d = 0; d < cond.hidden_dim; ++d) o[d] = p[d] * scale;
-          continue;
-        }
-
-        // Real semantic tokens get only a tiny CFG-direction rotation, with
-        // their original L2 norm restored afterwards. This protects identity,
-        // facial geometry and composition from embedding over-guidance.
-        double p2 = 0.0;
-        double c2 = 0.0;
-        for (int d = 0; d < cond.hidden_dim; ++d) {
-          const double pv = p[d];
-          const double cv = pv + semantic_alpha * (pv - n[d]);
-          o[d] = static_cast<float>(cv);
-          p2 += pv * pv;
-          c2 += cv * cv;
-        }
-        if (p2 > kEps && c2 > kEps) {
-          const float scale =
-              static_cast<float>(std::sqrt(p2 / c2));
-          for (int d = 0; d < cond.hidden_dim; ++d) o[d] *= scale;
-        }
-      }
-
-      if (cond.pooled_dim > 0) {
-        // Pooled text embedding controls global composition strongly: apply
-        // only a quarter of the semantic shift and preserve its norm exactly.
-        const float pooled_alpha = semantic_alpha * 0.25f;
-        const float *p = cond.posPooled();
-        const float *n = cond.negPooled();
-        float *o = guided_cond.posPooled();
-        double p2 = 0.0;
-        double c2 = 0.0;
-        for (int d = 0; d < cond.pooled_dim; ++d) {
-          const double pv = p[d];
-          const double cv = pv + pooled_alpha * (pv - n[d]);
-          o[d] = static_cast<float>(cv);
-          p2 += pv * pv;
-          c2 += cv * cv;
-        }
-        if (p2 > kEps && c2 > kEps) {
-          const float scale =
-              static_cast<float>(std::sqrt(p2 / c2));
-          for (int d = 0; d < cond.pooled_dim; ++d) o[d] *= scale;
-        }
-      }
-
-      QNN_INFO(
-          "[SDXL quality] one-pass padding guidance cfg=%.3f semantic=%.4f "
-          "padding_gain=%.4f sigma=(%.2f,%.2f]",
-          req.cfg, semantic_alpha, padding_gain, kSdxlGuidanceSigmaLo,
-          kSdxlGuidanceSigmaHi);
+    // Real CFG only. The previous one-pass embedding heuristic was fast but
+    // changed the denoising trajectory and produced generic/morphed faces.
+    // Keep a named legacy reference mode for same-seed A/B testing. The
+    // optimized mode deliberately uses the identical CFG equation.
+    if (sdxl_) {
+      QNN_INFO("[SDXL CFG] mode=%s cfg=%.3f steps=%d",
+               req.legacy_exact_cfg ? "legacy-exact" : "exact-optimized",
+               req.cfg, sampling_steps);
     }
 
     for (int i = start_step; i < (int)timesteps.size(); ++i) {
@@ -1315,75 +1193,27 @@ inline GenerationResult Pipeline::generateImpl(
       xt::xarray<float> latents_scaled =
           scheduler->scale_model_input(latents, current_ts);
 
-      const int step_idx = i - start_step;
-      const float sigma = scheduler->get_current_sigma();
-      const bool embedding_guidance_active =
-          sdxl_quality_fast && sigma > kSdxlGuidanceSigmaLo &&
-          sigma <= kSdxlGuidanceSigmaHi;
-
-      // Smooth bell-shaped strength in log-sigma space. Guidance research
-      // consistently finds a useful middle-noise region; easing in/out avoids
-      // a conditioning discontinuity and leaves the final fine-detail phase
-      // completely natural.
-      float guidance_mix = 0.0f;
-      if (embedding_guidance_active) {
-        const float log_lo = std::log(kSdxlGuidanceSigmaLo);
-        const float log_hi = std::log(kSdxlGuidanceSigmaHi);
-        const float u = std::clamp(
-            (std::log(std::max(sigma, 1.0e-6f)) - log_lo) /
-                (log_hi - log_lo),
-            0.0f, 1.0f);
-        const float bell = std::sin(3.1415926535f * u);
-        guidance_mix = bell * bell;
-
-        const size_t hidden_count =
-            (size_t)cond.seq_len * cond.hidden_dim;
-        const float *base_h = cond.posHidden();
-        const float *guided_h = guided_cond.posHidden();
-        float *blend_h = blended_cond.posHidden();
-        for (size_t k = 0; k < hidden_count; ++k) {
-          blend_h[k] =
-              base_h[k] + guidance_mix * (guided_h[k] - base_h[k]);
-        }
-        if (cond.pooled_dim > 0) {
-          const float *base_p = cond.posPooled();
-          const float *guided_p = guided_cond.posPooled();
-          float *blend_p = blended_cond.posPooled();
-          for (int k = 0; k < cond.pooled_dim; ++k) {
-            blend_p[k] =
-                base_p[k] + guidance_mix * (guided_p[k] - base_p[k]);
-          }
-        }
-      }
-
-      // CFG=2 now stays one-pass without becoming "plain CFG=1" after an
-      // arbitrary cosine threshold. High-noise composition and low-noise
-      // detail use the untouched conditioning; only the middle is sharpened.
-      bool skip_uncond = canSkipUncond() &&
-                         (std::fabs(req.cfg - 1.0f) < 1.0e-6f ||
-                          sdxl_quality_fast);
-      Conditioning &step_cond =
-          guidance_mix > 1.0e-4f ? blended_cond : cond;
+      const bool skip_uncond =
+          canSkipUncond() && std::fabs(req.cfg - 1.0f) < 1.0e-6f;
 
       if (unet_tiled) {
         noise_pred =
             runUnetTiled(req, latents_scaled, static_cast<int>(current_ts),
-                         skip_uncond, step_cond);
+                         skip_uncond, cond);
       } else {
         std::copy(latents_scaled.begin(), latents_scaled.end(),
                   latents_in_vec.begin());
         std::copy(latents_scaled.begin(), latents_scaled.end(),
                   latents_in_vec.begin() + single_latent_size);
 
-        runUnetStep(req, latents_in_vec.data(), current_ts, skip_uncond,
-                    step_cond, unet_out_latents.data());
+        runUnetStep(req, latents_in_vec.data(), current_ts, skip_uncond, cond,
+                    unet_out_latents.data());
 
         float *dst = noise_pred.data();
         if (skip_uncond) {
           const float *txt = unet_out_latents.data() + single_latent_size;
           std::copy(txt, txt + single_latent_size, dst);
         } else {
-          // Non-QNN / tiled paths retain exact CFG semantics.
           const float *uncond = unet_out_latents.data();
           const float *txt = uncond + single_latent_size;
           for (int k = 0; k < single_latent_size; ++k) {
@@ -1392,11 +1222,11 @@ inline GenerationResult Pipeline::generateImpl(
         }
       }
 
-      if (sdxl_quality_fast) {
-        QNN_INFO(
-            "[SDXL quality] step=%d/%d t=%.1f sigma=%.5f mix=%.4f mode=%s",
-            step_idx + 1, sampling_steps, current_ts, sigma, guidance_mix,
-            guidance_mix > 1.0e-4f ? "embed-guided" : "conditional");
+      if (sdxl_) {
+        QNN_INFO("[SDXL CFG] step=%d/%d t=%.1f mode=%s passes=%d",
+                 i - start_step + 1, sampling_steps, current_ts,
+                 req.legacy_exact_cfg ? "legacy-exact" : "exact-optimized",
+                 skip_uncond ? 1 : 2);
       }
 
       auto step_dur = elapsedMs(step_start_time);
