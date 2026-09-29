@@ -981,6 +981,25 @@ inline GenerationResult Pipeline::generateImpl(
     GenerationRequest &req, const ProgressCallback &progress_callback,
     const GenerationPhaseCallback &phase_callback) {
   if (req.prompt.empty()) throw std::invalid_argument("Prompt empty");
+
+  // Migrate the exact legacy Local Dream SDXL fallback negative prompt at
+  // runtime too. Existing per-model preferences may still contain it even
+  // after the Kotlin default was fixed, so merely changing Model.kt would not
+  // help already-installed models.
+  if (sdxl_) {
+    static const std::string kLegacySdxlNegative =
+        "lowres, bad anatomy, bad hands, missing fingers, extra fingers, "
+        "bad arms, missing legs, missing arms, poorly drawn face, bad face, "
+        "fused face, cloned face, three crus, fused feet, fused thigh, "
+        "extra crus, ugly fingers, horn, huge eyes, worst face, 2girl, "
+        "long fingers, disconnected limbs,";
+    if (req.negative_prompt == kLegacySdxlNegative) {
+      req.negative_prompt =
+          "low quality, blurry, deformed, distorted, artifacts";
+      QNN_INFO("[SDXL quality] replaced legacy overlong fallback negative prompt");
+    }
+  }
+
   if (safety_interpreter_ && !safety_session_)
     throw std::runtime_error("SafetyChecker missing");
   if (req.img2img && !supportsImg2Img())
