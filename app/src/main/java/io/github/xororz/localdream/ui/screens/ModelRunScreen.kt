@@ -490,8 +490,16 @@ fun ModelRunScreen(
     var sdxlNpuOnly by remember(modelId) {
         mutableStateOf(preferences.getBoolean("sdxl_npu_only_$modelId", false))
     }
-    var sdxlLegacyExactCfg by remember(modelId) {
-        mutableStateOf(preferences.getBoolean("sdxl_legacy_exact_cfg_$modelId", false))
+    var sdxlLegacyPath by remember(modelId) {
+        mutableStateOf(
+            preferences.getBoolean(
+                "sdxl_legacy_path_$modelId",
+                preferences.getBoolean("sdxl_legacy_exact_cfg_$modelId", false),
+            ),
+        )
+    }
+    var sdxlApgQuality by remember(modelId) {
+        mutableStateOf(preferences.getBoolean("sdxl_apg_quality_$modelId", false))
     }
     val showGenerationStats = remember {
         preferences.getBoolean("show_generation_stats", false)
@@ -1935,7 +1943,13 @@ fun ModelRunScreen(
                 aspectRatio = defaults.aspectRatio
                 htpMode = "auto"
                 sdxlNpuOnly = false
-                preferences.edit().putBoolean("sdxl_npu_only_$modelId", false).apply()
+                sdxlLegacyPath = false
+                sdxlApgQuality = false
+                preferences.edit()
+                    .putBoolean("sdxl_npu_only_$modelId", false)
+                    .putBoolean("sdxl_legacy_path_$modelId", false)
+                    .putBoolean("sdxl_apg_quality_$modelId", false)
+                    .apply()
                 promptField.replaceText(defaults.prompt)
                 negativePromptField.replaceText(defaults.negativePrompt)
                 denoiseStrength = defaults.denoiseStrength
@@ -2342,7 +2356,8 @@ fun ModelRunScreen(
                                     cfg = cfg,
                                     useOpenCL = useOpenCL,
                                     npuOnly = sdxlNpuOnly,
-                                    legacyExactCfg = sdxlLegacyExactCfg,
+                                    legacyPath = sdxlLegacyPath,
+                                    apgQuality = sdxlApgQuality,
                                     isQwen21 = model?.ditKind == "qwen21" && !isRemote,
                                     htpMode = htpMode,
                                     batchCounts = batchCounts,
@@ -2390,10 +2405,16 @@ fun ModelRunScreen(
                                             .putBoolean("sdxl_npu_only_$modelId", enabled)
                                             .apply()
                                     },
-                                    onLegacyExactCfgChange = { enabled ->
-                                        sdxlLegacyExactCfg = enabled
+                                    onLegacyPathChange = { enabled ->
+                                        sdxlLegacyPath = enabled
                                         preferences.edit()
-                                            .putBoolean("sdxl_legacy_exact_cfg_$modelId", enabled)
+                                            .putBoolean("sdxl_legacy_path_$modelId", enabled)
+                                            .apply()
+                                    },
+                                    onApgQualityChange = { enabled ->
+                                        sdxlApgQuality = enabled
+                                        preferences.edit()
+                                            .putBoolean("sdxl_apg_quality_$modelId", enabled)
                                             .apply()
                                     },
                                     onHtpModeChange = { mode ->
@@ -2598,9 +2619,14 @@ fun ModelRunScreen(
                                             putExtra("use_opencl", useOpenCL)
                                             putExtra("npu_only", model?.let { it.isSdxl && !it.runOnCpu } == true && sdxlNpuOnly)
                                             putExtra(
-                                                "legacy_exact_cfg",
+                                                "legacy_path",
                                                 model?.let { it.isSdxl && !it.runOnCpu } == true &&
-                                                    sdxlLegacyExactCfg,
+                                                    sdxlLegacyPath,
+                                            )
+                                            putExtra(
+                                                "apg_quality",
+                                                model?.let { it.isSdxl && !it.runOnCpu } == true &&
+                                                    sdxlApgQuality,
                                             )
                                             putExtra("scheduler", scheduler)
                                             putExtra("aspect_ratio", aspectRatio)
