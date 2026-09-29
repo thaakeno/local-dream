@@ -115,32 +115,87 @@ class PipelineSdxl : public PipelineQnn {
       QNN_INFO("[spill-fill] SDXL adaptive mode: independent QNN context allocations");
     }
 
-    if (qnn_runtime::initializeApp("UNET", unet_) != EXIT_SUCCESS) return false;
+    // Ask QAIRT for its createFromBinary concurrent-resource group first.
+    // This option is specifically intended for same-priority graphs that may
+    // execute concurrently. If the target runtime rejects it, rebuild the
+    // exact same primary context without the hint and keep the portable
+    // independent-context concurrency path.
+    unet_->setConcurrentResourceGroup(sf_bytes, nullptr);
+    if (qnn_runtime::initializeApp("UNET", unet_) == EXIT_SUCCESS) {
+      concurrent_group_enabled_ = true;
+      QNN_INFO("[SDXL parallel] HTP concurrent-resource group accepted");
+    } else {
+      QNN_WARN(
+          "[SDXL parallel] HTP concurrent-resource group unavailable; "
+          "retrying normal context");
+      unet_.reset();
+      unet_ = qnn_runtime::createModel(unet_path_, "unet");
+      if (!unet_) return false;
+      if (sf_bytes) unet_->setSpillFillGroup(sf_bytes, nullptr);
+      if (qnn_runtime::initializeApp("UNET", unet_) != EXIT_SUCCESS)
+        return false;
+      concurrent_group_enabled_ = false;
+    }
+
     unet_->logSdxlGraphProbeOnce("UNET");
     unet_tokens_ = preloadedContextLength();
     if (sf_bytes) group_head = unet_->getContextHandle();
     logSpillFill("UNET", unet_);
 
     // Preload a second independent UNET context for exact CFG branch
-    // concurrency. The two executions use independent QNN IO buffers/contexts,
-    // so cond and uncond can be submitted simultaneously without races. If the
-    // platform cannot host the second context, generation falls back to the
-    // serial legacy path without changing image math.
+    // concurrency. When supported, join it to the primary HTP concurrent
+    // resource group; otherwise two ordinary contexts are still submitted
+    // concurrently and the on-device overlap benchmark tells us what the
+    // scheduler actually allowed.
     if (!lowram_) {
       try {
-        unet_parallel_ = qnn_runtime::createModel(unet_path_, "unet_cfg_parallel");
+        unet_parallel_ =
+            qnn_runtime::createModel(unet_path_, "unet_cfg_parallel");
+        if (unet_parallel_) {
+          if (sf_bytes)
+            unet_parallel_->setSpillFillGroup(sf_bytes, group_head);
+          if (concurrent_group_enabled_)
+            unet_parallel_->setConcurrentResourceGroup(
+                sf_bytes, unet_->getContextHandle());
+        }
         if (unet_parallel_ &&
             qnn_runtime::initializeApp("UNET-CFG-PAR", unet_parallel_) ==
                 EXIT_SUCCESS) {
           unet_parallel_tokens_ = unet_tokens_;
-          QNN_INFO("[SDXL parallel] second UNET context ready");
+          QNN_INFO(
+              "[SDXL parallel] second UNET context ready resource_group=%d",
+              concurrent_group_enabled_ ? 1 : 0);
         } else {
+          // A device may support two contexts but not the resource-sharing
+          // registration. Retry the second context normally before giving up.
           unet_parallel_.reset();
-          QNN_WARN("[SDXL parallel] second UNET context unavailable; serial fallback");
+          if (concurrent_group_enabled_) {
+            concurrent_group_enabled_ = false;
+            unet_parallel_ =
+                qnn_runtime::createModel(unet_path_, "unet_cfg_parallel");
+            if (unet_parallel_ && sf_bytes)
+              unet_parallel_->setSpillFillGroup(sf_bytes, group_head);
+            if (unet_parallel_ &&
+                qnn_runtime::initializeApp("UNET-CFG-PAR",
+                                           unet_parallel_) == EXIT_SUCCESS) {
+              unet_parallel_tokens_ = unet_tokens_;
+              QNN_INFO(
+                  "[SDXL parallel] second normal context ready after "
+                  "resource-group fallback");
+            } else {
+              unet_parallel_.reset();
+            }
+          }
+          if (!unet_parallel_)
+            QNN_WARN(
+                "[SDXL parallel] second UNET context unavailable; "
+                "serial fallback");
         }
       } catch (const std::exception &e) {
         unet_parallel_.reset();
-        QNN_WARN("[SDXL parallel] preload failed: %s; serial fallback", e.what());
+        concurrent_group_enabled_ = false;
+        QNN_WARN("[SDXL parallel] preload failed: %s; serial fallback",
+                 e.what());
       }
     }
 
@@ -619,6 +674,7 @@ class PipelineSdxl : public PipelineQnn {
   std::unique_ptr<QnnModel> unet_parallel_;
   int unet_parallel_tokens_ = 0;
   bool parallel_run_enabled_ = false;
+  bool concurrent_group_enabled_ = false;
   int parallel_pairs_ = 0;
   double parallel_wall_ms_sum_ = 0.0;
   double parallel_branch_ms_sum_ = 0.0;
