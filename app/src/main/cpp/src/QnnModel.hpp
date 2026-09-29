@@ -46,6 +46,56 @@ class QnnModel : public QnnSampleApp {
   std::vector<float> sdxl_attention_mask_;
   int sdxl_mask_tokens_ = 0;
   int sdxl_mask_chunks_ = -1;
+  bool sdxl_graph_probe_logged_ = false;
+
+  void logSdxlGraphProbeOnce(const char *tag) {
+    if (sdxl_graph_probe_logged_) return;
+    sdxl_graph_probe_logged_ = true;
+    if (m_graphsInfo == nullptr || m_graphsCount == 0) {
+      QNN_WARN("[SDXL probe] %s has no graph metadata", tag);
+      return;
+    }
+
+    QNN_INFO("[SDXL probe] %s graphs=%u", tag, m_graphsCount);
+    for (uint32_t gi = 0; gi < m_graphsCount; ++gi) {
+      auto &g = (*m_graphsInfo)[gi];
+      QNN_INFO("[SDXL probe] graph[%u] inputs=%u outputs=%u", gi,
+               g.numInputTensors, g.numOutputTensors);
+
+      auto log_tensor = [&](const char *kind, uint32_t ti,
+                            const Qnn_Tensor_t &t) {
+        const char *name = QNN_TENSOR_GET_NAME(t);
+        const uint32_t rank = QNN_TENSOR_GET_RANK(t);
+        const uint32_t *dims = QNN_TENSOR_GET_DIMENSIONS(t);
+        std::string shape;
+        size_t elems = 1;
+        for (uint32_t d = 0; d < rank; ++d) {
+          if (d) shape += "x";
+          const uint32_t dim = dims ? dims[d] : 0;
+          shape += std::to_string(dim);
+          elems *= std::max<uint32_t>(1, dim);
+        }
+        const auto client = QNN_TENSOR_GET_CLIENT_BUF(t);
+        QNN_INFO(
+            "[SDXL probe] graph[%u] %s[%u] name=%s rank=%u shape=%s "
+            "type=%d dtype=%d elems=%zu client_bytes=%u",
+            gi, kind, ti, name ? name : "<null>", rank, shape.c_str(),
+            static_cast<int>(QNN_TENSOR_GET_TYPE(t)),
+            static_cast<int>(QNN_TENSOR_GET_DATA_TYPE(t)), elems,
+            client.dataSize);
+      };
+
+      for (uint32_t ti = 0; ti < g.numInputTensors; ++ti)
+        log_tensor("input", ti, g.inputTensors[ti]);
+      for (uint32_t ti = 0; ti < g.numOutputTensors; ++ti)
+        log_tensor("output", ti, g.outputTensors[ti]);
+    }
+
+    QNN_INFO(
+        "[SDXL probe] Only tensors serialized as graph inputs/outputs are "
+        "runtime-visible here; hidden NATIVE activations are not promoted by "
+        "the existing context binary.");
+  }
 
   QnnModel(QnnFunctionPointers qnnFunctionPointers, std::string inputListPaths,
            std::string opPackagePaths, void *backendHandle,
@@ -284,7 +334,9 @@ class QnnModel : public QnnSampleApp {
     powerConfig.dcvsV3Config.setSleepLatency = 1;
     powerConfig.dcvsV3Config.sleepLatency = burst ? 40 : (cool ? 1000 : 100);
     powerConfig.dcvsV3Config.setSleepDisable = 1;
-    powerConfig.dcvsV3Config.sleepDisable = 0;
+    // In burst mode keep the HTP awake across the short SDXL denoise loop.
+    // This removes repeated wake latency between back-to-back UNet executes.
+    powerConfig.dcvsV3Config.sleepDisable = burst ? 1 : 0;
     powerConfig.dcvsV3Config.setBusParams = 1;
     powerConfig.dcvsV3Config.busVoltageCornerMin = minCorner;
     powerConfig.dcvsV3Config.busVoltageCornerTarget = targetCorner;
@@ -551,6 +603,8 @@ class QnnModel : public QnnSampleApp {
       sdxl_mask_chunks_ = active_chunks;
     }
 
+    const auto total_start = std::chrono::high_resolution_clock::now();
+    const auto input_start = total_start;
     float time = static_cast<float>(timestep);
     for (uint32_t i = 0; i < graphInfo.numInputTensors; ++i) {
       auto &input = inputs[i];
@@ -587,10 +641,29 @@ class QnnModel : public QnnSampleApp {
         return StatusCode::FAILURE;
       }
     }
+    const auto input_end = std::chrono::high_resolution_clock::now();
+
+    const auto graph_start = input_end;
     if (!runGraph(graphInfo, "sdxl unet")) return StatusCode::FAILURE;
+    const auto graph_end = std::chrono::high_resolution_clock::now();
+
+    const auto output_start = graph_end;
     if (m_ioTensor.convertToFloatInto(out_sample, &outputs[0]) !=
         qnn::tools::iotensor::StatusCode::SUCCESS)
       return StatusCode::FAILURE;
+    const auto output_end = std::chrono::high_resolution_clock::now();
+
+    auto us = [](auto a, auto b) -> long long {
+      return std::chrono::duration_cast<std::chrono::microseconds>(b - a)
+          .count();
+    };
+    QNN_INFO(
+        "[SDXL profile] t=%d tokens=%d chunks=%d input=%.3fms graph=%.3fms "
+        "output=%.3fms total=%.3fms",
+        timestep, tokens, active_chunks, us(input_start, input_end) / 1000.0,
+        us(graph_start, graph_end) / 1000.0,
+        us(output_start, output_end) / 1000.0,
+        us(total_start, output_end) / 1000.0);
     return StatusCode::SUCCESS;
   }
 
