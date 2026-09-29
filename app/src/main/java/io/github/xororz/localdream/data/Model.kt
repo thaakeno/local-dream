@@ -722,16 +722,10 @@ class ModelRepository private constructor(private val context: Context) {
         // only fill what it leaves unset.
         val placeholders = ModelConfig(
             prompt = "masterpiece, best quality, a cat sat on a mat,",
-            // Long legacy negative-prompt soups consume almost the entire
-            // SDXL CLIP context and can actively inject face/anatomy concepts
-            // into unrelated prompts. Keep the SDXL fallback short and
-            // model-agnostic; a package config.json or user preference still
-            // overrides this field normally.
-            negativePrompt = if (isSdxl) {
-                "low quality, blurry, deformed, distorted, artifacts"
-            } else {
-                "lowres, bad anatomy, bad hands, missing fingers, extra fingers, bad arms, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, three crus, fused feet, fused thigh, extra crus, ugly fingers, horn, huge eyes, worst face, 2girl, long fingers, disconnected limbs,"
-            },
+            // Preserve the historical fallback exactly. Generation code must
+            // never silently rewrite conditioning if we want meaningful
+            // same-seed comparisons against older Local Dream builds.
+            negativePrompt = "lowres, bad anatomy, bad hands, missing fingers, extra fingers, bad arms, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, three crus, fused feet, fused thigh, extra crus, ugly fingers, horn, huge eyes, worst face, 2girl, long fingers, disconnected limbs,",
         )
         val config = ModelConfig.read(modelDir) ?: ModelConfig()
 
