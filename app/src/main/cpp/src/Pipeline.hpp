@@ -1203,6 +1203,7 @@ inline GenerationResult Pipeline::generateImpl(
     constexpr float kSdxlGuidanceSigmaHi = 5.42f;
 
     Conditioning guided_cond = cond;
+    Conditioning blended_cond = cond;
     float semantic_alpha = 0.0f;
     float padding_gain = 0.0f;
     if (sdxl_quality_fast) {
@@ -1311,15 +1312,49 @@ inline GenerationResult Pipeline::generateImpl(
           sdxl_quality_fast && sigma > kSdxlGuidanceSigmaLo &&
           sigma <= kSdxlGuidanceSigmaHi;
 
+      // Smooth bell-shaped strength in log-sigma space. Guidance research
+      // consistently finds a useful middle-noise region; easing in/out avoids
+      // a conditioning discontinuity and leaves the final fine-detail phase
+      // completely natural.
+      float guidance_mix = 0.0f;
+      if (embedding_guidance_active) {
+        const float log_lo = std::log(kSdxlGuidanceSigmaLo);
+        const float log_hi = std::log(kSdxlGuidanceSigmaHi);
+        const float u = std::clamp(
+            (std::log(std::max(sigma, 1.0e-6f)) - log_lo) /
+                (log_hi - log_lo),
+            0.0f, 1.0f);
+        const float bell = std::sin(3.1415926535f * u);
+        guidance_mix = bell * bell;
+
+        const size_t hidden_count =
+            (size_t)cond.seq_len * cond.hidden_dim;
+        const float *base_h = cond.posHidden();
+        const float *guided_h = guided_cond.posHidden();
+        float *blend_h = blended_cond.posHidden();
+        for (size_t k = 0; k < hidden_count; ++k) {
+          blend_h[k] =
+              base_h[k] + guidance_mix * (guided_h[k] - base_h[k]);
+        }
+        if (cond.pooled_dim > 0) {
+          const float *base_p = cond.posPooled();
+          const float *guided_p = guided_cond.posPooled();
+          float *blend_p = blended_cond.posPooled();
+          for (int k = 0; k < cond.pooled_dim; ++k) {
+            blend_p[k] =
+                base_p[k] + guidance_mix * (guided_p[k] - base_p[k]);
+          }
+        }
+      }
+
       // CFG=2 now stays one-pass without becoming "plain CFG=1" after an
-      // arbitrary cosine threshold. The guided conditioning is used only in
-      // SDXL's useful mid-noise region; high-noise composition and the final
-      // low-noise detail step see the untouched prompt conditioning.
+      // arbitrary cosine threshold. High-noise composition and low-noise
+      // detail use the untouched conditioning; only the middle is sharpened.
       bool skip_uncond = canSkipUncond() &&
                          (std::fabs(req.cfg - 1.0f) < 1.0e-6f ||
                           sdxl_quality_fast);
       Conditioning &step_cond =
-          embedding_guidance_active ? guided_cond : cond;
+          guidance_mix > 1.0e-4f ? blended_cond : cond;
 
       if (unet_tiled) {
         noise_pred =
@@ -1350,9 +1385,9 @@ inline GenerationResult Pipeline::generateImpl(
 
       if (sdxl_quality_fast) {
         QNN_INFO(
-            "[SDXL quality] step=%d/%d t=%.1f sigma=%.5f mode=%s",
-            step_idx + 1, sampling_steps, current_ts, sigma,
-            embedding_guidance_active ? "embed-guided" : "conditional");
+            "[SDXL quality] step=%d/%d t=%.1f sigma=%.5f mix=%.4f mode=%s",
+            step_idx + 1, sampling_steps, current_ts, sigma, guidance_mix,
+            guidance_mix > 1.0e-4f ? "embed-guided" : "conditional");
       }
 
       auto step_dur = elapsedMs(step_start_time);
