@@ -993,10 +993,19 @@ inline GenerationResult Pipeline::generateImpl(
         "fused face, cloned face, three crus, fused feet, fused thigh, "
         "extra crus, ugly fingers, horn, huge eyes, worst face, 2girl, "
         "long fingers, disconnected limbs,";
-    if (req.negative_prompt == kLegacySdxlNegative) {
+    const bool exact_legacy =
+        req.negative_prompt == kLegacySdxlNegative;
+    const bool legacy_variant =
+        req.negative_prompt.size() > 180 &&
+        req.negative_prompt.find("three crus") != std::string::npos &&
+        req.negative_prompt.find("fused face") != std::string::npos &&
+        req.negative_prompt.find("huge eyes") != std::string::npos &&
+        req.negative_prompt.find("disconnected limbs") != std::string::npos;
+    if (exact_legacy || legacy_variant) {
       req.negative_prompt =
           "low quality, blurry, deformed, distorted, artifacts";
-      QNN_INFO("[SDXL quality] replaced legacy overlong fallback negative prompt");
+      QNN_INFO(
+          "[SDXL quality] replaced legacy overlong fallback negative prompt");
     }
   }
 
