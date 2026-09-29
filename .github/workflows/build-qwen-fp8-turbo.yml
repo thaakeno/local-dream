@@ -160,10 +160,11 @@ jobs:
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
 
-      # The alpha.58 native cache is the exact same Xet/image/DiT source
-      # revision as this YuE2-only change. Reuse those immutable artifacts and
-      # rebuild only the music backend when the new full cache key is absent.
-      - name: Bootstrap unchanged alpha.58 native artifacts
+      # SDXL-only Pipeline/QNN C++ edits do not touch the DiT, Xet, YuE2,
+      # or QAIRT assets. Bootstrap from the last verified Fast v139 native
+      # bundle, then rebuild only libstable_diffusion_core.so. This keeps
+      # iterative SDXL quality work from needlessly rebuilding every engine.
+      - name: Bootstrap verified Fast v139 native artifacts
         id: native-bootstrap
         if: steps.native-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
@@ -174,7 +175,7 @@ jobs:
             app/src/main/assets/yue2libs
             app/src/main/assets/qnnlibs
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
-          key: localdream-native-e15a1da9bf69e7fc0e09d91594088a80058e21d5bd74d72fb5a11d630423944f
+          key: localdream-native-150c67dde94eee56776a00b7c66b8e67037c2d7f6d70690143ff6777e551306d
 
       - name: Build Android core and Hexagon DiT engine
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -248,11 +249,12 @@ jobs:
 
           cd /workspace/app/src/main/cpp
           if [ "${REUSE_STABLE_NATIVE:-false}" = "true" ]; then
-            echo "Reusing unchanged alpha.58 Xet and DiT native artifacts; rebuilding core and YuE2."
+            echo "Reusing verified Fast v139 DiT/Xet/YuE2 artifacts; rebuilding SDXL/core only."
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/libdit_engine.so
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
+            test -s /workspace/app/src/main/jniLibs/arm64-v8a/libyue2_server.so
+            test -s /workspace/app/src/main/assets/yue2libs/libggml-htp-v81.so
             bash build.sh
-            bash music/build.sh
           else
             # Full cold build when the verified bootstrap cache is unavailable.
             bash /workspace/app/src/main/rust/xet_downloader/build.sh
