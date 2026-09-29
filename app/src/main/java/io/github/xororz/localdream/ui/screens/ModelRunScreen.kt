@@ -1124,6 +1124,16 @@ fun ModelRunScreen(
                     putExtra("denoise_strength", ultrafixDenoiseStrength)
                     putExtra("scheduler", scheduler)
                     putExtra("npu_only", model?.let { it.isSdxl && !it.runOnCpu } == true && sdxlNpuOnly)
+                    putExtra(
+                        "legacy_path",
+                        model?.let { it.isSdxl && !it.runOnCpu } == true &&
+                            sdxlLegacyPath,
+                    )
+                    putExtra(
+                        "apg_quality",
+                        model?.let { it.isSdxl && !it.runOnCpu } == true &&
+                            sdxlApgQuality && !sdxlLegacyPath,
+                    )
                     putExtra("ultrafix", true)
                     putExtra("ultrafix_tile_size", tileSize)
                     putExtra("backend_host", backendHost)
