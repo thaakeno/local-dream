@@ -490,6 +490,9 @@ fun ModelRunScreen(
     var sdxlNpuOnly by remember(modelId) {
         mutableStateOf(preferences.getBoolean("sdxl_npu_only_$modelId", false))
     }
+    var sdxlLegacyExactCfg by remember(modelId) {
+        mutableStateOf(preferences.getBoolean("sdxl_legacy_exact_cfg_$modelId", false))
+    }
     val showGenerationStats = remember {
         preferences.getBoolean("show_generation_stats", false)
     }
@@ -2339,6 +2342,7 @@ fun ModelRunScreen(
                                     cfg = cfg,
                                     useOpenCL = useOpenCL,
                                     npuOnly = sdxlNpuOnly,
+                                    legacyExactCfg = sdxlLegacyExactCfg,
                                     isQwen21 = model?.ditKind == "qwen21" && !isRemote,
                                     htpMode = htpMode,
                                     batchCounts = batchCounts,
@@ -2384,6 +2388,12 @@ fun ModelRunScreen(
                                         sdxlNpuOnly = enabled
                                         preferences.edit()
                                             .putBoolean("sdxl_npu_only_$modelId", enabled)
+                                            .apply()
+                                    },
+                                    onLegacyExactCfgChange = { enabled ->
+                                        sdxlLegacyExactCfg = enabled
+                                        preferences.edit()
+                                            .putBoolean("sdxl_legacy_exact_cfg_$modelId", enabled)
                                             .apply()
                                     },
                                     onHtpModeChange = { mode ->
@@ -2587,6 +2597,11 @@ fun ModelRunScreen(
                                             )
                                             putExtra("use_opencl", useOpenCL)
                                             putExtra("npu_only", model?.let { it.isSdxl && !it.runOnCpu } == true && sdxlNpuOnly)
+                                            putExtra(
+                                                "legacy_exact_cfg",
+                                                model?.let { it.isSdxl && !it.runOnCpu } == true &&
+                                                    sdxlLegacyExactCfg,
+                                            )
                                             putExtra("scheduler", scheduler)
                                             putExtra("aspect_ratio", aspectRatio)
                                             putExtra("batch_index", i)
