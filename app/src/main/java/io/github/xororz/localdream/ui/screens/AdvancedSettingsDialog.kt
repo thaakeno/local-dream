@@ -66,7 +66,8 @@ internal fun AdvancedSettingsDialog(
     cfg: Float,
     useOpenCL: Boolean,
     npuOnly: Boolean = false,
-    legacyExactCfg: Boolean = false,
+    legacyPath: Boolean = false,
+    apgQuality: Boolean = false,
     isQwen21: Boolean = false,
     htpMode: String = "auto",
     batchCounts: Int,
@@ -85,7 +86,8 @@ internal fun AdvancedSettingsDialog(
     onCpuSelected: () -> Unit,
     onGpuSelected: () -> Unit,
     onNpuOnlyChange: (Boolean) -> Unit = {},
-    onLegacyExactCfgChange: (Boolean) -> Unit = {},
+    onLegacyPathChange: (Boolean) -> Unit = {},
+    onApgQualityChange: (Boolean) -> Unit = {},
     onHtpModeChange: (String) -> Unit = {},
     onBatchCountsChange: (Float) -> Unit,
     onDenoiseStrengthChange: (Float) -> Unit,
@@ -434,14 +436,14 @@ internal fun AdvancedSettingsDialog(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    "Legacy exact CFG",
+                                    "Legacy path",
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                                 Text(
-                                    if (legacyExactCfg) {
-                                        "Old reference path for same-seed A/B testing. Uses the original two-pass CFG equation."
+                                    if (legacyPath) {
+                                        "Original serial CFG path. Use this as the exact same-seed reference."
                                     } else {
-                                        "Exact CFG with current runtime optimizations. No embedding shortcut or skipped guidance."
+                                        "Parallel exact CFG. Cond + uncond run concurrently when the HTP accepts it."
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -451,9 +453,36 @@ internal fun AdvancedSettingsDialog(
                                 LocalMinimumInteractiveComponentSize provides Dp.Unspecified,
                             ) {
                                 Switch(
-                                    checked = legacyExactCfg,
+                                    checked = legacyPath,
                                     enabled = !isRunning,
-                                    onCheckedChange = onLegacyExactCfgChange,
+                                    onCheckedChange = onLegacyPathChange,
+                                    modifier = Modifier.scale(0.86f),
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "APG quality",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    "Adaptive Projected Guidance quality pass. Uses the same exact CFG outputs and adds no extra UNet run.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            CompositionLocalProvider(
+                                LocalMinimumInteractiveComponentSize provides Dp.Unspecified,
+                            ) {
+                                Switch(
+                                    checked = apgQuality,
+                                    enabled = !isRunning,
+                                    onCheckedChange = onApgQualityChange,
                                     modifier = Modifier.scale(0.86f),
                                 )
                             }
