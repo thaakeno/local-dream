@@ -60,10 +60,13 @@ struct GenerationRequest {
   // miss fails loudly instead of silently touching CPU. CFG=1 never needs
   // negative conditioning, which makes distilled/DMD2 models especially fast.
   bool npu_only = false;
-  // SDXL A/B reference mode. Both paths use real two-pass CFG; this flag
-  // explicitly selects the old reference path so future optimizations can be
-  // tested without silently changing denoising semantics.
-  bool legacy_exact_cfg = false;
+  // SDXL A/B reference mode. Legacy path keeps the original serial two-pass
+  // CFG execution. The default path may execute the same two branches in
+  // parallel, but the denoising equation remains exact.
+  bool legacy_path = false;
+  // Optional Adaptive Projected Guidance quality transform. This consumes the
+  // same exact cond/uncond predictions and adds no extra UNet evaluation.
+  bool apg_quality = false;
   bool show_diffusion_process = false;
   int show_diffusion_stride = 1;
   int width = 512;
@@ -1172,9 +1175,9 @@ inline GenerationResult Pipeline::generateImpl(
     // Keep a named legacy reference mode for same-seed A/B testing. The
     // optimized mode deliberately uses the identical CFG equation.
     if (sdxl_) {
-      QNN_INFO("[SDXL CFG] mode=%s cfg=%.3f steps=%d",
-               req.legacy_exact_cfg ? "legacy-exact" : "exact-optimized",
-               req.cfg, sampling_steps);
+      QNN_INFO("[SDXL CFG] mode=%s cfg=%.3f steps=%d apg=%d",
+               req.legacy_path ? "legacy-path" : "parallel-exact",
+               req.cfg, sampling_steps, req.apg_quality ? 1 : 0);
     }
 
     for (int i = start_step; i < (int)timesteps.size(); ++i) {
@@ -1216,8 +1219,54 @@ inline GenerationResult Pipeline::generateImpl(
         } else {
           const float *uncond = unet_out_latents.data();
           const float *txt = uncond + single_latent_size;
-          for (int k = 0; k < single_latent_size; ++k) {
-            dst[k] = uncond[k] + req.cfg * (txt[k] - uncond[k]);
+
+          if (!req.apg_quality) {
+            // Bit-for-bit reference equation used by the old Local Dream path.
+            for (int k = 0; k < single_latent_size; ++k) {
+              dst[k] = uncond[k] + req.cfg * (txt[k] - uncond[k]);
+            }
+          } else {
+            // Adaptive Projected Guidance (paper formulation), using a
+            // conservative SDXL quality preset: eta=0.5, norm threshold=15,
+            // momentum disabled. At eta=1 / threshold=0 this algebraically
+            // reduces to standard CFG. We intentionally keep momentum off so
+            // DPM++/other multistep solvers remain stateless.
+            constexpr double kEta = 0.5;
+            constexpr double kNormThreshold = 15.0;
+
+            double diff_norm_sq = 0.0;
+            for (int k = 0; k < single_latent_size; ++k) {
+              const double d = (double)txt[k] - (double)uncond[k];
+              diff_norm_sq += d * d;
+            }
+            const double diff_norm = std::sqrt(diff_norm_sq);
+            const double diff_scale =
+                (diff_norm > kNormThreshold && diff_norm > 1.0e-12)
+                    ? (kNormThreshold / diff_norm)
+                    : 1.0;
+
+            double cond_norm_sq = 0.0;
+            double dot = 0.0;
+            for (int k = 0; k < single_latent_size; ++k) {
+              const double c = (double)txt[k];
+              const double d =
+                  ((double)txt[k] - (double)uncond[k]) * diff_scale;
+              cond_norm_sq += c * c;
+              dot += d * c;
+            }
+            const double proj =
+                cond_norm_sq > 1.0e-20 ? dot / cond_norm_sq : 0.0;
+            const double guidance_scale = (double)req.cfg - 1.0;
+
+            for (int k = 0; k < single_latent_size; ++k) {
+              const double c = (double)txt[k];
+              const double d =
+                  ((double)txt[k] - (double)uncond[k]) * diff_scale;
+              const double parallel = proj * c;
+              const double orthogonal = d - parallel;
+              const double update = orthogonal + kEta * parallel;
+              dst[k] = (float)(c + guidance_scale * update);
+            }
           }
         }
       }
@@ -1225,7 +1274,7 @@ inline GenerationResult Pipeline::generateImpl(
       if (sdxl_) {
         QNN_INFO("[SDXL CFG] step=%d/%d t=%.1f mode=%s passes=%d",
                  i - start_step + 1, sampling_steps, current_ts,
-                 req.legacy_exact_cfg ? "legacy-exact" : "exact-optimized",
+                 req.legacy_path ? "legacy-path" : "parallel-exact",
                  skip_uncond ? 1 : 2);
       }
 
