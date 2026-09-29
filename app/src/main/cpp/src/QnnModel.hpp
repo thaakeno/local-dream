@@ -125,17 +125,36 @@ class QnnModel : public QnnSampleApp {
   // their metadata, so the size cannot be read back from them — it must be
   // supplied here explicitly.
   void setSpillFillGroup(uint64_t maxBytes, Qnn_ContextHandle_t firstHandle) {
-    if (maxBytes == 0) return;  // disabled: leave m_contextConfig untouched
+    if (maxBytes == 0) return;
     m_sfHtpConfig.option =
         QNN_HTP_CONTEXT_CONFIG_OPTION_REGISTER_MULTI_CONTEXTS;
     m_sfHtpConfig.groupRegistration.firstGroupHandle = firstHandle;
     m_sfHtpConfig.groupRegistration.maxSpillFillBuffer = maxBytes;
     m_sfCtxConfig.option = QNN_CONTEXT_CONFIG_OPTION_CUSTOM;
     m_sfCtxConfig.customConfig = &m_sfHtpConfig;
-    m_sfCtxConfigPtrs[0] = &m_sfCtxConfig;
-    m_sfCtxConfigPtrs[1] = nullptr;
-    // Consumed by QnnSampleApp::createFromBinary / QnnModel::createFromBuffer.
-    m_contextConfig = m_sfCtxConfigPtrs;
+    m_sfConfigEnabled = true;
+    refreshContextConfigs();
+  }
+
+  // QAIRT 2.50 exposes a createFromBinary-compatible concurrent-resource
+  // registration specifically for devices that can let same-priority HTP
+  // graphs coexist. This is different from SHARE_RESOURCES/CONCURRENT_OPTIMIZATION,
+  // which only applies to createFromBinaryListAsync. Pair the first context
+  // with firstHandle=nullptr and the second with the first context handle.
+  // maxBytes is the group's spill/fill budget; zero is valid for binaries that
+  // report no spill/fill requirement (our current SDXL probe reports zero).
+  void setConcurrentResourceGroup(uint64_t maxBytes,
+                                  Qnn_ContextHandle_t firstHandle) {
+    m_concurrentHtpConfig.option =
+        QNN_HTP_CONTEXT_CONFIG_OPTION_REGISTER_CONCURRENT_RESOURCE_SHARING;
+    m_concurrentHtpConfig.concurrentGroupRegistration.firstGroupHandle =
+        firstHandle;
+    m_concurrentHtpConfig.concurrentGroupRegistration.maxSpillFillBuffer =
+        maxBytes;
+    m_concurrentCtxConfig.option = QNN_CONTEXT_CONFIG_OPTION_CUSTOM;
+    m_concurrentCtxConfig.customConfig = &m_concurrentHtpConfig;
+    m_concurrentConfigEnabled = true;
+    refreshContextConfigs();
   }
 
   // Valid only after a successful initialize()/createFromBinary(): the QNN
@@ -1190,12 +1209,26 @@ class QnnModel : public QnnSampleApp {
   }
 
  private:
-  // Backing storage for the spill-fill group-registration context config.
-  // These must outlive the contextCreateFromBinary call, so they live as
-  // members rather than locals in setSpillFillGroup().
+  void refreshContextConfigs() {
+    size_t n = 0;
+    if (m_sfConfigEnabled) m_ctxConfigPtrs[n++] = &m_sfCtxConfig;
+    if (m_concurrentConfigEnabled)
+      m_ctxConfigPtrs[n++] = &m_concurrentCtxConfig;
+    m_ctxConfigPtrs[n] = nullptr;
+    m_contextConfig = n ? m_ctxConfigPtrs : nullptr;
+  }
+
+  // Backing storage for HTP context configs. These must outlive
+  // contextCreateFromBinary/createFromBuffer.
   QnnHtpContext_CustomConfig_t m_sfHtpConfig{};
   QnnContext_Config_t m_sfCtxConfig{};
-  QnnContext_Config_t *m_sfCtxConfigPtrs[2] = {nullptr, nullptr};
+  bool m_sfConfigEnabled = false;
+
+  QnnHtpContext_CustomConfig_t m_concurrentHtpConfig{};
+  QnnContext_Config_t m_concurrentCtxConfig{};
+  bool m_concurrentConfigEnabled = false;
+
+  QnnContext_Config_t *m_ctxConfigPtrs[3] = {nullptr, nullptr, nullptr};
 };
 
 #endif  // QNNMODEL_HPP
