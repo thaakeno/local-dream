@@ -35,7 +35,9 @@ inline GenerationRequest parseGenerationRequest(const nlohmann::json &json,
   req.scheduler_type = json.value("scheduler", "dpm");
   req.use_opencl = json.value("use_opencl", false);
   req.npu_only = sdxl && json.value("npu_only", false);
-  req.legacy_exact_cfg = sdxl && json.value("legacy_exact_cfg", false);
+  req.legacy_path =
+      sdxl && json.value("legacy_path", json.value("legacy_exact_cfg", false));
+  req.apg_quality = sdxl && json.value("apg_quality", false);
   req.show_diffusion_process = json.value("show_diffusion_process", false);
   req.show_diffusion_stride = json.value("show_diffusion_stride", 1);
   req.seed = json.value(
