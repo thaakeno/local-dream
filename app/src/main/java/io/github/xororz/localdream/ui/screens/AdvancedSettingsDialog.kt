@@ -66,6 +66,7 @@ internal fun AdvancedSettingsDialog(
     cfg: Float,
     useOpenCL: Boolean,
     npuOnly: Boolean = false,
+    legacyExactCfg: Boolean = false,
     isQwen21: Boolean = false,
     htpMode: String = "auto",
     batchCounts: Int,
@@ -84,6 +85,7 @@ internal fun AdvancedSettingsDialog(
     onCpuSelected: () -> Unit,
     onGpuSelected: () -> Unit,
     onNpuOnlyChange: (Boolean) -> Unit = {},
+    onLegacyExactCfgChange: (Boolean) -> Unit = {},
     onHtpModeChange: (String) -> Unit = {},
     onBatchCountsChange: (Float) -> Unit,
     onDenoiseStrengthChange: (Float) -> Unit,
@@ -424,6 +426,37 @@ internal fun AdvancedSettingsDialog(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary,
                             )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Legacy exact CFG",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    if (legacyExactCfg) {
+                                        "Old reference path for same-seed A/B testing. Uses the original two-pass CFG equation."
+                                    } else {
+                                        "Exact CFG with current runtime optimizations. No embedding shortcut or skipped guidance."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            CompositionLocalProvider(
+                                LocalMinimumInteractiveComponentSize provides Dp.Unspecified,
+                            ) {
+                                Switch(
+                                    checked = legacyExactCfg,
+                                    enabled = !isRunning,
+                                    onCheckedChange = onLegacyExactCfgChange,
+                                    modifier = Modifier.scale(0.86f),
+                                )
+                            }
                         }
                     }
                 }
