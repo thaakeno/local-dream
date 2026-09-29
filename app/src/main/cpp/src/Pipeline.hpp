@@ -1160,78 +1160,83 @@ inline GenerationResult Pipeline::generateImpl(
     std::vector<float> unet_out_latents(batch_size * single_latent_size);
     xt::xarray<float> noise_pred = xt::zeros<float>(shape);
 
-    // SDXL quality-fast path.
+    // SDXL one-pass quality guidance.
     //
-    // The old implementation froze (eps_cond - eps_uncond) and reused that
-    // stale guidance vector for most of the trajectory. It was fast, but the
-    // guidance field changes with x_t, so detail/skin/texture could drift.
+    // Previous experiments either reused a stale noise-space CFG delta or
+    // switched to plain conditional sampling when cond/uncond cosine became
+    // large. Both are fast but can deform faces because cosine similarity is
+    // not a reliable "guidance is no longer useful" test.
     //
-    // This path combines two training-free ideas instead:
-    //  1) Adaptive Guidance: run exact CFG until conditional/unconditional
-    //     predictions converge, then use the conditional prediction directly.
-    //  2) A guarded local predictor/corrector: only skip an entire UNet step
-    //     after the previous real step proved that linear score extrapolation
-    //     is accurate. Never skip consecutive steps, the first 3, or last 2.
+    // Keep exactly one UNet evaluation per denoise step for the common
+    // low-CFG SDXL path. Approximate CFG in *conditioning space* instead:
+    // move the positive CLIP conditioning a short distance away from the
+    // negative conditioning, then norm-clamp every token so the move changes
+    // direction without exploding activation magnitude. This is the cheap
+    // training-free analogue of text-embedding guidance / DICE-style
+    // sharpening. Apply it only in the noise interval where SDXL guidance is
+    // useful; outside that interval run the untouched conditional embedding.
     //
-    // The requested diffusion step count remains unchanged; skipped network
-    // evaluations still execute their scheduler update with a forecast score.
+    // The interval is expressed in sigma, not step index, so it works with
+    // arbitrary user-selected step counts and all supported schedulers.
     const bool sdxl_quality_fast =
-        sdxl_ && !unet_tiled && req.cfg > 1.0f && sampling_steps >= 8 &&
-        sampling_steps <= 20;
-    constexpr float kAdaptiveGuidanceCosine = 0.990f;
-    constexpr float kForecastRelativeRmse = 0.055f;
+        sdxl_ && !unet_tiled && canSkipUncond() && req.cfg > 1.0f;
+    constexpr float kSdxlGuidanceSigmaLo = 0.28f;
+    constexpr float kSdxlGuidanceSigmaHi = 5.42f;
 
-    bool adaptive_guidance_converged = false;
-    bool previous_step_forecast = false;
-    std::vector<float> prev_real_pred(single_latent_size, 0.0f);
-    std::vector<float> last_real_pred(single_latent_size, 0.0f);
-    bool have_prev_real = false;
-    bool have_last_real = false;
-    float prev_real_t = 0.0f;
-    float last_real_t = 0.0f;
-    float last_predictor_error = 1.0f;
+    Conditioning guided_cond = cond;
+    float embedding_alpha = 0.0f;
+    if (sdxl_quality_fast) {
+      // Conservative at normal CFG and capped for high-CFG custom models.
+      embedding_alpha =
+          std::clamp(0.16f * (req.cfg - 1.0f), 0.0f, 0.38f);
 
-    auto predict_from_two_real =
-        [&](float target_t, std::vector<float> &out) -> bool {
-      if (!have_prev_real || !have_last_real) return false;
-      const float denom = last_real_t - prev_real_t;
-      if (std::abs(denom) < 1e-6f) return false;
-      float ratio = (target_t - last_real_t) / denom;
-      ratio = std::clamp(ratio, 0.0f, 1.5f);
-      out.resize(single_latent_size);
-      for (int k = 0; k < single_latent_size; ++k) {
-        out[k] = last_real_pred[k] +
-                 ratio * (last_real_pred[k] - prev_real_pred[k]);
+      auto sharpen_norm_preserving =
+          [&](const float *positive, const float *negative, float *dst,
+              int vectors, int dim, float alpha, float norm_gain) {
+        constexpr double kEps = 1.0e-20;
+        for (int v = 0; v < vectors; ++v) {
+          const float *p = positive + (size_t)v * dim;
+          const float *n = negative + (size_t)v * dim;
+          float *o = dst + (size_t)v * dim;
+          double p2 = 0.0;
+          double c2 = 0.0;
+          for (int d = 0; d < dim; ++d) {
+            const double pv = p[d];
+            const double cv = pv + alpha * (pv - n[d]);
+            o[d] = static_cast<float>(cv);
+            p2 += pv * pv;
+            c2 += cv * cv;
+          }
+          if (p2 > kEps && c2 > kEps) {
+            // Permit only a tiny norm lift; most of the guidance comes from
+            // the changed direction, which avoids oversaturation/melted faces.
+            const double target =
+                std::sqrt(p2) * (1.0 + norm_gain * alpha);
+            const float scale =
+                static_cast<float>(target / std::sqrt(c2));
+            for (int d = 0; d < dim; ++d) o[d] *= scale;
+          }
+        }
+      };
+
+      sharpen_norm_preserving(
+          cond.posHidden(), cond.negHidden(), guided_cond.posHidden(),
+          cond.seq_len, cond.hidden_dim, embedding_alpha, 0.05f);
+
+      if (cond.pooled_dim > 0) {
+        // Pooled conditioning strongly affects global SDXL composition. Use a
+        // gentler direction shift and no norm lift there.
+        sharpen_norm_preserving(
+            cond.posPooled(), cond.negPooled(), guided_cond.posPooled(), 1,
+            cond.pooled_dim, embedding_alpha * 0.5f, 0.0f);
       }
-      return true;
-    };
 
-    auto relative_rmse = [&](const float *actual,
-                             const std::vector<float> &predicted) -> float {
-      double err2 = 0.0;
-      double ref2 = 0.0;
-      for (int k = 0; k < single_latent_size; ++k) {
-        const double a = actual[k];
-        const double d = a - predicted[k];
-        err2 += d * d;
-        ref2 += a * a;
-      }
-      return static_cast<float>(
-          std::sqrt(err2 / std::max(1.0, ref2)));
-    };
-
-    auto cosine_similarity = [&](const float *a, const float *b) -> float {
-      double dot = 0.0;
-      double aa = 0.0;
-      double bb = 0.0;
-      for (int k = 0; k < single_latent_size; ++k) {
-        dot += static_cast<double>(a[k]) * b[k];
-        aa += static_cast<double>(a[k]) * a[k];
-        bb += static_cast<double>(b[k]) * b[k];
-      }
-      const double denom = std::sqrt(aa * bb);
-      return denom > 1e-20 ? static_cast<float>(dot / denom) : 0.0f;
-    };
+      QNN_INFO(
+          "[SDXL quality] one-pass embedding guidance enabled cfg=%.3f "
+          "alpha=%.4f sigma=(%.2f,%.2f]",
+          req.cfg, embedding_alpha, kSdxlGuidanceSigmaLo,
+          kSdxlGuidanceSigmaHi);
+    }
 
     for (int i = start_step; i < (int)timesteps.size(); ++i) {
       if (req.show_diffusion_process && previewSupported() &&
@@ -1250,104 +1255,53 @@ inline GenerationResult Pipeline::generateImpl(
           scheduler->scale_model_input(latents, current_ts);
 
       const int step_idx = i - start_step;
+      const float sigma = scheduler->get_current_sigma();
+      const bool embedding_guidance_active =
+          sdxl_quality_fast && sigma > kSdxlGuidanceSigmaLo &&
+          sigma <= kSdxlGuidanceSigmaHi;
 
-      // Forecast only when the previous *real* point demonstrated that the
-      // local score field is smooth enough. Keeping correction steps between
-      // forecasts bounds drift; preserving the final two real evaluations
-      // protects the high-frequency detail phase.
-      bool forecast_step = false;
-      std::vector<float> forecast_pred;
-      if (sdxl_quality_fast && step_idx >= 3 &&
-          step_idx < sampling_steps - 2 && !previous_step_forecast &&
-          last_predictor_error <= kForecastRelativeRmse) {
-        forecast_step = predict_from_two_real(current_ts, forecast_pred);
+      // CFG=2 now stays one-pass without becoming "plain CFG=1" after an
+      // arbitrary cosine threshold. The guided conditioning is used only in
+      // SDXL's useful mid-noise region; high-noise composition and the final
+      // low-noise detail step see the untouched prompt conditioning.
+      bool skip_uncond = canSkipUncond() &&
+                         (std::fabs(req.cfg - 1.0f) < 1.0e-6f ||
+                          sdxl_quality_fast);
+      Conditioning &step_cond =
+          embedding_guidance_active ? guided_cond : cond;
+
+      if (unet_tiled) {
+        noise_pred =
+            runUnetTiled(req, latents_scaled, static_cast<int>(current_ts),
+                         skip_uncond, step_cond);
+      } else {
+        std::copy(latents_scaled.begin(), latents_scaled.end(),
+                  latents_in_vec.begin());
+        std::copy(latents_scaled.begin(), latents_scaled.end(),
+                  latents_in_vec.begin() + single_latent_size);
+
+        runUnetStep(req, latents_in_vec.data(), current_ts, skip_uncond,
+                    step_cond, unet_out_latents.data());
+
+        float *dst = noise_pred.data();
+        if (skip_uncond) {
+          const float *txt = unet_out_latents.data() + single_latent_size;
+          std::copy(txt, txt + single_latent_size, dst);
+        } else {
+          // Non-QNN / tiled paths retain exact CFG semantics.
+          const float *uncond = unet_out_latents.data();
+          const float *txt = uncond + single_latent_size;
+          for (int k = 0; k < single_latent_size; ++k) {
+            dst[k] = uncond[k] + req.cfg * (txt[k] - uncond[k]);
+          }
+        }
       }
 
-      if (forecast_step) {
-        std::copy(forecast_pred.begin(), forecast_pred.end(), noise_pred.begin());
-        previous_step_forecast = true;
+      if (sdxl_quality_fast) {
         QNN_INFO(
-            "[SDXL fast] step=%d/%d t=%.1f mode=forecast rel_rmse_gate=%.5f",
-            step_idx + 1, sampling_steps, current_ts, last_predictor_error);
-      } else {
-        // Adaptive Guidance: once cond/uncond predictions are almost parallel,
-        // the second evaluation is redundant. Also stop CFG in the final
-        // quarter, where limited-interval guidance finds it unnecessary.
-        const int hard_guidance_end =
-            std::max(2, (sampling_steps * 3 + 3) / 4);
-        bool skip_uncond = canSkipUncond() && (req.cfg == 1.0f);
-        if (sdxl_quality_fast &&
-            (adaptive_guidance_converged || step_idx >= hard_guidance_end)) {
-          skip_uncond = true;
-        }
-
-        if (unet_tiled) {
-          noise_pred =
-              runUnetTiled(req, latents_scaled, static_cast<int>(current_ts),
-                           skip_uncond, cond);
-        } else {
-          std::copy(latents_scaled.begin(), latents_scaled.end(),
-                    latents_in_vec.begin());
-          std::copy(latents_scaled.begin(), latents_scaled.end(),
-                    latents_in_vec.begin() + single_latent_size);
-
-          runUnetStep(req, latents_in_vec.data(), current_ts, skip_uncond, cond,
-                      unet_out_latents.data());
-
-          float *dst = noise_pred.data();
-          if (skip_uncond) {
-            const float *txt = unet_out_latents.data() + single_latent_size;
-            // Do not reuse stale guidance. AG intentionally becomes a real
-            // conditional step after convergence.
-            std::copy(txt, txt + single_latent_size, dst);
-          } else {
-            const float *uncond = unet_out_latents.data();
-            const float *txt = uncond + single_latent_size;
-            for (int k = 0; k < single_latent_size; ++k) {
-              dst[k] = uncond[k] + req.cfg * (txt[k] - uncond[k]);
-            }
-
-            if (sdxl_quality_fast && step_idx >= 1) {
-              const float sim = cosine_similarity(uncond, txt);
-              QNN_INFO(
-                  "[SDXL fast] step=%d/%d t=%.1f cfg=%.3f cosine=%.6f",
-                  step_idx + 1, sampling_steps, current_ts, req.cfg, sim);
-              if (sim >= kAdaptiveGuidanceCosine) {
-                adaptive_guidance_converged = true;
-                QNN_INFO(
-                    "[SDXL fast] adaptive-guidance converged at step=%d "
-                    "(cosine=%.6f); future real steps are cond-only",
-                    step_idx + 1, sim);
-              }
-            }
-          }
-        }
-
-        // Validate the predictor against this real result before allowing it
-        // to skip the following step.
-        if (sdxl_quality_fast && have_prev_real && have_last_real) {
-          std::vector<float> predicted_here;
-          if (predict_from_two_real(current_ts, predicted_here)) {
-            last_predictor_error =
-                relative_rmse(noise_pred.data(), predicted_here);
-            QNN_INFO(
-                "[SDXL fast] predictor-check step=%d/%d rel_rmse=%.6f gate=%.6f",
-                step_idx + 1, sampling_steps, last_predictor_error,
-                kForecastRelativeRmse);
-          }
-        }
-
-        if (sdxl_quality_fast) {
-          if (have_last_real) {
-            prev_real_pred = last_real_pred;
-            prev_real_t = last_real_t;
-            have_prev_real = true;
-          }
-          std::copy(noise_pred.begin(), noise_pred.end(), last_real_pred.begin());
-          last_real_t = current_ts;
-          have_last_real = true;
-        }
-        previous_step_forecast = false;
+            "[SDXL quality] step=%d/%d t=%.1f sigma=%.5f mode=%s",
+            step_idx + 1, sampling_steps, current_ts, sigma,
+            embedding_guidance_active ? "embed-guided" : "conditional");
       }
 
       auto step_dur = elapsedMs(step_start_time);
