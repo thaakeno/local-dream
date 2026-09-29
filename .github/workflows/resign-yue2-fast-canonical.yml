@@ -1,4 +1,4 @@
-# trigger: fast-v139-final
+# trigger: fast-v140-final-bc4d3f2
 name: Re-sign YuE2 Fast APK with canonical Local Dream key
 
 on:
