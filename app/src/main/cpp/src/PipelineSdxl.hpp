@@ -233,10 +233,20 @@ class PipelineSdxl : public PipelineQnn {
     QNN_INFO("[lowram] SDXL UNET loaded");
   }
 
-  void runUnetStep(const GenerationRequest &, const float *latents_batch2,
-                   float timestep, bool skip_uncond, Conditioning &cond,
+  void runUnetStep(const GenerationRequest &req,
+                   const float *latents_batch2, float timestep,
+                   bool skip_uncond, Conditioning &cond,
                    float *out_batch2) override {
     if (!unet_) throw std::runtime_error("QNN UNET missing");
+
+    // One-pass SDXL quality guidance changes the positive conditioning values
+    // as sigma changes. QnnModel's normal static-input cache keys by source
+    // pointer, so a mutable buffer would otherwise keep the native tensor from
+    // the first guided step. Refresh only this dynamic path. The recopy is
+    // sub-millisecond next to a ~hundreds-of-ms HTP UNet execute.
+    if (skip_uncond && req.cfg > 1.0f) {
+      unet_->resetSdxlStaticInputCache();
+    }
 
     const int single_latent_size = 1 * 4 * sample_width * sample_height;
     const int ts = static_cast<int>(timestep);
