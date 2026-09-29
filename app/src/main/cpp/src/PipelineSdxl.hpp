@@ -251,7 +251,7 @@ class PipelineSdxl : public PipelineQnn {
                                      cond.seq_len, cond.negative_chunks))
         throw std::runtime_error("QNN UNET SDXL exec failed (uncond)");
       QNN_INFO("[SDXL CFG] t=%d uncond=%.3fms", ts,
-               elapsedMs(uncond_start));
+               static_cast<double>(elapsedMs(uncond_start)));
     }
 
     const auto cond_start = std::chrono::high_resolution_clock::now();
@@ -262,7 +262,8 @@ class PipelineSdxl : public PipelineQnn {
             cond.seq_len, cond.positive_chunks))
       throw std::runtime_error("QNN UNET SDXL exec failed (cond)");
     QNN_INFO("[SDXL CFG] t=%d cond=%.3fms skip_uncond=%d", ts,
-             elapsedMs(cond_start), skip_uncond ? 1 : 0);
+             static_cast<double>(elapsedMs(cond_start)),
+             skip_uncond ? 1 : 0);
   }
 
   void endDenoise() override {
