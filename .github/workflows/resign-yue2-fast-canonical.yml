@@ -97,7 +97,7 @@ jobs:
           test -s "$src_apk"
 
           mkdir -p "$GITHUB_WORKSPACE/out"
-          out_apk="$GITHUB_WORKSPACE/out/LocalDream_YuE2_Fast_3.0.0-alpha.63-yue2fast.3-v139-canonical.apk"
+          out_apk="$GITHUB_WORKSPACE/out/LocalDream_YuE2_Fast_3.0.0-alpha.63-yue2fast.4-v140-canonical.apk"
 
           "$apksigner_bin" sign             --ks "$RUNNER_TEMP/localdream-ci.jks"             --ks-key-alias localdream             --ks-pass pass:android             --key-pass pass:android             --out "$out_apk"             "$src_apk"
 
@@ -113,7 +113,7 @@ jobs:
       - name: Upload canonical compatible APK
         uses: actions/upload-artifact@v6
         with:
-          name: LocalDream-YuE2-Fast-canonical-alpha63-yue2fast3-v139
+          name: LocalDream-YuE2-Fast-canonical-alpha63-yue2fast4-v140
           path: out/LocalDream_YuE2_Fast_3.0.0-alpha.63-yue2fast.3-v139-canonical.apk
           if-no-files-found: error
           retention-days: 14
