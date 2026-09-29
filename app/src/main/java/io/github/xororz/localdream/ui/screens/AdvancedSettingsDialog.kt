@@ -471,7 +471,11 @@ internal fun AdvancedSettingsDialog(
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                                 Text(
-                                    "Adaptive Projected Guidance quality pass. Uses the same exact CFG outputs and adds no extra UNet run.",
+                                    if (legacyPath) {
+                                        "Disabled in Legacy path so the reference stays untouched."
+                                    } else {
+                                        "Adaptive Projected Guidance quality pass. Uses the same exact CFG outputs and adds no extra UNet run."
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -480,8 +484,8 @@ internal fun AdvancedSettingsDialog(
                                 LocalMinimumInteractiveComponentSize provides Dp.Unspecified,
                             ) {
                                 Switch(
-                                    checked = apgQuality,
-                                    enabled = !isRunning,
+                                    checked = apgQuality && !legacyPath,
+                                    enabled = !isRunning && !legacyPath,
                                     onCheckedChange = onApgQualityChange,
                                     modifier = Modifier.scale(0.86f),
                                 )
