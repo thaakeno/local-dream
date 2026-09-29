@@ -169,7 +169,11 @@ class BackgroundGenerationService : Service() {
         val denoiseStrength = intent.getFloatExtra("denoise_strength", 0.6f)
         val useOpenCL = intent.getBooleanExtra("use_opencl", false)
         val npuOnly = intent.getBooleanExtra("npu_only", false)
-        val legacyExactCfg = intent.getBooleanExtra("legacy_exact_cfg", false)
+        val legacyPath = intent.getBooleanExtra(
+            "legacy_path",
+            intent.getBooleanExtra("legacy_exact_cfg", false),
+        )
+        val apgQuality = intent.getBooleanExtra("apg_quality", false)
         val scheduler = intent.getStringExtra("scheduler") ?: "dpm"
         val aspectRatio = intent.getStringExtra("aspect_ratio") ?: "1:1"
         // Ultrafix: tiled img2img repair over an upscaled image. Uses its own
@@ -264,7 +268,8 @@ class BackgroundGenerationService : Service() {
                 denoiseStrength,
                 useOpenCL,
                 npuOnly,
-                legacyExactCfg,
+                legacyPath,
+                apgQuality,
                 scheduler,
                 aspectRatio,
                 ultrafix,
@@ -293,7 +298,8 @@ class BackgroundGenerationService : Service() {
         denoiseStrength: Float,
         useOpenCL: Boolean,
         npuOnly: Boolean,
-        legacyExactCfg: Boolean,
+        legacyPath: Boolean,
+        apgQuality: Boolean,
         scheduler: String,
         aspectRatio: String,
         ultrafix: Boolean,
@@ -323,7 +329,7 @@ class BackgroundGenerationService : Service() {
                 "prompt=${prompt.take(1200)} | negative=${negativePrompt.take(600)} | " +
                     "steps=$steps cfg=$cfg seed=${seed ?: "random"} size=${width}x${height} " +
                     "scheduler=$scheduler denoise=$denoiseStrength aspect=$aspectRatio npuOnly=$npuOnly " +
-                    "legacyExactCfg=$legacyExactCfg " +
+                    "legacyPath=$legacyPath apgQuality=$apgQuality " +
                     "img2img=${image != null} mask=${mask != null} refs=${referenceImages?.length() ?: 0}",
             )
             CrashDiagnostics.recordGenerationTelemetry(
@@ -349,7 +355,8 @@ class BackgroundGenerationService : Service() {
                 put("denoise_strength", denoiseStrength)
                 put("use_opencl", useOpenCL)
                 put("npu_only", npuOnly)
-                put("legacy_exact_cfg", legacyExactCfg)
+                put("legacy_path", legacyPath)
+                put("apg_quality", apgQuality)
                 put("scheduler", scheduler)
                 // Ultrafix never streams previews: each one would tile-decode
                 // the full image (the backend rejects it as well).
