@@ -250,8 +250,11 @@ class PipelineSdxl : public PipelineQnn {
                                      cond.negPooled(), time_ids, out_batch2,
                                      cond.seq_len, cond.negative_chunks))
         throw std::runtime_error("QNN UNET SDXL exec failed (uncond)");
-      QNN_INFO("[SDXL CFG] t=%d uncond=%.3fms", ts,
-               static_cast<double>(elapsedMs(uncond_start)));
+      const double uncond_ms =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::high_resolution_clock::now() - uncond_start)
+              .count();
+      QNN_INFO("[SDXL CFG] t=%d uncond=%.3fms", ts, uncond_ms);
     }
 
     const auto cond_start = std::chrono::high_resolution_clock::now();
@@ -261,8 +264,11 @@ class PipelineSdxl : public PipelineQnn {
             cond.posPooled(), time_ids + 6, out_batch2 + single_latent_size,
             cond.seq_len, cond.positive_chunks))
       throw std::runtime_error("QNN UNET SDXL exec failed (cond)");
-    QNN_INFO("[SDXL CFG] t=%d cond=%.3fms skip_uncond=%d", ts,
-             static_cast<double>(elapsedMs(cond_start)),
+    const double cond_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - cond_start)
+            .count();
+    QNN_INFO("[SDXL CFG] t=%d cond=%.3fms skip_uncond=%d", ts, cond_ms,
              skip_uncond ? 1 : 0);
   }
 
