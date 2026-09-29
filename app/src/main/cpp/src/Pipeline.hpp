@@ -1203,57 +1203,89 @@ inline GenerationResult Pipeline::generateImpl(
     constexpr float kSdxlGuidanceSigmaHi = 5.42f;
 
     Conditioning guided_cond = cond;
-    float embedding_alpha = 0.0f;
+    float semantic_alpha = 0.0f;
+    float padding_gain = 0.0f;
     if (sdxl_quality_fast) {
-      // Conservative at normal CFG and capped for high-CFG custom models.
-      embedding_alpha =
-          std::clamp(0.16f * (req.cfg - 1.0f), 0.0f, 0.38f);
+      // DICE's SDXL analysis finds most useful sharpening in CLIP padding
+      // positions. Preserve the real prompt tokens almost exactly, and spend
+      // the stronger one-pass boost on padding instead. This is deliberately
+      // step-count agnostic and derived only from the user's CFG strength.
+      semantic_alpha =
+          std::clamp(0.04f * (req.cfg - 1.0f), 0.0f, 0.12f);
+      padding_gain =
+          std::clamp(0.12f * (req.cfg - 1.0f), 0.0f, 0.25f);
 
-      auto sharpen_norm_preserving =
-          [&](const float *positive, const float *negative, float *dst,
-              int vectors, int dim, float alpha, float norm_gain) {
-        constexpr double kEps = 1.0e-20;
-        for (int v = 0; v < vectors; ++v) {
-          const float *p = positive + (size_t)v * dim;
-          const float *n = negative + (size_t)v * dim;
-          float *o = dst + (size_t)v * dim;
-          double p2 = 0.0;
-          double c2 = 0.0;
-          for (int d = 0; d < dim; ++d) {
-            const double pv = p[d];
-            const double cv = pv + alpha * (pv - n[d]);
-            o[d] = static_cast<float>(cv);
-            p2 += pv * pv;
-            c2 += cv * cv;
-          }
-          if (p2 > kEps && c2 > kEps) {
-            // Permit only a tiny norm lift; most of the guidance comes from
-            // the changed direction, which avoids oversaturation/melted faces.
-            const double target =
-                std::sqrt(p2) * (1.0 + norm_gain * alpha);
-            const float scale =
-                static_cast<float>(target / std::sqrt(c2));
-            for (int d = 0; d < dim; ++d) o[d] *= scale;
-          }
+      const int positive_content_tokens =
+          std::max(0, text_encoder_.tokenizeInfo(req.prompt).count - 2);
+      constexpr double kEps = 1.0e-20;
+
+      for (int v = 0; v < cond.seq_len; ++v) {
+        const int chunk = v / 77;
+        const int pos_in_chunk = v % 77;
+        const int remaining = positive_content_tokens - chunk * 75;
+        const int content_in_chunk = std::clamp(remaining, 0, 75);
+        const int eos_pos = 1 + content_in_chunk;
+        const bool is_padding = pos_in_chunk > eos_pos;
+
+        const float *p = cond.posHidden() + (size_t)v * cond.hidden_dim;
+        const float *n = cond.negHidden() + (size_t)v * cond.hidden_dim;
+        float *o = guided_cond.posHidden() + (size_t)v * cond.hidden_dim;
+
+        if (is_padding) {
+          // Padding amplification is the zero-parameter DICE ablation that
+          // carries most of the detail benefit. It cannot inject negative-
+          // prompt semantics because it only scales the positive feature.
+          const float scale = 1.0f + padding_gain;
+          for (int d = 0; d < cond.hidden_dim; ++d) o[d] = p[d] * scale;
+          continue;
         }
-      };
 
-      sharpen_norm_preserving(
-          cond.posHidden(), cond.negHidden(), guided_cond.posHidden(),
-          cond.seq_len, cond.hidden_dim, embedding_alpha, 0.05f);
+        // Real semantic tokens get only a tiny CFG-direction rotation, with
+        // their original L2 norm restored afterwards. This protects identity,
+        // facial geometry and composition from embedding over-guidance.
+        double p2 = 0.0;
+        double c2 = 0.0;
+        for (int d = 0; d < cond.hidden_dim; ++d) {
+          const double pv = p[d];
+          const double cv = pv + semantic_alpha * (pv - n[d]);
+          o[d] = static_cast<float>(cv);
+          p2 += pv * pv;
+          c2 += cv * cv;
+        }
+        if (p2 > kEps && c2 > kEps) {
+          const float scale =
+              static_cast<float>(std::sqrt(p2 / c2));
+          for (int d = 0; d < cond.hidden_dim; ++d) o[d] *= scale;
+        }
+      }
 
       if (cond.pooled_dim > 0) {
-        // Pooled conditioning strongly affects global SDXL composition. Use a
-        // gentler direction shift and no norm lift there.
-        sharpen_norm_preserving(
-            cond.posPooled(), cond.negPooled(), guided_cond.posPooled(), 1,
-            cond.pooled_dim, embedding_alpha * 0.5f, 0.0f);
+        // Pooled text embedding controls global composition strongly: apply
+        // only a quarter of the semantic shift and preserve its norm exactly.
+        const float pooled_alpha = semantic_alpha * 0.25f;
+        const float *p = cond.posPooled();
+        const float *n = cond.negPooled();
+        float *o = guided_cond.posPooled();
+        double p2 = 0.0;
+        double c2 = 0.0;
+        for (int d = 0; d < cond.pooled_dim; ++d) {
+          const double pv = p[d];
+          const double cv = pv + pooled_alpha * (pv - n[d]);
+          o[d] = static_cast<float>(cv);
+          p2 += pv * pv;
+          c2 += cv * cv;
+        }
+        if (p2 > kEps && c2 > kEps) {
+          const float scale =
+              static_cast<float>(std::sqrt(p2 / c2));
+          for (int d = 0; d < cond.pooled_dim; ++d) o[d] *= scale;
+        }
       }
 
       QNN_INFO(
-          "[SDXL quality] one-pass embedding guidance enabled cfg=%.3f "
-          "alpha=%.4f sigma=(%.2f,%.2f]",
-          req.cfg, embedding_alpha, kSdxlGuidanceSigmaLo,
+          "[SDXL quality] one-pass padding guidance cfg=%.3f semantic=%.4f "
+          "padding_gain=%.4f sigma=(%.2f,%.2f]",
+          req.cfg, semantic_alpha, padding_gain, kSdxlGuidanceSigmaLo,
           kSdxlGuidanceSigmaHi);
     }
 
