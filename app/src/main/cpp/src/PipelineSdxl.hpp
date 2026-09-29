@@ -408,10 +408,11 @@ class PipelineSdxl : public PipelineQnn {
       }
     }
 
-    QNN_INFO("[SDXL path] requested=%s resolved=%s apg=%d",
-             req.legacy_path ? "legacy-path" : "parallel-exact",
-             parallel_run_enabled_ ? "parallel-exact" : "serial-exact",
-             req.apg_quality ? 1 : 0);
+    QNN_INFO(
+        "[SDXL path] requested=%s resolved=%s apg=%d resource_group=%d",
+        req.legacy_path ? "legacy-path" : "parallel-exact",
+        parallel_run_enabled_ ? "parallel-exact" : "serial-exact",
+        req.apg_quality ? 1 : 0, concurrent_group_enabled_ ? 1 : 0);
   }
 
   void runUnetStep(const GenerationRequest &req,
