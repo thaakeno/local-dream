@@ -233,7 +233,7 @@ class PipelineSdxl : public PipelineQnn {
     QNN_INFO("[lowram] SDXL UNET loaded");
   }
 
-  void runUnetStep(const GenerationRequest &req,
+  void runUnetStep(const GenerationRequest &,
                    const float *latents_batch2, float timestep,
                    bool skip_uncond, Conditioning &cond,
                    float *out_batch2) override {
