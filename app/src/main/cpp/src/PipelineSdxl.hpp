@@ -4,6 +4,7 @@
 #include <MNN/Interpreter.hpp>
 #include <cstdint>
 #include <cstdlib>
+#include <future>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -118,6 +119,29 @@ class PipelineSdxl : public PipelineQnn {
     if (sf_bytes) group_head = unet_->getContextHandle();
     logSpillFill("UNET", unet_);
 
+    // Preload a second independent UNET context for exact CFG branch
+    // concurrency. The two executions use independent QNN IO buffers/contexts,
+    // so cond and uncond can be submitted simultaneously without races. If the
+    // platform cannot host the second context, generation falls back to the
+    // serial legacy path without changing image math.
+    if (!lowram_) {
+      try {
+        unet_parallel_ = qnn_runtime::createModel(unet_path_, "unet_cfg_parallel");
+        if (unet_parallel_ &&
+            qnn_runtime::initializeApp("UNET-CFG-PAR", unet_parallel_) ==
+                EXIT_SUCCESS) {
+          unet_parallel_tokens_ = unet_tokens_;
+          QNN_INFO("[SDXL parallel] second UNET context ready");
+        } else {
+          unet_parallel_.reset();
+          QNN_WARN("[SDXL parallel] second UNET context unavailable; serial fallback");
+        }
+      } catch (const std::exception &e) {
+        unet_parallel_.reset();
+        QNN_WARN("[SDXL parallel] preload failed: %s; serial fallback", e.what());
+      }
+    }
+
     if (sf_bytes) vae_decoder_->setSpillFillGroup(sf_bytes, group_head);
     if (qnn_runtime::initializeApp("VAEDecoder", vae_decoder_) != EXIT_SUCCESS)
       return false;
@@ -188,52 +212,95 @@ class PipelineSdxl : public PipelineQnn {
   }
 
   void beginDenoise(const GenerationRequest &req) override {
-    const int tokens = text_encoder_.contextLength(req.prompt, req.negative_prompt);
+    const int tokens =
+        text_encoder_.contextLength(req.prompt, req.negative_prompt);
 
-    // The encoder has no work during sampling. Drop only this idle context
-    // before the UNet loop; UNet/decoder/CLIP remain hot in normal fast mode.
-    if (vae_encoder_) {
-      releaseVaeEncoder();
-    }
+    parallel_run_enabled_ = false;
+    parallel_pairs_ = 0;
+    parallel_wall_ms_sum_ = 0.0;
+    parallel_branch_ms_sum_ = 0.0;
 
-    // Native QNN conditioning buffers cache the quantized CLIP hidden states
-    // across denoising steps. Their source pointers are request-local, so clear
-    // the identity cache once at each generation boundary even when the UNet
-    // context itself remains hot.
-    if (unet_ && unet_tokens_ == tokens) {
-      unet_->resetSdxlStaticInputCache();
-      return;
+    // The encoder has no work during sampling.
+    if (vae_encoder_) releaseVaeEncoder();
+
+    // Keep/rebuild the primary exact-CFG UNET for the requested token shape.
+    if (!(unet_ && unet_tokens_ == tokens)) {
+      vae_encoder_.reset();
+      vae_decoder_.reset();
+      unet_parallel_.reset();
+      unet_.reset();
+
+      auto unet = qnn_runtime::createModel(unet_path_, "unet");
+      if (!unet) throw std::runtime_error("Failed create QNN UNET");
+      if (!lowram_) {
+        const uint64_t sf_bytes = configuredSpillFillGroupBytes();
+        if (sf_bytes) unet->setSpillFillGroup(sf_bytes, nullptr);
+      }
+      std::unique_ptr<qnn_runtime::PatchedModelBuffer> patched;
+      if (tokens > 77 && !text_encoder_.fixed_chunks_) {
+        patched = qnn_runtime::applyZstdPatchToBuffer(
+            unet_path_, model_dir_ + "/" + std::to_string(tokens) + ".patch");
+        if (!patched) throw std::runtime_error(unet_path_);
+      }
+      if (qnn_runtime::initializeApp(
+              "UNET", unet, patched ? patched->buffer.get() : nullptr,
+              patched ? patched->size : 0) != EXIT_SUCCESS)
+        throw std::runtime_error("Failed init QNN UNET");
+      unet->logSdxlGraphProbeOnce("UNET");
+      unet_ = std::move(unet);
+      unet_tokens_ = tokens;
+      QNN_INFO("[SDXL] primary UNET loaded for %d tokens", tokens);
     }
-    // The UNet is the spill-fill group head, so release its dependents first.
-    vae_encoder_.reset();
-    vae_decoder_.reset();
-    unet_.reset();
-    // Build into a local first: patching and bring-up can both throw, and a
-    // half-initialized unet_ left behind would be reused by the next request
-    // with the same token count and executed on empty graph info.
-    auto unet = qnn_runtime::createModel(unet_path_, "unet");
-    if (!unet) throw std::runtime_error("Failed create QNN UNET");
-    if (!lowram_) {
-      const uint64_t sf_bytes = configuredSpillFillGroupBytes();
-      if (sf_bytes) unet->setSpillFillGroup(sf_bytes, nullptr);
-    }
-    std::unique_ptr<qnn_runtime::PatchedModelBuffer> patched;
-    if (tokens > 77 && !text_encoder_.fixed_chunks_) {
-      patched = qnn_runtime::applyZstdPatchToBuffer(
-          unet_path_, model_dir_ + "/" + std::to_string(tokens) + ".patch");
-      if (!patched) throw std::runtime_error(unet_path_);
-    }
-    if (qnn_runtime::initializeApp("UNET", unet, patched ? patched->buffer.get() : nullptr,
-                                    patched ? patched->size : 0) != EXIT_SUCCESS)
-      throw std::runtime_error("Failed init QNN UNET");
-    unet->logSdxlGraphProbeOnce("UNET");
-    unet_ = std::move(unet);
-    unet_tokens_ = tokens;
     unet_->resetSdxlStaticInputCache();
-    QNN_INFO("[lowram] SDXL UNET loaded");
+
+    // Legacy path is intentionally the original serial reference. Otherwise,
+    // prepare an independent second context so exact cond/uncond branches can
+    // overlap on HTP. Low-RAM mode stays serial because duplicating the UNET
+    // would defeat its purpose.
+    const bool want_parallel =
+        !req.legacy_path && !lowram_ && req.cfg > 1.000001f;
+    if (want_parallel) {
+      if (!(unet_parallel_ && unet_parallel_tokens_ == tokens)) {
+        unet_parallel_.reset();
+        try {
+          auto second =
+              qnn_runtime::createModel(unet_path_, "unet_cfg_parallel");
+          if (!second) throw std::runtime_error("create second UNET failed");
+          std::unique_ptr<qnn_runtime::PatchedModelBuffer> patched2;
+          if (tokens > 77 && !text_encoder_.fixed_chunks_) {
+            patched2 = qnn_runtime::applyZstdPatchToBuffer(
+                unet_path_,
+                model_dir_ + "/" + std::to_string(tokens) + ".patch");
+            if (!patched2) throw std::runtime_error("patch second UNET failed");
+          }
+          if (qnn_runtime::initializeApp(
+                  "UNET-CFG-PAR", second,
+                  patched2 ? patched2->buffer.get() : nullptr,
+                  patched2 ? patched2->size : 0) != EXIT_SUCCESS)
+            throw std::runtime_error("init second UNET failed");
+          unet_parallel_ = std::move(second);
+          unet_parallel_tokens_ = tokens;
+          QNN_INFO("[SDXL parallel] second context loaded for %d tokens",
+                   tokens);
+        } catch (const std::exception &e) {
+          unet_parallel_.reset();
+          QNN_WARN("[SDXL parallel] setup failed: %s; using serial exact CFG",
+                   e.what());
+        }
+      }
+      if (unet_parallel_) {
+        unet_parallel_->resetSdxlStaticInputCache();
+        parallel_run_enabled_ = true;
+      }
+    }
+
+    QNN_INFO("[SDXL path] requested=%s resolved=%s apg=%d",
+             req.legacy_path ? "legacy-path" : "parallel-exact",
+             parallel_run_enabled_ ? "parallel-exact" : "serial-exact",
+             req.apg_quality ? 1 : 0);
   }
 
-  void runUnetStep(const GenerationRequest &,
+  void runUnetStep(const GenerationRequest &req,
                    const float *latents_batch2, float timestep,
                    bool skip_uncond, Conditioning &cond,
                    float *out_batch2) override {
@@ -244,6 +311,70 @@ class PipelineSdxl : public PipelineQnn {
     float *latents_in = const_cast<float *>(latents_batch2);
     float *time_ids = cond.time_ids.data();
 
+    const bool do_parallel =
+        !skip_uncond && !req.legacy_path && parallel_run_enabled_ &&
+        unet_parallel_;
+
+    if (do_parallel) {
+      const auto pair_start = std::chrono::high_resolution_clock::now();
+      double uncond_ms = 0.0;
+      double cond_ms = 0.0;
+
+      auto uncond_future = std::async(std::launch::async, [&]() {
+        const auto t0 = std::chrono::high_resolution_clock::now();
+        auto st = unet_->executeUnetGraphsSDXL(
+            latents_in, ts, cond.negHidden(), cond.negPooled(), time_ids,
+            out_batch2, cond.seq_len, cond.negative_chunks);
+        uncond_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::high_resolution_clock::now() - t0)
+                        .count();
+        return st;
+      });
+
+      auto cond_future = std::async(std::launch::async, [&]() {
+        const auto t0 = std::chrono::high_resolution_clock::now();
+        auto st = unet_parallel_->executeUnetGraphsSDXL(
+            latents_in + single_latent_size, ts, cond.posHidden(),
+            cond.posPooled(), time_ids + 6,
+            out_batch2 + single_latent_size, cond.seq_len,
+            cond.positive_chunks);
+        cond_ms = std::chrono::duration<double, std::milli>(
+                      std::chrono::high_resolution_clock::now() - t0)
+                      .count();
+        return st;
+      });
+
+      const auto uncond_status = uncond_future.get();
+      const auto cond_status = cond_future.get();
+      const double wall_ms =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::high_resolution_clock::now() - pair_start)
+              .count();
+
+      if (uncond_status != StatusCode::SUCCESS ||
+          cond_status != StatusCode::SUCCESS) {
+        QNN_WARN(
+            "[SDXL parallel] execution failed at t=%d; retrying serial exact CFG",
+            ts);
+        parallel_run_enabled_ = false;
+      } else {
+        ++parallel_pairs_;
+        parallel_wall_ms_sum_ += wall_ms;
+        parallel_branch_ms_sum_ += uncond_ms + cond_ms;
+        const double overlap_pct =
+            (uncond_ms + cond_ms) > 0.0
+                ? 100.0 *
+                      std::max(0.0, 1.0 - wall_ms / (uncond_ms + cond_ms))
+                : 0.0;
+        QNN_INFO(
+            "[SDXL parallel] t=%d uncond=%.3fms cond=%.3fms wall=%.3fms "
+            "overlap=%.1f%%",
+            ts, uncond_ms, cond_ms, wall_ms, overlap_pct);
+        return;
+      }
+    }
+
+    // Serial exact CFG reference / fallback.
     if (!skip_uncond) {
       const auto uncond_start = std::chrono::high_resolution_clock::now();
       if (StatusCode::SUCCESS != unet_->executeUnetGraphsSDXL(
@@ -259,11 +390,12 @@ class PipelineSdxl : public PipelineQnn {
     }
 
     const auto cond_start = std::chrono::high_resolution_clock::now();
-    if (StatusCode::SUCCESS !=
-        unet_->executeUnetGraphsSDXL(
-            latents_in + single_latent_size, ts, cond.posHidden(),
-            cond.posPooled(), time_ids + 6, out_batch2 + single_latent_size,
-            cond.seq_len, cond.positive_chunks))
+    if (StatusCode::SUCCESS != unet_->executeUnetGraphsSDXL(
+                                   latents_in + single_latent_size, ts,
+                                   cond.posHidden(), cond.posPooled(),
+                                   time_ids + 6,
+                                   out_batch2 + single_latent_size,
+                                   cond.seq_len, cond.positive_chunks))
       throw std::runtime_error("QNN UNET SDXL exec failed (cond)");
     const double cond_ms =
         std::chrono::duration<double, std::milli>(
@@ -274,7 +406,21 @@ class PipelineSdxl : public PipelineQnn {
   }
 
   void endDenoise() override {
+    if (parallel_pairs_ > 0) {
+      const double avg_wall = parallel_wall_ms_sum_ / parallel_pairs_;
+      const double avg_branch_sum =
+          parallel_branch_ms_sum_ / parallel_pairs_;
+      const double overlap_pct =
+          avg_branch_sum > 0.0
+              ? 100.0 * std::max(0.0, 1.0 - avg_wall / avg_branch_sum)
+              : 0.0;
+      QNN_INFO(
+          "[SDXL parallel summary] pairs=%d avg_wall=%.3fms "
+          "avg_branch_sum=%.3fms overlap=%.1f%%",
+          parallel_pairs_, avg_wall, avg_branch_sum, overlap_pct);
+    }
     if (!lowram_ || !unet_) return;
+    unet_parallel_.reset();
     unet_.reset();
     QNN_INFO("[lowram] SDXL UNET released");
   }
@@ -466,6 +612,14 @@ class PipelineSdxl : public PipelineQnn {
   const std::string vae_encoder_path_;
   const bool lowram_;
   int unet_tokens_ = 77;
+
+  // Independent second QNN context for simultaneous cond/uncond execution.
+  std::unique_ptr<QnnModel> unet_parallel_;
+  int unet_parallel_tokens_ = 0;
+  bool parallel_run_enabled_ = false;
+  int parallel_pairs_ = 0;
+  double parallel_wall_ms_sum_ = 0.0;
+  double parallel_branch_ms_sum_ = 0.0;
 
   MNN::Interpreter *clip_interpreter_ = nullptr;
   MNN::Interpreter *clip2_interpreter_ = nullptr;
