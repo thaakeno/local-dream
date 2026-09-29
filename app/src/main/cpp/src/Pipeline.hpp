@@ -1160,12 +1160,78 @@ inline GenerationResult Pipeline::generateImpl(
     std::vector<float> unet_out_latents(batch_size * single_latent_size);
     xt::xarray<float> noise_pred = xt::zeros<float>(shape);
 
-    // Guidance Delta Caching:
-    // Caches delta = eps_cond - eps_uncond across steps. For CFG > 1.0,
-    // alternating uncond on early steps and exiting uncond on the second half
-    // of denoising reduces UNet evaluations by ~45% without visual quality loss.
-    std::vector<float> cached_guidance_delta(single_latent_size, 0.0f);
-    bool has_cached_delta = false;
+    // SDXL quality-fast path.
+    //
+    // The old implementation froze (eps_cond - eps_uncond) and reused that
+    // stale guidance vector for most of the trajectory. It was fast, but the
+    // guidance field changes with x_t, so detail/skin/texture could drift.
+    //
+    // This path combines two training-free ideas instead:
+    //  1) Adaptive Guidance: run exact CFG until conditional/unconditional
+    //     predictions converge, then use the conditional prediction directly.
+    //  2) A guarded local predictor/corrector: only skip an entire UNet step
+    //     after the previous real step proved that linear score extrapolation
+    //     is accurate. Never skip consecutive steps, the first 3, or last 2.
+    //
+    // The requested diffusion step count remains unchanged; skipped network
+    // evaluations still execute their scheduler update with a forecast score.
+    const bool sdxl_quality_fast =
+        sdxl_ && !unet_tiled && req.cfg > 1.0f && sampling_steps >= 8 &&
+        sampling_steps <= 20;
+    constexpr float kAdaptiveGuidanceCosine = 0.990f;
+    constexpr float kForecastRelativeRmse = 0.055f;
+
+    bool adaptive_guidance_converged = false;
+    bool previous_step_forecast = false;
+    std::vector<float> prev_real_pred(single_latent_size, 0.0f);
+    std::vector<float> last_real_pred(single_latent_size, 0.0f);
+    bool have_prev_real = false;
+    bool have_last_real = false;
+    float prev_real_t = 0.0f;
+    float last_real_t = 0.0f;
+    float last_predictor_error = 1.0f;
+
+    auto predict_from_two_real =
+        [&](float target_t, std::vector<float> &out) -> bool {
+      if (!have_prev_real || !have_last_real) return false;
+      const float denom = last_real_t - prev_real_t;
+      if (std::abs(denom) < 1e-6f) return false;
+      float ratio = (target_t - last_real_t) / denom;
+      ratio = std::clamp(ratio, 0.0f, 1.5f);
+      out.resize(single_latent_size);
+      for (int k = 0; k < single_latent_size; ++k) {
+        out[k] = last_real_pred[k] +
+                 ratio * (last_real_pred[k] - prev_real_pred[k]);
+      }
+      return true;
+    };
+
+    auto relative_rmse = [&](const float *actual,
+                             const std::vector<float> &predicted) -> float {
+      double err2 = 0.0;
+      double ref2 = 0.0;
+      for (int k = 0; k < single_latent_size; ++k) {
+        const double a = actual[k];
+        const double d = a - predicted[k];
+        err2 += d * d;
+        ref2 += a * a;
+      }
+      return static_cast<float>(
+          std::sqrt(err2 / std::max(1.0, ref2)));
+    };
+
+    auto cosine_similarity = [&](const float *a, const float *b) -> float {
+      double dot = 0.0;
+      double aa = 0.0;
+      double bb = 0.0;
+      for (int k = 0; k < single_latent_size; ++k) {
+        dot += static_cast<double>(a[k]) * b[k];
+        aa += static_cast<double>(a[k]) * a[k];
+        bb += static_cast<double>(b[k]) * b[k];
+      }
+      const double denom = std::sqrt(aa * bb);
+      return denom > 1e-20 ? static_cast<float>(dot / denom) : 0.0f;
+    };
 
     for (int i = start_step; i < (int)timesteps.size(); ++i) {
       if (req.show_diffusion_process && previewSupported() &&
@@ -1184,55 +1250,104 @@ inline GenerationResult Pipeline::generateImpl(
           scheduler->scale_model_input(latents, current_ts);
 
       const int step_idx = i - start_step;
-      const int cutoff_step = (sampling_steps + 1) / 2;
-      const bool fast_cfg_active = canSkipUncond() && (req.cfg > 1.0f) && (sampling_steps <= 20);
 
-      bool skip_uncond = canSkipUncond() && (req.cfg == 1.0f);
-      if (fast_cfg_active && has_cached_delta) {
-        if (step_idx >= cutoff_step) {
-          // Late steps: composition and layout are settled; reuse cached delta.
-          skip_uncond = true;
-        } else if (step_idx % 2 == 1) {
-          // Early steps: alternate uncond passes to maintain fresh guidance.
-          skip_uncond = true;
-        }
+      // Forecast only when the previous *real* point demonstrated that the
+      // local score field is smooth enough. Keeping correction steps between
+      // forecasts bounds drift; preserving the final two real evaluations
+      // protects the high-frequency detail phase.
+      bool forecast_step = false;
+      std::vector<float> forecast_pred;
+      if (sdxl_quality_fast && step_idx >= 3 &&
+          step_idx < sampling_steps - 2 && !previous_step_forecast &&
+          last_predictor_error <= kForecastRelativeRmse) {
+        forecast_step = predict_from_two_real(current_ts, forecast_pred);
       }
 
-      if (unet_tiled) {
-        noise_pred =
-            runUnetTiled(req, latents_scaled, static_cast<int>(current_ts),
-                         skip_uncond, cond);
+      if (forecast_step) {
+        std::copy(forecast_pred.begin(), forecast_pred.end(), noise_pred.begin());
+        previous_step_forecast = true;
+        QNN_INFO(
+            "[SDXL fast] step=%d/%d t=%.1f mode=forecast rel_rmse_gate=%.5f",
+            step_idx + 1, sampling_steps, current_ts, last_predictor_error);
       } else {
-        std::copy(latents_scaled.begin(), latents_scaled.end(),
-                  latents_in_vec.begin());
-        std::copy(latents_scaled.begin(), latents_scaled.end(),
-                  latents_in_vec.begin() + single_latent_size);
-
-        runUnetStep(req, latents_in_vec.data(), current_ts, skip_uncond, cond,
-                    unet_out_latents.data());
-
-        float *dst = noise_pred.data();
-        if (skip_uncond) {
-          const float *txt = unet_out_latents.data() + single_latent_size;
-          if (has_cached_delta && req.cfg > 1.0f) {
-            const float guidance = req.cfg - 1.0f;
-            for (int k = 0; k < single_latent_size; ++k) {
-              dst[k] = txt[k] + guidance * cached_guidance_delta[k];
-            }
-          } else {
-            std::copy(unet_out_latents.begin() + single_latent_size,
-                      unet_out_latents.end(), dst);
-          }
-        } else {
-          const float *uncond = unet_out_latents.data();
-          const float *txt = uncond + single_latent_size;
-          for (int k = 0; k < single_latent_size; ++k) {
-            const float delta = txt[k] - uncond[k];
-            cached_guidance_delta[k] = delta;
-            dst[k] = uncond[k] + req.cfg * delta;
-          }
-          has_cached_delta = true;
+        // Adaptive Guidance: once cond/uncond predictions are almost parallel,
+        // the second evaluation is redundant. Also stop CFG in the final
+        // quarter, where limited-interval guidance finds it unnecessary.
+        const int hard_guidance_end =
+            std::max(2, (sampling_steps * 3 + 3) / 4);
+        bool skip_uncond = canSkipUncond() && (req.cfg == 1.0f);
+        if (sdxl_quality_fast &&
+            (adaptive_guidance_converged || step_idx >= hard_guidance_end)) {
+          skip_uncond = true;
         }
+
+        if (unet_tiled) {
+          noise_pred =
+              runUnetTiled(req, latents_scaled, static_cast<int>(current_ts),
+                           skip_uncond, cond);
+        } else {
+          std::copy(latents_scaled.begin(), latents_scaled.end(),
+                    latents_in_vec.begin());
+          std::copy(latents_scaled.begin(), latents_scaled.end(),
+                    latents_in_vec.begin() + single_latent_size);
+
+          runUnetStep(req, latents_in_vec.data(), current_ts, skip_uncond, cond,
+                      unet_out_latents.data());
+
+          float *dst = noise_pred.data();
+          if (skip_uncond) {
+            const float *txt = unet_out_latents.data() + single_latent_size;
+            // Do not reuse stale guidance. AG intentionally becomes a real
+            // conditional step after convergence.
+            std::copy(txt, txt + single_latent_size, dst);
+          } else {
+            const float *uncond = unet_out_latents.data();
+            const float *txt = uncond + single_latent_size;
+            for (int k = 0; k < single_latent_size; ++k) {
+              dst[k] = uncond[k] + req.cfg * (txt[k] - uncond[k]);
+            }
+
+            if (sdxl_quality_fast && step_idx >= 1) {
+              const float sim = cosine_similarity(uncond, txt);
+              QNN_INFO(
+                  "[SDXL fast] step=%d/%d t=%.1f cfg=%.3f cosine=%.6f",
+                  step_idx + 1, sampling_steps, current_ts, req.cfg, sim);
+              if (sim >= kAdaptiveGuidanceCosine) {
+                adaptive_guidance_converged = true;
+                QNN_INFO(
+                    "[SDXL fast] adaptive-guidance converged at step=%d "
+                    "(cosine=%.6f); future real steps are cond-only",
+                    step_idx + 1, sim);
+              }
+            }
+          }
+        }
+
+        // Validate the predictor against this real result before allowing it
+        // to skip the following step.
+        if (sdxl_quality_fast && have_prev_real && have_last_real) {
+          std::vector<float> predicted_here;
+          if (predict_from_two_real(current_ts, predicted_here)) {
+            last_predictor_error =
+                relative_rmse(noise_pred.data(), predicted_here);
+            QNN_INFO(
+                "[SDXL fast] predictor-check step=%d/%d rel_rmse=%.6f gate=%.6f",
+                step_idx + 1, sampling_steps, last_predictor_error,
+                kForecastRelativeRmse);
+          }
+        }
+
+        if (sdxl_quality_fast) {
+          if (have_last_real) {
+            prev_real_pred = last_real_pred;
+            prev_real_t = last_real_t;
+            have_prev_real = true;
+          }
+          std::copy(noise_pred.begin(), noise_pred.end(), last_real_pred.begin());
+          last_real_t = current_ts;
+          have_last_real = true;
+        }
+        previous_step_forecast = false;
       }
 
       auto step_dur = elapsedMs(step_start_time);
