@@ -276,6 +276,8 @@ class PipelineSdxl : public PipelineQnn {
     parallel_pairs_ = 0;
     parallel_wall_ms_sum_ = 0.0;
     parallel_branch_ms_sum_ = 0.0;
+    const bool want_parallel =
+        !req.legacy_path && !lowram_ && req.cfg > 1.000001f;
 
     // The encoder has no work during sampling.
     if (vae_encoder_) releaseVaeEncoder();
@@ -287,26 +289,52 @@ class PipelineSdxl : public PipelineQnn {
       unet_parallel_.reset();
       unet_.reset();
 
-      auto unet = qnn_runtime::createModel(unet_path_, "unet");
-      if (!unet) throw std::runtime_error("Failed create QNN UNET");
-      if (!lowram_) {
-        const uint64_t sf_bytes = configuredSpillFillGroupBytes();
-        if (sf_bytes) unet->setSpillFillGroup(sf_bytes, nullptr);
-      }
+      const uint64_t sf_bytes =
+          !lowram_ ? configuredSpillFillGroupBytes() : 0;
+      auto make_primary = [&](bool concurrent_hint) {
+        auto model = qnn_runtime::createModel(unet_path_, "unet");
+        if (!model) return std::unique_ptr<QnnModel>{};
+        if (sf_bytes) model->setSpillFillGroup(sf_bytes, nullptr);
+        if (concurrent_hint)
+          model->setConcurrentResourceGroup(sf_bytes, nullptr);
+        return model;
+      };
+
       std::unique_ptr<qnn_runtime::PatchedModelBuffer> patched;
       if (tokens > 77 && !text_encoder_.fixed_chunks_) {
         patched = qnn_runtime::applyZstdPatchToBuffer(
             unet_path_, model_dir_ + "/" + std::to_string(tokens) + ".patch");
         if (!patched) throw std::runtime_error(unet_path_);
       }
-      if (qnn_runtime::initializeApp(
-              "UNET", unet, patched ? patched->buffer.get() : nullptr,
-              patched ? patched->size : 0) != EXIT_SUCCESS)
+
+      concurrent_group_enabled_ = false;
+      auto unet = make_primary(want_parallel);
+      if (!unet) throw std::runtime_error("Failed create QNN UNET");
+      int init_status = qnn_runtime::initializeApp(
+          "UNET", unet, patched ? patched->buffer.get() : nullptr,
+          patched ? patched->size : 0);
+      if (init_status != EXIT_SUCCESS && want_parallel) {
+        QNN_WARN(
+            "[SDXL parallel] concurrent primary rejected for token patch; "
+            "retrying normal context");
+        unet.reset();
+        unet = make_primary(false);
+        if (!unet) throw std::runtime_error("Failed recreate QNN UNET");
+        init_status = qnn_runtime::initializeApp(
+            "UNET", unet, patched ? patched->buffer.get() : nullptr,
+            patched ? patched->size : 0);
+      } else if (init_status == EXIT_SUCCESS && want_parallel) {
+        concurrent_group_enabled_ = true;
+      }
+      if (init_status != EXIT_SUCCESS)
         throw std::runtime_error("Failed init QNN UNET");
+
       unet->logSdxlGraphProbeOnce("UNET");
       unet_ = std::move(unet);
       unet_tokens_ = tokens;
-      QNN_INFO("[SDXL] primary UNET loaded for %d tokens", tokens);
+      QNN_INFO(
+          "[SDXL] primary UNET loaded for %d tokens concurrent_group=%d",
+          tokens, concurrent_group_enabled_ ? 1 : 0);
     }
     unet_->resetSdxlStaticInputCache();
 
@@ -314,15 +342,23 @@ class PipelineSdxl : public PipelineQnn {
     // prepare an independent second context so exact cond/uncond branches can
     // overlap on HTP. Low-RAM mode stays serial because duplicating the UNET
     // would defeat its purpose.
-    const bool want_parallel =
-        !req.legacy_path && !lowram_ && req.cfg > 1.000001f;
     if (want_parallel) {
       if (!(unet_parallel_ && unet_parallel_tokens_ == tokens)) {
         unet_parallel_.reset();
         try {
-          auto second =
-              qnn_runtime::createModel(unet_path_, "unet_cfg_parallel");
-          if (!second) throw std::runtime_error("create second UNET failed");
+          const uint64_t sf_bytes = configuredSpillFillGroupBytes();
+          auto make_second = [&](bool concurrent_hint) {
+            auto model =
+                qnn_runtime::createModel(unet_path_, "unet_cfg_parallel");
+            if (!model) return std::unique_ptr<QnnModel>{};
+            if (sf_bytes)
+              model->setSpillFillGroup(sf_bytes, unet_->getContextHandle());
+            if (concurrent_hint)
+              model->setConcurrentResourceGroup(sf_bytes,
+                                                unet_->getContextHandle());
+            return model;
+          };
+
           std::unique_ptr<qnn_runtime::PatchedModelBuffer> patched2;
           if (tokens > 77 && !text_encoder_.fixed_chunks_) {
             patched2 = qnn_runtime::applyZstdPatchToBuffer(
@@ -330,15 +366,36 @@ class PipelineSdxl : public PipelineQnn {
                 model_dir_ + "/" + std::to_string(tokens) + ".patch");
             if (!patched2) throw std::runtime_error("patch second UNET failed");
           }
-          if (qnn_runtime::initializeApp(
-                  "UNET-CFG-PAR", second,
-                  patched2 ? patched2->buffer.get() : nullptr,
-                  patched2 ? patched2->size : 0) != EXIT_SUCCESS)
+
+          auto second = make_second(concurrent_group_enabled_);
+          if (!second) throw std::runtime_error("create second UNET failed");
+          int second_status = qnn_runtime::initializeApp(
+              "UNET-CFG-PAR", second,
+              patched2 ? patched2->buffer.get() : nullptr,
+              patched2 ? patched2->size : 0);
+          if (second_status != EXIT_SUCCESS && concurrent_group_enabled_) {
+            QNN_WARN(
+                "[SDXL parallel] concurrent second rejected; retrying "
+                "independent context");
+            concurrent_group_enabled_ = false;
+            second.reset();
+            second = make_second(false);
+            if (!second)
+              throw std::runtime_error("recreate second UNET failed");
+            second_status = qnn_runtime::initializeApp(
+                "UNET-CFG-PAR", second,
+                patched2 ? patched2->buffer.get() : nullptr,
+                patched2 ? patched2->size : 0);
+          }
+          if (second_status != EXIT_SUCCESS)
             throw std::runtime_error("init second UNET failed");
+
           unet_parallel_ = std::move(second);
           unet_parallel_tokens_ = tokens;
-          QNN_INFO("[SDXL parallel] second context loaded for %d tokens",
-                   tokens);
+          QNN_INFO(
+              "[SDXL parallel] second context loaded for %d tokens "
+              "resource_group=%d",
+              tokens, concurrent_group_enabled_ ? 1 : 0);
         } catch (const std::exception &e) {
           unet_parallel_.reset();
           QNN_WARN("[SDXL parallel] setup failed: %s; using serial exact CFG",
