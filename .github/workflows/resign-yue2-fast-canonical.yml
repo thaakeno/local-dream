@@ -1,4 +1,4 @@
-# trigger: fast-v142-parallel-apg
+# trigger: fast-v142-final-built
 name: Re-sign YuE2 Fast APK with canonical Local Dream key
 
 on:
