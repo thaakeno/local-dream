@@ -441,9 +441,9 @@ internal fun AdvancedSettingsDialog(
                                 )
                                 Text(
                                     if (legacyPath) {
-                                        "Original serial CFG path. Use this as the exact same-seed reference."
+                                        "Full CFG on every denoising step. Exact old-quality same-seed reference."
                                     } else {
-                                        "Parallel exact CFG. Cond + uncond run concurrently when the HTP accepts it."
+                                        "Fast guidance interval. Keeps CFG in the useful middle steps and skips redundant uncond passes outside it."
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -474,7 +474,7 @@ internal fun AdvancedSettingsDialog(
                                     if (legacyPath) {
                                         "Disabled in Legacy path so the reference stays untouched."
                                     } else {
-                                        "Adaptive Projected Guidance quality pass. Uses the same exact CFG outputs and adds no extra UNet run."
+                                        "Adaptive Projected Guidance on the guided steps. No extra UNet run."
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
