@@ -1006,12 +1006,11 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (backendType == "sdxl") {
-                // Sustained SDXL should race at TURBO without pinning MAX clocks
-                // and a 9.999 ms host busy-poll for the entire backend lifetime.
-                // The previous burst default amplified heat/battery drain and
-                // thermal throttling, especially when a second UNET context was
-                // loaded. Explicit burst remains available for profiling only.
-                env["LOCALDREAM_QNN_POWER_MODE"] = "efficient"
+                // Restore the proven v141 single-context SDXL performance
+                // profile. The v142 thermal regression came from duplicating the
+                // multi-GB UNET context while also pinning burst; with one UNET
+                // context this is the known ~13s baseline on the target device.
+                env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
             }
 
             if (isMusicBackend(backendType)) {
