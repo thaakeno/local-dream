@@ -1006,9 +1006,12 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (backendType == "sdxl") {
-                // Restore burst mode clocks and 9999us FastRPC polling for SDXL
-                // to recover the 12-14s baseline generation speed.
-                env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
+                // Sustained SDXL should race at TURBO without pinning MAX clocks
+                // and a 9.999 ms host busy-poll for the entire backend lifetime.
+                // The previous burst default amplified heat/battery drain and
+                // thermal throttling, especially when a second UNET context was
+                // loaded. Explicit burst remains available for profiling only.
+                env["LOCALDREAM_QNN_POWER_MODE"] = "efficient"
             }
 
             if (isMusicBackend(backendType)) {
