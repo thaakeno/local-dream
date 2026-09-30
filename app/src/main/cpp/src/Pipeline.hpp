@@ -1176,7 +1176,7 @@ inline GenerationResult Pipeline::generateImpl(
     // optimized mode deliberately uses the identical CFG equation.
     if (sdxl_) {
       QNN_INFO("[SDXL CFG] mode=%s cfg=%.3f steps=%d apg=%d",
-               req.legacy_path ? "legacy-path" : "parallel-exact",
+               req.legacy_path ? "legacy-full-cfg" : "limited-guidance",
                req.cfg, sampling_steps,
                (req.apg_quality && !req.legacy_path) ? 1 : 0);
     }
@@ -1197,8 +1197,35 @@ inline GenerationResult Pipeline::generateImpl(
       xt::xarray<float> latents_scaled =
           scheduler->scale_model_input(latents, current_ts);
 
+      // Training-free limited guidance fast path.
+      //
+      // Legacy path: preserve the original full CFG trajectory (2 UNET calls
+      // at every denoising step for cfg > 1).
+      //
+      // Fast path: apply CFG only through the useful middle portion of the
+      // denoising chain. Guidance-interval work reports that high-noise early
+      // guidance can be harmful and late low-noise guidance largely redundant,
+      // including on SDXL. The interval is expressed as normalized denoising
+      // progress so it automatically scales to 8/12/20/etc. steps.
+      //
+      // A conservative 20%-70% window keeps half the steps fully guided. For
+      // 12 steps this is 6 guided + 6 conditional-only = 18 UNET evaluations
+      // instead of 24, while preserving the exact CFG equation inside the
+      // guidance interval and the requested CFG value (e.g. 2.0).
+      const float denoise_progress =
+          sampling_steps > 1
+              ? (float)(i - start_step) / (float)(sampling_steps - 1)
+              : 1.0f;
+      constexpr float kGuidanceStart = 0.20f;
+      constexpr float kGuidanceEnd = 0.70f;
+      const bool in_guidance_interval =
+          denoise_progress >= kGuidanceStart &&
+          denoise_progress <= kGuidanceEnd;
+      const bool full_cfg_requested =
+          req.legacy_path || in_guidance_interval;
       const bool skip_uncond =
-          canSkipUncond() && std::fabs(req.cfg - 1.0f) < 1.0e-6f;
+          canSkipUncond() &&
+          (std::fabs(req.cfg - 1.0f) < 1.0e-6f || !full_cfg_requested);
 
       if (unet_tiled) {
         noise_pred =
@@ -1273,10 +1300,13 @@ inline GenerationResult Pipeline::generateImpl(
       }
 
       if (sdxl_) {
-        QNN_INFO("[SDXL CFG] step=%d/%d t=%.1f mode=%s passes=%d",
-                 i - start_step + 1, sampling_steps, current_ts,
-                 req.legacy_path ? "legacy-path" : "parallel-exact",
-                 skip_uncond ? 1 : 2);
+        QNN_INFO(
+            "[SDXL CFG] step=%d/%d t=%.1f progress=%.3f mode=%s guided=%d "
+            "passes=%d",
+            i - start_step + 1, sampling_steps, current_ts, denoise_progress,
+            req.legacy_path ? "legacy-full-cfg" : "limited-guidance",
+            (!skip_uncond && req.cfg > 1.0f) ? 1 : 0,
+            skip_uncond ? 1 : 2);
       }
 
       auto step_dur = elapsedMs(step_start_time);
