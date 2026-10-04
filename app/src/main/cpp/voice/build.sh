@@ -47,6 +47,20 @@ grep -q 'GGML_TYPE_Q6_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GGML_TYPE_Q4_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GGML_TYPE_Q2_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 
+# Breeze's vocoder needs SIN and transpose-convolution semantics that current
+# upstream Hexagon does not expose. Extend the pinned backend with two reviewed
+# native HTP primitives. This is a normal git patch with a hard drift check,
+# not a runtime source rewrite and not a CPU/GPU fallback.
+cp "$(pwd)/native/breeze-sin-ops.c"     "$GGML_DIR/src/ggml-hexagon/htp/breeze-sin-ops.c"
+cp "$(pwd)/native/breeze-col2im-ops.c"     "$GGML_DIR/src/ggml-hexagon/htp/breeze-col2im-ops.c"
+git -C "$HEXAGON_DIR" apply --check "$(pwd)/hexagon-breeze.patch"
+git -C "$HEXAGON_DIR" apply "$(pwd)/hexagon-breeze.patch"
+
+grep -q 'HTP_OP_SIN' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
+grep -q 'HTP_OP_COL2IM_1D' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
+grep -q 'GGML_OP_SIN' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'GGML_OP_COL2IM_1D' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+
 rm -rf "$BUILD_DIR"
 
 cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
@@ -76,6 +90,7 @@ backend=kan-linux/ggml-hexagon
 backend_commit=$HEXAGON_COMMIT
 mode=strict-htp-only
 fallback=disabled
+extensions=sin-hvx,col2im1d-htp,exact-elu-lowering,transpose-conv-gemm-col2im
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
