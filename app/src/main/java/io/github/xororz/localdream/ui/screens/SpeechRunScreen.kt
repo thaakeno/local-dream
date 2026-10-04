@@ -99,7 +99,10 @@ fun SpeechRunScreen(
             ),
         )
     }
-    val events = listOf("(laugh)", "(sigh)", "(cough)", "(clears throat)")
+    val events = listOf(
+        "(laugh)", "(sigh)", "(cough)", "(clears throat)",
+        "[笑]", "[叹气]", "[咳嗽]", "[清嗓子]",
+    )
 
     LaunchedEffect(modelId, model?.isDownloaded) {
         if (model?.isDownloaded == true && model.isVoice) {
