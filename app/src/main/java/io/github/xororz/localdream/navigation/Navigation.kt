@@ -27,6 +27,10 @@ sealed class Screen(val route: String) {
         fun createRoute(modelId: String) = "music_run/$modelId"
     }
 
+    object SpeechRun : Screen("speech_run/{modelId}") {
+        fun createRoute(modelId: String) = "speech_run/$modelId"
+    }
+
     object Upscale : Screen("upscale")
 
     object History : Screen("history")
