@@ -250,19 +250,21 @@ jobs:
 
           cd /workspace/app/src/main/cpp
           if [ "${REUSE_STABLE_NATIVE:-false}" = "true" ]; then
-            echo "Reusing unchanged alpha.58 Xet/image/DiT native artifacts; rebuilding YuE2 only."
+            echo "Reusing unchanged alpha.58 Xet/image/DiT native artifacts; rebuilding Breeze and YuE2."
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/libdit_engine.so
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
-            bash music/build.sh
+            # Build the newest/most failure-prone native feature first so CI fails fast.
             bash voice/build.sh
+            bash music/build.sh
           else
             # Full cold build when the verified bootstrap cache is unavailable.
+            # Build Breeze first so Hexagon integration errors surface immediately.
+            bash voice/build.sh
             bash /workspace/app/src/main/rust/xet_downloader/build.sh
             bash build.sh
             bash dit/build.sh
             bash music/build.sh
-            bash voice/build.sh
           fi
           CONTAINER_SCRIPT
 
