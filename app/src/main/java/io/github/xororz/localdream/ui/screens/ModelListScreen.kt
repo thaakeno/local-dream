@@ -94,6 +94,7 @@ import io.github.xororz.localdream.ui.components.BlockingProgressOverlay
 import io.github.xororz.localdream.ui.components.CatalogFilterMode
 import io.github.xororz.localdream.ui.components.CatalogSortMode
 import io.github.xororz.localdream.ui.components.ModelCatalogControls
+import io.github.xororz.localdream.ui.components.BreezeFamilyCard
 import io.github.xororz.localdream.ui.components.QwenFamilyCard
 import io.github.xororz.localdream.ui.components.Yue2FamilyCard
 import io.github.xororz.localdream.ui.components.filterAndSortCatalog
@@ -135,6 +136,7 @@ private sealed interface FamilyAssetDeleteTarget {
     data class QwenPrecision(val precision: String) : FamilyAssetDeleteTarget
     data class QwenAdapter(val adapter: String) : FamilyAssetDeleteTarget
     data class YueVariant(val model: Model) : FamilyAssetDeleteTarget
+    data class BreezeVariant(val model: Model) : FamilyAssetDeleteTarget
 }
 
 private fun getCleanFileName(uri: Uri): String {
@@ -1345,6 +1347,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 "Delete Viggle ${target.adapter}?"
             is FamilyAssetDeleteTarget.YueVariant ->
                 "Delete YuE2 ${target.model.variantPrecision}?"
+            is FamilyAssetDeleteTarget.BreezeVariant ->
+                "Delete Breeze ${target.model.variantPrecision}?"
         }
         val body = when (target) {
             is FamilyAssetDeleteTarget.QwenPrecision ->
@@ -1356,6 +1360,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             is FamilyAssetDeleteTarget.YueVariant ->
                 "This removes the downloaded ${target.model.approximateSize} YuE2 package. " +
                     "Other YuE2 precisions are untouched."
+            is FamilyAssetDeleteTarget.BreezeVariant ->
+                "This removes only the ${target.model.variantPrecision} Breeze model. " +
+                    "Other Breeze variants and speech history are untouched."
         }
 
         AlertDialog(
@@ -1382,6 +1389,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                             request.adapter,
                                         )
                                     is FamilyAssetDeleteTarget.YueVariant ->
+                                        request.model.deleteModel(context, keepHistory = true)
+                                    is FamilyAssetDeleteTarget.BreezeVariant ->
                                         request.model.deleteModel(context, keepHistory = true)
                                 }
                             }
@@ -1696,9 +1705,20 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 } else {
                     emptyList()
                 }
-                val standalone = if (qwenVariants.isNotEmpty() || yue2Variants.isNotEmpty()) {
+                val breezeVariants = if (page == 1 && !remoteActive) {
+                    rawModels.filter { it.catalogFamily == "breeze2" }
+                } else {
+                    emptyList()
+                }
+                val standalone = if (
+                    qwenVariants.isNotEmpty() ||
+                    yue2Variants.isNotEmpty() ||
+                    breezeVariants.isNotEmpty()
+                ) {
                     rawModels.filter {
-                        it.catalogFamily != "qwen21" && it.catalogFamily != "yue2"
+                        it.catalogFamily != "qwen21" &&
+                            it.catalogFamily != "yue2" &&
+                            it.catalogFamily != "breeze2"
                     }
                 } else {
                     rawModels
@@ -1716,7 +1736,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     when (catalogFilter) {
                         CatalogFilterMode.All, CatalogFilterMode.Dit -> true
                         CatalogFilterMode.Installed -> qwenVariants.any { it.isDownloaded }
-                        CatalogFilterMode.Music, CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
+                        CatalogFilterMode.Music, CatalogFilterMode.Voice,
+                        CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
                     }
                 val yue2Needle = catalogQuery.trim().lowercase(Locale.US)
                 val yue2Visible = yue2Variants.isNotEmpty() &&
@@ -1725,7 +1746,20 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     when (catalogFilter) {
                         CatalogFilterMode.All, CatalogFilterMode.Music -> true
                         CatalogFilterMode.Installed -> yue2Variants.any { it.isDownloaded }
-                        CatalogFilterMode.Dit, CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
+                        CatalogFilterMode.Dit, CatalogFilterMode.Voice,
+                        CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
+                    }
+                val breezeNeedle = catalogQuery.trim().lowercase(Locale.US)
+                val breezeVisible = breezeVariants.isNotEmpty() &&
+                    (breezeNeedle.isBlank() ||
+                        "breeze tts speech voice audio english chinese q8 q6 q4".contains(
+                            breezeNeedle,
+                        )) &&
+                    when (catalogFilter) {
+                        CatalogFilterMode.All, CatalogFilterMode.Voice -> true
+                        CatalogFilterMode.Installed -> breezeVariants.any { it.isDownloaded }
+                        CatalogFilterMode.Dit, CatalogFilterMode.Music,
+                        CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
                     }
 
                 LazyColumn(
@@ -1760,6 +1794,29 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 accent = true,
                                 onClick = { showCustomNpuModelDialog = true },
                                 modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+
+                    if (breezeVisible) {
+                        item(key = "breeze-family") {
+                            BreezeFamilyCard(
+                                variants = breezeVariants,
+                                onOpen = { model ->
+                                    navController.navigate(Screen.SpeechRun.createRoute(model.id))
+                                },
+                                onDownload = { model ->
+                                    showDownloadConfirm = model
+                                },
+                                onDelete = { model ->
+                                    familyAssetDeleteTarget =
+                                        FamilyAssetDeleteTarget.BreezeVariant(model)
+                                },
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = tween(Motion.DurationMedium),
+                                    fadeOutSpec = tween(Motion.DurationMedium),
+                                    placementSpec = Motion.springExpressiveSpatial(),
+                                ),
                             )
                         }
                     }
@@ -1882,7 +1939,13 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         )
                     }
 
-                    if (models.isEmpty() && !qwenVisible && !yue2Visible && modelRepository.isLoaded) {
+                    if (
+                        models.isEmpty() &&
+                        !qwenVisible &&
+                        !yue2Visible &&
+                        !breezeVisible &&
+                        modelRepository.isLoaded
+                    ) {
                         item {
                             var visible by remember { mutableStateOf(false) }
                             LaunchedEffect(Unit) { visible = true }
