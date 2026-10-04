@@ -189,7 +189,7 @@ static int op_col2im_1d_impl(struct htp_ops_context * octx, int has_bias) {
     }
 
     const uint32_t n_threads = MIN(
-        octx->ctx->n_threads,
+        octx->n_threads,
         (uint32_t) oc);
     if (n_threads == 0) return HTP_STATUS_INVAL_PARAMS;
 
