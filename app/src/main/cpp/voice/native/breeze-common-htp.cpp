@@ -1,5 +1,4 @@
 #include "breeze/common.h"
-#include "ggml-cpu.h"
 #include "ggml-hexagon.h"
 
 #include <cmath>
