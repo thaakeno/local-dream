@@ -1,45 +1,29 @@
 diff --git a/ggml/src/ggml-hexagon/htp/CMakeLists.txt b/ggml/src/ggml-hexagon/htp/CMakeLists.txt
 --- a/ggml/src/ggml-hexagon/htp/CMakeLists.txt
 +++ b/ggml/src/ggml-hexagon/htp/CMakeLists.txt
-@@ -31,6 +31,8 @@ set(HTP_OPS_SRCS
-     pad-ops.c
-     argsort-ops.c
-     im2col-ops.c
+@@ -42,1 +42,3 @@
 +    breeze-col2im-ops.c
 +    breeze-sin-ops.c
      roll-ops.c
-     allreduce-ops.c
- )
 diff --git a/ggml/src/ggml-hexagon/htp/htp-ops.h b/ggml/src/ggml-hexagon/htp/htp-ops.h
 --- a/ggml/src/ggml-hexagon/htp/htp-ops.h
 +++ b/ggml/src/ggml-hexagon/htp/htp-ops.h
-@@ -103,6 +103,8 @@ enum htp_op_code {
-     HTP_OP_ARGMAX,
-     HTP_OP_UNARY_GELU_ERF,
-     HTP_OP_GLU_GEGLU_ERF,
+@@ -118,1 +118,4 @@
 +    HTP_OP_SIN,
 +    HTP_OP_COL2IM_1D,
- 
++
      HTP_OP_INVALID
- };
 diff --git a/ggml/src/ggml-hexagon/htp/htp-ctx.h b/ggml/src/ggml-hexagon/htp/htp-ctx.h
 --- a/ggml/src/ggml-hexagon/htp/htp-ctx.h
 +++ b/ggml/src/ggml-hexagon/htp/htp-ctx.h
-@@ -150,6 +150,8 @@ int op_gated_delta_net(struct htp_ops_context * octx);
- int op_pad(struct htp_ops_context * octx);
- int op_im2col(struct htp_ops_context * octx);
+@@ -176,1 +176,3 @@
 +int op_col2im_1d(struct htp_ops_context * octx);
 +int op_sin(struct htp_ops_context * octx);
  int op_allreduce(struct htp_ops_context * octx);
- int op_roll(struct htp_ops_context * octx);
- 
 diff --git a/ggml/src/ggml-hexagon/htp/main.c b/ggml/src/ggml-hexagon/htp/main.c
 --- a/ggml/src/ggml-hexagon/htp/main.c
 +++ b/ggml/src/ggml-hexagon/htp/main.c
-@@ -918,6 +918,12 @@ static int execute_op(struct htp_ops_context * octx) {
-         case HTP_OP_IM2COL:
-             return op_im2col(octx);
- 
+@@ -931,1 +931,7 @@
 +        case HTP_OP_COL2IM_1D:
 +            return op_col2im_1d(octx);
 +
@@ -47,15 +31,10 @@ diff --git a/ggml/src/ggml-hexagon/htp/main.c b/ggml/src/ggml-hexagon/htp/main.c
 +            return op_sin(octx);
 +
          case HTP_OP_ROLL:
-             return op_roll(octx);
- 
 diff --git a/ggml/src/ggml-hexagon/ggml-hexagon.cpp b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
 --- a/ggml/src/ggml-hexagon/ggml-hexagon.cpp
 +++ b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
-@@ -6460,6 +6460,34 @@ static bool ggml_hexagon_supported_unary(const struct ggml_hexagon_session * ses
-     GGML_UNUSED(sess);
- }
- 
+@@ -6447,1 +6447,26 @@
 +static bool ggml_hexagon_supported_sin(const struct ggml_hexagon_session * sess, const struct ggml_tensor * op) {
 +    GGML_UNUSED(sess);
 +    const struct ggml_tensor * src = op->src[0];
@@ -74,9 +53,7 @@ diff --git a/ggml/src/ggml-hexagon/ggml-hexagon.cpp b/ggml/src/ggml-hexagon/ggml
 +    const int32_t stride = params[0];
 +    const int32_t oc = params[1];
 +    const int32_t padding = params[2];
-+    if (stride <= 0 || oc <= 0 || src->ne[0] % oc != 0) {
-+        return false;
-+    }
++    if (stride <= 0 || oc <= 0 || src->ne[0] % oc != 0) return false;
 +    const int64_t kernel = src->ne[0] / oc;
 +    const int64_t t_out = (src->ne[1] - 1) * stride + kernel - 2 * padding;
 +    return t_out > 0 && op->ne[0] == t_out && op->ne[1] == oc &&
@@ -84,43 +61,33 @@ diff --git a/ggml/src/ggml-hexagon/ggml-hexagon.cpp b/ggml/src/ggml-hexagon/ggml
 +}
 +
  static bool ggml_hexagon_supported_sum(const struct ggml_hexagon_session * sess, const struct ggml_tensor * op) {
-     const struct ggml_tensor * src0 = op->src[0];
-     const struct ggml_tensor * dst  = op;
-@@ -7077,6 +7105,7 @@ static enum htp_op_code op_remap_to_htp(const struct ggml_tensor * t) {
-         case GGML_OP_SCALE:           return HTP_OP_SCALE;
-         case GGML_OP_CLAMP:           return HTP_OP_CLAMP;
-         case GGML_OP_LEAKY_RELU:      return HTP_OP_LEAKY_RELU;
+diff --git a/ggml/src/ggml-hexagon/ggml-hexagon.cpp b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+--- a/ggml/src/ggml-hexagon/ggml-hexagon.cpp
++++ b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+@@ -7075,1 +7075,2 @@
 +        case GGML_OP_SIN:             return HTP_OP_SIN;
          case GGML_OP_SQR:             return HTP_OP_SQR;
-         case GGML_OP_SQRT:            return HTP_OP_SQRT;
-         case GGML_OP_LOG:             return HTP_OP_UNARY_LOG;
-@@ -7094,6 +7123,7 @@ static enum htp_op_code op_remap_to_htp(const struct ggml_tensor * t) {
-         case GGML_OP_TRI:             return HTP_OP_TRI;
-         case GGML_OP_PAD:             return HTP_OP_PAD;
-         case GGML_OP_IM2COL:          return HTP_OP_IM2COL;
+diff --git a/ggml/src/ggml-hexagon/ggml-hexagon.cpp b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+--- a/ggml/src/ggml-hexagon/ggml-hexagon.cpp
++++ b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+@@ -7093,1 +7093,2 @@
 +        case GGML_OP_COL2IM_1D:       return HTP_OP_COL2IM_1D;
          case GGML_OP_ROLL:            return HTP_OP_ROLL;
- 
-         case GGML_OP_UNARY:
-@@ -8135,6 +8165,10 @@ static bool ggml_backend_hexagon_device_supports_op(ggml_backend_dev_t dev, cons
-             supp = ggml_hexagon_supported_unary(sess, op);
-             break;
- 
+diff --git a/ggml/src/ggml-hexagon/ggml-hexagon.cpp b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+--- a/ggml/src/ggml-hexagon/ggml-hexagon.cpp
++++ b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+@@ -8143,1 +8143,5 @@
 +        case GGML_OP_SIN:
 +            supp = ggml_hexagon_supported_sin(sess, op);
 +            break;
 +
          case GGML_OP_SQR:
-         case GGML_OP_SQRT:
-         case GGML_OP_LOG:
-@@ -8235,6 +8269,10 @@ static bool ggml_backend_hexagon_device_supports_op(ggml_backend_dev_t dev, cons
-         case GGML_OP_IM2COL:
-             supp = ggml_hexagon_supported_im2col(sess, op);
-             break;
-+
+diff --git a/ggml/src/ggml-hexagon/ggml-hexagon.cpp b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+--- a/ggml/src/ggml-hexagon/ggml-hexagon.cpp
++++ b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+@@ -8244,1 +8244,5 @@
 +        case GGML_OP_COL2IM_1D:
 +            supp = ggml_hexagon_supported_col2im_1d(sess, op);
 +            break;
- 
-         case GGML_OP_ROLL:
-             supp = ggml_hexagon_supported_roll(sess, op);
++
+         case GGML_OP_GATED_DELTA_NET:
