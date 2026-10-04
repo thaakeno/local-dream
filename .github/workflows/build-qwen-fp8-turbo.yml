@@ -35,7 +35,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Checkout source
@@ -157,6 +157,7 @@ jobs:
             app/src/main/jniLibs/arm64-v8a
             app/src/main/assets/ditlibs
             app/src/main/assets/yue2libs
+            app/src/main/assets/breezelibs
             app/src/main/assets/qnnlibs
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
@@ -254,12 +255,14 @@ jobs:
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/libdit_engine.so
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
             bash music/build.sh
+            bash voice/build.sh
           else
             # Full cold build when the verified bootstrap cache is unavailable.
             bash /workspace/app/src/main/rust/xet_downloader/build.sh
             bash build.sh
             bash dit/build.sh
             bash music/build.sh
+            bash voice/build.sh
           fi
           CONTAINER_SCRIPT
 
@@ -273,6 +276,7 @@ jobs:
           test -s app/src/main/jniLibs/arm64-v8a/libyue2_server_fastrpc.so
           test -s app/src/main/jniLibs/arm64-v8a/libyue2_bench_dspqueue.so
           test -s app/src/main/jniLibs/arm64-v8a/libyue2_bench_fastrpc.so
+          test -s app/src/main/jniLibs/arm64-v8a/libbreeze_server.so
           test -s app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v79.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
@@ -298,8 +302,15 @@ jobs:
           grep -q 'dual-transport-bench' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'strict-accelerator' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'cpu_fallback=disabled' app/src/main/assets/yue2libs/backend-version.txt
+          for arch in v73 v75 v79 v81; do
+            test -s "app/src/main/assets/breezelibs/libggml-htp-$arch.so"
+          done
+          grep -q 'runtime_commit=a0e177f91242ebbd2ea8d61548d742c89e4b9e06' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'backend_commit=ab9acc4476cfe3add369379a3783fea190505a48' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'mode=strict-htp-only' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'fallback=disabled' app/src/main/assets/breezelibs/backend-version.txt
           test -s app/src/main/assets/qnnlibs/libQnnHtp.so
-          find app/src/main/jniLibs/arm64-v8a app/src/main/assets/ditlibs app/src/main/assets/yue2libs -maxdepth 1 -type f -ls
+          find app/src/main/jniLibs/arm64-v8a app/src/main/assets/ditlibs app/src/main/assets/yue2libs app/src/main/assets/breezelibs -maxdepth 1 -type f -ls
 
       - name: Save native artifacts cache
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -309,6 +320,7 @@ jobs:
             app/src/main/jniLibs/arm64-v8a
             app/src/main/assets/ditlibs
             app/src/main/assets/yue2libs
+            app/src/main/assets/breezelibs
             app/src/main/assets/qnnlibs
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
