@@ -129,6 +129,9 @@ data class Model(
     // distinct from ditKind prevents image-only resolution/edit assumptions
     // from leaking into music models.
     val musicKind: String = "",
+    // Native speech packages run through the strict Breeze Hexagon service.
+    // Kept separate from musicKind so speech never inherits YuE2 assumptions.
+    val voiceKind: String = "",
     // Optional marker written only after every package file is complete.
     // Image DiT models fall back to their legacy marker when this is blank.
     val packageMarker: String = "",
@@ -159,6 +162,7 @@ data class Model(
 ) {
     val isDit: Boolean get() = ditKind.isNotEmpty()
     val isMusic: Boolean get() = musicKind.isNotEmpty()
+    val isVoice: Boolean get() = voiceKind.isNotEmpty()
 
     // Per-field priority: code defaults > config.json > global defaults.
     val defaults: GenerationDefaults
@@ -179,6 +183,7 @@ data class Model(
     // Backend --type value; each type implies the full model file layout.
     val backendType: String
         get() = when {
+            isVoice -> voiceKind
             isMusic -> musicKind
             isDit -> ditKind
             isAnima -> "anima"
@@ -406,6 +411,31 @@ data class Model(
         val YUE2_Q6_PACKAGE_FILES = yue2Package("YuE2-3B-Q6_K.gguf")
         val YUE2_Q8_PACKAGE_FILES = yue2Package("YuE2-3B-Q8_0.gguf")
         val YUE2_BF16_PACKAGE_FILES = yue2Package("YuE2-3B-BF16.gguf")
+
+        // Breeze-TTS-2.cpp GGUF matrix. The Oct 3 ggml-hexagon backend used
+        // by Local Dream supports the K-quants used by the experimental depth
+        // variants, so every published HoppouAI variant can stay strict HTP.
+        private const val BREEZE_REPO =
+            "HoppouAI/Breeze-TTS-2.cpp/resolve/main/"
+
+        private fun breezePackage(fileName: String): List<String> = listOf(
+            BREEZE_REPO + fileName + "|model.gguf",
+        )
+
+        val BREEZE_F16_PACKAGE_FILES =
+            breezePackage("breeze-tts-2-f16.gguf")
+        val BREEZE_Q8_PACKAGE_FILES =
+            breezePackage("breeze-tts-2-q8_0.gguf")
+        val BREEZE_Q6_PACKAGE_FILES =
+            breezePackage("breeze-tts-2-q6_k.gguf")
+        val BREEZE_Q4_PACKAGE_FILES =
+            breezePackage("breeze-tts-2-q4_k.gguf")
+        val BREEZE_Q8_DD4_PACKAGE_FILES =
+            breezePackage("breeze-tts-2-q8_0-dd4.gguf")
+        val BREEZE_Q8_DD2_PACKAGE_FILES =
+            breezePackage("breeze-tts-2-q8_0-dd2.gguf")
+        val BREEZE_Q4_DD2_PACKAGE_FILES =
+            breezePackage("breeze-tts-2-q4_k-dd2.gguf")
 
         // The values are the raw nodes published by Viggle. The engine applies
         // Qwen/FlowMatch's resolution-dependent shift at runtime and appends the
@@ -804,6 +834,79 @@ class ModelRepository private constructor(private val context: Context) {
                     profile = "Native",
                 ))
             }
+            if (Model.isQualcommDevice()) {
+                add(
+                    createBreezeVariant(
+                        id = "breeze_tts2_q8",
+                        precision = "Q8_0",
+                        packageFiles = Model.BREEZE_Q8_PACKAGE_FILES,
+                        size = "3.57 GB",
+                        bytes = 3_570_000_000L,
+                        profile = "Recommended · near-lossless",
+                        recommended = true,
+                    ),
+                )
+                add(
+                    createBreezeVariant(
+                        id = "breeze_tts2_q6",
+                        precision = "Q6_K",
+                        packageFiles = Model.BREEZE_Q6_PACKAGE_FILES,
+                        size = "3.07 GB",
+                        bytes = 3_070_000_000L,
+                        profile = "Balanced",
+                    ),
+                )
+                add(
+                    createBreezeVariant(
+                        id = "breeze_tts2_q4",
+                        precision = "Q4_K",
+                        packageFiles = Model.BREEZE_Q4_PACKAGE_FILES,
+                        size = "2.54 GB",
+                        bytes = 2_540_000_000L,
+                        profile = "Compact · safe",
+                    ),
+                )
+                add(
+                    createBreezeVariant(
+                        id = "breeze_tts2_f16",
+                        precision = "F16",
+                        packageFiles = Model.BREEZE_F16_PACKAGE_FILES,
+                        size = "6.28 GB",
+                        bytes = 6_280_000_000L,
+                        profile = "Reference quality",
+                    ),
+                )
+                add(
+                    createBreezeVariant(
+                        id = "breeze_tts2_q8_dd4",
+                        precision = "Q8_0 · DD4",
+                        packageFiles = Model.BREEZE_Q8_DD4_PACKAGE_FILES,
+                        size = "3.40 GB",
+                        bytes = 3_400_000_000L,
+                        profile = "Experimental · faster depth",
+                    ),
+                )
+                add(
+                    createBreezeVariant(
+                        id = "breeze_tts2_q8_dd2",
+                        precision = "Q8_0 · DD2",
+                        packageFiles = Model.BREEZE_Q8_DD2_PACKAGE_FILES,
+                        size = "3.32 GB",
+                        bytes = 3_320_000_000L,
+                        profile = "Experimental · short speech",
+                    ),
+                )
+                add(
+                    createBreezeVariant(
+                        id = "breeze_tts2_q4_dd2",
+                        precision = "Q4_K · DD2",
+                        packageFiles = Model.BREEZE_Q4_DD2_PACKAGE_FILES,
+                        size = "2.46 GB",
+                        bytes = 2_460_000_000L,
+                        profile = "Experimental · smallest",
+                    ),
+                )
+            }
             if (isSdxlCapableSoc(getDeviceSoc())) {
                 add(createIllustriousV16Model())
                 add(createIllustriousV16Dmd2Model())
@@ -936,6 +1039,39 @@ class ModelRepository private constructor(private val context: Context) {
             recommendedVariant = recommended,
         )
     }
+
+    private fun createBreezeVariant(
+        id: String,
+        precision: String,
+        packageFiles: List<String>,
+        size: String,
+        bytes: Long,
+        profile: String,
+        recommended: Boolean = false,
+    ): Model = Model(
+        id = id,
+        name = "Breeze TTS 2 · $precision",
+        description = "$profile · 24 kHz · English + Mandarin · strict Hexagon HTP",
+        baseUrl = baseUrl,
+        packageFiles = packageFiles,
+        packageMarker = "BREEZE_TTS_2",
+        approximateSize = size,
+        isDownloaded = Model.isPackageDownloaded(
+            context,
+            id,
+            "BREEZE_TTS_2",
+            packageFiles,
+        ),
+        runOnCpu = false,
+        voiceKind = "breeze2",
+        catalogFamily = "breeze2",
+        variantPrecision = precision,
+        variantFormat = "GGUF",
+        variantProfile = profile,
+        modelBytes = bytes,
+        downloadBytesEstimate = bytes,
+        recommendedVariant = recommended,
+    )
 
     private fun createQwenVariant(
         id: String,
@@ -1439,7 +1575,7 @@ class ModelRepository private constructor(private val context: Context) {
                         val isDownloaded = when {
                             model.catalogFamily == "qwen21" ->
                                 QwenFamilyStorage.isPackageReady(context, model.packageFiles)
-                            model.isMusic ->
+                            model.isMusic || model.isVoice ->
                                 Model.isPackageDownloaded(
                                     context,
                                     modelId,
@@ -1497,6 +1633,9 @@ class ModelRepository private constructor(private val context: Context) {
             "qwen_image_2_1_q8_viggle_r256", "qwen_image_2_1_fp8_viggle_r128",
             // Music
             "yue2_3b_q5km", "yue2_3b_q6k", "yue2_3b_q8", "yue2_3b_bf16",
+            // Speech
+            "breeze_tts2_q8", "breeze_tts2_q6", "breeze_tts2_q4", "breeze_tts2_f16",
+            "breeze_tts2_q8_dd4", "breeze_tts2_q8_dd2", "breeze_tts2_q4_dd2",
         )
 
         fun isReservedModelId(id: String): Boolean = id in RESERVED_MODEL_IDS
