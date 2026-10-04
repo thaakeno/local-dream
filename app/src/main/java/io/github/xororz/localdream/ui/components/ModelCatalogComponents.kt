@@ -88,6 +88,7 @@ enum class CatalogFilterMode(val label: String) {
     Installed("Installed"),
     Dit("DiT"),
     Music("Music"),
+    Voice("Voice"),
     Sdxl("SDXL"),
     Custom("Custom"),
 }
@@ -108,6 +109,7 @@ fun filterAndSortCatalog(
             CatalogFilterMode.Installed -> model.isDownloaded
             CatalogFilterMode.Dit -> model.isDit
             CatalogFilterMode.Music -> model.isMusic
+            CatalogFilterMode.Voice -> model.isVoice
             CatalogFilterMode.Sdxl -> model.isSdxl
             CatalogFilterMode.Custom -> model.isCustom
         }
@@ -245,18 +247,25 @@ private fun AnimatedFamilyHero(
     subtitle: String,
     badge: String,
     music: Boolean,
+    voice: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val gradient = if (music) {
-        Brush.linearGradient(
+    val gradient = when {
+        voice -> Brush.linearGradient(
+            listOf(
+                Color(0xFF092D33),
+                Color(0xFF126A73),
+                Color(0xFF2AA9A5),
+            ),
+        )
+        music -> Brush.linearGradient(
             listOf(
                 Color(0xFF351344),
                 Color(0xFF713069),
                 Color(0xFFB84D81),
             ),
         )
-    } else {
-        Brush.linearGradient(
+        else -> Brush.linearGradient(
             listOf(
                 Color(0xFF071D45),
                 Color(0xFF0A4A9F),
@@ -283,7 +292,14 @@ private fun AnimatedFamilyHero(
                     color = Color.White.copy(alpha = 0.12f),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
                 ) {
-                    if (music) {
+                    if (voice) {
+                        Icon(
+                            Icons.Default.GraphicEq,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.padding(13.dp),
+                        )
+                    } else if (music) {
                         AnimatedMusicMark(Modifier.padding(11.dp))
                     } else {
                         Icon(
@@ -324,10 +340,10 @@ private fun AnimatedFamilyHero(
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                val capabilities = if (music) {
-                    listOf("Q8", "BF16", "48 kHz")
-                } else {
-                    listOf("Q4", "Q8", "FP8", "Viggle")
+                val capabilities = when {
+                    voice -> listOf("Q8", "Q6", "Q4", "24 kHz")
+                    music -> listOf("Q8", "BF16", "48 kHz")
+                    else -> listOf("Q4", "Q8", "FP8", "Viggle")
                 }
                 capabilities.forEach { label ->
                     Surface(
@@ -1246,6 +1262,293 @@ private fun Yue2VariantSheet(
                         "Download ${selected.approximateSize}"
                     },
                 )
+            }
+        }
+    }
+}
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun BreezeFamilyCard(
+    variants: List<Model>,
+    onOpen: (Model) -> Unit,
+    onDownload: (Model) -> Unit,
+    onDelete: (Model) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (variants.isEmpty()) return
+
+    val context = LocalContext.current
+    val order = listOf(
+        "Q8_0",
+        "Q6_K",
+        "Q4_K",
+        "F16",
+        "Q8_0 · DD4",
+        "Q8_0 · DD2",
+        "Q4_K · DD2",
+    )
+    val sorted = variants.sortedBy {
+        order.indexOf(it.variantPrecision).let { index ->
+            if (index < 0) Int.MAX_VALUE else index
+        }
+    }
+    val initial = sorted.firstOrNull { it.recommendedVariant }
+        ?: sorted.firstOrNull { it.isDownloaded }
+        ?: sorted.first()
+    var selectedId by remember(sorted) { mutableStateOf(initial.id) }
+    var showSheet by remember { mutableStateOf(false) }
+    val selected = sorted.firstOrNull { it.id == selectedId } ?: initial
+    val installed = sorted.count { it.isDownloaded }
+
+    ElevatedCard(
+        onClick = {
+            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+            showSheet = true
+        },
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
+    ) {
+        Column {
+            AnimatedFamilyHero(
+                title = "Breeze TTS 2",
+                subtitle = "Voice design · strict Hexagon HTP",
+                badge = if (installed > 0) installed.toString() + " ready" else "HTP only",
+                music = false,
+                voice = true,
+            )
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 18.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min)
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        if (selected.isDownloaded) "Ready to speak" else "Recommended",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        selected.variantPrecision + " · " + selected.variantProfile,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                VerticalDivider(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .padding(vertical = 2.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                )
+                TextButton(
+                    onClick = { showSheet = true },
+                    modifier = Modifier.padding(start = 8.dp),
+                ) {
+                    Icon(Icons.Default.Tune, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Configure")
+                }
+            }
+        }
+    }
+
+    if (showSheet) {
+        ModalBottomSheet(onDismissRequest = { showSheet = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 18.dp)
+                    .padding(bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                AnimatedFamilyHero(
+                    title = "Breeze TTS 2",
+                    subtitle = "English + Mandarin · 24 kHz · no fallback",
+                    badge = "7 variants",
+                    music = false,
+                    voice = true,
+                )
+
+                Text(
+                    "Quality models",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                sorted.filterNot { "DD" in it.variantPrecision }
+                    .chunked(2)
+                    .forEach { row ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            row.forEach { variant ->
+                                FamilyVariantTile(
+                                    selected = selected.id == variant.id,
+                                    installed = variant.isDownloaded,
+                                    title = variant.variantPrecision,
+                                    subtitle = variant.variantProfile + " · " +
+                                        variant.approximateSize,
+                                    icon = if (variant.recommendedVariant) {
+                                        Icons.Default.GraphicEq
+                                    } else {
+                                        Icons.Default.Memory
+                                    },
+                                    onClick = { selectedId = variant.id },
+                                    onLongClick = if (variant.isDownloaded) {
+                                        { onDelete(variant) }
+                                    } else {
+                                        null
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (row.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
+
+                Text(
+                    "Experimental depth quants",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "Faster/smaller for short dialogue. The quantized depth decoder can lose high-frequency detail over long continuous narration.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                sorted.filter { "DD" in it.variantPrecision }
+                    .chunked(2)
+                    .forEach { row ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            row.forEach { variant ->
+                                FamilyVariantTile(
+                                    selected = selected.id == variant.id,
+                                    installed = variant.isDownloaded,
+                                    title = variant.variantPrecision,
+                                    subtitle = variant.variantProfile + " · " +
+                                        variant.approximateSize,
+                                    icon = Icons.Default.Speed,
+                                    onClick = { selectedId = variant.id },
+                                    onLongClick = if (variant.isDownloaded) {
+                                        { onDelete(variant) }
+                                    } else {
+                                        null
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (row.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
+
+                val current = sorted.firstOrNull { it.id == selectedId } ?: selected
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Breeze TTS 2 · " + current.variantPrecision,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    current.variantProfile,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (current.isDownloaded) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = "Installed",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FamilyStatusPill("Strict HTP", true)
+                            FamilyStatusPill("GGUF")
+                            FamilyStatusPill("24 kHz")
+                        }
+                        Text(
+                            when (current.variantPrecision) {
+                                "Q8_0" ->
+                                    "Recommended. Near-lossless against F16 while keeping the full depth decoder at Q8."
+                                "Q6_K" ->
+                                    "Balanced memory and quality with the full depth decoder preserved."
+                                "Q4_K" ->
+                                    "Smallest normal model. Good mobile footprint without the experimental depth quant."
+                                "F16" ->
+                                    "Reference-quality model with the highest memory requirement."
+                                else ->
+                                    "Experimental depth-quantized build intended for faster short utterances."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                "Download",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                current.approximateSize,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        showSheet = false
+                        if (current.isDownloaded) onOpen(current) else onDownload(current)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.large,
+                ) {
+                    Icon(
+                        if (current.isDownloaded) {
+                            Icons.Default.GraphicEq
+                        } else {
+                            Icons.Default.CloudDownload
+                        },
+                        contentDescription = null,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (current.isDownloaded) {
+                            "Open text to speech"
+                        } else {
+                            "Download " + current.variantPrecision + " · " +
+                                current.approximateSize
+                        },
+                    )
+                }
             }
         }
     }
