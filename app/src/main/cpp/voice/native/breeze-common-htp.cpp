@@ -9,11 +9,19 @@ namespace breeze {
 
 void Backend::init(bool prefer_gpu) {
     (void) prefer_gpu;
-    backend = ggml_backend_hexagon_init();
+    ggml_backend_reg_t reg = ggml_backend_hexagon_reg();
+    if (!reg || ggml_backend_reg_dev_count(reg) == 0) {
+        throw std::runtime_error(
+            "Local Dream Breeze requires Qualcomm Hexagon HTP; Hexagon registry initialization failed"
+        );
+    }
+
+    ggml_backend_dev_t dev = ggml_backend_reg_dev_get(reg, 0);
+    backend = dev ? ggml_backend_dev_init(dev, nullptr) : nullptr;
     is_gpu = backend != nullptr;
     if (!backend) {
         throw std::runtime_error(
-            "Local Dream Breeze requires Qualcomm Hexagon HTP; HTP initialization failed and fallback is disabled"
+            "Local Dream Breeze requires Qualcomm Hexagon HTP; HTP0 initialization failed and fallback is disabled"
         );
     }
     alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
