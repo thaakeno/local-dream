@@ -33,7 +33,7 @@ set(BREEZE_SOURCES
     "${BREEZE_SOURCE_DIR}/src/backbone.cpp"
     "${BREEZE_SOURCE_DIR}/src/depth_decoder.cpp"
     "${BREEZE_SOURCE_DIR}/src/codec.cpp"
-    "${BREEZE_SOURCE_DIR}/src/codec_conv.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-codec-conv-htp.cpp"
     "${BREEZE_SOURCE_DIR}/src/codec_decoder.cpp"
     "${BREEZE_SOURCE_DIR}/src/codec_transformer.cpp"
     "${BREEZE_SOURCE_DIR}/src/sampling.cpp"
