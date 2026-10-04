@@ -43,8 +43,8 @@ android {
         minSdk = 28
 //        minSdk = 31
         targetSdk = 36
-        versionCode = 141
-        versionName = "3.0.0-alpha.63-yue2fast.5"
+        versionCode = 145
+        versionName = "3.0.0-alpha.63-v141yue2.1"
 
         buildConfigField("String", "GIT_SHA", buildConfigString(buildGitSha))
         buildConfigField("String", "GIT_BRANCH", buildConfigString(buildGitBranch))
@@ -137,7 +137,7 @@ androidComponents {
         variant.outputs.forEach { output ->
             val versionName = output.versionName.orNull
             if (output is com.android.build.api.variant.impl.VariantOutputImpl) {
-                output.outputFileName.set("LocalDream_YuE2_Fast_$versionName.apk")
+                output.outputFileName.set("LocalDream_armv8a_$versionName.apk")
             }
         }
     }

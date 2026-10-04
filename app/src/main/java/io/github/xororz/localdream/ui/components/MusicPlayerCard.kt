@@ -58,30 +58,75 @@ fun MusicPlayerCard(
     subtitle: String,
     modifier: Modifier = Modifier,
 ) {
-    val player = remember(file.absolutePath) {
-        MediaPlayer().apply {
-            setDataSource(file.absolutePath)
-            prepare()
-        }
-    }
-    var playing by remember(player) { mutableStateOf(false) }
-    var position by remember(player) { mutableIntStateOf(0) }
-    val duration = remember(player) { player.duration.coerceAtLeast(1) }
+    var player by remember(file.absolutePath) { mutableStateOf<MediaPlayer?>(null) }
+    var preparing by remember(file.absolutePath) { mutableStateOf(false) }
+    var prepared by remember(file.absolutePath) { mutableStateOf(false) }
+    var playing by remember(file.absolutePath) { mutableStateOf(false) }
+    var position by remember(file.absolutePath) { mutableIntStateOf(0) }
+    var duration by remember(file.absolutePath) { mutableIntStateOf(1) }
 
-    DisposableEffect(player) {
-        player.setOnCompletionListener {
+    fun releasePlayer() {
+        player?.let { current ->
+            runCatching { current.stop() }
+            runCatching { current.reset() }
+            current.release()
+        }
+        player = null
+        preparing = false
+        prepared = false
+        playing = false
+        position = 0
+        duration = 1
+    }
+
+    fun ensurePreparedAndPlay() {
+        val current = player
+        if (prepared && current != null) {
+            if (position >= duration - 200) {
+                current.seekTo(0)
+                position = 0
+            }
+            current.start()
+            playing = true
+            return
+        }
+        if (preparing) return
+
+        preparing = true
+        val created = MediaPlayer()
+        player = created
+        created.setOnPreparedListener { ready ->
+            duration = ready.duration.coerceAtLeast(1)
+            prepared = true
+            preparing = false
+            ready.start()
+            playing = true
+        }
+        created.setOnCompletionListener {
             playing = false
             position = 0
         }
-        onDispose {
-            runCatching { player.stop() }
-            player.release()
+        created.setOnErrorListener { _, _, _ ->
+            preparing = false
+            prepared = false
+            playing = false
+            true
         }
+        runCatching {
+            created.setDataSource(file.absolutePath)
+            created.prepareAsync()
+        }.onFailure {
+            releasePlayer()
+        }
+    }
+
+    DisposableEffect(file.absolutePath) {
+        onDispose { releasePlayer() }
     }
 
     LaunchedEffect(playing, player) {
         while (playing) {
-            position = runCatching { player.currentPosition }.getOrDefault(position)
+            position = runCatching { player?.currentPosition ?: position }.getOrDefault(position)
             delay(120)
         }
     }
@@ -116,29 +161,35 @@ fun MusicPlayerCard(
                         title,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
                     )
                     Text(
                         subtitle,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
                     )
+                    if (preparing) {
+                        Text(
+                            "Preparing playback…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
                 Surface(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.primary,
                 ) {
                     IconButton(
+                        enabled = !preparing,
                         onClick = {
-                            if (playing) {
-                                player.pause()
+                            val current = player
+                            if (playing && current != null) {
+                                current.pause()
                                 playing = false
                             } else {
-                                if (position >= duration - 200) {
-                                    player.seekTo(0)
-                                    position = 0
-                                }
-                                player.start()
-                                playing = true
+                                ensurePreparedAndPlay()
                             }
                         },
                     ) {
@@ -160,9 +211,12 @@ fun MusicPlayerCard(
             Slider(
                 value = position.coerceIn(0, duration).toFloat(),
                 onValueChange = {
-                    position = it.toInt()
-                    player.seekTo(position)
+                    if (prepared) {
+                        position = it.toInt()
+                        player?.seekTo(position)
+                    }
                 },
+                enabled = prepared,
                 valueRange = 0f..duration.toFloat(),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -179,19 +233,17 @@ fun MusicPlayerCard(
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
+                        enabled = prepared,
                         onClick = {
-                            player.seekTo(0)
+                            player?.seekTo(0)
                             position = 0
-                            if (!playing) {
-                                player.start()
-                                playing = true
-                            }
+                            if (!playing) ensurePreparedAndPlay()
                         },
                     ) {
                         Icon(Icons.Default.Replay, contentDescription = "Replay")
                     }
                     Text(
-                        formatTime(duration),
+                        if (prepared) formatTime(duration) else "--:--",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

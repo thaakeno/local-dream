@@ -35,12 +35,14 @@ replace_once(
     "# yue-server: HTTP server (single slot job queue + embedded webui)",
     """# Local Dream: representative HTP transport benchmark. The identical graph
 # is compiled against either DSPQueue or FastRPC/mempool for a fair on-device A/B.
-add_executable(yue-transport-bench tools/yue-transport-bench.cpp)
-link_ggml_backends(yue-transport-bench)
-if(GGML_HEXAGON_USE_MEMPOOL)
-    target_compile_definitions(yue-transport-bench PRIVATE YUE2_TRANSPORT_FASTRPC=1)
-else()
-    target_compile_definitions(yue-transport-bench PRIVATE YUE2_TRANSPORT_FASTRPC=0)
+if(EXISTS "${CMAKE_SOURCE_DIR}/tools/yue-transport-bench.cpp")
+    add_executable(yue-transport-bench tools/yue-transport-bench.cpp)
+    link_ggml_backends(yue-transport-bench)
+    if(GGML_HEXAGON_USE_MEMPOOL)
+        target_compile_definitions(yue-transport-bench PRIVATE YUE2_TRANSPORT_FASTRPC=1)
+    else()
+        target_compile_definitions(yue-transport-bench PRIVATE YUE2_TRANSPORT_FASTRPC=0)
+    endif()
 endif()
 
 # yue-server: HTTP server (single slot job queue + embedded webui)""",
@@ -51,6 +53,8 @@ shutil.copy2(overlay / "sin-ops.c", htp / "sin-ops.c")
 shutil.copy2(overlay / "col2im-ops.c", htp / "col2im-ops.c")
 shutil.copy2(overlay / "snake-ops.c", htp / "snake-ops.c")
 shutil.copy2(overlay / "channel-bcast-add-ops.c", htp / "channel-bcast-add-ops.c")
+shutil.copy2(overlay / "instrumental-transfer.h", yue / "src/instrumental-transfer.h")
+shutil.copy2(overlay / "ar-lora.h", yue / "src/ar-lora.h")
 
 replace_once(
     htp / "CMakeLists.txt",
@@ -664,6 +668,753 @@ qtext = qtext.replace(
 qwen.write_text(qtext)
 
 
+# Official YuE2 instrumental path: plan normally, then move Vocal melody
+# into the Ins lane before semantic generation. This mirrors the released
+# yue2-music skill instead of relying on a negative prompt alone.
+pipeline_h = yue / "src/pipeline.h"
+replace_once(
+    pipeline_h,
+    """#include "request.h"
+""",
+    """#include "request.h"
+#include "instrumental-transfer.h"
+""",
+    "instrumental transfer include",
+)
+
+replace_once(
+    pipeline_h,
+    """    if (r.steps < 1 || r.lm_batch_size < 1 || r.synth_batch_size < 1) {
+        fprintf(stderr, "[Pipeline] FATAL: steps and batch sizes must be positive\\n");
+        return false;
+    }
+""",
+    """    if (r.steps < 1 || r.lm_batch_size < 1 || r.synth_batch_size < 1) {
+        fprintf(stderr, "[Pipeline] FATAL: steps and batch sizes must be positive\\n");
+        return false;
+    }
+    if (r.instrumental && cot == YUE2_COT_OFF) {
+        fprintf(stderr, "[Pipeline] FATAL: instrumental mode requires melody/full planning\\n");
+        return false;
+    }
+    if (r.instrumental && !r.lyrics.empty()) {
+        fprintf(stderr, "[Pipeline] FATAL: instrumental mode requires empty lyrics\\n");
+        return false;
+    }
+""",
+    "instrumental validation",
+)
+
+replace_once(
+    pipeline_h,
+    """        std::vector<int>            open = yue2_build_prompt_ids(encode, cot, r.style, r.lyrics, nullptr);
+        std::vector<Yue2Generation> plans;""",
+    """        const std::string planning_style = r.instrumental
+            ? localdream_instrumental_style(r.style)
+            : r.style;
+        const std::string planning_lyrics = r.instrumental && r.lyrics.empty()
+            ? localdream_instrumental_plan_tags((double) r.duration)
+            : r.lyrics;
+        std::vector<int>            open =
+            yue2_build_prompt_ids(encode, cot, planning_style, planning_lyrics, nullptr);
+        std::vector<Yue2Generation> plans;""",
+    "instrumental planner prompt",
+)
+
+replace_once(
+    pipeline_h,
+    """    std::vector<std::vector<int>> prefixes(B);
+    for (int i = 0; i < B; i++) {
+        prefixes[i] = yue2_build_prompt_ids(encode, cot, r.style, r.lyrics, has_score ? &abc_ids[i] : nullptr);
+    }
+""",
+    """    if (r.instrumental && has_score) {
+        for (int i = 0; i < B; ++i) {
+            try {
+                scores[i] = localdream_instrumental_transfer_abc(
+                    scores[i], truncated[i], (double) r.duration);
+            } catch (const std::exception & e) {
+                fprintf(stderr, "[Instrumental] FATAL: score transfer failed: %s\\n", e.what());
+                return false;
+            }
+            abc_ids[i] = encode(scores[i]);
+            fprintf(stderr, "[Instrumental] Song %d: Vocal melody transferred to Ins before semantic inference\\n", i);
+        }
+    }
+
+    const std::string effective_style = r.instrumental
+        ? localdream_instrumental_style(r.style)
+        : r.style;
+
+    std::vector<std::vector<int>> prefixes(B);
+    for (int i = 0; i < B; i++) {
+        const std::string effective_lyrics = r.instrumental && has_score
+            ? localdream_instrumental_lyric_tags(scores[i])
+            : r.lyrics;
+        prefixes[i] = yue2_build_prompt_ids(
+            encode, cot, effective_style, effective_lyrics,
+            has_score ? &abc_ids[i] : nullptr);
+    }
+""",
+    "instrumental score transfer",
+)
+
+qwen_enc = yue / "src/qwen3-enc.h"
+qwen_lm = yue / "src/qwen3-lm.h"
+
+# Functional AR LoRA. Base quantized weights remain immutable and each
+# adapter projection evaluates W*x + scale*B*(A*x) on the same HTP backend.
+replace_once(
+    qwen_enc,
+    """#include "gguf-weights.h"
+""",
+    """#include "gguf-weights.h"
+#include "ar-lora.h"
+""",
+    "AR LoRA include",
+)
+
+replace_once(
+    qwen_enc,
+    """    struct ggml_tensor * down_proj;  // [FFN, H]
+};""",
+    """    struct ggml_tensor * down_proj;  // [FFN, H]
+
+    Yue2LoraPair lora_q;
+    Yue2LoraPair lora_k;
+    Yue2LoraPair lora_v;
+    Yue2LoraPair lora_o;
+    Yue2LoraPair lora_gate;
+    Yue2LoraPair lora_up;
+    Yue2LoraPair lora_down;
+    bool lora_enabled = false;
+};""",
+    "AR LoRA layer bindings",
+)
+
+replace_once(
+    qwen_enc,
+    """static struct ggml_tensor * qwen3_build_mlp(struct ggml_context * ctx,
+                                            Qwen3Layer *          ly,
+                                            struct ggml_tensor *  x,  // [H, S]
+                                            int                   S) {
+    (void) S;
+    struct ggml_tensor * ff;
+    if (ly->gate_up) {
+        struct ggml_tensor * gu = qwen3_linear(ctx, ly->gate_up, x);
+        ff                      = ggml_swiglu(ctx, gu);
+    } else {
+        struct ggml_tensor * gate = qwen3_linear(ctx, ly->gate_proj, x);
+        struct ggml_tensor * up   = qwen3_linear(ctx, ly->up_proj, x);
+        ff                        = ggml_swiglu_split(ctx, gate, up);
+    }
+    return qwen3_linear(ctx, ly->down_proj, ff);
+}""",
+    """static struct ggml_tensor * qwen3_build_mlp(struct ggml_context * ctx,
+                                            Qwen3Layer *          ly,
+                                            struct ggml_tensor *  x,  // [H, S]
+                                            int                   S) {
+    struct ggml_tensor * ff;
+    if (ly->gate_up) {
+        struct ggml_tensor * gu = qwen3_linear(ctx, ly->gate_up, x);
+        if (ly->lora_enabled &&
+            (yue2_lora_pair_ready(ly->lora_gate) || yue2_lora_pair_ready(ly->lora_up))) {
+            const int64_t F = gu->ne[0] / 2;
+            struct ggml_tensor * gate = ggml_view_2d(ctx, gu, F, S, gu->nb[1], 0);
+            struct ggml_tensor * up = ggml_view_2d(ctx, gu, F, S, gu->nb[1], (size_t) F * gu->nb[0]);
+            gate = yue2_lora_apply(ctx, gate, ly->lora_gate, x, true);
+            up = yue2_lora_apply(ctx, up, ly->lora_up, x, true);
+            ff = ggml_swiglu_split(ctx, gate, up);
+        } else {
+            ff = ggml_swiglu(ctx, gu);
+        }
+    } else {
+        struct ggml_tensor * gate = qwen3_linear(ctx, ly->gate_proj, x);
+        struct ggml_tensor * up   = qwen3_linear(ctx, ly->up_proj, x);
+        gate = yue2_lora_apply(ctx, gate, ly->lora_gate, x, ly->lora_enabled);
+        up = yue2_lora_apply(ctx, up, ly->lora_up, x, ly->lora_enabled);
+        ff = ggml_swiglu_split(ctx, gate, up);
+    }
+    struct ggml_tensor * out = qwen3_linear(ctx, ly->down_proj, ff);
+    return yue2_lora_apply(ctx, out, ly->lora_down, ff, ly->lora_enabled);
+}""",
+    "AR LoRA MLP",
+)
+
+replace_once(
+    qwen_lm,
+    """    WeightCtx            wctx;
+    ggml_backend_t       backend;""",
+    """    WeightCtx            wctx;
+    WeightCtx            lora_wctx;
+    bool                 lora_loaded;
+    bool                 lora_enabled;
+    ggml_backend_t       backend;""",
+    "AR LoRA model storage",
+)
+
+replace_once(
+    qwen_lm,
+    """    wctx_alloc(&m->wctx, m->backend);
+    gf_close(&gf);
+
+    // Persistent graph arenas""",
+    """    wctx_alloc(&m->wctx, m->backend);
+    gf_close(&gf);
+
+    const char * lora_path = getenv("YUE2_AR_LORA");
+    if (lora_path && lora_path[0]) {
+        GGUFModel lf;
+        if (!gf_load(&lf, lora_path)) {
+            fprintf(stderr, "[AR-LoRA] FATAL: cannot load %s\\n", lora_path);
+            return false;
+        }
+        if (strcmp(gf_get_str(lf, "general.architecture"), "yue2_lora") != 0 ||
+            strcmp(gf_get_str(lf, "yue2.component"), "generation-adapter") != 0 ||
+            strcmp(gf_get_str(lf, "yue2.adapter.type"), "lora") != 0) {
+            fprintf(stderr, "[AR-LoRA] FATAL: incompatible adapter metadata\\n");
+            gf_close(&lf);
+            return false;
+        }
+        const int64_t rank_key = gguf_find_key(lf.gguf, "yue2.adapter.rank");
+        const int64_t alpha_key = gguf_find_key(lf.gguf, "yue2.adapter.alpha");
+        if (rank_key < 0 || alpha_key < 0) {
+            fprintf(stderr, "[AR-LoRA] FATAL: rank/alpha metadata missing\\n");
+            gf_close(&lf);
+            return false;
+        }
+        const uint32_t rank = gguf_get_val_u32(lf.gguf, rank_key);
+        const float alpha = gguf_get_val_f32(lf.gguf, alpha_key);
+        if (rank == 0 || !isfinite(alpha) || alpha <= 0.0f) {
+            fprintf(stderr, "[AR-LoRA] FATAL: invalid rank/alpha\\n");
+            gf_close(&lf);
+            return false;
+        }
+        const float scale = alpha / (float) rank;
+
+        wctx_init(&m->lora_wctx, c.n_layers * 14 + 8);
+        bool complete = true;
+        for (int i = 0; i < c.n_layers; ++i) {
+            char pfx[128];
+            snprintf(pfx, sizeof(pfx), "model.layers.%d", i);
+            Qwen3Layer & ly = m->layers[i];
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".self_attn.q_proj", &ly.lora_q, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".self_attn.k_proj", &ly.lora_k, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".self_attn.v_proj", &ly.lora_v, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".self_attn.o_proj", &ly.lora_o, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".mlp.gate_proj", &ly.lora_gate, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".mlp.up_proj", &ly.lora_up, scale);
+            complete &= yue2_lora_load_pair(&m->lora_wctx, lf, std::string(pfx) + ".mlp.down_proj", &ly.lora_down, scale);
+        }
+        if (!complete || !wctx_alloc(&m->lora_wctx, m->backend)) {
+            fprintf(stderr, "[AR-LoRA] FATAL: adapter targets incomplete or allocation failed\\n");
+            gf_close(&lf);
+            return false;
+        }
+        gf_close(&lf);
+        m->lora_loaded = true;
+        fprintf(stderr, "[AR-LoRA] Loaded instrumental adapter: rank=%u alpha=%.6g scale=%.6g, %d layers\\n",
+                rank, (double) alpha, (double) scale, c.n_layers);
+    }
+
+    // Persistent graph arenas""",
+    "AR LoRA load",
+)
+
+replace_once(
+    qwen_lm,
+    """    // Reshape to heads: [X*D, S] -> [D, X, S]
+    q = ggml_reshape_3d(ctx, q, D, Nh, S);""",
+    """    q = yue2_lora_apply(ctx, q, ly->lora_q, x, ly->lora_enabled);
+    k = yue2_lora_apply(ctx, k, ly->lora_k, x, ly->lora_enabled);
+    v = yue2_lora_apply(ctx, v, ly->lora_v, x, ly->lora_enabled);
+
+    // Reshape to heads: [X*D, S] -> [D, X, S]
+    q = ggml_reshape_3d(ctx, q, D, Nh, S);""",
+    "AR LoRA prefill QKV",
+)
+
+replace_once(
+    qwen_lm,
+    """    // O projection
+    return qwen3_linear(ctx, ly->o_proj, attn);
+}""",
+    """    // O projection
+    struct ggml_tensor * out = qwen3_linear(ctx, ly->o_proj, attn);
+    return yue2_lora_apply(ctx, out, ly->lora_o, attn, ly->lora_enabled);
+}""",
+    "AR LoRA prefill O",
+)
+
+replace_once(
+    qwen_lm,
+    """            // Reshape to heads: [D, Heads, N]
+            q = ggml_reshape_3d(ctx, q, D, Nh, N);""",
+    """            q = yue2_lora_apply(ctx, q, ly->lora_q, norm, ly->lora_enabled);
+            k = yue2_lora_apply(ctx, k, ly->lora_k, norm, ly->lora_enabled);
+            v = yue2_lora_apply(ctx, v, ly->lora_v, norm, ly->lora_enabled);
+
+            // Reshape to heads: [D, Heads, N]
+            q = ggml_reshape_3d(ctx, q, D, Nh, N);""",
+    "AR LoRA batch QKV",
+)
+
+replace_once(
+    qwen_lm,
+    """            struct ggml_tensor * attn_out = qwen3_linear(ctx, ly->o_proj, attn_cat);
+            hidden                        = ggml_add(ctx, hidden, attn_out);""",
+    """            struct ggml_tensor * attn_out = qwen3_linear(ctx, ly->o_proj, attn_cat);
+            attn_out = yue2_lora_apply(ctx, attn_out, ly->lora_o, attn_cat, ly->lora_enabled);
+            hidden   = ggml_add(ctx, hidden, attn_out);""",
+    "AR LoRA batch O",
+)
+
+replace_once(
+    qwen_lm,
+    """// Build self-attention with KV cache write + read.""",
+    """static bool qw3lm_set_lora_enabled(Qwen3LM * m, bool requested) {
+    const bool enabled = requested && m->lora_loaded;
+    if (requested && !m->lora_loaded) {
+        fprintf(stderr, "[AR-LoRA] Instrumental adapter not installed; transformed-score base AR remains active\\n");
+    }
+    if (m->lora_enabled == enabled) {
+        return enabled;
+    }
+    if (m->batch_graph.graph.sched_allocated) {
+        static_graph_release(&m->batch_graph.graph, m->sched);
+    }
+    m->batch_graph.built = false;
+    m->lora_enabled = enabled;
+    for (int i = 0; i < m->cfg.n_layers; ++i) {
+        m->layers[i].lora_enabled = enabled;
+    }
+    fprintf(stderr, "[AR-LoRA] %s\\n", enabled ? "enabled" : "disabled");
+    return enabled;
+}
+
+// Build self-attention with KV cache write + read.""",
+    "AR LoRA toggle",
+)
+
+replace_once(
+    qwen_lm,
+    """    backend_release(m->backend, m->cpu_backend);
+    wctx_free(&m->wctx);
+    *m = {};""",
+    """    backend_release(m->backend, m->cpu_backend);
+    if (m->lora_wctx.ctx) {
+        wctx_free(&m->lora_wctx);
+    }
+    wctx_free(&m->wctx);
+    *m = {};""",
+    "AR LoRA free",
+)
+
+replace_once(
+    pipeline_h,
+    """        lm = require_lm(p);
+        if (!lm) {
+            return false;
+        }
+        lm_hold.emplace(p->store, lm);""",
+    """        lm = require_lm(p);
+        if (!lm) {
+            return false;
+        }
+        qw3lm_set_lora_enabled(lm, r.instrumental);
+        lm_hold.emplace(p->store, lm);""",
+    "instrumental LoRA initial activation",
+)
+
+replace_once(
+    pipeline_h,
+    """                Qwen3LM * lm_chunk = require_lm(p);
+                if (!lm_chunk) {
+                    return false;
+                }
+                ModelHandle lm_chunk_hold(p->store, lm_chunk);""",
+    """                Qwen3LM * lm_chunk = require_lm(p);
+                if (!lm_chunk) {
+                    return false;
+                }
+                qw3lm_set_lora_enabled(lm_chunk, r.instrumental);
+                ModelHandle lm_chunk_hold(p->store, lm_chunk);""",
+    "instrumental LoRA chunk activation",
+)
+
+# Exact eager NAR attention tiling for long songs. The score softmax is
+# independent per query row, so slicing query rows and concatenating their
+# contexts is mathematically identical to one giant score matrix. This ports
+# audio.cpp #642's strategy with a phone-sized score-tile budget.
+nar_h = yue / "src/nar.h"
+replace_once(
+    nar_h,
+    """// NAR attention: fresh Q/K/V for the latent block of every variation,
+""",
+    """static struct ggml_tensor * nar_attn_f32_tiled(
+        struct ggml_context * ctx,
+        struct ggml_tensor * q,
+        struct ggml_tensor * k,
+        struct ggml_tensor * v,
+        struct ggml_tensor * mask,
+        float scale) {
+    const int64_t steps = q->ne[1];
+    const int64_t kv_steps = k->ne[1];
+    const int64_t heads = q->ne[2];
+    const int64_t batch = q->ne[3];
+
+    // Keep one eager F32 score tile around 96 MiB on mobile. The rows are
+    // balanced to avoid a tiny slow tail. A short song stays one tile.
+    const int64_t bytes_per_row =
+        kv_steps * heads * batch * (int64_t) sizeof(float);
+    const int64_t target_bytes = 96LL * 1024LL * 1024LL;
+    const int64_t max_rows = std::max<int64_t>(
+        1, target_bytes / std::max<int64_t>(1, bytes_per_row));
+    const int64_t tiles = std::max<int64_t>(
+        1, (steps + max_rows - 1) / max_rows);
+    const int64_t rows_base = steps / tiles;
+    const int64_t wider = steps % tiles;
+
+    struct ggml_tensor * vt = ggml_cont(ctx, ggml_transpose(ctx, v));
+    struct ggml_tensor * joined = nullptr;
+    int64_t first = 0;
+
+    for (int64_t tile = 0; tile < tiles; ++tile) {
+        const int64_t rows = rows_base + (tile < wider ? 1 : 0);
+        struct ggml_tensor * q_tile = q;
+        struct ggml_tensor * mask_tile = mask;
+
+        if (tiles > 1) {
+            q_tile = ggml_cont(
+                ctx,
+                ggml_view_4d(
+                    ctx, q,
+                    q->ne[0], rows, q->ne[2], q->ne[3],
+                    q->nb[1], q->nb[2], q->nb[3],
+                    (size_t) first * q->nb[1]));
+            if (mask) {
+                mask_tile = ggml_cont(
+                    ctx,
+                    ggml_view_2d(
+                        ctx, mask,
+                        mask->ne[0], rows, mask->nb[1],
+                        (size_t) first * mask->nb[1]));
+            }
+        }
+
+        struct ggml_tensor * scores = ggml_mul_mat(ctx, k, q_tile);
+        ggml_mul_mat_set_prec(scores, GGML_PREC_F32);
+        struct ggml_tensor * weights =
+            ggml_soft_max_ext(ctx, scores, mask_tile, scale, 0.0f);
+        struct ggml_tensor * context = ggml_mul_mat(ctx, vt, weights);
+        ggml_mul_mat_set_prec(context, GGML_PREC_F32);
+        joined = joined ? ggml_concat(ctx, joined, context, 1) : context;
+        first += rows;
+    }
+
+    if (tiles > 1) {
+        fprintf(stderr,
+                "[NAR] Exact eager attention tiling: %lld query rows, %lld key rows, %lld tiles, <=%.1f MiB scores/tile\\n",
+                (long long) steps, (long long) kv_steps, (long long) tiles,
+                (double) target_bytes / (1024.0 * 1024.0));
+    }
+
+    return ggml_cont(ctx, ggml_permute(ctx, joined, 0, 2, 1, 3));
+}
+
+// NAR attention: fresh Q/K/V for the latent block of every variation,
+""",
+    "exact NAR attention tiling helper",
+)
+
+replace_once(
+    nar_h,
+    """    float                scale = 1.0f / sqrtf((float) D);
+    struct ggml_tensor * attn  = use_flash_attn ? ggml_flash_attn_ext(ctx, q, k_full, v_full, mask, scale, 0.0f, 0.0f) :
+                                                  qwen3_attn_f32(ctx, q, k_full, v_full, mask, scale);
+""",
+    """    float scale = 1.0f / sqrtf((float) D);
+    struct ggml_tensor * attn = use_flash_attn
+        ? ggml_flash_attn_ext(ctx, q, k_full, v_full, mask, scale, 0.0f, 0.0f)
+        : nar_attn_f32_tiled(ctx, q, k_full, v_full, mask, scale);
+""",
+    "exact NAR attention tiling call",
+)
+
+replace_once(
+    qwen_lm,
+    """#include <cmath>
+""",
+    """#include <algorithm>
+#include <cmath>
+""",
+    "phase-sized KV algorithm include",
+)
+
+# Phase-sized KV cache. Allocating the full 8192-row cache for a 5-second
+# plan consumed ~896 MiB on HTP and pushed SM8850 DSPQueue over the same
+# footprint-sensitive 0x2e failure boundary seen upstream. Reserve only the
+# rows the current AR phase can actually touch, then grow/rebuild between
+# planning and semantic generation when needed.
+replace_once(
+    qwen_lm,
+    """    int                   n_sets;
+};""",
+    """    int                   n_sets;
+    int                   capacity;  // rows physically allocated per set
+};""",
+    "phase-sized KV capacity field",
+)
+
+replace_once(
+    qwen_lm,
+    """    kv->buf    = nullptr;
+    kv->ctx    = nullptr;
+    kv->n_sets = 0;
+}""",
+    """    kv->buf      = nullptr;
+    kv->ctx      = nullptr;
+    kv->n_sets   = 0;
+    kv->capacity = 0;
+}""",
+    "phase-sized KV free",
+)
+
+replace_once(
+    qwen_lm,
+    """static bool qw3lm_kv_alloc(Qw3lmKvCache * kv, int n_sets) {
+    const Qwen3LMConfig & cfg = kv->cfg;
+    int                   D   = cfg.head_dim;
+    int                   Nkv = cfg.n_kv_heads;
+    int                   L   = cfg.n_layers;
+    int                   S   = cfg.max_seq_len;
+
+    qw3lm_kv_free(kv);
+    kv->n_sets = n_sets;""",
+    """static bool qw3lm_kv_alloc(Qw3lmKvCache * kv, int n_sets, int capacity) {
+    const Qwen3LMConfig & cfg = kv->cfg;
+    int                   D   = cfg.head_dim;
+    int                   Nkv = cfg.n_kv_heads;
+    int                   L   = cfg.n_layers;
+    int                   S   = (int) GGML_PAD(std::max(1, capacity), 64);
+    if (S > cfg.max_seq_len) {
+        fprintf(stderr, "[LM-KV] FATAL: requested capacity %d > max_seq %d\\n", S, cfg.max_seq_len);
+        return false;
+    }
+
+    qw3lm_kv_free(kv);
+    kv->n_sets   = n_sets;
+    kv->capacity = S;""",
+    "phase-sized KV alloc signature",
+)
+
+replace_once(
+    qwen_lm,
+    """static bool qw3lm_kv_sets(Qw3lmKvCache * kv, int n_sets) {
+    if (n_sets <= kv->n_sets) {
+        return true;
+    }
+    return qw3lm_kv_alloc(kv, n_sets);
+}""",
+    """static bool qw3lm_kv_reserve(Qw3lmKvCache * kv, int n_sets, int capacity) {
+    const int wanted = (int) GGML_PAD(std::max(1, capacity), 64);
+    if (n_sets <= kv->n_sets && wanted <= kv->capacity) {
+        return true;
+    }
+    return qw3lm_kv_alloc(kv, n_sets, wanted);
+}
+
+static bool qw3lm_kv_sets(Qw3lmKvCache * kv, int n_sets) {
+    const int capacity = kv->capacity > 0 ? kv->capacity : kv->cfg.max_seq_len;
+    return qw3lm_kv_reserve(kv, n_sets, capacity);
+}""",
+    "phase-sized KV reserve",
+)
+
+replace_once(
+    qwen_lm,
+    """    const int max_seq = kv->cfg.max_seq_len;""",
+    """    const int max_seq = kv->capacity;""",
+    "prefill uses physical KV capacity",
+)
+
+replace_once(
+    qwen_lm,
+    """        if (kl > kv->cfg.max_seq_len) {
+            fprintf(stderr, "[LM-Batch] FATAL: kv_len %d > max_seq %d (set %d)\\n", kl, kv->cfg.max_seq_len, kv_sets[i]);
+            exit(1);
+        }""",
+    """        if (kl > kv->capacity) {
+            fprintf(stderr, "[LM-Batch] FATAL: kv_len %d > capacity %d (set %d)\\n", kl, kv->capacity, kv_sets[i]);
+            exit(1);
+        }""",
+    "batch physical KV bound",
+)
+
+replace_once(
+    qwen_lm,
+    """    const int kv_pad_raw = (int) GGML_PAD(max_kv_len, 64);
+    const int n_kv_pad   = kv_pad_raw < kv->cfg.max_seq_len ? kv_pad_raw : kv->cfg.max_seq_len;""",
+    """    const int kv_pad_raw = (int) GGML_PAD(max_kv_len, 64);
+    const int n_kv_pad   = kv_pad_raw < kv->capacity ? kv_pad_raw : kv->capacity;""",
+    "batch KV padding physical capacity",
+)
+
+replace_once(
+    qwen_lm,
+    """            struct ggml_tensor * k_sets = ggml_view_4d(ctx, kv->k4[l], D, kv->cfg.max_seq_len, Nkv, N, kv->k4[l]->nb[1],
+                                                       kv->k4[l]->nb[2], kv->k4[l]->nb[3], off_s0);
+            struct ggml_tensor * v_sets = ggml_view_4d(ctx, kv->v4[l], D, kv->cfg.max_seq_len, Nkv, N, kv->v4[l]->nb[1],
+                                                       kv->v4[l]->nb[2], kv->v4[l]->nb[3], off_s0);""",
+    """            struct ggml_tensor * k_sets = ggml_view_4d(ctx, kv->k4[l], D, kv->capacity, Nkv, N, kv->k4[l]->nb[1],
+                                                       kv->k4[l]->nb[2], kv->k4[l]->nb[3], off_s0);
+            struct ggml_tensor * v_sets = ggml_view_4d(ctx, kv->v4[l], D, kv->capacity, Nkv, N, kv->v4[l]->nb[1],
+                                                       kv->v4[l]->nb[2], kv->v4[l]->nb[3], off_s0);""",
+    "batch KV set views physical capacity",
+)
+
+generate_h = yue / "src/generate.h"
+replace_once(
+    generate_h,
+    """    // Every set holds its prefix, the budget and the end token
+    for (int i = 0; i < B; i++) {
+        size_t longest = guided && negatives[i].size() > prefixes[i].size() ? negatives[i].size() : prefixes[i].size();
+        if ((int) longest + s.max_tokens + 1 > context) {
+            fprintf(stderr, "[AR] FATAL: prefix %zu + budget %d + end exceeds context %d\\n", longest, s.max_tokens,
+                    context);
+            return false;
+        }
+    }
+
+    const int N = guided ? 2 * B : B;
+    if (!qw3lm_kv_sets(kv, N)) {
+        return false;
+    }""",
+    """    // Every set holds its prefix, the budget and the end token. Reserve
+    // only that phase footprint instead of mapping the server-wide max_seq.
+    int required_capacity = 1;
+    for (int i = 0; i < B; i++) {
+        size_t longest = guided && negatives[i].size() > prefixes[i].size() ? negatives[i].size() : prefixes[i].size();
+        const int needed = (int) longest + s.max_tokens + 1;
+        if (needed > context) {
+            fprintf(stderr, "[AR] FATAL: prefix %zu + budget %d + end exceeds context %d\\n", longest, s.max_tokens,
+                    context);
+            return false;
+        }
+        required_capacity = std::max(required_capacity, needed);
+    }
+
+    const int N = guided ? 2 * B : B;
+    if (!qw3lm_kv_reserve(kv, N, required_capacity)) {
+        return false;
+    }
+    fprintf(stderr, "[LM-KV] Phase reserve: %d/%d rows (%s)\\n",
+            kv->capacity, context, phase == YUE2_PHASE_ABC ? "score" : "semantic");""",
+    "phase-sized KV generation reserve",
+)
+
+# Let symbolic planning stop on a complete score boundary once it already
+# covers the requested audio duration. Waiting for the model's natural ABC_END
+# can make a 5 s request write a full song and spend hundreds of unnecessary
+# autoregressive HTP steps.
+generate_h = yue / "src/generate.h"
+replace_once(
+    generate_h,
+    """                          std::vector<Yue2Generation> *         out,
+                          bool (*cancelled)(void *) = nullptr,
+                          void * cancel_data        = nullptr) {""",
+    """                          std::vector<Yue2Generation> *         out,
+                          bool (*cancelled)(void *) = nullptr,
+                          void * cancel_data        = nullptr,
+                          bool (*stop_sequence)(int, const std::vector<int> &, void *) = nullptr,
+                          void * stop_data = nullptr) {""",
+    "AR target-stop callback signature",
+)
+
+replace_once(
+    generate_h,
+    """                } else {
+                    g.tokens.push_back(token);
+                    if ((int) g.tokens.size() >= s.max_tokens) {
+                        owed[i] = 2;
+                    }
+                }""",
+    """                } else {
+                    g.tokens.push_back(token);
+                    if (stop_sequence && stop_sequence(i, g.tokens, stop_data)) {
+                        g.truncated = false;
+                        owed[i] = 2;
+                        fprintf(stderr, "[AR] %s song %d: target reached at step %d\\n", label, i, step);
+                    } else if ((int) g.tokens.size() >= s.max_tokens) {
+                        owed[i] = 2;
+                    }
+                }""",
+    "AR target-stop callback body",
+)
+
+replace_once(
+    pipeline_h,
+    """// Renders lm_batch_size songs times synth_batch_size variations, song-major:
+""",
+    """struct LocalDreamPlanStop {
+    BPETokenizer * tok = nullptr;
+    double target_seconds = 0.0;
+};
+
+static bool localdream_plan_target_reached(
+        int song,
+        const std::vector<int> & tokens,
+        void * opaque) {
+    (void) song;
+    auto * stop = static_cast<LocalDreamPlanStop *>(opaque);
+    if (!stop || !stop->tok || tokens.size() < 48 || stop->target_seconds <= 0.0) {
+        return false;
+    }
+
+    // A valid parse here means the token stream itself ends on a complete
+    // native Vocal+Ins score group, so stopping never invents or repairs ABC.
+    try {
+        const std::string abc = bpe_decode(stop->tok, tokens);
+        const double seconds = nominal_seconds(parse(abc));
+        if (seconds + 0.02 >= stop->target_seconds) {
+            fprintf(stderr,
+                    "[Instrumental] Planned score reached %.2fs target with %.2fs at %zu tokens\\n",
+                    stop->target_seconds, seconds, tokens.size());
+            return true;
+        }
+    } catch (const std::exception &) {
+        // Most intermediate token boundaries are intentionally incomplete.
+    }
+    return false;
+}
+
+// Renders lm_batch_size songs times synth_batch_size variations, song-major:
+""",
+    "instrumental plan target-stop helper",
+)
+
+replace_once(
+    pipeline_h,
+    """        std::vector<int>            open =
+            yue2_build_prompt_ids(encode, cot, planning_style, planning_lyrics, nullptr);
+        std::vector<Yue2Generation> plans;
+        if (!yue2_generate(lm, &p->kv, std::vector<std::vector<int>>(B, open), {}, 1.0f, r.abc_sampling, r.lm_seed,
+                           YUE2_PHASE_ABC, &plans, cancelled, cancel_data)) {
+            return false;
+        }""",
+    """        std::vector<int>            open =
+            yue2_build_prompt_ids(encode, cot, planning_style, planning_lyrics, nullptr);
+        std::vector<Yue2Generation> plans;
+        LocalDreamPlanStop plan_stop = { tok, r.instrumental ? (double) r.duration : 0.0 };
+        if (!yue2_generate(lm, &p->kv, std::vector<std::vector<int>>(B, open), {}, 1.0f, r.abc_sampling, r.lm_seed,
+                           YUE2_PHASE_ABC, &plans, cancelled, cancel_data,
+                           r.instrumental ? localdream_plan_target_reached : nullptr,
+                           r.instrumental ? &plan_stop : nullptr)) {
+            return false;
+        }""",
+    "instrumental plan target-stop call",
+)
+
 # Local Dream mobile acoustic solver.
 #
 # Midpoint remains the release/reference protocol. The fast path below ports
@@ -682,7 +1433,62 @@ replace_once(
     "DPM++ 2M request field",
 )
 
+replace_once(
+    request_h,
+    """    std::string style;   // ""
+    std::string lyrics;  // ""
+""",
+    """    std::string style;   // ""
+    std::string lyrics;  // ""
+    bool instrumental;   // official no-vocal score transfer path
+""",
+    "instrumental request field",
+)
+
 request_cpp = yue / "src/request.cpp"
+replace_once(
+    request_cpp,
+    """    r->style  = "";
+    r->lyrics = "";
+    r->abc    = "";
+""",
+    """    r->style        = "";
+    r->lyrics       = "";
+    r->instrumental = false;
+    r->abc          = "";
+""",
+    "instrumental request default",
+)
+replace_once(
+    request_cpp,
+    """    if ((v = yyjson_obj_get(obj, "lyrics")) && yyjson_is_str(v)) {
+        r->lyrics = yy_str(v);
+    }
+""",
+    """    if ((v = yyjson_obj_get(obj, "lyrics")) && yyjson_is_str(v)) {
+        r->lyrics = yy_str(v);
+    }
+    if ((v = yyjson_obj_get(obj, "instrumental")) && yyjson_is_bool(v)) {
+        r->instrumental = yyjson_get_bool(v);
+    }
+""",
+    "instrumental request parse",
+)
+replace_once(
+    request_cpp,
+    """    if (!sparse || r->lyrics != d.lyrics) {
+        yyjson_mut_obj_add_strncpy(doc, root, "lyrics", r->lyrics.c_str(), r->lyrics.size());
+    }
+""",
+    """    if (!sparse || r->lyrics != d.lyrics) {
+        yyjson_mut_obj_add_strncpy(doc, root, "lyrics", r->lyrics.c_str(), r->lyrics.size());
+    }
+    if (!sparse || r->instrumental != d.instrumental) {
+        yyjson_mut_obj_add_bool(doc, root, "instrumental", r->instrumental);
+    }
+""",
+    "instrumental request serialize",
+)
 replace_once(
     request_cpp,
     """    r->steps            = 32;
@@ -755,16 +1561,19 @@ replace_once(
     std::vector<float> first(count);
     std::vector<float> mid;
     std::vector<float> second;
-    std::vector<float> prev_v;
+    std::vector<float> denoised;
+    std::vector<float> old_denoised;
     if (midpoint) {
         mid.resize(count);
         second.resize(count);
     } else {
-        prev_v.resize(count);
+        denoised.resize(count);
+        old_denoised.resize(count);
     }
 
     const float dt = 1.0f / (float) steps;
-    bool  have_prev_v = false;
+    bool  have_old_denoised = false;
+    float previous_sigma = 0.0f;
     int   evaluations = 0;
     char  name[64];
 
@@ -828,12 +1637,43 @@ replace_once(
             snprintf(name, sizeof(name), "nar_step%d_second", step);
             debug_dump_2d(dbg, name, second.data(), T_lat, n->latent_dim);
         } else {
-            // Exact 2nd-order Rectified Flow Multistep (Adams-Bashforth 2).
-            // Linearly integrates the continuous velocity field without diffusion
-            // noise-schedule distortion or double flow-shift bugs.
-            const float t = 1.0f - (float) step * dt;
+            // ComfyUI normal_scheduler(..., sgm=True) for ModelSamplingDiscreteFlow:
+            // linearly space the model-sampling timestep from sigma_max to
+            // sigma_min (the 1/1000 endpoint), map each through the flow shift,
+            // then append an exact final zero.
+            const float shift = n->timestep_shift;
+            const auto flow_shift = [shift](float t) {
+                return shift * t / (1.0f + (shift - 1.0f) * t);
+            };
+            const auto flow_unshift = [shift](float sigma) {
+                const float denom = shift - (shift - 1.0f) * sigma;
+                return sigma / denom;
+            };
+
+            const float sigma_max = flow_shift(1.0f);
+            const float sigma_min = flow_shift(0.001f);
+            const float scheduler_t =
+                sigma_max + (sigma_min - sigma_max) * ((float) step / (float) steps);
+            const float sigma = flow_shift(scheduler_t);
+            const float sigma_next = (step + 1 == steps)
+                ? 0.0f
+                : flow_shift(
+                    sigma_max + (sigma_min - sigma_max) * ((float) (step + 1) / (float) steps));
+
+            if (!(sigma > 0.0f) || !(sigma_next >= 0.0f) || !(sigma_next < sigma)) {
+                fprintf(stderr, "[NAR] FATAL: invalid sgm_uniform sigma pair %.9f -> %.9f\\n",
+                        (double) sigma, (double) sigma_next);
+                return false;
+            }
+
+            const float raw_t = flow_unshift(sigma);
+            if (!(raw_t > 0.0f) || !(raw_t <= 1.0f)) {
+                fprintf(stderr, "[NAR] FATAL: invalid YuE2 flow timestep %.9f for sigma %.9f\\n",
+                        (double) raw_t, (double) sigma);
+                return false;
+            }
             if (!nar_velocity(n, kv, state, T_lat, M, ar_len, kv_set,
-                              nar_logit_clamped(t), first.data())) {
+                              nar_logit_clamped(raw_t), first.data())) {
                 return false;
             }
             ++evaluations;
@@ -841,21 +1681,48 @@ replace_once(
                 nar_dump_named(n, dbg);
             }
 
-            if (!have_prev_v) {
-                for (size_t i = 0; i < count; i++) {
-                    state[i] -= first[i] * dt;
-                }
+            // ComfyUI CONST flow model: denoised = model_input - model_output*sigma.
+            for (size_t i = 0; i < count; i++) {
+                denoised[i] = state[i] - first[i] * sigma;
+            }
+
+            if (sigma_next == 0.0f) {
+                memcpy(state, denoised.data(), count * sizeof(float));
             } else {
+                const float ratio = sigma_next / sigma;
+                float current_coeff = 1.0f;
+                float old_coeff = 0.0f;
+                if (have_old_denoised) {
+                    const float h = logf(sigma / sigma_next);
+                    const float h_last = logf(previous_sigma / sigma);
+                    if (!(h > 0.0f) || !(h_last > 0.0f)) {
+                        fprintf(stderr, "[NAR] FATAL: invalid DPM++ log-time interval\\n");
+                        return false;
+                    }
+                    const float r = h_last / h;
+                    if (!(r > 0.0f)) {
+                        fprintf(stderr, "[NAR] FATAL: invalid DPM++ history ratio %.9f\\n", (double) r);
+                        return false;
+                    }
+                    old_coeff = 1.0f / (2.0f * r);
+                    current_coeff = 1.0f + old_coeff;
+                }
+
+                const float denoised_mix = 1.0f - ratio; // -expm1(-h), stable here
                 for (size_t i = 0; i < count; i++) {
-                    state[i] -= (first[i] * 1.5f - prev_v[i] * 0.5f) * dt;
+                    const float d = current_coeff * denoised[i] - old_coeff * old_denoised[i];
+                    state[i] = ratio * state[i] + denoised_mix * d;
                 }
             }
 
-            memcpy(prev_v.data(), first.data(), count * sizeof(float));
-            have_prev_v = true;
+            memcpy(old_denoised.data(), denoised.data(), count * sizeof(float));
+            previous_sigma = sigma;
+            have_old_denoised = true;
 
             snprintf(name, sizeof(name), "nar_step%d_first", step);
             debug_dump_2d(dbg, name, first.data(), T_lat, n->latent_dim);
+            snprintf(name, sizeof(name), "nar_step%d_denoised", step);
+            debug_dump_2d(dbg, name, denoised.data(), T_lat, n->latent_dim);
         }
 
         snprintf(name, sizeof(name), "nar_step%d_xt", step);
@@ -1003,7 +1870,12 @@ replace_once(
     vae,
     """// Load model
 static void vae_ggml_load(VAEGGML * m, const char * path) {""",
-    """static bool g_vae_parity_checked = false;
+    """// Forward declarations for the one-shot full decoder parity check.
+static int vae_ggml_decode(VAEGGML * m, const float * latent, int T_latent,
+                           float * audio_out, int max_T_audio);
+static void vae_ggml_free(VAEGGML * m);
+static bool g_vae_reference_loading = false;
+static bool g_vae_parity_checked = false;
 
 // Load model
 static void vae_ggml_load(VAEGGML * m, const char * path) {""",
@@ -1017,20 +1889,20 @@ replace_once(
     m->backend     = bp.backend;
     m->cpu_backend = bp.cpu_backend;
     m->sched       = backend_sched_new(bp, 8192);""",
-    """    // Oobleck VAE audio synthesis requires full IEEE 754 float32 precision
-    // across its 6-block residual Snake / col2im graph. CPU with ARM NEON SIMD
-    // executes this in milliseconds with bit-exact parity, preventing the
-    // severe acoustic distortion (cosine < 0.5) caused by HTP HVX sin/exp approximations.
-    const int n_threads = backend_cpu_n_threads();
+    """    // CPU is permitted only for the short parity reference instance.
+    // Normal generation always takes the accelerator branch below.
     BackendPair bp = {};
-    bp.backend = cpu_backend_new(n_threads);
-    bp.cpu_backend = bp.backend;
-    bp.has_gpu = false;
-    m->standalone_backend = true;
-    if (!bp.backend) {
-        fprintf(stderr, "[VAE] Fallback to backend_init for VAE\\n");
+    if (g_vae_reference_loading) {
+        bp.backend = cpu_backend_new(backend_cpu_n_threads());
+        bp.cpu_backend = bp.backend;
+        bp.has_gpu = false;
+        m->standalone_backend = true;
+        if (!bp.backend) {
+            fprintf(stderr, "[VAE-PARITY] FATAL: CPU reference backend unavailable\\n");
+            exit(1);
+        }
+    } else {
         bp = backend_init("VAE");
-        m->standalone_backend = false;
     }
     m->backend      = bp.backend;
     m->cpu_backend  = bp.cpu_backend;
@@ -1046,10 +1918,54 @@ replace_once(
     """    fprintf(stderr, "[VAE] Loaded: 6 blocks, upsample=1920x, F32 activations\\n");
     gf_close(&gf);
 
-    if (!g_vae_parity_checked) {
+    if (!g_vae_reference_loading && !g_vae_parity_checked) {
         g_vae_parity_checked = true;
-        fprintf(stderr, "[VAE-PARITY] cosine=1.000000000 max_abs=0.00000000 rmse=0.00000000 samples=15232\\n");
-        fprintf(stderr, "[VAE-PARITY] PASS (IEEE 754 CPU reference decoder)\\n");
+        fprintf(stderr, "[VAE-PARITY] Running full HTP vs CPU decoder check\\n");
+
+        constexpr int pt = 4;
+        constexpr int pa = pt * 1920 - 64;
+        std::vector<float> latent((size_t) pt * 64);
+        uint32_t rng = 0x6d2b79f5u;
+        for (size_t i = 0; i < latent.size(); ++i) {
+            rng = rng * 1664525u + 1013904223u;
+            const float u = (float) ((rng >> 8) & 0x00ffffffu) / 16777216.0f;
+            latent[i] = (u * 2.0f - 1.0f) * 0.35f;
+        }
+
+        std::vector<float> htp((size_t) pa * 2);
+        std::vector<float> ref((size_t) pa * 2);
+        const int hn = vae_ggml_decode(m, latent.data(), pt, htp.data(), pa);
+
+        VAEGGML cpu_ref = {};
+        g_vae_reference_loading = true;
+        vae_ggml_load(&cpu_ref, path);
+        g_vae_reference_loading = false;
+        const int rn = vae_ggml_decode(&cpu_ref, latent.data(), pt, ref.data(), pa);
+        vae_ggml_free(&cpu_ref);
+
+        if (hn != pa || rn != pa) {
+            fprintf(stderr, "[VAE-PARITY] FATAL: length htp=%d cpu=%d expected=%d\\n", hn, rn, pa);
+            exit(1);
+        }
+
+        double dot = 0.0, na = 0.0, nb = 0.0, mse = 0.0;
+        float max_abs = 0.0f;
+        const size_t n = (size_t) pa * 2;
+        for (size_t i = 0; i < n; ++i) {
+            const double a = htp[i], b = ref[i], d = a - b;
+            dot += a * b; na += a * a; nb += b * b; mse += d * d;
+            const float ad = fabsf((float) d);
+            if (ad > max_abs) max_abs = ad;
+        }
+        const double cosine = dot / (sqrt(na * nb) + 1e-30);
+        const double rmse = sqrt(mse / (double) n);
+        fprintf(stderr, "[VAE-PARITY] cosine=%.9f max_abs=%.9g rmse=%.9g samples=%zu\\n",
+                cosine, (double) max_abs, rmse, n);
+        if (cosine < 0.999999 || max_abs > 8.0e-4f) {
+            fprintf(stderr, "[VAE-PARITY] FATAL: HTP decoder diverges; refusing corrupted audio\\n");
+            exit(1);
+        }
+        fprintf(stderr, "[VAE-PARITY] PASS\\n");
     }
 }""",
     "VAE whole decoder parity gate",
@@ -1112,9 +2028,23 @@ replace_once(
             fprintf(stderr, "[VAE] FATAL: tile %d decode failed\\n", i);
             return -1;
         }
-        fprintf(stderr, "[VAE] Tile %d/%d done: %.0f ms\\n", i + 1, num_tiles, tile_timer.ms());
 """,
-    "VAE tile progress",
+    "VAE tile progress begin",
+)
+replace_once(
+    vae,
+    """        ggml_backend_tensor_get(m->graph_output, audio_out + max_T_audio + out_start, (tile_T + crop) * sizeof(float),
+                                core_len * sizeof(float));
+    }
+
+    // Compact ch1""",
+    """        ggml_backend_tensor_get(m->graph_output, audio_out + max_T_audio + out_start, (tile_T + crop) * sizeof(float),
+                                core_len * sizeof(float));
+        fprintf(stderr, "[VAE] Tile %d/%d done: %.0f ms\\n", i + 1, num_tiles, tile_timer.ms());
+    }
+
+    // Compact ch1""",
+    "VAE tile progress done",
 )
 
 print("Local Dream YuE2 native HTP integration applied")

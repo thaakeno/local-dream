@@ -8,6 +8,7 @@ on:
       - qwen-fp8-turbo
       - yue2-text-music
       - yue2-fast-instrumental-htp
+      - v141-stable-yue2-full
     paths:
       - 'app/**'
       - '.gitmodules'
@@ -160,11 +161,10 @@ jobs:
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
 
-      # SDXL-only Pipeline/QNN C++ edits do not touch the DiT, Xet, YuE2,
-      # or QAIRT assets. Bootstrap from the last verified Fast v139 native
-      # bundle, then rebuild only libstable_diffusion_core.so. This keeps
-      # iterative SDXL quality work from needlessly rebuilding every engine.
-      - name: Bootstrap verified Fast v139 native artifacts
+      # The alpha.58 native cache is the exact same Xet/image/DiT source
+      # revision as this YuE2-only change. Reuse those immutable artifacts and
+      # rebuild only the music backend when the new full cache key is absent.
+      - name: Bootstrap unchanged alpha.58 native artifacts
         id: native-bootstrap
         if: steps.native-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
@@ -175,7 +175,7 @@ jobs:
             app/src/main/assets/yue2libs
             app/src/main/assets/qnnlibs
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
-          key: localdream-native-150c67dde94eee56776a00b7c66b8e67037c2d7f6d70690143ff6777e551306d
+          key: localdream-native-e15a1da9bf69e7fc0e09d91594088a80058e21d5bd74d72fb5a11d630423944f
 
       - name: Build Android core and Hexagon DiT engine
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -249,12 +249,11 @@ jobs:
 
           cd /workspace/app/src/main/cpp
           if [ "${REUSE_STABLE_NATIVE:-false}" = "true" ]; then
-            echo "Reusing verified Fast v139 DiT/Xet/YuE2 artifacts; rebuilding SDXL/core only."
+            echo "Reusing unchanged alpha.58 Xet/image/DiT native artifacts; rebuilding YuE2 only."
+            test -s /workspace/app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/libdit_engine.so
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
-            test -s /workspace/app/src/main/jniLibs/arm64-v8a/libyue2_server.so
-            test -s /workspace/app/src/main/assets/yue2libs/libggml-htp-v81.so
-            bash build.sh
+            bash music/build.sh
           else
             # Full cold build when the verified bootstrap cache is unavailable.
             bash /workspace/app/src/main/rust/xet_downloader/build.sh
@@ -271,13 +270,19 @@ jobs:
           test -s app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
           test -s app/src/main/jniLibs/arm64-v8a/libdit_engine.so
           test -s app/src/main/jniLibs/arm64-v8a/libyue2_server.so
+          test -s app/src/main/jniLibs/arm64-v8a/libyue2_server_fastrpc.so
+          test -s app/src/main/jniLibs/arm64-v8a/libyue2_bench_dspqueue.so
+          test -s app/src/main/jniLibs/arm64-v8a/libyue2_bench_fastrpc.so
           test -s app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v79.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
-          test -s app/src/main/assets/yue2libs/libggml-htp-v79.so
-          test -s app/src/main/assets/yue2libs/libggml-htp-v81.so
+          for arch in v79 v81; do
+            test -s "app/src/main/assets/yue2libs/libggml-htp-$arch.so"
+            test -s "app/src/main/assets/yue2libs/libggml-htp-$arch-dspqueue.so"
+            test -s "app/src/main/assets/yue2libs/libggml-htp-$arch-fastrpc.so"
+          done
           grep -q 'commit=37f752b77fc4d661e2552128f42cb811d7bdb628' app/src/main/assets/yue2libs/backend-version.txt
-          grep -q 'variant=dspqueue-yue2-native-0.6.0' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'variant=dual-transport-yue2-native-0.7.0' app/src/main/assets/yue2libs/backend-version.txt
           grep -q '^integration=' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'snake-hvx-fused' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/yue2libs/backend-version.txt
@@ -288,6 +293,9 @@ jobs:
           grep -q 'adaptive-binary-vtcm' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'dpmpp2m-sgm-uniform' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'htp-kv-window64' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'vae-cpu-parity-gate' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'dual-transport-server' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'dual-transport-bench' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'strict-accelerator' app/src/main/assets/yue2libs/backend-version.txt
           grep -q 'cpu_fallback=disabled' app/src/main/assets/yue2libs/backend-version.txt
           test -s app/src/main/assets/qnnlibs/libQnnHtp.so
@@ -369,13 +377,13 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v6
         with:
-          name: LocalDream-YuE2-Fast-alpha63
+          name: LocalDream-Qwen-FP8-Turbo
           path: app/build/outputs/apk/basic/debug/*.apk
           if-no-files-found: error
           retention-days: 14
 
       - name: Dispatch canonical signer
-        if: github.ref_name == 'yue2-text-music' || github.ref_name == 'yue2-fast-instrumental-htp'
+        if: github.ref_name == 'yue2-text-music'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

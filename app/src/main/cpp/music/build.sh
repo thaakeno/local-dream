@@ -121,6 +121,7 @@ for arch in v79 v81; do
         exit 1
     fi
     cp "$skel" "$ASSET_DIR/libggml-htp-${arch}.so"
+    cp "$skel" "$ASSET_DIR/libggml-htp-${arch}-dspqueue.so"
 done
 
 # Build the exact same benchmark graph against the coherent FastRPC/mempool
@@ -146,7 +147,8 @@ cmake -S "$YUE2_DIR" -B "$FAST_BUILD_DIR" -G Ninja \
     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
 
-cmake --build "$FAST_BUILD_DIR" --target yue-transport-bench htp-mempool-v79 htp-mempool-v81 -j "$(nproc)"
+cmake --build "$FAST_BUILD_DIR" --target yue-server yue-transport-bench htp-mempool-v79 htp-mempool-v81 -j "$(nproc)"
+cp "$FAST_BUILD_DIR/yue-server" "$JNI_DIR/libyue2_server_fastrpc.so"
 cp "$FAST_BUILD_DIR/yue-transport-bench" "$JNI_DIR/libyue2_bench_fastrpc.so"
 
 for arch in v79 v81; do
@@ -165,11 +167,11 @@ rm -f "$ASSET_DIR/ggml-hexagon.cfg"
 cat > "$ASSET_DIR/backend-version.txt" <<EOF
 backend=kan-linux/ggml-hexagon
 commit=$JZ_COMMIT
-variant=dspqueue-yue2-native-0.6.0
-integration=snake-hvx-fused,sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-channel-blocked,channel-bcast-addmul-hvx,adaptive-binary-vtcm,dpmpp2m-sgm-uniform,htp-kv-window64,vae-cpu-parity-gate,dual-transport-bench,strict-accelerator
+variant=dual-transport-yue2-native-0.7.0
+integration=snake-hvx-fused,sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-channel-blocked,channel-bcast-addmul-hvx,adaptive-binary-vtcm,dpmpp2m-sgm-uniform,htp-kv-window64,vae-cpu-parity-gate,dual-transport-server,dual-transport-bench,strict-accelerator
 cpu_fallback=disabled
 EOF
 
-chmod +x "$JNI_DIR/libyue2_server.so" "$JNI_DIR/libyue2_bench_dspqueue.so" "$JNI_DIR/libyue2_bench_fastrpc.so"
-ls -lh "$JNI_DIR/libyue2_server.so" "$JNI_DIR"/libyue2_bench_*.so \
+chmod +x "$JNI_DIR/libyue2_server.so" "$JNI_DIR/libyue2_server_fastrpc.so" "$JNI_DIR/libyue2_bench_dspqueue.so" "$JNI_DIR/libyue2_bench_fastrpc.so"
+ls -lh "$JNI_DIR/libyue2_server.so" "$JNI_DIR/libyue2_server_fastrpc.so" "$JNI_DIR"/libyue2_bench_*.so \
     "$ASSET_DIR"/libggml-htp-v{79,81}.so "$ASSET_DIR"/libggml-htp-v{79,81}-fastrpc.so

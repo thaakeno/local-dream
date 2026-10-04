@@ -72,6 +72,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.xororz.localdream.data.Model
+import java.io.File
 import io.github.xororz.localdream.utils.AppHaptics
 import java.util.Locale
 
@@ -954,6 +955,7 @@ private fun Yue2VariantSheet(
     onOpen: (Model) -> Unit,
     onDownload: (Model) -> Unit,
 ) {
+    val context = LocalContext.current
     val sorted = variants.sortedBy {
         when (it.variantPrecision) {
             "Q8_0" -> 0
@@ -1033,9 +1035,9 @@ private fun Yue2VariantSheet(
                                 Text(
                                     when (selected.variantPrecision) {
                                         "BF16" ->
-                                            "BF16 tensor data type · F16 Oobleck VAE · Mothersuperior instrumental LoRA."
+                                            "BF16 is the tensor data type; GGUF is only the model file/container format."
                                         else ->
-                                            "GGUF container · quantized backbone · F16 Oobleck waveform decoder · Instrumental LoRA"
+                                            "GGUF container · quantized backbone · Oobleck waveform decoder"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1050,10 +1052,7 @@ private fun Yue2VariantSheet(
                             }
                         }
 
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             FamilyStatusPill(
                                 if (selected.variantPrecision == "BF16") {
                                     "BF16 weights"
@@ -1063,16 +1062,15 @@ private fun Yue2VariantSheet(
                                 true,
                             )
                             FamilyStatusPill("GGUF container")
-                            FamilyStatusPill("F16 VAE")
-                            FamilyStatusPill("Instrumental LoRA")
+                            FamilyStatusPill("Oobleck VAE")
                         }
 
                         Text(
                             when (selected.variantPrecision) {
                                 "Q8_0" ->
-                                    "Near-lossless upstream default and the recommended Local Dream mobile path on Hexagon HTP. Includes F16 VAE and instrumental LoRA for piano and vocal-free tracks."
+                                    "Near-lossless upstream default and the recommended Local Dream mobile path because Q8_0 is implemented by the Hexagon backend."
                                 else ->
-                                    "Full BF16 backbone stored inside a GGUF container. High-memory reference option supported on Hexagon HTP."
+                                    "Full BF16 backbone stored inside a GGUF container. Kept as the high-memory reference option and supported by the Hexagon backend."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1091,6 +1089,103 @@ private fun Yue2VariantSheet(
                                 fontWeight = FontWeight.SemiBold,
                             )
                         }
+                    }
+                }
+            }
+
+            val instrumentalAdapter = File(
+                File(Model.getModelsDir(context), selected.id),
+                "instrumental_lora.gguf",
+            )
+            val adapterInstalled = instrumentalAdapter.isFile && instrumentalAdapter.length() > 1_000_000L
+
+            Surface(
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                border = BorderStroke(
+                    1.dp,
+                    if (adapterInstalled) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant
+                    },
+                ),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                        ) {
+                            Icon(
+                                Icons.Default.MusicNote,
+                                contentDescription = null,
+                                modifier = Modifier.padding(10.dp),
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Instrumental CoT adapter",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Rank-64 YuE2 AR LoRA · score-first instrumentals · F16 GGUF",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (adapterInstalled) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = "Installed",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+
+                    Text(
+                        "Recommended for piano and other no-vocal tracks. Local Dream combines it with Full planning and the official Vocal→Ins melody transfer.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    Button(
+                        enabled = selected.isDownloaded && !adapterInstalled,
+                        onClick = {
+                            Model(
+                                id = selected.id,
+                                name = "YuE2 Instrumental CoT adapter",
+                                description = "Instrumental AR LoRA",
+                                baseUrl = "https://huggingface.co",
+                                packageFiles = listOf(
+                                    "thepatch/YuE2-3B-GGUF/resolve/main/" +
+                                        "yue2-instrumental-cot-full-v1.0-F16-LoRA.gguf|" +
+                                        "instrumental_lora.gguf",
+                                ),
+                                packageMarker = "YUE2_INSTRUMENTAL_LORA",
+                            ).startDownload(context)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.large,
+                    ) {
+                        Icon(
+                            if (adapterInstalled) Icons.Default.CheckCircle else Icons.Default.CloudDownload,
+                            contentDescription = null,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            when {
+                                adapterInstalled -> "Instrumental adapter installed"
+                                !selected.isDownloaded -> "Download ${selected.variantPrecision} first"
+                                else -> "Download instrumental adapter"
+                            },
+                        )
                     }
                 }
             }

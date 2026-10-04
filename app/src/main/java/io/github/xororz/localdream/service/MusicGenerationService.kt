@@ -380,33 +380,13 @@ class MusicGenerationService : Service() {
 
     private fun startGeneration(intent: Intent) {
         val style = intent.getStringExtra("style")?.trim().orEmpty()
-        val rawLyrics = intent.getStringExtra("lyrics").orEmpty()
+        val lyrics = intent.getStringExtra("lyrics").orEmpty()
+        val instrumental = intent.getBooleanExtra("instrumental", false)
         val modelId = intent.getStringExtra("modelId")
-        if (style.isBlank() && rawLyrics.isBlank()) {
+        if (style.isBlank() && lyrics.isBlank()) {
             _state.value = MusicState.Error("Describe the music or enter lyrics.", modelId)
             finishService()
             return
-        }
-
-        val isInstrumentalPrompt = rawLyrics.isBlank() ||
-            rawLyrics.contains("instrumental", ignoreCase = true) ||
-            style.contains("instrumental", ignoreCase = true) ||
-            style.contains("no vocals", ignoreCase = true) ||
-            style.contains("no vocal", ignoreCase = true)
-
-        val duration = intent.getIntExtra("duration", 60).coerceIn(10, 240)
-
-        val lyrics = if (isInstrumentalPrompt && (rawLyrics.isBlank() || rawLyrics.trim() == "[instrumental]")) {
-            // Proven HuggingFace (mrfakename/yue2-3b & hugging-apps/yue2-instrumental-cot-lora)
-            // clean untimed section tags without internal text notes, instructing the symbolic
-            // planner to compose structured instrumental movements without vocal tracks.
-            when {
-                duration <= 30 -> "[intro]\n[verse]\n[outro]"
-                duration <= 90 -> "[intro]\n[verse]\n[chorus]\n[outro]"
-                else -> "[intro]\n[verse]\n[chorus]\n[bridge]\n[chorus]\n[outro]"
-            }
-        } else {
-            rawLyrics
         }
 
         workJob?.cancel()
@@ -416,10 +396,15 @@ class MusicGenerationService : Service() {
         // YuE2's released protocol uses symbolic planning for new songs.
         // Auto therefore resolves to full planning; direct remains an explicit
         // expert option for users who intentionally want score-free generation.
-        val cot = if (requestedCot == "auto") "full" else requestedCot
+        val cot = when {
+            instrumental && requestedCot == "off" -> "full"
+            requestedCot == "auto" -> "full"
+            else -> requestedCot
+        }
         val outputFormat = intent.getStringExtra("output_format")?.takeIf {
-            it in setOf("wav16", "wav32", "wav24", "mp3")
+            it in setOf("wav32", "wav24", "wav16", "mp3")
         } ?: "wav16"
+        val duration = intent.getIntExtra("duration", 120).coerceIn(5, 240)
         val steps = intent.getIntExtra("steps", 32).coerceIn(1, 64)
         val odeMethod = intent.getStringExtra("ode_method")
             ?.takeIf { it == "dpmpp_2m" || it == "midpoint" }
@@ -440,9 +425,15 @@ class MusicGenerationService : Service() {
                 value.coerceIn(0.5f, 2f)
             }
         }
+        // Keep enough score budget for multi-minute section plans without
+        // letting ABC consume the entire 8192-token runtime context. In practice
+        // instrumental CoT usually stops well before these caps.
         val planMaxTokens = when (cot) {
-            "full" -> (duration * 48).coerceIn(384, 4096)
-            "melody" -> (duration * 36).coerceIn(256, 3072)
+            // The planner now receives the requested duration explicitly.
+            // Keep a compact safety budget instead of forcing every 5 s test
+            // through 1024 autoregressive score tokens.
+            "full" -> (duration * 14).coerceIn(384, 2048)
+            "melody" -> (duration * 10).coerceIn(320, 1536)
             else -> 0
         }
         val started = System.currentTimeMillis()
@@ -463,7 +454,7 @@ class MusicGenerationService : Service() {
             this,
             "REQUEST",
             "generate model=${modelId ?: "unknown"} duration=${duration}s " +
-                "steps=$steps solver=$odeMethod cot=$cot format=$outputFormat temp=$temperature topP=$topP cfg=$cfg",
+                "steps=$steps solver=$odeMethod cot=$cot instrumental=$instrumental format=$outputFormat temp=$temperature topP=$topP cfg=$cfg",
         )
         _state.value = MusicState.Generating(
             phase = "queued",
@@ -482,7 +473,8 @@ class MusicGenerationService : Service() {
             try {
                 val payload = JSONObject().apply {
                     put("style", style)
-                    put("lyrics", lyrics)
+                    put("lyrics", if (instrumental) "" else lyrics)
+                    put("instrumental", instrumental)
                     put("cot", cot)
                     put("duration", duration.toDouble())
                     put("lm_seed", seed)
@@ -1048,7 +1040,7 @@ class MusicGenerationService : Service() {
             vaeDecodeStartedAt = System.currentTimeMillis()
             return state(
                 "decoding",
-                "VAE decode · $total tiles · core $core + halo $halo",
+                "VAE decode · $total exact HTP tiles · core $core + halo $halo",
                 0.90f,
                 0,
                 total,
@@ -1069,7 +1061,7 @@ class MusicGenerationService : Service() {
             val local = (completed.toFloat() / total).coerceIn(0f, 1f)
             return state(
                 "decoding",
-                "Tile $step/$total · $latent latent frames · decoding",
+                "HTP tile $step/$total · $latent latent frames · decoding",
                 0.90f + local * 0.07f,
                 completed,
                 total,
@@ -1122,9 +1114,9 @@ class MusicGenerationService : Service() {
             return state(
                 "decoding",
                 if (vaeDecodeTileTotal > 0) {
-                    "Tile $active/$total · $nodes-node decoder graph · $latent latent frames"
+                    "HTP tile $active/$total · $nodes-node decoder graph · $latent latent frames"
                 } else {
-                    "Decoder graph · $nodes nodes · $latent latent frames"
+                    "HTP decoder graph · $nodes nodes · $latent latent frames"
                 },
                 0.90f + (completed.toFloat() / total) * 0.07f,
                 completed,
