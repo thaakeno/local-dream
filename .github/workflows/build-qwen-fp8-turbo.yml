@@ -279,6 +279,11 @@ jobs:
           test -s app/src/main/jniLibs/arm64-v8a/libyue2_bench_dspqueue.so
           test -s app/src/main/jniLibs/arm64-v8a/libyue2_bench_fastrpc.so
           test -s app/src/main/jniLibs/arm64-v8a/libbreeze_server.so
+          readelf -d app/src/main/jniLibs/arm64-v8a/libbreeze_server.so | tee /tmp/breeze-elf-needed.txt
+          if grep -Eq 'Shared library: \[libggml(-base|-hexagon)?\.so\]' /tmp/breeze-elf-needed.txt; then
+            echo "Breeze APK runtime still has private ggml shared-library dependencies" >&2
+            exit 1
+          fi
           test -s app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v79.so
           test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
@@ -381,15 +386,23 @@ jobs:
           test -x "$apksigner_bin"
           test -s "$apk"
 
-          # Certificate used by the existing installable Local Dream builds.
-          expected="4231f002da1066b9055386ceae442394262070545a7a2202d414c8efba724af7"
           actual="$("$apksigner_bin" verify --print-certs "$apk" |             sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n 1 |             tr -d ':' | tr 'A-F' 'a-f')"
-
-          echo "expected signer: $expected"
-          echo "actual signer:   $actual"
           test -n "$actual"
-          if [ "$actual" != "$expected" ]; then
-            echo "::warning::Branch-local CI signer differs from the canonical installed-app signer; publish only after canonical re-signing."
+
+          if [ "$GITHUB_REF_NAME" = "v141-stable-yue2-full" ]; then
+            # v146 was installed/tested with this branch-local certificate.
+            # v147 must keep it exactly so Android accepts an in-place update.
+            expected="bff433493c171fcd31e8159ca19e64d938b8d4afe043a07be91fec0ad23f071b"
+            echo "required v146/v147 signer: $expected"
+            echo "actual signer:            $actual"
+            test "$actual" = "$expected"
+          else
+            expected="4231f002da1066b9055386ceae442394262070545a7a2202d414c8efba724af7"
+            echo "canonical signer: $expected"
+            echo "actual signer:    $actual"
+            if [ "$actual" != "$expected" ]; then
+              echo "::warning::Branch-local CI signer differs from the canonical installed-app signer."
+            fi
           fi
 
       - name: Upload APK
