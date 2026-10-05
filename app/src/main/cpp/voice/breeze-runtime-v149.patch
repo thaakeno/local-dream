@@ -1,0 +1,25 @@
+diff --git a/src/generation.cpp b/src/generation.cpp
+--- a/src/generation.cpp
++++ b/src/generation.cpp
+@@ -107,7 +107,18 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest
+     if (use_cfg) emb_u = assemble(m, build_segments(m, req, text, has_ref, ref.text, ref_codes, ref_T, false), total_u);
+     tm.prompt += since(t0);
+ 
+-    const int max_new = req.max_new_tokens > 0 ? req.max_new_tokens : m.cfg.max_new_tokens;
++    const int configured_max =
++        req.max_new_tokens > 0 ? req.max_new_tokens : m.cfg.max_new_tokens;
++    // The model normally emits EOS by itself, but a bad sample can otherwise run
++    // all the way to the 750-frame (~60 s) model cap. Bound each text piece from
++    // the same spoken-duration estimate used by the progress display, with >2x
++    // headroom for unusually slow delivery. This is a safety ceiling, not a
++    // target: normal generations still stop on EOS much earlier.
++    const double estimated_seconds = std::max(0.8, estimate_seconds(text));
++    const double frames_per_second =
++        (double) m.cfg.sample_rate / (double) m.cfg.samples_per_frame;
++    const int estimated_frames =
++        (int) (estimated_seconds * frames_per_second + 0.999);
++    const int adaptive_cap = std::max(64, estimated_frames * 2 + 24);
++    const int max_new = std::min(configured_max, adaptive_cap);
+ 
+     BackboneState st_c, st_u;
+     st_c.init(m, total_c + max_new + 8);
