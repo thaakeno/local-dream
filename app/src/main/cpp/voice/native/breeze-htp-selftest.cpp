@@ -20,6 +20,19 @@ static void require_close(
     float worst = 0.0f;
     size_t worst_i = 0;
     for (size_t i = 0; i < got.size(); ++i) {
+        if (!std::isfinite(got[i]) || !std::isfinite(expected[i])) {
+            char buf[256];
+            std::snprintf(
+                buf,
+                sizeof(buf),
+                "%s non-finite at %zu: got %.7g expected %.7g",
+                name,
+                i,
+                got[i],
+                expected[i]
+            );
+            throw std::runtime_error(buf);
+        }
         const float err = std::fabs(got[i] - expected[i]);
         if (err > worst) {
             worst = err;
@@ -41,6 +54,40 @@ static void require_close(
         throw std::runtime_error(buf);
     }
     std::fprintf(stderr, "[BREEZE_SELFTEST] %s ok worst=%.7f\n", name, worst);
+}
+
+static void test_get_rows_f32(Backend & be) {
+    constexpr int D = 256;
+    constexpr int ROWS = 64;
+
+    std::vector<float> table((size_t) D * ROWS);
+    for (int r = 0; r < ROWS; ++r) {
+        for (int d = 0; d < D; ++d) {
+            table[(size_t) d + (size_t) D * r] =
+                -3.0f + 0.25f * (float) r + 0.001f * (float) d;
+        }
+    }
+
+    auto run = [&](const char * name, const std::vector<int32_t> & ids) {
+        Graph g(96);
+        auto * values = g.input_f32(table, D, ROWS);
+        auto * indices = g.input_i32(ids, (int) ids.size());
+        auto * out = ggml_get_rows(g.ctx, values, indices);
+        g.compute(be, out);
+
+        std::vector<float> expected((size_t) D * ids.size());
+        for (size_t i = 0; i < ids.size(); ++i) {
+            const int r = ids[i];
+            for (int d = 0; d < D; ++d) {
+                expected[(size_t) d + (size_t) D * i] =
+                    table[(size_t) d + (size_t) D * r];
+            }
+        }
+        require_close(name, tensor_to_f32(out), expected, 1e-6f);
+    };
+
+    run("get-rows-f32-single", { 37 });
+    run("get-rows-f32-multi", { 0, 7, 31, 63 });
 }
 
 static void test_snake(Backend & be) {
@@ -225,6 +272,7 @@ int main() {
         be.init(true);
         std::fprintf(stderr, "[BREEZE_SELFTEST] backend=%s\n", be.name());
         test_sin(be);
+        test_get_rows_f32(be);
         test_snake(be);
         test_col2im_bias(be);
         be.free();
