@@ -9,7 +9,7 @@
 namespace breeze {
 
 struct CodecStreamCacheBlock {
-    std::vector<float> data;
+    size_t offset_f32 = 0;
     int left = 0;
     int channels = 0;
 };
@@ -18,6 +18,16 @@ struct VocoderStreamState {
     bool initialized = false;
     int position = 0;
     KVCache kv;
+
+    // All causal conv / transposed-conv carry state lives in one persistent
+    // HTP buffer. Previous builds copied every cache block HTP -> CPU -> HTP
+    // on each flush, which was both slow and vulnerable to stale/invalid state.
+    ggml_context * conv_ctx = nullptr;
+    ggml_backend_buffer_t conv_buffer = nullptr;
+    ggml_tensor * conv_storage = nullptr;
+    size_t conv_capacity_f32 = 0;
+    size_t conv_used_f32 = 0;
+
     std::unordered_map<std::string, CodecStreamCacheBlock> conv1d;
     std::unordered_map<std::string, CodecStreamCacheBlock> tconv1d;
 
@@ -45,11 +55,6 @@ struct MimiCodec {
 
 namespace codec_detail {
 
-struct StreamCacheUpdate {
-    CodecStreamCacheBlock * block = nullptr;
-    ggml_tensor * tensor = nullptr;
-};
-
 ggml_tensor * conv1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
                             ggml_tensor * x, int stride, int dilation);
 ggml_tensor * convtr1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
@@ -67,8 +72,7 @@ ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
                              const std::vector<int> & codes, int n_codebooks, int seq_len);
 ggml_tensor * vocoder_decode_stream(ggml_context * ctx, BreezeModel & m, Graph & g,
                                     VocoderStreamState & state,
-                                    const std::vector<int> & codes, int n_codebooks, int seq_len,
-                                    std::vector<StreamCacheUpdate> & updates);
+                                    const std::vector<int> & codes, int n_codebooks, int seq_len);
 
 }
 
