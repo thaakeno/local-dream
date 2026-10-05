@@ -1,6 +1,8 @@
 package io.github.xororz.localdream.ui.screens
 
 import android.content.Intent
+import android.widget.Toast
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -63,6 +65,22 @@ private const val DEFAULT_TOP_P = 1f
 private const val DEFAULT_REPETITION = 1.1f
 private const val DEFAULT_SPLIT_CHARS = 600
 private const val DEFAULT_MAX_NEW_TOKENS = 750
+
+private fun shareSpeechFile(context: android.content.Context, file: File) {
+    if (!file.isFile) return
+    val uri = FileProvider.getUriForFile(
+        context,
+        context.packageName + ".fileprovider",
+        file,
+    )
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "audio/wav"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        clipData = android.content.ClipData.newRawUri("Breeze TTS audio", uri)
+    }
+    context.startActivity(Intent.createChooser(send, "Share generated speech"))
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -460,6 +478,23 @@ fun SpeechRunScreen(
                     subtitle = "Seed " + complete.seed + " · " +
                         String.format(Locale.US, "%.1f s generation", complete.elapsedMillis / 1000f),
                     modifier = Modifier.padding(horizontal = 16.dp),
+                    onSave = {
+                        scope.launch {
+                            val saved = runCatching {
+                                SpeechHistoryStore.exportToMusic(context, complete.file)
+                            }.getOrNull()
+                            Toast.makeText(
+                                context,
+                                if (saved != null) {
+                                    "Saved to Music/LocalDream"
+                                } else {
+                                    "Could not save audio"
+                                },
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    },
+                    onShare = { shareSpeechFile(context, complete.file) },
                 )
             }
 
@@ -663,6 +698,23 @@ fun SpeechRunScreen(
                                     file = file,
                                     title = item.text.take(64),
                                     subtitle = item.instruction.take(90),
+                                    onSave = {
+                                        scope.launch {
+                                            val saved = runCatching {
+                                                SpeechHistoryStore.exportToMusic(context, file)
+                                            }.getOrNull()
+                                            Toast.makeText(
+                                                context,
+                                                if (saved != null) {
+                                                    "Saved to Music/LocalDream"
+                                                } else {
+                                                    "Could not save audio"
+                                                },
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        }
+                                    },
+                                    onShare = { shareSpeechFile(context, file) },
                                 )
                                 TextButton(
                                     onClick = {
