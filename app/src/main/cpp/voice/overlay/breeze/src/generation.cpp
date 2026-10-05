@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <random>
 
 namespace breeze {
@@ -105,7 +106,25 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     if (use_cfg) emb_u = assemble(m, build_segments(m, req, text, has_ref, ref.text, ref_codes, ref_T, false), total_u);
     tm.prompt += since(t0);
 
-    const int max_new = req.max_new_tokens > 0 ? req.max_new_tokens : m.cfg.max_new_tokens;
+    const int configured_max =
+        req.max_new_tokens > 0 ? req.max_new_tokens : m.cfg.max_new_tokens;
+    const double estimated_seconds = std::max(0.8, estimate_seconds(text));
+    const double frames_per_second =
+        (double) m.cfg.sample_rate / (double) m.cfg.samples_per_frame;
+    const int estimated_frames =
+        (int) (estimated_seconds * frames_per_second + 0.999);
+    // EOS normally stops generation much earlier. This ceiling only prevents a
+    // bad sample from wandering all the way to the model's ~60 second default.
+    const int adaptive_cap = std::max(64, estimated_frames * 2 + 24);
+    const int max_new = std::min(configured_max, adaptive_cap);
+    std::fprintf(
+        stderr,
+        "[BREEZE_LIMIT] estimate=%.2fs estimated_frames=%d configured=%d effective=%d\n",
+        estimated_seconds,
+        estimated_frames,
+        configured_max,
+        max_new
+    );
 
     BackboneState st_c, st_u;
     st_c.init(m, total_c + max_new + 8);
@@ -155,6 +174,15 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
             const double vtime = since(tv);
             tm.vocoder += vtime;
             tm.flushes++;
+            std::fprintf(
+                stderr,
+                "[BREEZE_VOCODER] flush=%d new_frames=%d context_frames=%d ms=%.2f total_ms=%.2f\n",
+                tm.flushes,
+                count,
+                sub_T,
+                vtime,
+                tm.vocoder
+            );
             const int skip = (start - ctx_start) * spf;
             if (!tm.first_audio) {
                 tm.first_vocoder = vtime;
@@ -169,7 +197,9 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         return true;
     };
 
+    int generated_steps = 0;
     for (int step = 0; step < max_new; step++) {
+        generated_steps = step + 1;
         if (cb0 == m.cfg.backbone_eos_token_id) break;
         std::vector<std::vector<float>> hiddens = { o_c.hidden };
         if (use_cfg) hiddens.push_back(o_u.hidden);
@@ -200,8 +230,30 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         tm.backbone += since(tb);
         comb = combine_logits(o_c.logits, o_u.logits, use_cfg, req.cfg_scale);
         cb0 = sample_token(comb, bp, rng, &hist, &suppress);
+
+        if (tm.frames == 1 || (tm.frames > 0 && tm.frames % 4 == 0)) {
+            const double denom = std::max(1, tm.frames);
+            std::fprintf(
+                stderr,
+                "[BREEZE_STAGE] frames=%d depth_ms_per_frame=%.2f backbone_ms_per_frame=%.2f "
+                "vocoder_total_ms=%.2f first_audio_ms=%.2f\n",
+                tm.frames,
+                tm.depth / denom,
+                tm.backbone / denom,
+                tm.vocoder,
+                tm.first_audio
+            );
+        }
     }
     if (!stopped) stopped = !flush(true);
+
+    if (generated_steps >= max_new && cb0 != m.cfg.backbone_eos_token_id) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_LIMIT] adaptive ceiling reached after %d frames; returning bounded audio\n",
+            generated_steps
+        );
+    }
 
     st_c.free();
     if (use_cfg) st_u.free();
