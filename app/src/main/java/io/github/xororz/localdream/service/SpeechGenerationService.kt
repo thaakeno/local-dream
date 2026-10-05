@@ -47,7 +47,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v161-weight-buffer-extended-map"
+            "breeze-a0e177-hexagon-ab9acc-v162-v81-quant-hmx-guard"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -241,6 +241,7 @@ class SpeechGenerationService : Service() {
                 "GGML_HEXAGON_NHVX" to "0",
                 "GGML_HEXAGON_MM_SELECT" to "2",
                 "GGML_HEXAGON_OPFUSION" to "1",
+                "GGML_HEXAGON_BATCHLOG" to "1",
                 // Busy-poll completions while speech is actively generating.
                 // It trades a little host CPU for lower DSPQueue hand-off latency.
                 "GGML_HEXAGON_OPPOLL" to "1",
@@ -254,7 +255,8 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
-                    "queue=backend-default oppoll=1 opfusion=1 hmx=1 matmul=hvx-v81 " +
+                    "queue=backend-default oppoll=1 opfusion=1 hmx=fp-only " +
+                    "quant-matmul=hvx-v81 batchlog=1 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
             runBackendSelfTest(env, modelId, started)
