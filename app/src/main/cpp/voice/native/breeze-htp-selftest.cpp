@@ -91,8 +91,8 @@ static void test_col2im_case(
     for (int t = 0; t < TIN; ++t) {
         for (int k = 0; k < K; ++k) {
             for (int ch = 0; ch < OC; ++ch) {
-                // Exact ggml [K * OC, T] layout: flattened index = k * OC + ch.
-                cols[(size_t) (k * OC + ch) + (size_t) (K * OC) * t] =
+                // Exact ggml [K * OC, T] layout: flattened index = ch * K + k.
+                cols[(size_t) (ch * K + k) + (size_t) (K * OC) * t] =
                     0.013f * (1 + t * 101 + k * 11 + ch * 3);
             }
         }
@@ -105,7 +105,7 @@ static void test_col2im_case(
             if (dst_t < 0 || dst_t >= TOUT) continue;
             for (int ch = 0; ch < OC; ++ch) {
                 expected[(size_t) dst_t + (size_t) TOUT * ch] +=
-                    cols[(size_t) (k * OC + ch) + (size_t) (K * OC) * t];
+                    cols[(size_t) (ch * K + k) + (size_t) (K * OC) * t];
             }
         }
     }
