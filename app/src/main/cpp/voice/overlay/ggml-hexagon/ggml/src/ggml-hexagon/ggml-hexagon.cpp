@@ -5185,12 +5185,11 @@ static bool ggml_hexagon_matmul_is_hmx_eligible(
     const int ne12  = src1->ne[2];
     const int wtype = src0->type;
 
-    // SM8850 / Hexagon v81 has a known visibility/correctness failure when
-    // downstream ops consume HMX MUL_MAT results. It affects F16 as well as
-    // quantized models, so disabling only quantized HMX is not sufficient.
-    // Keep the HMX unit/session enabled (flash-attention can still use it), but
-    // route every v81 MUL_MAT through the mature HVX kernels.
-    if (opt_arch >= 81) {
+    // The current v81 quantized HMX matmul path has public correctness
+    // regressions on Snapdragon 8 Elite-class parts. Keep those repacked
+    // weights on HVX, but leave F16/F32 HMX enabled for the heavy vocoder
+    // projections where it is both valid and materially faster.
+    if (opt_arch >= 81 && ggml_hexagon_is_repack_type((ggml_type) wtype)) {
         return false;
     }
 
