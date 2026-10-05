@@ -576,9 +576,15 @@ replace_once(
 
 replace_once(
     generation,
-    """        std::vector<float> ae = audio_embed_forward(m, frame, 1);
+    """        hist.push_back(cb0);
+
+        auto tb = clock_now();
+        std::vector<float> ae = audio_embed_forward(m, frame, 1);
         if (use_cfg) {""",
-    """        std::vector<float> ae = audio_embed.run(m, frame);
+    """        hist.push_back(cb0);
+
+        auto tb = clock_now();
+        std::vector<float> ae = audio_embed.run(m, frame);
         if (use_cfg) {""",
     "generation cached audio embedding",
 )
@@ -600,9 +606,13 @@ replace_once(
 
 replace_once(
     generation,
-    """        std::vector<float> ae = audio_embed_forward(m, frame, 1);
+    """        const int * from = opt.feed_source ? &src_codes[(size_t) t * nc] : &out[(size_t) t * nc];
+        std::vector<int> frame(from, from + nc);
+        std::vector<float> ae = audio_embed_forward(m, frame, 1);
         if (use_cfg) {""",
-    """        std::vector<float> ae = audio_embed.run(m, frame);
+    """        const int * from = opt.feed_source ? &src_codes[(size_t) t * nc] : &out[(size_t) t * nc];
+        std::vector<int> frame(from, from + nc);
+        std::vector<float> ae = audio_embed.run(m, frame);
         if (use_cfg) {""",
     "conversion cached audio embedding",
 )
