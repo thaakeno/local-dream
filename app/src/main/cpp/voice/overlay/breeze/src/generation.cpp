@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <random>
 
@@ -197,6 +198,39 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
                 );
                 return false;
             }
+
+            float peak = 0.0f;
+            double sum_sq = 0.0;
+            size_t nonfinite = 0;
+            for (size_t i = 0; i < want; ++i) {
+                const float v = audio[i];
+                if (!std::isfinite(v)) {
+                    nonfinite++;
+                    continue;
+                }
+                peak = std::max(peak, std::fabs(v));
+                sum_sq += (double) v * (double) v;
+            }
+            const double rms = want > nonfinite
+                ? std::sqrt(sum_sq / (double) (want - nonfinite))
+                : 0.0;
+            std::fprintf(
+                stderr,
+                "[BREEZE_AUDIO] flush=%d samples=%zu peak=%.7f rms=%.7f nonfinite=%zu\n",
+                tm.flushes,
+                want,
+                peak,
+                rms,
+                nonfinite
+            );
+            if (nonfinite != 0) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_AUDIO] refusing non-finite vocoder output\n"
+                );
+                return false;
+            }
+
             if (!tm.first_audio) {
                 tm.first_vocoder = vtime;
                 tm.first_frames = count;
@@ -230,6 +264,13 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
             if (!flush(false)) { stopped = true; break; }
         }
         hist.push_back(cb0);
+
+        // There is no next token to sample after the final allowed frame.
+        // v153 still ran audio_embed + backbone here, which is exactly where
+        // the 88-frame SM8850 run crossed into dspqueue error 0x2e.
+        if (step + 1 >= max_new) {
+            break;
+        }
 
         auto tb = clock_now();
         std::vector<float> ae = audio_embed.run(m, frame);
