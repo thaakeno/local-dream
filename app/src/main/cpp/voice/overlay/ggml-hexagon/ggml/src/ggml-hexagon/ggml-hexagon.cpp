@@ -5185,13 +5185,12 @@ static bool ggml_hexagon_matmul_is_hmx_eligible(
     const int ne12  = src1->ne[2];
     const int wtype = src0->type;
 
-    // Quantized HMX has public v81 correctness reports (Q4/Q8 garbage output)
-    // on Snapdragon 8 Elite-class parts. Breeze Q4_K/DD2 uses the same HMX
-    // quantized path, and a corrupted codec-transformer/prompt state can
-    // legitimately decode to near-zero PCM. Keep HMX for F16/F32 workloads
-    // (notably the heavy vocoder projection work), but use the mature HVX
-    // quantized kernels on v81 until the HMX quant path is proven fixed.
-    if (opt_arch >= 81 && ggml_hexagon_is_repack_type((ggml_type) wtype)) {
+    // SM8850 / Hexagon v81 has a known visibility/correctness failure when
+    // downstream ops consume HMX MUL_MAT results. It affects F16 as well as
+    // quantized models, so disabling only quantized HMX is not sufficient.
+    // Keep the HMX unit/session enabled (flash-attention can still use it), but
+    // route every v81 MUL_MAT through the mature HVX kernels.
+    if (opt_arch >= 81) {
         return false;
     }
 
