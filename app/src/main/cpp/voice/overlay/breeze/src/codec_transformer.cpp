@@ -91,7 +91,9 @@ ggml_tensor * vocoder_transformer_stream(ggml_context * ctx, BreezeModel & m, Gr
     for (int i = 0; i < T; i++) pos_i[i] = pos0 + i;
     ggml_tensor * pos = g.input_i32(pos_i, T);
     std::vector<float> mask_v = build_causal_mask(T, kv_len, pos0, c.sliding_window);
-    ggml_tensor * mask = g.input_f32(mask_v, T, kv_len);
+    // GGML softmax expects mask ne[0] to match the attention KV axis.
+    // build_causal_mask stores [query][kv], so expose kv_len as ne0.
+    ggml_tensor * mask = g.input_f32(mask_v, kv_len, T);
 
     ggml_tensor * h = ggml_add(ctx, linear(ctx, m.w("codec.dtf.in_proj.weight"), x),
                                m.w("codec.dtf.in_proj.bias"));
