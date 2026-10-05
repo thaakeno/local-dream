@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <iomanip>
 #include <limits>
@@ -388,7 +389,21 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
     Graph g(32768);
     ggml_tensor * x = vocoder_decode_stream(g.ctx, *m, g, stream, codes, n_cb, T, nullptr);
     ggml_tensor * audio = ggml_cont(g.ctx, ggml_reshape_1d(g.ctx, x, x->ne[0]));
+    const auto compute_started = std::chrono::steady_clock::now();
+    if (first_frame) {
+        std::fprintf(stderr, "[BREEZE_VOCODER] first-frame HTP compute begin\n");
+    }
     g.compute(m->backend, audio);
+    if (first_frame) {
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - compute_started
+        ).count();
+        std::fprintf(
+            stderr,
+            "[BREEZE_VOCODER] first-frame HTP compute end elapsed_ms=%lld\n",
+            (long long) elapsed_ms
+        );
+    }
 
     std::vector<float> out = tensor_to_f32(audio);
     const size_t want = (size_t) T * (size_t) m->cfg.samples_per_frame;
