@@ -9,7 +9,7 @@
 namespace breeze {
 
 struct CodecStreamCacheBlock {
-    size_t offset_f32 = 0;
+    ggml_tensor * tensor = nullptr;
     int left = 0;
     int channels = 0;
 };
@@ -19,17 +19,11 @@ struct VocoderStreamState {
     int position = 0;
     KVCache kv;
 
-    // All causal conv / transposed-conv carry state lives in one persistent
-    // HTP buffer. Previous builds copied every cache block HTP -> CPU -> HTP
-    // on each flush, which was both slow and vulnerable to stale/invalid state.
+    // Breeze's reference fast runtime keeps one dedicated device tensor per
+    // causal-conv / transposed-conv cache. Mirror that layout on HTP instead of
+    // slicing views out of one giant arena.
     ggml_context * conv_ctx = nullptr;
     ggml_backend_buffer_t conv_buffer = nullptr;
-    ggml_tensor * conv_storage = nullptr;
-    // Per-bank capacity. Two banks are allocated so a flush never overwrites
-    // carry state that is still being consumed by the same HTP graph.
-    size_t conv_capacity_f32 = 0;
-    size_t conv_used_f32 = 0;
-    int conv_bank = 0;
 
     std::unordered_map<std::string, CodecStreamCacheBlock> conv1d;
     std::unordered_map<std::string, CodecStreamCacheBlock> tconv1d;
