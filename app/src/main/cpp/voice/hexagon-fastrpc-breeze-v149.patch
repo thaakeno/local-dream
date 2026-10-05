@@ -1,11 +1,8 @@
 diff --git a/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp b/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp
 --- a/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp
 +++ b/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp
-@@ -4838,7 +4838,55 @@
- // op tensor; returns true if the NPU can handle the op.
+@@ -4838,1 +4838,49 @@
  typedef bool (*hexagon_op_validator_t)(ggml_backend_hexagon_context * ctx, const ggml_tensor * op);
- 
--// Binary element-wise ops: ADD, SUB, MUL, DIV
 +// Breeze-specific validators used by the FastRPC/mempool transport.
 +// These keep the large vocoder channel broadcasts, sine, and transpose-conv
 +// entirely on HTP without asking the generic binary VTCM staging path to hold
@@ -54,22 +51,12 @@ diff --git a/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp b/ggml/src/ggml-hexa
 +           op->ne[2] == 1 && op->ne[3] == 1;
 +}
 +
-+// Binary element-wise ops: ADD, SUB, MUL, DIV
- static bool hexagon_validate_binary_op(ggml_backend_hexagon_context * ctx, const ggml_tensor * op) {
-     GGML_UNUSED(ctx);
-     const ggml_tensor * src0 = op->src[0];
-@@ -4839,9 +4839,11 @@
- typedef bool (*hexagon_op_validator_t)(ggml_backend_hexagon_context * ctx, const ggml_tensor * op);
- 
- // Binary element-wise ops: ADD, SUB, MUL, DIV
--static bool hexagon_validate_binary_op(ggml_backend_hexagon_context * ctx, const ggml_tensor * op) {
--    GGML_UNUSED(ctx);
--    const ggml_tensor * src0 = op->src[0];
-+static bool hexagon_validate_binary_op(ggml_backend_hexagon_context * ctx, const ggml_tensor * op) {
+@@ -4842,7 +4890,10 @@ static bool hexagon_validate_binary_op(ggml_backend_hexagon_context * ctx, const
 +    if (breeze_is_channel_binary(op)) {
 +        return true;
 +    }
-+    const ggml_tensor * src0 = op->src[0];
+     GGML_UNUSED(ctx);
+     const ggml_tensor * src0 = op->src[0];
      const ggml_tensor * src1 = op->src[1];
      const ggml_tensor * dst  = op;
      if (src0->type == GGML_TYPE_F32) {
