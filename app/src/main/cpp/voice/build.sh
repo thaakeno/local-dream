@@ -72,6 +72,7 @@ done
 
 test -s "$(pwd)/overlay/breeze/include/breeze/backbone.h"
 test -s "$(pwd)/overlay/breeze/src/backbone.cpp"
+test -s "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 test -s "$(pwd)/overlay/breeze/include/breeze/codec.h"
 test -s "$(pwd)/overlay/breeze/src/codec.cpp"
 test -s "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
@@ -94,6 +95,11 @@ grep -q 'GET_ROWS_THREAD_DT_FN(f32' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops
 grep -q 'case HTP_TYPE_F32:' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.h"
 grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-multi' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'get-rows-f32-weight-2048' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'GGML_BACKEND_BUFFER_USAGE_WEIGHTS' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'HTP decoder codebook row verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'verified %zu finite decoder codebooks' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -Fq '"${BREEZE_OVERLAY_DIR}/src/gguf_loader.cpp"' "$(pwd)/CMakeLists.txt"
 grep -q 'vocoder_decode_stream' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 grep -q 'decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
 grep -q 'vocoder_transformer_stream' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
@@ -182,8 +188,8 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=backend-default
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged
-streaming_vocoder=reference-state-tensors-chunk1-f32-getrows-vtcm
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map
+streaming_vocoder=reference-state-tensors-chunk1-weight-buffer-extended-map
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
