@@ -58,8 +58,12 @@ git -C "$HEXAGON_DIR" apply --check "$(pwd)/hexagon-breeze-v148.patch"
 git -C "$HEXAGON_DIR" apply "$(pwd)/hexagon-breeze-v148.patch"
 git -C "$HEXAGON_DIR" apply --check "$(pwd)/hexagon-fastrpc-breeze-v149.patch"
 git -C "$HEXAGON_DIR" apply "$(pwd)/hexagon-fastrpc-breeze-v149.patch"
+git -C "$HEXAGON_DIR" apply --check "$(pwd)/hexagon-fastrpc-v81-stability-v149.patch"
+git -C "$HEXAGON_DIR" apply "$(pwd)/hexagon-fastrpc-v81-stability-v149.patch"
 git -C "$BREEZE_DIR" apply --check "$(pwd)/breeze-core-v148.patch"
 git -C "$BREEZE_DIR" apply "$(pwd)/breeze-core-v148.patch"
+git -C "$BREEZE_DIR" apply --check "$(pwd)/breeze-runtime-v149.patch"
+git -C "$BREEZE_DIR" apply "$(pwd)/breeze-runtime-v149.patch"
 
 grep -q 'HTP_OP_SIN' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_COL2IM_1D_BIAS' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
@@ -72,6 +76,8 @@ grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'breeze_is_channel_binary' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp"
 grep -q 'HTP_OP_SNAKE.*op_snake' "$GGML_DIR/src/ggml-hexagon/htp/entry.c"
+grep -q 'persistent_weight_mirrors' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp"
+grep -q 'adaptive_cap' "$BREEZE_DIR/src/generation.cpp"
 grep -q '1 / exp(lb) == exp(-lb)' "$BREEZE_DIR/src/codec_decoder.cpp"
 grep -q 'struct AudioEmbedRunner' "$BREEZE_DIR/include/breeze/backbone.h"
 
@@ -113,6 +119,8 @@ backend_commit=$HEXAGON_COMMIT
 mode=strict-htp-fastrpc-mempool
 fallback=disabled
 transport=fastrpc-single-pool
+v81_persistent_weight_mirrors=disabled
+runaway_eos_guard=adaptive-2x-plus24
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
@@ -134,7 +142,7 @@ dsp_cache_trace_bit0=0
 dsp_cache_trace_bit1=0
 enable_graph_optimize=1
 enable_graph_cache=1
-mirror_threshold=0.88
+mirror_threshold=0.70
 enabled_ops=all
 EOF
 
