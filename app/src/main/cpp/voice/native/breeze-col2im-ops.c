@@ -43,7 +43,9 @@ static inline void col2im_fast_channel(const float * src,
                                        const struct htp_col2im_context * c) {
     const int32_t s = c->stride;
     const int32_t edge = s - c->padding;
-    const size_t oc_off = (size_t) oc * (size_t) c->kernel;
+    // ggml_col2im_1d receives [K * OC, T] where ne0 is laid out as
+    // flattened [k, oc]: index = k * OC + oc. Do not treat each channel's
+    // K taps as contiguous; that was the v150 correctness bug.
     size_t out = 0;
 
     // Full (uncropped) transpose-conv blocks are:
@@ -54,20 +56,20 @@ static inline void col2im_fast_channel(const float * src,
     //   B(T-2) + A(T-1),
     //   B(T-1)
     // Padding simply crops p values from both outer blocks.
-    const float * a0 = src + oc_off;
+    const float * a0 = src;
     for (int32_t r = c->padding; r < s; ++r) {
-        dst[out++] = a0[r] + bias;
+        dst[out++] = a0[(size_t) r * (size_t) c->out_channels + (size_t) oc] + bias;
     }
 
     for (int32_t ti = 1; ti < c->t_in; ++ti) {
         const float * prev_b =
-            src + (size_t) (ti - 1) * (size_t) c->k_oc + oc_off + (size_t) s;
+            src + (size_t) (ti - 1) * (size_t) c->k_oc;
         const float * cur_a =
-            src + (size_t) ti * (size_t) c->k_oc + oc_off;
+            src + (size_t) ti * (size_t) c->k_oc;
 
         if (ti + 1 < c->t_in) {
             __builtin_prefetch(
-                src + (size_t) (ti + 1) * (size_t) c->k_oc + oc_off,
+                src + (size_t) (ti + 1) * (size_t) c->k_oc,
                 0,
                 2);
         }
@@ -76,14 +78,19 @@ static inline void col2im_fast_channel(const float * src,
         // branch-free is substantially cheaper than reconstructing t_min /
         // t_max for every output sample.
         for (int32_t r = 0; r < s; ++r) {
-            dst[out++] = prev_b[r] + cur_a[r] + bias;
+            dst[out++] =
+                prev_b[(size_t) (s + r) * (size_t) c->out_channels + (size_t) oc] +
+                cur_a[(size_t) r * (size_t) c->out_channels + (size_t) oc] +
+                bias;
         }
     }
 
     const float * tail =
-        src + (size_t) (c->t_in - 1) * (size_t) c->k_oc + oc_off + (size_t) s;
+        src + (size_t) (c->t_in - 1) * (size_t) c->k_oc;
     for (int32_t r = 0; r < edge; ++r) {
-        dst[out++] = tail[r] + bias;
+        dst[out++] =
+            tail[(size_t) (s + r) * (size_t) c->out_channels + (size_t) oc] +
+            bias;
     }
 }
 
@@ -108,8 +115,8 @@ static inline void col2im_generic_channel(const float * src,
             const int32_t k = t_abs - ti * c->stride;
             if ((uint32_t) k < (uint32_t) c->kernel) {
                 sum += src[(size_t) ti * (size_t) c->k_oc +
-                           (size_t) oc * (size_t) c->kernel +
-                           (size_t) k];
+                           (size_t) k * (size_t) c->out_channels +
+                           (size_t) oc];
             }
         }
         dst[t_out] = sum + bias;
