@@ -616,3 +616,34 @@ replace_once(
         if (use_cfg) {""",
     "conversion cached audio embedding",
 )
+
+
+# Do not SIGABRT the whole long-lived Breeze server when an unforeseen binary
+# geometry cannot be precomputed. Strict mode still refuses the graph, but the
+# failure now propagates through GGML_STATUS_FAILED so the request can surface a
+# useful error and the already-loaded model can stay resident.
+replace_once(
+    host,
+    """                GGML_ASSERT(ggml_hexagon_precompute_binary_params(sess,
+                    node.opcode, node.node->src[0], src1, node.node,
+                    (struct htp_binary_kernel_params *) node.kernel_params));""",
+    """                if (!ggml_hexagon_precompute_binary_params(sess,
+                    node.opcode, node.node->src[0], src1, node.node,
+                    (struct htp_binary_kernel_params *) node.kernel_params)) {
+                    GGML_LOG_ERROR(
+                        "ggml-hex: %s binary precompute rejected op=%s "
+                        "src0=[%lld,%lld,%lld,%lld] src1=[%lld,%lld,%lld,%lld] "
+                        "dst=[%lld,%lld,%lld,%lld]\\n",
+                        sess->c_name(), ggml_op_desc(node.node),
+                        (long long) node.node->src[0]->ne[0],
+                        (long long) node.node->src[0]->ne[1],
+                        (long long) node.node->src[0]->ne[2],
+                        (long long) node.node->src[0]->ne[3],
+                        (long long) src1->ne[0], (long long) src1->ne[1],
+                        (long long) src1->ne[2], (long long) src1->ne[3],
+                        (long long) node.node->ne[0], (long long) node.node->ne[1],
+                        (long long) node.node->ne[2], (long long) node.node->ne[3]);
+                    return GGML_STATUS_FAILED;
+                }""",
+    "Breeze binary precompute graceful failure",
+)
