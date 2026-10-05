@@ -342,6 +342,14 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
     if (codes.size() != code_count) {
         throw std::runtime_error("Breeze streaming codec received a malformed code chunk");
     }
+    for (size_t i = 0; i < codes.size(); ++i) {
+        if (codes[i] < 0 || codes[i] >= m->cfg.codec_codebook_size) {
+            throw std::runtime_error(
+                "Breeze codec code out of range at " + std::to_string(i) +
+                ": " + std::to_string(codes[i])
+            );
+        }
+    }
 
     const bool first_frame = stream.position == 0;
     if (first_frame) {
@@ -375,9 +383,6 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
             m->cfg.voc.n_kv_head, m->cfg.voc.head_dim, m->cfg.voc.sliding_window,
             m->cfg.voc.upsampling_ratios.size(), m->cfg.voc.upsample_rates.size()
         );
-        log_codec_weight_map(*m);
-        log_cache_map("BREEZE_DIAG_CACHE_PRE", stream.conv1d);
-        log_cache_map("BREEZE_DIAG_CACHE_PRE", stream.tconv1d);
     }
 
     Graph g(32768);
