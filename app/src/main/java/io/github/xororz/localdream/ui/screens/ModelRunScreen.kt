@@ -174,6 +174,7 @@ import io.github.xororz.localdream.ui.components.ResultGalleryOverlay
 import io.github.xororz.localdream.ui.components.ShareParamsFlow
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
 import io.github.xororz.localdream.ui.theme.Motion
+import io.github.xororz.localdream.utils.AppHaptics
 import io.github.xororz.localdream.utils.ImportedParams
 import io.github.xororz.localdream.utils.LogCapture
 import io.github.xororz.localdream.utils.ParamShare
@@ -405,6 +406,7 @@ fun ModelRunScreen(
     var generationStep by remember { mutableIntStateOf(0) }
     var generationTotalSteps by remember { mutableIntStateOf(0) }
     var generationPhase by remember { mutableStateOf("preparing") }
+    var lastImageProgressHapticKey by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isCheckingBackend by remember { mutableStateOf(true) }
 
@@ -1648,11 +1650,20 @@ fun ModelRunScreen(
                 generationStep = state.step
                 generationTotalSteps = state.totalSteps
                 generationPhase = state.phase
+                val hapticKey =
+                    state.phase + ":" + state.step + ":" + (state.progress * 1000f).toInt()
+                if (state.progress > 0f && hapticKey != lastImageProgressHapticKey) {
+                    AppHaptics.perform(context, AppHaptics.Kind.Progress)
+                    lastImageProgressHapticKey = hapticKey
+                } else if (state.progress <= 0f) {
+                    lastImageProgressHapticKey = null
+                }
                 isRunning = true
                 state.intermediateImage?.let { intermediateBitmap = it }
             }
 
             is GenerationState.Complete -> {
+                lastImageProgressHapticKey = null
                 intermediateBitmap = null
                 withContext(Dispatchers.Main) {
                     Log.d("ModelRunScreen", "update bitmap")
