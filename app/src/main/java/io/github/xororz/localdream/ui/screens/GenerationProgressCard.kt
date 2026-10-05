@@ -46,7 +46,6 @@ internal fun GenerationProgressCard(
     startedAtMillis: Long?,
     showStats: Boolean,
     intermediateBitmap: Bitmap?,
-    acceleratorLabel: String = "NPU · HTP",
     onCancel: () -> Unit,
 ) {
     AnimatedVisibility(
@@ -111,7 +110,7 @@ internal fun GenerationProgressCard(
                 }
 
                 if (showStats) {
-                    GenerationTelemetryPanel(startedAtMillis, acceleratorLabel)
+                    GenerationTelemetryPanel(startedAtMillis)
                 }
 
                 intermediateBitmap?.let { bitmap ->
@@ -167,7 +166,6 @@ private fun GenerationElapsedLabel(startedAtMillis: Long?) {
 @Composable
 private fun GenerationTelemetryPanel(
     startedAtMillis: Long?,
-    acceleratorLabel: String,
 ) {
     val context = LocalContext.current
     val telemetry by produceState<GenerationTelemetrySnapshot?>(
@@ -195,11 +193,6 @@ private fun GenerationTelemetryPanel(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(
-                acceleratorLabel,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-            )
             Text(
                 "RAM ${GenerationTelemetry.formatBytes(t.processRamBytes)} app · " +
                     "${GenerationTelemetry.formatBytes(t.availableRamBytes)} free",
