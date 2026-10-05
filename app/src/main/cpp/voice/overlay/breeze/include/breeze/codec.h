@@ -25,8 +25,11 @@ struct VocoderStreamState {
     ggml_context * conv_ctx = nullptr;
     ggml_backend_buffer_t conv_buffer = nullptr;
     ggml_tensor * conv_storage = nullptr;
+    // Per-bank capacity. Two banks are allocated so a flush never overwrites
+    // carry state that is still being consumed by the same HTP graph.
     size_t conv_capacity_f32 = 0;
     size_t conv_used_f32 = 0;
+    int conv_bank = 0;
 
     std::unordered_map<std::string, CodecStreamCacheBlock> conv1d;
     std::unordered_map<std::string, CodecStreamCacheBlock> tconv1d;
@@ -39,6 +42,13 @@ struct VocoderStreamState {
 struct MimiCodec {
     BreezeModel * m = nullptr;
     VocoderStreamState stream;
+
+    // Keep a bounded code history so a numerically bad incremental flush can
+    // fall back to the exact full decoder instead of returning broken PCM.
+    bool stream_safe_full = false;
+    int stream_history_frames = 0;
+    int stream_history_n_cb = 0;
+    std::vector<int> stream_history_codes;
 
     void init(BreezeModel & model);
     void stream_reset();
