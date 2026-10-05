@@ -48,11 +48,6 @@ static void test_snake(Backend & be) {
     constexpr int C = 4;
     std::vector<float> x(T * C);
     std::vector<float> log_alpha = { -0.60f, -0.10f, 0.35f, 0.80f };
-    // This catches the exact failure mode from v156: exp(-beta) overflows for
-    // sufficiently negative beta, whereas Breeze's reference denominator stays finite.
-    std::vector<float> log_beta = { -100.0f, -20.0f, 0.0f, 4.0f };
-    std::vector<float> ones(C, 1.0f);
-    std::vector<float> eps(C, 1.0e-9f);
 
     for (int ch = 0; ch < C; ++ch) {
         for (int t = 0; t < T; ++t) {
@@ -60,37 +55,77 @@ static void test_snake(Backend & be) {
         }
     }
 
-    Graph g(160);
-    auto * tx = g.input_f32(x, T, C);
-    auto * tla = g.input_f32(log_alpha, 1, C);
-    auto * tlb = g.input_f32(log_beta, 1, C);
-    auto * one = g.input_f32(ones, 1, C);
-    auto * tiny = g.input_f32(eps, 1, C);
+    // First validate normal Breeze SnakeBeta numerics against a scalar
+    // reference with realistic magnitudes.
+    {
+        std::vector<float> log_beta = { -2.0f, -0.5f, 0.0f, 4.0f };
+        std::vector<float> ones(C, 1.0f);
+        std::vector<float> eps(C, 1.0e-9f);
 
-    auto * alpha = ggml_exp(g.ctx, tla);
-    auto * beta = ggml_exp(g.ctx, tlb);
-    auto * inv_beta = ggml_div(g.ctx, one, ggml_add(g.ctx, beta, tiny));
-    auto * s = ggml_sin(g.ctx, ggml_mul(g.ctx, tx, alpha));
-    auto * out = ggml_add(
-        g.ctx, tx, ggml_mul(g.ctx, inv_beta, ggml_sqr(g.ctx, s))
-    );
-    g.compute(be, out);
+        Graph g(160);
+        auto * tx = g.input_f32(x, T, C);
+        auto * tla = g.input_f32(log_alpha, 1, C);
+        auto * tlb = g.input_f32(log_beta, 1, C);
+        auto * one = g.input_f32(ones, 1, C);
+        auto * tiny = g.input_f32(eps, 1, C);
 
-    std::vector<float> expected(x.size());
-    for (int ch = 0; ch < C; ++ch) {
-        const float a = std::exp(log_alpha[ch]);
-        const float b = std::exp(log_beta[ch]);
-        const float inv_b = 1.0f / (b + 1.0e-9f);
-        for (int t = 0; t < T; ++t) {
-            const size_t i = (size_t) t + (size_t) T * ch;
-            const float s0 = std::sin(x[i] * a);
-            expected[i] = x[i] + s0 * s0 * inv_b;
-            if (!std::isfinite(expected[i])) {
-                throw std::runtime_error("SnakeBeta reference became non-finite");
+        auto * alpha = ggml_exp(g.ctx, tla);
+        auto * beta = ggml_exp(g.ctx, tlb);
+        auto * inv_beta = ggml_div(g.ctx, one, ggml_add(g.ctx, beta, tiny));
+        auto * s = ggml_sin(g.ctx, ggml_mul(g.ctx, tx, alpha));
+        auto * out = ggml_add(
+            g.ctx, tx, ggml_mul(g.ctx, ggml_sqr(g.ctx, s), inv_beta)
+        );
+        g.compute(be, out);
+
+        std::vector<float> expected(x.size());
+        for (int ch = 0; ch < C; ++ch) {
+            const float a = std::exp(log_alpha[ch]);
+            const float b = std::exp(log_beta[ch]);
+            const float inv_b = 1.0f / (b + 1.0e-9f);
+            for (int t = 0; t < T; ++t) {
+                const size_t i = (size_t) t + (size_t) T * ch;
+                const float s0 = std::sin(x[i] * a);
+                expected[i] = x[i] + s0 * s0 * inv_b;
             }
         }
+        require_close("snake-beta-reference", tensor_to_f32(out), expected, 4e-3f);
     }
-    require_close("snake-beta-reference", tensor_to_f32(out), expected, 4e-3f);
+
+    // Then explicitly cover the v156 overflow scenario. This test only asks
+    // for finiteness because values near the epsilon floor can be ~1e9 and an
+    // absolute close check would be meaningless.
+    {
+        std::vector<float> log_beta = { -100.0f, -20.0f, 0.0f, 4.0f };
+        std::vector<float> ones(C, 1.0f);
+        std::vector<float> eps(C, 1.0e-9f);
+
+        Graph g(160);
+        auto * tx = g.input_f32(x, T, C);
+        auto * tla = g.input_f32(log_alpha, 1, C);
+        auto * tlb = g.input_f32(log_beta, 1, C);
+        auto * one = g.input_f32(ones, 1, C);
+        auto * tiny = g.input_f32(eps, 1, C);
+
+        auto * alpha = ggml_exp(g.ctx, tla);
+        auto * beta = ggml_exp(g.ctx, tlb);
+        auto * inv_beta = ggml_div(g.ctx, one, ggml_add(g.ctx, beta, tiny));
+        auto * s = ggml_sin(g.ctx, ggml_mul(g.ctx, tx, alpha));
+        auto * out = ggml_add(
+            g.ctx, tx, ggml_mul(g.ctx, ggml_sqr(g.ctx, s), inv_beta)
+        );
+        g.compute(be, out);
+
+        const std::vector<float> got = tensor_to_f32(out);
+        for (size_t i = 0; i < got.size(); ++i) {
+            if (!std::isfinite(got[i])) {
+                throw std::runtime_error(
+                    "snake-beta-extreme produced non-finite output at " + std::to_string(i)
+                );
+            }
+        }
+        std::fprintf(stderr, "[BREEZE_SELFTEST] snake-beta-extreme finite\n");
+    }
 }
 
 static void test_col2im_case(
