@@ -46,7 +46,7 @@ class SpeechGenerationService : Service() {
         private const val EXECUTABLE = "libbreeze_server.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-strict-htp-v2-static"
+            "breeze-a0e177-hexagon-ab9acc-v3-fast-vocoder"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -88,6 +88,12 @@ class SpeechGenerationService : Service() {
             val detail: String,
             val generatedSeconds: Float,
             val startedAtMillis: Long,
+            val progress: Float? = null,
+            val estimatedSeconds: Float? = null,
+            val elapsedSeconds: Float? = null,
+            val etaSeconds: Float? = null,
+            val fps: Float? = null,
+            val realtimeFactor: Float? = null,
         ) : SpeechState()
 
         data class Complete(
@@ -125,7 +131,7 @@ class SpeechGenerationService : Service() {
             NOTIFICATION_ID,
             NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Local Dream · Breeze TTS 2")
-                .setContentText("Qualcomm Hexagon HTP")
+                .setContentText("Speech engine")
                 .setSmallIcon(R.drawable.ic_launcher_monochrome)
                 .setOngoing(true)
                 .build(),
@@ -173,7 +179,7 @@ class SpeechGenerationService : Service() {
         val started = System.currentTimeMillis()
         _state.value = SpeechState.Loading(
             modelId,
-            "Preparing strict Hexagon HTP runtime",
+            "Preparing speech engine",
             started,
         )
         try {
@@ -192,7 +198,7 @@ class SpeechGenerationService : Service() {
 
             _state.value = SpeechState.Loading(
                 modelId,
-                "Opening one physical HTP session",
+                "Starting voice model",
                 started,
             )
 
@@ -202,8 +208,8 @@ class SpeechGenerationService : Service() {
                 "--host", "127.0.0.1",
                 "--port", "8082",
                 "--ws-port", "-1",
-                "--chunk-first", "2",
-                "--chunk-max", "40",
+                "--chunk-first", "8",
+                "--chunk-max", "64",
                 "--split-chars", "600",
                 "--verbose",
             )
@@ -231,8 +237,8 @@ class SpeechGenerationService : Service() {
                 "GGML_HEXAGON_MM_SELECT" to "2",
                 "GGML_HEXAGON_OPFUSION" to "1",
                 "GGML_HEXAGON_OPPOLL" to "0",
-                "GGML_HEXAGON_OPBATCH" to "64",
-                "GGML_HEXAGON_OPQUEUE" to "8",
+                "GGML_HEXAGON_OPBATCH" to "1280",
+                "GGML_HEXAGON_OPQUEUE" to "32",
             )
 
             BackendDiagnostics.beginSession(
@@ -242,7 +248,7 @@ class SpeechGenerationService : Service() {
             BackendDiagnostics.append(
                 this,
                 "BREEZE_ENV",
-                "backend=HTP0:0 fallback=disabled queue=64/8 hmx=1 " +
+                "backend=HTP0:0 fallback=disabled queue=1280/32 hmx=1 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
             BackendDiagnostics.append(this, "BREEZE_CMD", command.joinToString(" "))
@@ -264,19 +270,19 @@ class SpeechGenerationService : Service() {
                 }
                 if (!proc.isAlive) {
                     throw IllegalStateException(
-                        "Breeze HTP runtime exited during startup. Check native backend logs.",
+                        "Speech engine stopped during startup.",
                     )
                 }
                 if (attempt % 8 == 0) {
                     _state.value = SpeechState.Loading(
                         modelId,
-                        "Loading ${modelFile.name} directly on HTP · ${attempt / 2}s",
+                        "Loading voice model · ${attempt / 2}s",
                         started,
                     )
                 }
                 delay(500)
             }
-            throw IllegalStateException("Breeze HTP runtime did not become ready")
+            throw IllegalStateException("Speech engine did not become ready")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -313,10 +319,10 @@ class SpeechGenerationService : Service() {
 
                 val started = System.currentTimeMillis()
                 _state.value = SpeechState.Generating(
-                    modelId,
-                    "Generating first audio frames on Hexagon HTP",
-                    0f,
-                    started,
+                    modelId = modelId,
+                    detail = "Starting speech generation",
+                    generatedSeconds = 0f,
+                    startedAtMillis = started,
                 )
 
                 val payload = JSONObject().apply {
@@ -374,12 +380,20 @@ class SpeechGenerationService : Service() {
                                 if (now - lastUi >= 250L) {
                                     val seconds =
                                         ((bytes - 44L).coerceAtLeast(0L) / 2f / 24000f)
-                                    _state.value = SpeechState.Generating(
-                                        modelId,
-                                        "Streaming ${"%.1f".format(Locale.US, seconds)} s of 24 kHz audio",
-                                        seconds,
-                                        started,
-                                    )
+                                    val current = _state.value as? SpeechState.Generating
+                                    if (current?.modelId == modelId) {
+                                        _state.value = current.copy(
+                                            detail = if (current.progress == null) {
+                                                "Streaming first audio"
+                                            } else {
+                                                current.detail
+                                            },
+                                            generatedSeconds = maxOf(
+                                                current.generatedSeconds,
+                                                seconds,
+                                            ),
+                                        )
+                                    }
                                     lastUi = now
                                 }
                             }
@@ -507,24 +521,90 @@ class SpeechGenerationService : Service() {
         }
     }
 
+    private val nativeProgressRegex = Regex(
+        """(\\d{1,3})%\\|.*?\\|\\s*([0-9.]+)/([0-9.]+)s\\s*""" +
+            """\\[([0-9:]+)<([0-9:]+),\\s*([0-9.]+)\\s*fps,\\s*([0-9.]+)x\\]""",
+    )
+
+    private fun parseClockSeconds(value: String): Float? {
+        val parts = value.split(':').mapNotNull { it.toFloatOrNull() }
+        if (parts.isEmpty()) return null
+        return when (parts.size) {
+            1 -> parts[0]
+            2 -> parts[0] * 60f + parts[1]
+            else -> parts.takeLast(3).let { it[0] * 3600f + it[1] * 60f + it[2] }
+        }
+    }
+
+    private fun handleNativeOutput(modelId: String, raw: String) {
+        val line = raw.trim()
+        if (line.isEmpty()) return
+
+        BackendDiagnostics.append(
+            this,
+            "BREEZE_NATIVE",
+            line.take(3000),
+        )
+
+        val match = nativeProgressRegex.find(line) ?: return
+        val current = _state.value as? SpeechState.Generating ?: return
+        if (current.modelId != modelId) return
+
+        val percent = match.groupValues[1].toFloatOrNull()?.coerceIn(0f, 100f)
+        val generated = match.groupValues[2].toFloatOrNull()
+        val estimated = match.groupValues[3].toFloatOrNull()
+        val elapsed = parseClockSeconds(match.groupValues[4])
+        val eta = parseClockSeconds(match.groupValues[5])
+        val fps = match.groupValues[6].toFloatOrNull()
+        val realtime = match.groupValues[7].toFloatOrNull()
+
+        _state.value = current.copy(
+            detail = "Synthesizing speech",
+            generatedSeconds = maxOf(current.generatedSeconds, generated ?: 0f),
+            progress = percent?.div(100f),
+            estimatedSeconds = estimated,
+            elapsedSeconds = elapsed,
+            etaSeconds = eta,
+            fps = fps,
+            realtimeFactor = realtime,
+        )
+    }
+
     private fun monitorProcess(proc: Process, modelId: String) {
         monitorThread?.interrupt()
         monitorThread = Thread({
             runCatching {
-                proc.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
-                        BackendDiagnostics.append(
-                            this,
-                            "BREEZE_NATIVE",
-                            line.take(3000),
-                        )
+                proc.inputStream.bufferedReader().use { reader ->
+                    val buffer = CharArray(2048)
+                    val record = StringBuilder()
+                    while (true) {
+                        val count = reader.read(buffer)
+                        if (count < 0) break
+                        for (i in 0 until count) {
+                            val ch = buffer[i]
+                            if (ch == '\\r' || ch == '\\n') {
+                                if (record.isNotEmpty()) {
+                                    handleNativeOutput(modelId, record.toString())
+                                    record.setLength(0)
+                                }
+                            } else {
+                                record.append(ch)
+                                if (record.length >= 8192) {
+                                    handleNativeOutput(modelId, record.toString())
+                                    record.setLength(0)
+                                }
+                            }
+                        }
+                    }
+                    if (record.isNotEmpty()) {
+                        handleNativeOutput(modelId, record.toString())
                     }
                 }
             }
             val code = runCatching { proc.waitFor() }.getOrDefault(-1)
             if (process === proc && code != 0 && _state.value !is SpeechState.Idle) {
                 fail(
-                    "Breeze HTP runtime exited with code $code. Check native backend logs.",
+                    "Speech engine stopped unexpectedly (code $code).",
                     modelId,
                 )
             }
