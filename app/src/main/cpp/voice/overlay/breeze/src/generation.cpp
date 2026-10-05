@@ -113,9 +113,10 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         (double) m.cfg.sample_rate / (double) m.cfg.samples_per_frame;
     const int estimated_frames =
         (int) (estimated_seconds * frames_per_second + 0.999);
-    // EOS normally stops generation much earlier. This ceiling only prevents a
-    // bad sample from wandering all the way to the model's ~60 second default.
-    const int adaptive_cap = std::max(64, estimated_frames * 2 + 24);
+    // Keep generous room for slow delivery, but do not let a missing EOS turn
+    // a two-second sentence into six seconds of useless codec work.
+    const int adaptive_slack = std::max(12, estimated_frames / 2);
+    const int adaptive_cap = std::max(32, estimated_frames + adaptive_slack);
     const int max_new = std::min(configured_max, adaptive_cap);
     std::fprintf(
         stderr,
@@ -156,40 +157,52 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     std::vector<int> frames;
     int emitted = 0;
     bool stopped = false;
-    // the first flush is small so audio starts early, then it grows to keep the vocoder efficient
+    codec.stream_reset();
+
+    // The codec is now genuinely stateful: every flush evaluates only new frames.
+    // Keep the first chunk small for low latency and ramp gently to amortise graph setup.
     const int chunk_max = std::max(1, req.chunk_max);
     int chunk = std::min(std::max(1, req.chunk_first), chunk_max);
-    // the transformer window plus the slack the vocoder convolutions reach back over
-    const int ctx = m.cfg.voc.sliding_window + 16;
     auto flush = [&](bool final_flush) {
         const int have = (int) frames.size() / nc;
         while (have - emitted >= chunk || (final_flush && have > emitted)) {
             const int start = emitted;
             const int count = final_flush ? have - emitted : chunk;
-            const int ctx_start = start > ctx ? start - ctx : 0;
-            const int sub_T = start + count - ctx_start;
-            std::vector<int> sub(frames.begin() + (size_t) ctx_start * nc, frames.begin() + (size_t) (start + count) * nc);
+            std::vector<int> sub(
+                frames.begin() + (size_t) start * nc,
+                frames.begin() + (size_t) (start + count) * nc
+            );
+
             const auto tv = clock_now();
-            std::vector<float> audio = codec.decode(sub, sub_T);
+            std::vector<float> audio = codec.decode_stream(sub, count);
             const double vtime = since(tv);
             tm.vocoder += vtime;
             tm.flushes++;
             std::fprintf(
                 stderr,
-                "[BREEZE_VOCODER] flush=%d new_frames=%d context_frames=%d ms=%.2f total_ms=%.2f\n",
+                "[BREEZE_VOCODER_STREAM] flush=%d new_frames=%d ms=%.2f total_ms=%.2f\n",
                 tm.flushes,
                 count,
-                sub_T,
                 vtime,
                 tm.vocoder
             );
-            const int skip = (start - ctx_start) * spf;
+
+            const size_t want = (size_t) count * (size_t) spf;
+            if (audio.size() < want) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_VOCODER_STREAM] short output: got=%zu want=%zu\n",
+                    audio.size(),
+                    want
+                );
+                return false;
+            }
             if (!tm.first_audio) {
                 tm.first_vocoder = vtime;
-                tm.first_frames = sub_T;
+                tm.first_frames = count;
                 tm.first_audio = since(t_start);
             }
-            if (!cb(audio.data() + skip, count * spf)) return false;
+            if (!cb(audio.data(), want)) return false;
             emitted += count;
             chunk = std::min(chunk + chunk / 3 + 1, chunk_max);
             if (!final_flush && have - emitted < chunk) break;
