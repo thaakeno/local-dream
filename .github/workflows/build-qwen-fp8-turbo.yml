@@ -364,7 +364,9 @@ jobs:
           grep -q 'mode=strict-htp-dspqueue' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'fallback=disabled' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'integration=pinned-source-overlay' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'queue=backend-default' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'queue=opbatch64' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'v81-opbatch64' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'batch-progress-log' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im-bias-fused' app/src/main/assets/breezelibs/backend-version.txt
