@@ -13,6 +13,8 @@ if(NOT GGML_SOURCE_DIR OR NOT EXISTS "${GGML_SOURCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "GGML_SOURCE_DIR must point at the pinned ggml-hexagon ggml tree")
 endif()
 
+set(BREEZE_OVERLAY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/overlay/breeze")
+
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(GGML_STATIC ON CACHE BOOL "" FORCE)
 set(GGML_HEXAGON ON CACHE BOOL "" FORCE)
@@ -35,21 +37,26 @@ set(BREEZE_SOURCES
     "${BREEZE_SOURCE_DIR}/src/gguf_loader.cpp"
     "${BREEZE_SOURCE_DIR}/src/tokenizer.cpp"
     "${BREEZE_SOURCE_DIR}/src/text_encoder.cpp"
-    "${BREEZE_SOURCE_DIR}/src/backbone.cpp"
+    "${BREEZE_OVERLAY_DIR}/src/backbone.cpp"
     "${BREEZE_SOURCE_DIR}/src/depth_decoder.cpp"
     "${BREEZE_SOURCE_DIR}/src/codec.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-codec-conv-htp.cpp"
-    "${BREEZE_SOURCE_DIR}/src/codec_decoder.cpp"
+    "${BREEZE_OVERLAY_DIR}/src/codec_decoder.cpp"
     "${BREEZE_SOURCE_DIR}/src/codec_transformer.cpp"
     "${BREEZE_SOURCE_DIR}/src/sampling.cpp"
-    "${BREEZE_SOURCE_DIR}/src/generation.cpp"
+    "${BREEZE_OVERLAY_DIR}/src/generation.cpp"
     "${BREEZE_SOURCE_DIR}/src/text_split.cpp"
     "${BREEZE_SOURCE_DIR}/src/voice.cpp"
     "${BREEZE_SOURCE_DIR}/src/model.cpp"
 )
 
 add_library(breeze_core STATIC ${BREEZE_SOURCES})
-target_include_directories(breeze_core PUBLIC "${BREEZE_SOURCE_DIR}/include")
+target_include_directories(
+    breeze_core
+    PUBLIC
+        "${BREEZE_OVERLAY_DIR}/include"
+        "${BREEZE_SOURCE_DIR}/include"
+)
 target_link_libraries(breeze_core PUBLIC ggml)
 
 set(BREEZE_WEBUI_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/breeze_webui_assets.h")
@@ -88,3 +95,11 @@ target_include_directories(
 find_package(Threads REQUIRED)
 target_link_libraries(breeze-server PRIVATE breeze_core Threads::Threads)
 target_link_options(breeze-server PRIVATE "-Wl,-z,defs")
+
+
+add_executable(
+    breeze-htp-selftest
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-htp-selftest.cpp"
+)
+target_link_libraries(breeze-htp-selftest PRIVATE breeze_core Threads::Threads)
+target_link_options(breeze-htp-selftest PRIVATE "-Wl,-z,defs")
