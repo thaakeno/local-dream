@@ -1,6 +1,11 @@
 package io.github.xororz.localdream.service
 
+import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +62,47 @@ object SpeechHistoryStore {
             item
         }
     }
+
+    suspend fun exportToMusic(context: Context, file: File): Uri? =
+        withContext(Dispatchers.IO) {
+            if (!file.isFile) return@withContext null
+            val displayName = "LocalDream_Breeze_" + System.currentTimeMillis() + ".wav"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Audio.Media.DISPLAY_NAME, displayName)
+                    put(MediaStore.Audio.Media.MIME_TYPE, "audio/wav")
+                    put(
+                        MediaStore.Audio.Media.RELATIVE_PATH,
+                        Environment.DIRECTORY_MUSIC + "/LocalDream",
+                    )
+                    put(MediaStore.Audio.Media.IS_PENDING, 1)
+                }
+                val resolver = context.contentResolver
+                val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: return@withContext null
+                try {
+                    resolver.openOutputStream(uri, "w")?.use { out ->
+                        file.inputStream().use { it.copyTo(out) }
+                    } ?: error("Could not open exported audio")
+                    values.clear()
+                    values.put(MediaStore.Audio.Media.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                    uri
+                } catch (t: Throwable) {
+                    runCatching { resolver.delete(uri, null, null) }
+                    throw t
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
+                    "LocalDream",
+                ).apply { mkdirs() }
+                val target = File(dir, displayName)
+                file.copyTo(target, overwrite = true)
+                Uri.fromFile(target)
+            }
+        }
 
     suspend fun delete(context: Context, id: String): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
