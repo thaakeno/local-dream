@@ -735,6 +735,7 @@ private fun InlineEventEditor(
                     onValueChange = onValueChange,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(min = 138.dp)
                         .drawBehind {
                             val layout = textLayout ?: return@drawBehind
                             events.forEach { event ->
