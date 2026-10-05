@@ -56,6 +56,8 @@ done
 
 git -C "$HEXAGON_DIR" apply --check "$(pwd)/hexagon-breeze-v148.patch"
 git -C "$HEXAGON_DIR" apply "$(pwd)/hexagon-breeze-v148.patch"
+git -C "$HEXAGON_DIR" apply --check "$(pwd)/hexagon-fastrpc-breeze-v149.patch"
+git -C "$HEXAGON_DIR" apply "$(pwd)/hexagon-fastrpc-breeze-v149.patch"
 git -C "$BREEZE_DIR" apply --check "$(pwd)/breeze-core-v148.patch"
 git -C "$BREEZE_DIR" apply "$(pwd)/breeze-core-v148.patch"
 
@@ -68,14 +70,16 @@ grep -q 'ggml_hexagon_is_breeze_channel_binary' "$GGML_DIR/src/ggml-hexagon/ggml
 grep -q 'Fit binary staging to the available VTCM' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'breeze_is_channel_binary' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp"
+grep -q 'HTP_OP_SNAKE.*op_snake' "$GGML_DIR/src/ggml-hexagon/htp/entry.c"
 grep -q '1 / exp(lb) == exp(-lb)' "$BREEZE_DIR/src/codec_decoder.cpp"
 grep -q 'struct AudioEmbedRunner' "$BREEZE_DIR/include/breeze/backbone.h"
 
 rm -rf "$BUILD_DIR"
 
-cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=OFF     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
+cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=ON     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=OFF     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
 
-cmake --build "$BUILD_DIR" --target breeze-server htp-v73 htp-v75 htp-v79 htp-v81 -j "$(nproc)"
+cmake --build "$BUILD_DIR" --target breeze-server htp-mempool-v73 htp-mempool-v75 htp-mempool-v79 htp-mempool-v81 -j "$(nproc)"
 
 READELF="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 test -x "$READELF"
@@ -106,10 +110,32 @@ runtime=HoppouAI/Breeze-TTS-2.cpp
 runtime_commit=$BREEZE_COMMIT
 backend=kan-linux/ggml-hexagon
 backend_commit=$HEXAGON_COMMIT
-mode=strict-htp-only
+mode=strict-htp-fastrpc-mempool
 fallback=disabled
+transport=fastrpc-single-pool
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
+EOF
+
+cat > "$ASSET_DIR/ggml-hexagon.cfg" <<'EOF'
+[general]
+version=0.5.7
+dump_debug_info=0
+
+[cdsp]
+thread_counts=6
+dump_diag_info=0
+ndev=1
+rpc_mmap_mode=0
+enable_opfusion=1
+fa_select=2
+dsp_cache_mode=5
+dsp_cache_trace_bit0=0
+dsp_cache_trace_bit1=0
+enable_graph_optimize=1
+enable_graph_cache=1
+mirror_threshold=0.88
+enabled_ops=all
 EOF
 
 ls -lh "$JNI_DIR/libbreeze_server.so" "$ASSET_DIR"/libggml-htp-v*.so
