@@ -72,7 +72,7 @@ static void test_snake(Backend & be) {
     auto * inv_beta = ggml_div(g.ctx, one, ggml_add(g.ctx, beta, tiny));
     auto * s = ggml_sin(g.ctx, ggml_mul(g.ctx, tx, alpha));
     auto * out = ggml_add(
-        g.ctx, tx, ggml_mul(g.ctx, ggml_sqr(g.ctx, s), inv_beta)
+        g.ctx, tx, ggml_mul(g.ctx, inv_beta, ggml_sqr(g.ctx, s))
     );
     g.compute(be, out);
 
