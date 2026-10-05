@@ -2,21 +2,19 @@
 
 #include <cmath>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace breeze {
 namespace codec_detail {
 
-// snake beta activation: x + sin(x*alpha)^2 / beta, both params stored in log space
 static ggml_tensor * snake_beta(ggml_context * ctx, ggml_tensor * x, ggml_tensor * la, ggml_tensor * lb) {
     ggml_tensor * alpha = ggml_reshape_2d(ctx, ggml_exp(ctx, la), 1, la->ne[0]);
-    // Exact: 1 / exp(lb) == exp(-lb), which keeps the wide waveform path in MUL.
     ggml_tensor * inv_beta = ggml_reshape_2d(ctx, ggml_exp(ctx, ggml_neg(ctx, lb)), 1, lb->ne[0]);
     ggml_tensor * s = ggml_sin(ctx, ggml_mul(ctx, x, alpha));
     return ggml_add(ctx, x, ggml_mul(ctx, ggml_sqr(ctx, s), inv_beta));
 }
 
-// convnext block over [L, C]
 static ggml_tensor * convnext(ggml_context * ctx, BreezeModel & m, const std::string & p, ggml_tensor * x) {
     ggml_tensor * dw = m.w(p + ".dw.weight");
     ggml_tensor * h = depthwise1d_causal(ctx, dw, m.w(p + ".dw.bias"), x, (int) dw->ne[1]);
@@ -38,7 +36,6 @@ static ggml_tensor * residual_unit(ggml_context * ctx, BreezeModel & m, const st
     return ggml_add(ctx, x, h);
 }
 
-// rebuild the continuous latent from the residual codebooks, first stage split from the rest
 static ggml_tensor * quantizer_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
                                       const std::vector<int> & codes, int n_cb, int T) {
     auto lookup = [&](const std::string & name, int cb) {
@@ -61,6 +58,141 @@ static ggml_tensor * quantizer_decode(ggml_context * ctx, BreezeModel & m, Graph
         first = ggml_add(ctx, first, rest);
     }
     return ggml_cont(ctx, ggml_transpose(ctx, first));
+}
+
+static CodecStreamCacheBlock & ensure_cache(
+    std::unordered_map<std::string, CodecStreamCacheBlock> & map,
+    const std::string & name, int left, int channels
+) {
+    CodecStreamCacheBlock & b = map[name];
+    if (b.left != left || b.channels != channels ||
+        (int) b.data.size() != left * channels) {
+        b.left = left;
+        b.channels = channels;
+        b.data.assign((size_t) left * channels, 0.0f);
+    }
+    return b;
+}
+
+static void keep_tail(
+    ggml_context * ctx, Graph & g, ggml_tensor * joined,
+    CodecStreamCacheBlock & block, int new_len,
+    std::vector<StreamCacheUpdate> & updates
+) {
+    if (block.left <= 0) return;
+    ggml_tensor * tail = ggml_view_2d(
+        ctx, joined, block.left, block.channels, joined->nb[1],
+        (size_t) new_len * joined->nb[0]
+    );
+    tail = ggml_cont(ctx, tail);
+    ggml_set_output(tail);
+    g.write(tail);
+    updates.push_back({ &block, tail });
+}
+
+static ggml_tensor * stream_conv1d(
+    ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
+    std::vector<StreamCacheUpdate> & updates, const std::string & name,
+    ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int dilation
+) {
+    const int K = (int) w->ne[0];
+    const int left = (K - 1) * dilation;
+    const int C = (int) x->ne[1];
+    const int N = (int) x->ne[0];
+    if (left <= 0) return conv1d_causal(ctx, w, b, x, 1, dilation);
+
+    CodecStreamCacheBlock & block = ensure_cache(state.conv1d, name, left, C);
+    ggml_tensor * cache = g.input_f32(block.data, left, C);
+    ggml_tensor * joined = ggml_concat(ctx, cache, x, 0);
+
+    // Cache already supplies the exact causal left padding, so use valid convolution.
+    ggml_tensor * y = ggml_conv_1d(ctx, w, joined, 1, 0, dilation);
+    if (y->ne[0] != N) {
+        y = ggml_cont(ctx, ggml_view_2d(ctx, y, N, y->ne[1], y->nb[1],
+                                        (size_t) (y->ne[0] - N) * y->nb[0]));
+    }
+    if (b) y = ggml_add(ctx, y, ggml_reshape_2d(ctx, b, 1, b->ne[0]));
+    keep_tail(ctx, g, joined, block, N, updates);
+    return y;
+}
+
+static ggml_tensor * stream_depthwise(
+    ggml_context * ctx, Graph & g, VocoderStreamState & state,
+    std::vector<StreamCacheUpdate> & updates, const std::string & name,
+    ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int K
+) {
+    const int left = K - 1;
+    const int C = (int) x->ne[1];
+    const int N = (int) x->ne[0];
+    if (left <= 0) return depthwise1d_causal(ctx, w, b, x, K);
+
+    CodecStreamCacheBlock & block = ensure_cache(state.conv1d, name, left, C);
+    ggml_tensor * cache = g.input_f32(block.data, left, C);
+    ggml_tensor * joined = ggml_concat(ctx, cache, x, 0);
+    ggml_tensor * all = depthwise1d_causal(ctx, w, b, joined, K);
+    ggml_tensor * y = ggml_cont(ctx, ggml_view_2d(
+        ctx, all, N, C, all->nb[1], (size_t) left * all->nb[0]
+    ));
+    keep_tail(ctx, g, joined, block, N, updates);
+    return y;
+}
+
+static ggml_tensor * stream_tconv(
+    ggml_context * ctx, Graph & g, VocoderStreamState & state,
+    std::vector<StreamCacheUpdate> & updates, const std::string & name,
+    ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int stride
+) {
+    const int K = (int) w->ne[0];
+    const int left = (K - 1) / stride;
+    const int C = (int) x->ne[1];
+    const int N = (int) x->ne[0];
+    if (left <= 0) return convtr1d_causal(ctx, w, b, x, stride);
+
+    CodecStreamCacheBlock & block = ensure_cache(state.tconv1d, name, left, C);
+    ggml_tensor * cache = g.input_f32(block.data, left, C);
+    ggml_tensor * joined = ggml_concat(ctx, cache, x, 0);
+    ggml_tensor * all = convtr1d_causal(ctx, w, b, joined, stride);
+    const int prefix = left * stride;
+    const int new_len = N * stride;
+    ggml_tensor * y = ggml_cont(ctx, ggml_view_2d(
+        ctx, all, new_len, all->ne[1], all->nb[1], (size_t) prefix * all->nb[0]
+    ));
+    keep_tail(ctx, g, joined, block, N, updates);
+    return y;
+}
+
+static ggml_tensor * convnext_stream(
+    ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
+    std::vector<StreamCacheUpdate> & updates, const std::string & name,
+    const std::string & p, ggml_tensor * x
+) {
+    ggml_tensor * dw = m.w(p + ".dw.weight");
+    ggml_tensor * h = stream_depthwise(
+        ctx, g, state, updates, name, dw, m.w(p + ".dw.bias"), x, (int) dw->ne[1]
+    );
+    h = ggml_cont(ctx, ggml_transpose(ctx, h));
+    h = layer_norm(ctx, h, m.w(p + ".norm.weight"), m.w(p + ".norm.bias"), 1e-6f);
+    h = ggml_add(ctx, linear(ctx, m.w(p + ".pw1.weight"), h), m.w(p + ".pw1.bias"));
+    h = ggml_gelu_erf(ctx, h);
+    h = ggml_add(ctx, linear(ctx, m.w(p + ".pw2.weight"), h), m.w(p + ".pw2.bias"));
+    h = ggml_mul(ctx, h, m.w(p + ".gamma"));
+    return ggml_add(ctx, x, ggml_cont(ctx, ggml_transpose(ctx, h)));
+}
+
+static ggml_tensor * residual_unit_stream(
+    ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
+    std::vector<StreamCacheUpdate> & updates, const std::string & name,
+    const std::string & p, ggml_tensor * x, int dilation
+) {
+    ggml_tensor * h = snake_beta(ctx, x, m.w(p + ".a1"), m.w(p + ".b1"));
+    h = stream_conv1d(
+        ctx, m, g, state, updates, name,
+        m.w(p + ".conv1.conv.weight"), m.w(p + ".conv1.conv.bias"), h, dilation
+    );
+    h = snake_beta(ctx, h, m.w(p + ".a2"), m.w(p + ".b2"));
+    // The second convolution has no causal carry in the reference fast runtime.
+    h = conv1d_causal(ctx, m.w(p + ".conv2.conv.weight"), m.w(p + ".conv2.conv.bias"), h, 1, 1);
+    return ggml_add(ctx, x, h);
 }
 
 ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
@@ -95,6 +227,64 @@ ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
 
     h = snake_beta(ctx, h, m.w("codec.dfin.alpha"), m.w("codec.dfin.beta"));
     h = conv1d_causal(ctx, m.w("codec.dfin.conv.weight"), m.w("codec.dfin.conv.bias"), h, 1, 1);
+    return ggml_clamp(ctx, h, -1.0f, 1.0f);
+}
+
+ggml_tensor * vocoder_decode_stream(
+    ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
+    const std::vector<int> & codes, int n_cb, int T,
+    std::vector<StreamCacheUpdate> & updates
+) {
+    const VocoderConfig & c = m.cfg.voc;
+
+    ggml_tensor * h = quantizer_decode(ctx, m, g, codes, n_cb, T);
+    h = stream_conv1d(
+        ctx, m, g, state, updates, "pre_conv",
+        m.w("codec.dpre.conv.weight"), m.w("codec.dpre.conv.bias"), h, 1
+    );
+
+    h = ggml_cont(ctx, ggml_transpose(ctx, h));
+    h = vocoder_transformer_stream(ctx, m, g, state, h, T);
+    h = ggml_cont(ctx, ggml_transpose(ctx, h));
+
+    for (size_t i = 0; i < c.upsampling_ratios.size(); i++) {
+        const std::string p = "codec.dup." + std::to_string(i);
+        h = stream_tconv(
+            ctx, g, state, updates, "upsample_" + std::to_string(i) + "_tconv",
+            m.w(p + ".up.conv.weight"), m.w(p + ".up.conv.bias"), h, c.upsampling_ratios[i]
+        );
+        h = convnext_stream(
+            ctx, m, g, state, updates, "upsample_" + std::to_string(i) + "_dwconv", p, h
+        );
+    }
+
+    h = stream_conv1d(
+        ctx, m, g, state, updates, "decoder_pre_conv",
+        m.w("codec.dhead.conv.weight"), m.w("codec.dhead.conv.bias"), h, 1
+    );
+
+    const int dilations[3] = { 1, 3, 9 };
+    for (size_t i = 0; i < c.upsample_rates.size(); i++) {
+        const std::string p = "codec.dblk." + std::to_string(i);
+        h = snake_beta(ctx, h, m.w(p + ".alpha"), m.w(p + ".beta"));
+        h = stream_tconv(
+            ctx, g, state, updates, "decoder_block_" + std::to_string(i) + "_tconv",
+            m.w(p + ".up.conv.weight"), m.w(p + ".up.conv.bias"), h, c.upsample_rates[i]
+        );
+        for (int j = 0; j < 3; j++) {
+            h = residual_unit_stream(
+                ctx, m, g, state, updates,
+                "decoder_block_" + std::to_string(i) + "_residual_" + std::to_string(j) + "_conv1",
+                p + ".res." + std::to_string(j), h, dilations[j]
+            );
+        }
+    }
+
+    h = snake_beta(ctx, h, m.w("codec.dfin.alpha"), m.w("codec.dfin.beta"));
+    h = stream_conv1d(
+        ctx, m, g, state, updates, "final_conv",
+        m.w("codec.dfin.conv.weight"), m.w("codec.dfin.conv.bias"), h, 1
+    );
     return ggml_clamp(ctx, h, -1.0f, 1.0f);
 }
 
