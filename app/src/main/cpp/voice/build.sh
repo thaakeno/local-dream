@@ -47,19 +47,21 @@ grep -q 'GGML_TYPE_Q6_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GGML_TYPE_Q4_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GGML_TYPE_Q2_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 
-# Breeze's vocoder needs SIN and transpose-convolution semantics that current
-# upstream Hexagon does not expose. Extend the pinned backend with two reviewed
-# native HTP primitives. This is a normal git patch with a hard drift check,
-# not a runtime source rewrite and not a CPU/GPU fallback.
-cp "$(pwd)/native/breeze-sin-ops.c"     "$GGML_DIR/src/ggml-hexagon/htp/breeze-sin-ops.c"
-cp "$(pwd)/native/breeze-col2im-ops.c"     "$GGML_DIR/src/ggml-hexagon/htp/breeze-col2im-ops.c"
-git -C "$HEXAGON_DIR" apply --check "$(pwd)/hexagon-breeze.patch"
-git -C "$HEXAGON_DIR" apply "$(pwd)/hexagon-breeze.patch"
+# Compile Local Dream's maintained Breeze integration into the exact pinned
+# AP backend + DSP skels. The integration is fail-on-drift and adds only native
+# HTP paths; there is no runtime patching and no CPU/GPU compute fallback.
+python3 "$(pwd)/integrate_htp_breeze.py" "$HEXAGON_DIR" "$BREEZE_DIR" "$(pwd)/native"
 
 grep -q 'HTP_OP_SIN' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
-grep -q 'HTP_OP_COL2IM_1D' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
-grep -q 'GGML_OP_SIN' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'GGML_OP_COL2IM_1D' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'HTP_OP_COL2IM_1D_BIAS' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
+grep -q 'HTP_OP_SNAKE' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
+grep -q 'HTP_OP_CHANNEL_BCAST_ADD' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
+grep -q 'HTP_OP_CHANNEL_BCAST_MUL' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
+grep -q 'ggml_hexagon_is_breeze_channel_binary' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'Breeze adaptive binary VTCM' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'streaming MUL path' "$BREEZE_DIR/src/codec_decoder.cpp"
 
 rm -rf "$BUILD_DIR"
 
@@ -98,7 +100,7 @@ backend=kan-linux/ggml-hexagon
 backend_commit=$HEXAGON_COMMIT
 mode=strict-htp-only
 fallback=disabled
-extensions=sin-hvx,col2im1d-htp,exact-elu-lowering,transpose-conv-gemm-col2im
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
