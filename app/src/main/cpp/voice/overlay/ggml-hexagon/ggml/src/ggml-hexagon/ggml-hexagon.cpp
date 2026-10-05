@@ -5185,6 +5185,16 @@ static bool ggml_hexagon_matmul_is_hmx_eligible(
     const int ne12  = src1->ne[2];
     const int wtype = src0->type;
 
+    // Quantized HMX has public v81 correctness reports (Q4/Q8 garbage output)
+    // on Snapdragon 8 Elite-class parts. Breeze Q4_K/DD2 uses the same HMX
+    // quantized path, and a corrupted codec-transformer/prompt state can
+    // legitimately decode to near-zero PCM. Keep HMX for F16/F32 workloads
+    // (notably the heavy vocoder projection work), but use the mature HVX
+    // quantized kernels on v81 until the HMX quant path is proven fixed.
+    if (opt_arch >= 81 && ggml_hexagon_is_repack_type((ggml_type) wtype)) {
+        return false;
+    }
+
     // HMX weight tile requires N to be 32-aligned.
     if (ne01_padded % 32 != 0) {
         return false;
