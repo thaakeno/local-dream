@@ -601,7 +601,7 @@ class SpeechGenerationService : Service() {
                         if (count < 0) break
                         for (i in 0 until count) {
                             val ch = buffer[i]
-                            if (ch == '\\r' || ch == '\\n') {
+                            if (ch == '\r' || ch == '\n') {
                                 if (record.isNotEmpty()) {
                                     handleNativeOutput(modelId, record.toString())
                                     record.setLength(0)
