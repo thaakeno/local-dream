@@ -1,7 +1,7 @@
 diff --git a/src/generation.cpp b/src/generation.cpp
 --- a/src/generation.cpp
 +++ b/src/generation.cpp
-@@ -107,7 +107,18 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest
+@@ -107,7 +107,20 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest
      if (use_cfg) emb_u = assemble(m, build_segments(m, req, text, has_ref, ref.text, ref_codes, ref_T, false), total_u);
      tm.prompt += since(t0);
  
