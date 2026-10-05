@@ -93,12 +93,15 @@ grep -q 'vocoder_transformer_stream' "$(pwd)/overlay/breeze/src/codec_transforme
 # Stateful vocoder attention must expose the KV axis as GGML ne[0]. This
 # catches the flush-2 regression where T == KV only on the first chunk.
 grep -Fq 'g.input_f32(mask_v, kv_len, T)' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
-grep -q 'conv_storage' "$(pwd)/overlay/breeze/include/breeze/codec.h"
-grep -q 'conv_capacity_f32 \* 2' "$(pwd)/overlay/breeze/src/codec.cpp"
-grep -q 'stream.conv_bank \^= 1' "$(pwd)/overlay/breeze/src/codec.cpp"
-grep -q 'state.conv_bank \^ 1' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-grep -q 'convtr1d_raw' "$(pwd)/native/breeze-codec-conv-htp.cpp"
-grep -q 'const int trim = K - stride' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'ggml_tensor \* tensor' "$(pwd)/overlay/breeze/include/breeze/codec.h"
+grep -q 'ggml_new_tensor_2d(conv_ctx, GGML_TYPE_F32' "$(pwd)/overlay/breeze/src/codec.cpp"
+grep -q 'ggml_concat(ctx, block.tensor, x, 0)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'const int left = (K - 1) / stride' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'const int prefix = left \* stride' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+if grep -q 'conv_storage\|conv_bank\|offset_f32\|conv_capacity_f32\|conv_used_f32' "$(pwd)/overlay/breeze/include/breeze/codec.h" "$(pwd)/overlay/breeze/src/codec.cpp" "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
+    echo "Legacy monolithic/ping-pong Breeze state returned" >&2
+    exit 1
+fi
 grep -q 'const int kv_start' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
 grep -q 'kv_store_future' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
 if grep -q 'stream_safe_full\|stream_history_\|VOCODER_FALLBACK' "$(pwd)/overlay/breeze/include/breeze/codec.h" "$(pwd)/overlay/breeze/src/codec.cpp"; then
@@ -155,7 +158,7 @@ fallback=disabled
 integration=pinned-source-overlay
 queue=backend-default
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im
-streaming_vocoder=exact-stateful-kv-windowed-pingpong-conv-output-overlap-tconv
+streaming_vocoder=reference-state-tensors-input-cache-tconv-windowed-kv
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
