@@ -19,6 +19,9 @@ overlay = Path(sys.argv[3])
 htp = root / "ggml/src/ggml-hexagon/htp"
 host = root / "ggml/src/ggml-hexagon/ggml-hexagon.cpp"
 codec = breeze / "src/codec_decoder.cpp"
+backbone_h = breeze / "include/breeze/backbone.h"
+backbone_cpp = breeze / "src/backbone.cpp"
+generation = breeze / "src/generation.cpp"
 
 def replace_once(path: Path, old: str, new: str, label: str) -> None:
     text = path.read_text()
@@ -478,4 +481,128 @@ replace_once(
     ggml_tensor * s = ggml_sin(ctx, ggml_mul(ctx, x, alpha));
     return ggml_add(ctx, x, ggml_mul(ctx, ggml_sqr(ctx, s), inv_beta));""",
     "Breeze Snake reciprocal lowering",
+)
+
+
+# The per-frame audio embedding shape is constant. Upstream rebuilt and
+# reallocated this graph for every 80 ms audio frame, then immediately freed
+# it. Keep one prepared graph resident and only update the 16 codebook ids.
+replace_once(
+    backbone_h,
+    """struct StepOut {
+    std::vector<float> hidden; // [hidden_size]
+    std::vector<float> logits; // [audio_vocab_size + 1]
+};""",
+    """struct StepOut {
+    std::vector<float> hidden; // [hidden_size]
+    std::vector<float> logits; // [audio_vocab_size + 1]
+};
+
+struct AudioEmbedRunner {
+    Graph graph{256};
+    ggml_tensor * ids = nullptr;
+    ggml_tensor * out = nullptr;
+    int n_codebooks = 0;
+    int vocab = 0;
+
+    void init(BreezeModel & m);
+    std::vector<float> run(BreezeModel & m, const std::vector<int> & codes);
+};""",
+    "persistent audio embedding runner declaration",
+)
+
+replace_once(
+    backbone_cpp,
+    """static ggml_tensor * build_audio_embed(ggml_context * ctx, BreezeModel & m, ggml_tensor * idx, int n) {
+    const int nc = m.cfg.num_codebooks;
+    const int hidden = m.cfg.hidden_size;
+    // get_rows only indexes along one axis, so the frames stay flat until after the lookup
+    ggml_tensor * rows = ggml_get_rows(ctx, m.w("audio_embd.weight"), idx);    // [hidden, nc*n]
+    rows = ggml_reshape_3d(ctx, rows, hidden, nc, n);
+    ggml_tensor * perm = ggml_cont(ctx, ggml_permute(ctx, rows, 1, 0, 2, 3));  // [nc, hidden, n]
+    ggml_tensor * summed = ggml_sum_rows(ctx, perm);                           // [1, hidden, n]
+    return ggml_reshape_2d(ctx, summed, hidden, n);
+}
+""",
+    """static ggml_tensor * build_audio_embed(ggml_context * ctx, BreezeModel & m, ggml_tensor * idx, int n) {
+    const int nc = m.cfg.num_codebooks;
+    const int hidden = m.cfg.hidden_size;
+    // get_rows only indexes along one axis, so the frames stay flat until after the lookup
+    ggml_tensor * rows = ggml_get_rows(ctx, m.w("audio_embd.weight"), idx);    // [hidden, nc*n]
+    rows = ggml_reshape_3d(ctx, rows, hidden, nc, n);
+    ggml_tensor * perm = ggml_cont(ctx, ggml_permute(ctx, rows, 1, 0, 2, 3));  // [nc, hidden, n]
+    ggml_tensor * summed = ggml_sum_rows(ctx, perm);                           // [1, hidden, n]
+    return ggml_reshape_2d(ctx, summed, hidden, n);
+}
+
+void AudioEmbedRunner::init(BreezeModel & m) {
+    n_codebooks = m.cfg.num_codebooks;
+    vocab = m.cfg.audio_vocab_size;
+    std::vector<int32_t> zeros((size_t) n_codebooks, 0);
+    ids = graph.input_i32(zeros, n_codebooks);
+    out = build_audio_embed(graph.ctx, m, ids, 1);
+    graph.prepare(m.backend, out);
+}
+
+std::vector<float> AudioEmbedRunner::run(BreezeModel & m, const std::vector<int> & codes) {
+    if (!ids || !out) init(m);
+    if ((int) codes.size() != n_codebooks) {
+        throw std::runtime_error("audio embedding frame has wrong codebook count");
+    }
+    std::vector<int32_t> idx((size_t) n_codebooks);
+    for (int cb = 0; cb < n_codebooks; ++cb) idx[(size_t) cb] = codes[(size_t) cb] + cb * vocab;
+    ggml_backend_tensor_set(ids, idx.data(), 0, idx.size() * sizeof(int32_t));
+    graph.replay(m.backend);
+    return tensor_to_f32(out);
+}
+""",
+    "persistent audio embedding runner implementation",
+)
+
+replace_once(
+    generation,
+    """    DepthRunner depth;
+    depth.init(m, use_cfg ? 2 : 1);
+
+    SampleParams bp;""",
+    """    DepthRunner depth;
+    depth.init(m, use_cfg ? 2 : 1);
+    AudioEmbedRunner audio_embed;
+    audio_embed.init(m);
+
+    SampleParams bp;""",
+    "generation audio embedding cache",
+)
+
+replace_once(
+    generation,
+    """        std::vector<float> ae = audio_embed_forward(m, frame, 1);
+        if (use_cfg) {""",
+    """        std::vector<float> ae = audio_embed.run(m, frame);
+        if (use_cfg) {""",
+    "generation cached audio embedding",
+)
+
+replace_once(
+    generation,
+    """    DepthRunner depth;
+    depth.init(m, use_cfg ? 2 : 1);
+
+    std::vector<int> out((size_t) src_T * nc);""",
+    """    DepthRunner depth;
+    depth.init(m, use_cfg ? 2 : 1);
+    AudioEmbedRunner audio_embed;
+    audio_embed.init(m);
+
+    std::vector<int> out((size_t) src_T * nc);""",
+    "conversion audio embedding cache",
+)
+
+replace_once(
+    generation,
+    """        std::vector<float> ae = audio_embed_forward(m, frame, 1);
+        if (use_cfg) {""",
+    """        std::vector<float> ae = audio_embed.run(m, frame);
+        if (use_cfg) {""",
+    "conversion cached audio embedding",
 )
