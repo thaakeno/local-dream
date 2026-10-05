@@ -874,7 +874,7 @@ private fun NativeRuntimeErrorCard(
                 color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.20f),
             )
             TextButton(onClick = onRestart) {
-                Text("Restart YuE2 runtime")
+                Text("Restart engine")
             }
         }
     }
@@ -883,11 +883,11 @@ private fun NativeRuntimeErrorCard(
 @Composable
 private fun NativeStartupStageStrip(activePhase: String) {
     val stages = listOf(
-        "process" to "Process",
+        "process" to "Start",
         "model" to "Model",
-        "fastrpc" to "FastRPC",
-        "htp" to "HTP",
-        "server" to "Server",
+        "fastrpc" to "Runtime",
+        "htp" to "Compute",
+        "server" to "Ready",
     )
     val index = when (activePhase) {
         "launch", "process" -> 0
