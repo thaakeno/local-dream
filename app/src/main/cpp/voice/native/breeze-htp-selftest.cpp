@@ -90,6 +90,76 @@ static void test_get_rows_f32(Backend & be) {
     run("get-rows-f32-multi", { 0, 7, 31, 63 });
 }
 
+static void test_get_rows_f32_weight_buffer(Backend & be) {
+    constexpr int D = 256;
+    constexpr int ROWS = 2048;
+    constexpr int ROW_ID = 31;
+
+    ggml_init_params params{
+        ggml_tensor_overhead() * 8 + 4096,
+        nullptr,
+        true,
+    };
+    ggml_context * ctx = ggml_init(params);
+    if (!ctx) throw std::runtime_error("weight GET_ROWS context allocation failed");
+
+    ggml_backend_buffer_t buffer = nullptr;
+    try {
+        ggml_tensor * table = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, D, ROWS);
+        ggml_set_name(table, "selftest.decoder_codebook.weight");
+
+        buffer = ggml_backend_alloc_ctx_tensors(ctx, be.backend);
+        if (!buffer) {
+            throw std::runtime_error("weight GET_ROWS HTP buffer allocation failed");
+        }
+
+        // Match the real GGUF loader exactly: mark the allocation as immutable
+        // weights before the first tensor upload so v81 uses extended mapping.
+        ggml_backend_buffer_set_usage(
+            buffer,
+            GGML_BACKEND_BUFFER_USAGE_WEIGHTS
+        );
+
+        std::vector<float> values((size_t) D * ROWS);
+        for (int r = 0; r < ROWS; ++r) {
+            for (int d = 0; d < D; ++d) {
+                values[(size_t) d + (size_t) D * r] =
+                    -1.75f + 0.0025f * (float) r + 0.0005f * (float) d;
+            }
+        }
+        ggml_backend_tensor_set(
+            table,
+            values.data(),
+            0,
+            values.size() * sizeof(float)
+        );
+
+        std::vector<float> expected(D);
+        for (int d = 0; d < D; ++d) {
+            expected[d] = values[(size_t) d + (size_t) D * ROW_ID];
+        }
+
+        Graph g(96);
+        auto * ids = g.input_i32({ ROW_ID }, 1);
+        auto * out = ggml_get_rows(g.ctx, table, ids);
+        g.compute(be, out);
+        require_close(
+            "get-rows-f32-weight-2048",
+            tensor_to_f32(out),
+            expected,
+            1e-6f
+        );
+
+        ggml_backend_buffer_free(buffer);
+        buffer = nullptr;
+        ggml_free(ctx);
+    } catch (...) {
+        if (buffer) ggml_backend_buffer_free(buffer);
+        ggml_free(ctx);
+        throw;
+    }
+}
+
 static void test_snake(Backend & be) {
     constexpr int T = 32;
     constexpr int C = 4;
@@ -273,6 +343,7 @@ int main() {
         std::fprintf(stderr, "[BREEZE_SELFTEST] backend=%s\n", be.name());
         test_sin(be);
         test_get_rows_f32(be);
+        test_get_rows_f32_weight_buffer(be);
         test_snake(be);
         test_col2im_bias(be);
         be.free();
