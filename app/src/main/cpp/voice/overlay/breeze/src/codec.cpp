@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
+#include <stdexcept>
 #include <string>
 
 namespace breeze {
@@ -18,6 +20,31 @@ void VocoderStreamState::init(BreezeModel & model) {
     const VocoderConfig & c = model.cfg.voc;
     const int max_seq = std::max(model.cfg.max_new_tokens + 32, c.sliding_window + 64);
     kv.init(model.backend, c.n_layer, c.head_dim, c.n_kv_head, max_seq);
+
+    // One 16 MiB persistent state arena is comfortably larger than all Breeze
+    // decoder causal tails while keeping them in a single HTP buffer. A single
+    // buffer also avoids exploding the Hexagon batch buffer count.
+    conv_capacity_f32 = (16u * 1024u * 1024u) / sizeof(float);
+    ggml_init_params p{
+        ggml_tensor_overhead() * 8 + 4096,
+        nullptr,
+        true,
+    };
+    conv_ctx = ggml_init(p);
+    if (!conv_ctx) throw std::runtime_error("failed to create Breeze vocoder state context");
+    conv_storage = ggml_new_tensor_1d(
+        conv_ctx, GGML_TYPE_F32, (int64_t) conv_capacity_f32
+    );
+    conv_buffer = ggml_backend_alloc_ctx_tensors(conv_ctx, model.backend.backend);
+    if (!conv_buffer) {
+        ggml_free(conv_ctx);
+        conv_ctx = nullptr;
+        conv_storage = nullptr;
+        kv.free();
+        throw std::runtime_error("failed to allocate persistent Breeze vocoder state on HTP");
+    }
+
+    conv_used_f32 = 0;
     initialized = true;
     reset();
 }
@@ -25,12 +52,26 @@ void VocoderStreamState::init(BreezeModel & model) {
 void VocoderStreamState::reset() {
     position = 0;
     if (initialized) kv.reset();
-    for (auto & it : conv1d) std::fill(it.second.data.begin(), it.second.data.end(), 0.0f);
-    for (auto & it : tconv1d) std::fill(it.second.data.begin(), it.second.data.end(), 0.0f);
+
+    // Only clear the portion that has actually been carved into cache blocks.
+    // New blocks are explicitly zeroed when first allocated.
+    if (conv_storage && conv_used_f32 > 0) {
+        std::vector<float> zeros(conv_used_f32, 0.0f);
+        ggml_backend_tensor_set(
+            conv_storage, zeros.data(), 0, zeros.size() * sizeof(float)
+        );
+    }
 }
 
 void VocoderStreamState::free() {
     if (initialized) kv.free();
+    if (conv_buffer) ggml_backend_buffer_free(conv_buffer);
+    if (conv_ctx) ggml_free(conv_ctx);
+    conv_buffer = nullptr;
+    conv_ctx = nullptr;
+    conv_storage = nullptr;
+    conv_capacity_f32 = 0;
+    conv_used_f32 = 0;
     initialized = false;
     position = 0;
     conv1d.clear();
@@ -54,24 +95,13 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
     if (!stream.initialized) stream.init(*m);
 
     Graph g(32768);
-    std::vector<StreamCacheUpdate> updates;
-    ggml_tensor * x = vocoder_decode_stream(g.ctx, *m, g, stream, codes, n_cb, T, updates);
+    ggml_tensor * x = vocoder_decode_stream(g.ctx, *m, g, stream, codes, n_cb, T);
     ggml_tensor * audio = ggml_cont(g.ctx, ggml_reshape_1d(g.ctx, x, x->ne[0]));
 
-    // Cache tails are real graph outputs so gallocr cannot reuse their storage
-    // before we copy the small state blocks back for the next streaming step.
-    for (auto & u : updates) {
-        if (!u.block || !u.tensor) continue;
-        ggml_set_output(u.tensor);
-        g.write(u.tensor);
-    }
-
+    // Cache updates are graph-side CPYs into the persistent HTP state arena.
+    // Only the actual audio crosses back to the application processor.
     g.compute(m->backend, audio);
     std::vector<float> out = tensor_to_f32(audio);
-    for (auto & u : updates) {
-        if (!u.block || !u.tensor) continue;
-        u.block->data = tensor_to_f32(u.tensor);
-    }
 
     stream.position += T;
     stream.kv.len = stream.position;
