@@ -318,6 +318,10 @@ jobs:
           grep -q 'fallback=disabled' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'col2im-bias-fused' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'channel-bcast-addmul-hvx' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'snake-hvx-fused' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'adaptive-binary-vtcm' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'exact-elu-lowering' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'transpose-conv-gemm-col2im' app/src/main/assets/breezelibs/backend-version.txt
           test -s app/src/main/assets/qnnlibs/libQnnHtp.so
@@ -390,10 +394,10 @@ jobs:
           test -n "$actual"
 
           if [ "$GITHUB_REF_NAME" = "v141-stable-yue2-full" ]; then
-            # v146 was installed/tested with this branch-local certificate.
-            # v147 must keep it exactly so Android accepts an in-place update.
+            # v146+ test builds use this branch-local certificate.
+            # Keep it exactly so Android accepts in-place updates.
             expected="bff433493c171fcd31e8159ca19e64d938b8d4afe043a07be91fec0ad23f071b"
-            echo "required v146/v147 signer: $expected"
+            echo "required v146+ signer: $expected"
             echo "actual signer:            $actual"
             test "$actual" = "$expected"
           else
