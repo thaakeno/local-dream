@@ -93,7 +93,7 @@ static void test_get_rows_f32(Backend & be) {
 static void test_get_rows_f32_weight_buffer(Backend & be) {
     constexpr int D = 256;
     constexpr int ROWS = 2048;
-    constexpr int ROW_ID = 31;
+    const std::vector<int32_t> row_ids = { 0, 31, 219, 1221, 1938, 2047 };
 
     ggml_init_params params{
         ggml_tensor_overhead() * 8 + 4096,
@@ -112,13 +112,7 @@ static void test_get_rows_f32_weight_buffer(Backend & be) {
         if (!buffer) {
             throw std::runtime_error("weight GET_ROWS HTP buffer allocation failed");
         }
-
-        // Match the real GGUF loader exactly: mark the allocation as immutable
-        // weights before the first tensor upload so v81 uses extended mapping.
-        ggml_backend_buffer_set_usage(
-            buffer,
-            GGML_BACKEND_BUFFER_USAGE_WEIGHTS
-        );
+        ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
 
         std::vector<float> values((size_t) D * ROWS);
         for (int r = 0; r < ROWS; ++r) {
@@ -127,24 +121,22 @@ static void test_get_rows_f32_weight_buffer(Backend & be) {
                     -1.75f + 0.0025f * (float) r + 0.0005f * (float) d;
             }
         }
-        ggml_backend_tensor_set(
-            table,
-            values.data(),
-            0,
-            values.size() * sizeof(float)
-        );
+        ggml_backend_tensor_set(table, values.data(), 0, values.size() * sizeof(float));
 
-        std::vector<float> expected(D);
-        for (int d = 0; d < D; ++d) {
-            expected[d] = values[(size_t) d + (size_t) D * ROW_ID];
+        std::vector<float> expected((size_t) D * row_ids.size());
+        for (size_t r = 0; r < row_ids.size(); ++r) {
+            for (int d = 0; d < D; ++d) {
+                expected[(size_t) D * r + (size_t) d] =
+                    values[(size_t) D * (size_t) row_ids[r] + (size_t) d];
+            }
         }
 
-        Graph g(96);
-        auto * ids = g.input_i32({ ROW_ID }, 1);
+        Graph g(128);
+        auto * ids = g.input_i32(row_ids, (int) row_ids.size());
         auto * out = ggml_get_rows(g.ctx, table, ids);
         g.compute(be, out);
         require_close(
-            "get-rows-f32-weight-2048",
+            "get-rows-f32-weight-2048-highrows",
             tensor_to_f32(out),
             expected,
             1e-6f
