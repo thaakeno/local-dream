@@ -9,6 +9,16 @@
 namespace breeze {
 namespace codec_detail {
 
+static ggml_tensor * debug_probe(
+    CodecDebugProbes * probes, const std::string & name, ggml_tensor * tensor
+) {
+    if (probes && tensor) {
+        ggml_set_output(tensor);
+        probes->push_back({ name, tensor });
+    }
+    return tensor;
+}
+
 static ggml_tensor * snake_beta(
     ggml_context * ctx, Graph & g, ggml_tensor * x, ggml_tensor * la, ggml_tensor * lb
 ) {
@@ -49,8 +59,10 @@ static ggml_tensor * residual_unit(ggml_context * ctx, BreezeModel & m, Graph & 
     return ggml_add(ctx, x, h);
 }
 
-static ggml_tensor * quantizer_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
-                                      const std::vector<int> & codes, int n_cb, int T) {
+static ggml_tensor * quantizer_decode(
+    ggml_context * ctx, BreezeModel & m, Graph & g,
+    const std::vector<int> & codes, int n_cb, int T, CodecDebugProbes * probes
+) {
     auto lookup = [&](const std::string & name, int cb) {
         std::vector<int32_t> idx(T);
         for (int t = 0; t < T; t++) idx[t] = codes[(size_t) t * n_cb + cb];
@@ -59,18 +71,24 @@ static ggml_tensor * quantizer_decode(ggml_context * ctx, BreezeModel & m, Graph
     };
 
     ggml_tensor * first = lookup("codec.dq.first.0.embed", 0);
+    debug_probe(probes, "dq.first_embed", first);
     first = linear(ctx, m.w("codec.dq.first.out_proj.weight"), first);
+    debug_probe(probes, "dq.first_proj", first);
 
     ggml_tensor * rest = nullptr;
     for (int cb = 1; cb < n_cb; cb++) {
         ggml_tensor * e = lookup("codec.dq.rest." + std::to_string(cb - 1) + ".embed", cb);
+        debug_probe(probes, "dq.rest_embed." + std::to_string(cb), e);
         rest = rest ? ggml_add(ctx, rest, e) : e;
     }
     if (rest) {
+        debug_probe(probes, "dq.rest_sum", rest);
         rest = linear(ctx, m.w("codec.dq.rest.out_proj.weight"), rest);
+        debug_probe(probes, "dq.rest_proj", rest);
         first = ggml_add(ctx, first, rest);
+        debug_probe(probes, "dq.combined", first);
     }
-    return ggml_cont(ctx, ggml_transpose(ctx, first));
+    return debug_probe(probes, "dq.transpose", ggml_cont(ctx, ggml_transpose(ctx, first)));
 }
 
 static CodecStreamCacheBlock & ensure_cache(
@@ -113,7 +131,8 @@ static void keep_input_tail(
 static ggml_tensor * stream_conv1d(
     ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
     const std::string & name,
-    ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int dilation
+    ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int dilation,
+    CodecDebugProbes * probes
 ) {
     const int K = (int) w->ne[0];
     const int left = (K - 1) * dilation;
@@ -124,11 +143,13 @@ static ggml_tensor * stream_conv1d(
     CodecStreamCacheBlock & block =
         ensure_cache(state.conv1d, name, left, C);
     ggml_tensor * joined = ggml_concat(ctx, block.tensor, x, 0);
+    debug_probe(probes, "conv." + name + ".joined", joined);
 
     // Mirror Breeze's reference StaticCachedQwenCausalConv1dV2 exactly:
     // run the normal causal layer over [cache, fresh], then return only the
     // fresh suffix and persist the new input tail.
     ggml_tensor * all = conv1d_causal(ctx, w, b, joined, 1, dilation);
+    debug_probe(probes, "conv." + name + ".all", all);
     if (all->ne[0] < N) {
         throw std::runtime_error("Breeze streaming Conv1d returned a short output");
     }
@@ -136,6 +157,7 @@ static ggml_tensor * stream_conv1d(
         ctx, all, N, all->ne[1], all->nb[1],
         (size_t) (all->ne[0] - N) * all->nb[0]
     ));
+    debug_probe(probes, "conv." + name + ".out", y);
     keep_input_tail(ctx, g, joined, block);
     return y;
 }
@@ -143,7 +165,8 @@ static ggml_tensor * stream_conv1d(
 static ggml_tensor * stream_depthwise(
     ggml_context * ctx, Graph & g, VocoderStreamState & state,
     const std::string & name,
-    ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int K
+    ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int K,
+    CodecDebugProbes * probes
 ) {
     const int left = K - 1;
     const int C = (int) x->ne[1];
@@ -153,11 +176,14 @@ static ggml_tensor * stream_depthwise(
     CodecStreamCacheBlock & block =
         ensure_cache(state.conv1d, name, left, C);
     ggml_tensor * joined = ggml_concat(ctx, block.tensor, x, 0);
+    debug_probe(probes, "depthwise." + name + ".joined", joined);
     ggml_tensor * all = depthwise1d_causal(ctx, w, b, joined, K);
+    debug_probe(probes, "depthwise." + name + ".all", all);
     ggml_tensor * y = ggml_cont(ctx, ggml_view_2d(
         ctx, all, N, C, all->nb[1],
         (size_t) (all->ne[0] - N) * all->nb[0]
     ));
+    debug_probe(probes, "depthwise." + name + ".out", y);
     keep_input_tail(ctx, g, joined, block);
     return y;
 }
@@ -165,7 +191,8 @@ static ggml_tensor * stream_depthwise(
 static ggml_tensor * stream_tconv(
     ggml_context * ctx, Graph & g, VocoderStreamState & state,
     const std::string & name,
-    ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int stride
+    ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int stride,
+    CodecDebugProbes * probes
 ) {
     const int K = (int) w->ne[0];
     const int left = (K - 1) / stride;
@@ -176,11 +203,13 @@ static ggml_tensor * stream_tconv(
     CodecStreamCacheBlock & block =
         ensure_cache(state.tconv1d, name, left, C);
     ggml_tensor * joined = ggml_concat(ctx, block.tensor, x, 0);
+    debug_probe(probes, "tconv." + name + ".joined", joined);
 
     // Match Breeze's reference StaticCachedQwenTransposedConv1dV2:
     // cache input frames, run the unchanged causal transposed convolution,
     // then drop exactly cache_len * stride samples from the front.
     ggml_tensor * all = convtr1d_causal(ctx, w, b, joined, stride);
+    debug_probe(probes, "tconv." + name + ".all", all);
     const int prefix = left * stride;
     const int new_len = N * stride;
     if (all->ne[0] < prefix + new_len) {
@@ -190,41 +219,55 @@ static ggml_tensor * stream_tconv(
         ctx, all, new_len, all->ne[1], all->nb[1],
         (size_t) prefix * all->nb[0]
     ));
+    debug_probe(probes, "tconv." + name + ".out", y);
     keep_input_tail(ctx, g, joined, block);
     return y;
 }
 
 static ggml_tensor * convnext_stream(
     ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
-    const std::string & name, const std::string & p, ggml_tensor * x
+    const std::string & name, const std::string & p, ggml_tensor * x,
+    CodecDebugProbes * probes
 ) {
     ggml_tensor * dw = m.w(p + ".dw.weight");
     ggml_tensor * h = stream_depthwise(
-        ctx, g, state, name, dw, m.w(p + ".dw.bias"), x, (int) dw->ne[1]
+        ctx, g, state, name, dw, m.w(p + ".dw.bias"), x, (int) dw->ne[1], probes
     );
     h = ggml_cont(ctx, ggml_transpose(ctx, h));
+    debug_probe(probes, p + ".convnext.transpose", h);
     h = layer_norm(ctx, h, m.w(p + ".norm.weight"), m.w(p + ".norm.bias"), 1e-6f);
+    debug_probe(probes, p + ".convnext.norm", h);
     h = ggml_add(ctx, linear(ctx, m.w(p + ".pw1.weight"), h), m.w(p + ".pw1.bias"));
+    debug_probe(probes, p + ".convnext.pw1", h);
     h = ggml_gelu_erf(ctx, h);
+    debug_probe(probes, p + ".convnext.gelu", h);
     h = ggml_add(ctx, linear(ctx, m.w(p + ".pw2.weight"), h), m.w(p + ".pw2.bias"));
+    debug_probe(probes, p + ".convnext.pw2", h);
     h = ggml_mul(ctx, h, m.w(p + ".gamma"));
-    return ggml_add(ctx, x, ggml_cont(ctx, ggml_transpose(ctx, h)));
+    debug_probe(probes, p + ".convnext.gamma", h);
+    return debug_probe(probes, p + ".convnext.residual",
+                       ggml_add(ctx, x, ggml_cont(ctx, ggml_transpose(ctx, h))));
 }
 
 static ggml_tensor * residual_unit_stream(
     ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
-    const std::string & name, const std::string & p, ggml_tensor * x, int dilation
+    const std::string & name, const std::string & p, ggml_tensor * x, int dilation,
+    CodecDebugProbes * probes
 ) {
     ggml_tensor * h = snake_beta(ctx, g, x, m.w(p + ".a1"), m.w(p + ".b1"));
+    debug_probe(probes, p + ".snake1", h);
     h = stream_conv1d(
         ctx, m, g, state, name,
-        m.w(p + ".conv1.conv.weight"), m.w(p + ".conv1.conv.bias"), h, dilation
+        m.w(p + ".conv1.conv.weight"), m.w(p + ".conv1.conv.bias"), h, dilation, probes
     );
+    debug_probe(probes, p + ".conv1", h);
     h = snake_beta(ctx, g, h, m.w(p + ".a2"), m.w(p + ".b2"));
+    debug_probe(probes, p + ".snake2", h);
     h = conv1d_causal(
         ctx, m.w(p + ".conv2.conv.weight"), m.w(p + ".conv2.conv.bias"), h, 1, 1
     );
-    return ggml_add(ctx, x, h);
+    debug_probe(probes, p + ".conv2", h);
+    return debug_probe(probes, p + ".residual_out", ggml_add(ctx, x, h));
 }
 
 ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
@@ -264,62 +307,77 @@ ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
 
 ggml_tensor * vocoder_decode_stream(
     ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
-    const std::vector<int> & codes, int n_cb, int T
+    const std::vector<int> & codes, int n_cb, int T, CodecDebugProbes * probes
 ) {
     const VocoderConfig & c = m.cfg.voc;
 
-    ggml_tensor * h = quantizer_decode(ctx, m, g, codes, n_cb, T);
+    ggml_tensor * h = quantizer_decode(ctx, m, g, codes, n_cb, T, probes);
+    debug_probe(probes, "stage.quantizer", h);
+
     h = stream_conv1d(
         ctx, m, g, state, "pre_conv",
-        m.w("codec.dpre.conv.weight"), m.w("codec.dpre.conv.bias"), h, 1
+        m.w("codec.dpre.conv.weight"), m.w("codec.dpre.conv.bias"), h, 1, probes
     );
+    debug_probe(probes, "stage.pre_conv", h);
 
     h = ggml_cont(ctx, ggml_transpose(ctx, h));
-    h = vocoder_transformer_stream(ctx, m, g, state, h, T);
+    debug_probe(probes, "stage.dtf_input", h);
+    h = vocoder_transformer_stream(ctx, m, g, state, h, T, probes);
+    debug_probe(probes, "stage.dtf_output", h);
     h = ggml_cont(ctx, ggml_transpose(ctx, h));
+    debug_probe(probes, "stage.dtf_transpose", h);
 
     for (size_t i = 0; i < c.upsampling_ratios.size(); i++) {
         const std::string p = "codec.dup." + std::to_string(i);
         h = stream_tconv(
             ctx, g, state, "upsample_" + std::to_string(i) + "_tconv",
             m.w(p + ".up.conv.weight"), m.w(p + ".up.conv.bias"), h,
-            c.upsampling_ratios[i]
+            c.upsampling_ratios[i], probes
         );
+        debug_probe(probes, "stage.dup." + std::to_string(i) + ".tconv", h);
         h = convnext_stream(
-            ctx, m, g, state, "upsample_" + std::to_string(i) + "_dwconv", p, h
+            ctx, m, g, state, "upsample_" + std::to_string(i) + "_dwconv", p, h, probes
         );
+        debug_probe(probes, "stage.dup." + std::to_string(i) + ".convnext", h);
     }
 
     h = stream_conv1d(
         ctx, m, g, state, "decoder_pre_conv",
-        m.w("codec.dhead.conv.weight"), m.w("codec.dhead.conv.bias"), h, 1
+        m.w("codec.dhead.conv.weight"), m.w("codec.dhead.conv.bias"), h, 1, probes
     );
+    debug_probe(probes, "stage.decoder_pre_conv", h);
 
     const int dilations[3] = { 1, 3, 9 };
     for (size_t i = 0; i < c.upsample_rates.size(); i++) {
         const std::string p = "codec.dblk." + std::to_string(i);
         h = snake_beta(ctx, g, h, m.w(p + ".alpha"), m.w(p + ".beta"));
+        debug_probe(probes, "stage.dblk." + std::to_string(i) + ".snake", h);
         h = stream_tconv(
             ctx, g, state, "decoder_block_" + std::to_string(i) + "_tconv",
             m.w(p + ".up.conv.weight"), m.w(p + ".up.conv.bias"), h,
-            c.upsample_rates[i]
+            c.upsample_rates[i], probes
         );
+        debug_probe(probes, "stage.dblk." + std::to_string(i) + ".tconv", h);
         for (int j = 0; j < 3; j++) {
             h = residual_unit_stream(
                 ctx, m, g, state,
                 "decoder_block_" + std::to_string(i) +
                     "_residual_" + std::to_string(j) + "_conv1",
-                p + ".res." + std::to_string(j), h, dilations[j]
+                p + ".res." + std::to_string(j), h, dilations[j], probes
             );
+            debug_probe(probes, "stage.dblk." + std::to_string(i) +
+                ".res." + std::to_string(j), h);
         }
     }
 
     h = snake_beta(ctx, g, h, m.w("codec.dfin.alpha"), m.w("codec.dfin.beta"));
+    debug_probe(probes, "stage.final_snake", h);
     h = stream_conv1d(
         ctx, m, g, state, "final_conv",
-        m.w("codec.dfin.conv.weight"), m.w("codec.dfin.conv.bias"), h, 1
+        m.w("codec.dfin.conv.weight"), m.w("codec.dfin.conv.bias"), h, 1, probes
     );
-    return ggml_clamp(ctx, h, -1.0f, 1.0f);
+    debug_probe(probes, "stage.final_conv", h);
+    return debug_probe(probes, "stage.final_clamp", ggml_clamp(ctx, h, -1.0f, 1.0f));
 }
 
 
