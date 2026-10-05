@@ -1,6 +1,7 @@
 #include "breeze/codec.h"
 
 #include <cmath>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
