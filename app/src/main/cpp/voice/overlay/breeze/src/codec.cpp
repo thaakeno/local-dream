@@ -17,56 +17,115 @@ static ggml_tensor * transpose_cont(ggml_context * ctx, ggml_tensor * x) {
 
 void VocoderStreamState::init(BreezeModel & model) {
     if (initialized) free();
+
     const VocoderConfig & c = model.cfg.voc;
     const int max_seq = std::max(model.cfg.max_new_tokens + 32, c.sliding_window + 64);
     kv.init(model.backend, c.n_layer, c.head_dim, c.n_kv_head, max_seq);
 
-    // Two equally sized banks live in one HTP allocation. A streaming graph
-    // only reads bank A and writes bank B (then swaps them after a successful
-    // compute), so backend scheduling can never turn a state refresh into a
-    // read/write alias hazard.
-    conv_capacity_f32 = (16u * 1024u * 1024u) / sizeof(float);
+    // Match Breeze's reference fast-streaming runtime: every state block is a
+    // real persistent device tensor with its own shape. Do not manufacture
+    // cross-context views into a monolithic arena.
     ggml_init_params p{
-        ggml_tensor_overhead() * 8 + 4096,
+        ggml_tensor_overhead() * 256 + 65536,
         nullptr,
         true,
     };
     conv_ctx = ggml_init(p);
-    if (!conv_ctx) throw std::runtime_error("failed to create Breeze vocoder state context");
-    conv_storage = ggml_new_tensor_1d(
-        conv_ctx, GGML_TYPE_F32, (int64_t) conv_capacity_f32 * 2
-    );
+    if (!conv_ctx) {
+        kv.free();
+        throw std::runtime_error("failed to create Breeze vocoder state context");
+    }
+
+    auto add_state = [&](std::unordered_map<std::string, CodecStreamCacheBlock> & map,
+                         const std::string & name, int left, int channels) {
+        if (left <= 0) return;
+        CodecStreamCacheBlock block;
+        block.left = left;
+        block.channels = channels;
+        block.tensor = ggml_new_tensor_2d(conv_ctx, GGML_TYPE_F32, left, channels);
+        ggml_set_name(block.tensor, name.c_str());
+        map.emplace(name, block);
+    };
+
+    auto add_conv = [&](const std::string & name, const std::string & weight, int dilation) {
+        ggml_tensor * w = model.w(weight);
+        add_state(conv1d, name, ((int) w->ne[0] - 1) * dilation, (int) w->ne[1]);
+    };
+    auto add_tconv = [&](const std::string & name, const std::string & weight, int stride) {
+        ggml_tensor * w = model.w(weight);
+        add_state(tconv1d, name, ((int) w->ne[0] - 1) / stride, (int) w->ne[2]);
+    };
+
+    add_conv("pre_conv", "codec.dpre.conv.weight", 1);
+
+    for (size_t i = 0; i < c.upsampling_ratios.size(); ++i) {
+        const std::string p = "codec.dup." + std::to_string(i);
+        add_tconv(
+            "upsample_" + std::to_string(i) + "_tconv",
+            p + ".up.conv.weight",
+            c.upsampling_ratios[i]
+        );
+        ggml_tensor * dw = model.w(p + ".dw.weight");
+        add_state(
+            conv1d,
+            "upsample_" + std::to_string(i) + "_dwconv",
+            (int) dw->ne[1] - 1,
+            (int) dw->ne[0]
+        );
+    }
+
+    add_conv("decoder_pre_conv", "codec.dhead.conv.weight", 1);
+
+    const int dilations[3] = { 1, 3, 9 };
+    for (size_t i = 0; i < c.upsample_rates.size(); ++i) {
+        const std::string p = "codec.dblk." + std::to_string(i);
+        add_tconv(
+            "decoder_block_" + std::to_string(i) + "_tconv",
+            p + ".up.conv.weight",
+            c.upsample_rates[i]
+        );
+        for (int j = 0; j < 3; ++j) {
+            add_conv(
+                "decoder_block_" + std::to_string(i) +
+                    "_residual_" + std::to_string(j) + "_conv1",
+                p + ".res." + std::to_string(j) + ".conv1.conv.weight",
+                dilations[j]
+            );
+        }
+    }
+
+    add_conv("final_conv", "codec.dfin.conv.weight", 1);
+
     conv_buffer = ggml_backend_alloc_ctx_tensors(conv_ctx, model.backend.backend);
     if (!conv_buffer) {
         ggml_free(conv_ctx);
         conv_ctx = nullptr;
-        conv_storage = nullptr;
+        conv1d.clear();
+        tconv1d.clear();
         kv.free();
         throw std::runtime_error("failed to allocate persistent Breeze vocoder state on HTP");
     }
 
-    conv_used_f32 = 0;
-    conv_bank = 0;
     initialized = true;
     reset();
 }
 
 void VocoderStreamState::reset() {
     position = 0;
-    conv_bank = 0;
     if (initialized) kv.reset();
 
-    if (conv_storage && conv_used_f32 > 0) {
-        std::vector<float> zeros(conv_used_f32, 0.0f);
-        for (int bank = 0; bank < 2; ++bank) {
+    auto clear_map = [](auto & map) {
+        for (auto & it : map) {
+            CodecStreamCacheBlock & block = it.second;
+            const size_t count = (size_t) block.left * (size_t) block.channels;
+            std::vector<float> zeros(count, 0.0f);
             ggml_backend_tensor_set(
-                conv_storage,
-                zeros.data(),
-                ((size_t) bank * conv_capacity_f32) * sizeof(float),
-                zeros.size() * sizeof(float)
+                block.tensor, zeros.data(), 0, zeros.size() * sizeof(float)
             );
         }
-    }
+    };
+    clear_map(conv1d);
+    clear_map(tconv1d);
 }
 
 void VocoderStreamState::free() {
@@ -75,10 +134,6 @@ void VocoderStreamState::free() {
     if (conv_ctx) ggml_free(conv_ctx);
     conv_buffer = nullptr;
     conv_ctx = nullptr;
-    conv_storage = nullptr;
-    conv_capacity_f32 = 0;
-    conv_used_f32 = 0;
-    conv_bank = 0;
     initialized = false;
     position = 0;
     conv1d.clear();
@@ -132,7 +187,6 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
     // State advances only after a numerically valid chunk completed.
     stream.position += T;
     stream.kv.len = stream.position;
-    stream.conv_bank ^= 1;
     return out;
 }
 
