@@ -243,7 +243,6 @@ ggml_tensor * vocoder_transformer_stream(
     );
     return debug_probe_transformer(probes, "dtf.out_proj", h);
 }
-}
 
 }
 }
