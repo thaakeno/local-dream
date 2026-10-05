@@ -70,6 +70,9 @@ done
 
 test -s "$(pwd)/overlay/breeze/include/breeze/backbone.h"
 test -s "$(pwd)/overlay/breeze/src/backbone.cpp"
+test -s "$(pwd)/overlay/breeze/include/breeze/codec.h"
+test -s "$(pwd)/overlay/breeze/src/codec.cpp"
+test -s "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
 test -s "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 test -s "$(pwd)/overlay/breeze/src/generation.cpp"
 
@@ -82,7 +85,9 @@ grep -q 'ggml_hexagon_is_breeze_channel_binary' "$GGML_DIR/src/ggml-hexagon/ggml
 grep -q 'Fit binary staging to the available VTCM' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q '1 / exp(lb) == exp(-lb)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'vocoder_decode_stream' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
+grep -q 'vocoder_transformer_stream' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
 grep -q 'struct AudioEmbedRunner' "$(pwd)/overlay/breeze/include/breeze/backbone.h"
 
 rm -rf "$BUILD_DIR"
