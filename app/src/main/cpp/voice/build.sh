@@ -91,6 +91,14 @@ grep -q 'vocoder_transformer_stream' "$(pwd)/overlay/breeze/src/codec_transforme
 # Stateful vocoder attention must expose the KV axis as GGML ne[0]. This
 # catches the flush-2 regression where T == KV only on the first chunk.
 grep -Fq 'g.input_f32(mask_v, kv_len, T)' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
+grep -q 'conv_storage' "$(pwd)/overlay/breeze/include/breeze/codec.h"
+grep -q 'ggml_cpy(ctx, tail, dst)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+if grep -q 'StreamCacheUpdate\|block.data' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
+    echo "Legacy host-roundtrip vocoder cache path returned" >&2
+    exit 1
+fi
+grep -q 'step + 1 >= max_new' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q '\[BREEZE_AUDIO\]' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'struct AudioEmbedRunner' "$(pwd)/overlay/breeze/include/breeze/backbone.h"
 
 rm -rf "$BUILD_DIR"
@@ -135,7 +143,7 @@ fallback=disabled
 integration=pinned-source-overlay
 queue=backend-default
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im
-streaming_vocoder=stateful-kv-conv-tconv
+streaming_vocoder=stateful-kv-htp-resident-conv-tconv
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
