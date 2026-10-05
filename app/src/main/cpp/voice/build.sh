@@ -89,15 +89,19 @@ grep -q 'Fit binary staging to the available VTCM' "$GGML_DIR/src/ggml-hexagon/g
 grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'hmx_rows > 2' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'v81_quant_hmx_safe' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'opt_arch >= 81 && quantized_w' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'BREEZE_HTP_BATCH submit' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'BREEZE_HTP_BATCH complete' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'if (opt_arch >= 81)' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GET_ROWS_THREAD_DT_FN(f32' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.c"
 grep -q 'case HTP_TYPE_F32:' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.h"
 grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-multi' "$(pwd)/native/breeze-htp-selftest.cpp"
-grep -q 'get-rows-f32-weight-2048' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'get-rows-f32-weight-2048-highrows' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'GGML_BACKEND_BUFFER_USAGE_WEIGHTS' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
-grep -q 'HTP decoder codebook row verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'HTP decoder codebook rows verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -q 'verified %zu finite decoder codebooks' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -Fq '"${BREEZE_OVERLAY_DIR}/src/gguf_loader.cpp"' "$(pwd)/CMakeLists.txt"
 grep -q 'vocoder_decode_stream' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
@@ -188,8 +192,8 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=backend-default
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map
-streaming_vocoder=reference-state-tensors-chunk1-weight-buffer-extended-map
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map,v81-quant-hmx-guard,batch-progress-log
+streaming_vocoder=reference-state-tensors-chunk1-v81-quant-hvx
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
