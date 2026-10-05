@@ -46,7 +46,7 @@ class SpeechGenerationService : Service() {
         private const val EXECUTABLE = "libbreeze_server.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-strict-htp-v1"
+            "breeze-a0e177-hexagon-ab9acc-strict-htp-v2-static"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
