@@ -8939,6 +8939,19 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     opt_verbose   = str_verbose  ? atoi(str_verbose)                      : 0;
     opt_opbatch   = str_opbatch  ? strtoul(str_opbatch, NULL, 0)          : opt_opbatch;
     opt_opqueue   = str_opqueue  ? strtoul(str_opqueue, NULL, 0)          : opt_opqueue;
+
+    // SM8850 / HTP v81 DSPQueue reliability: public device sweeps show
+    // 4..64 ops/message stable with negligible throughput difference, while
+    // larger batches can stall forever in the DSP response path. Breeze's
+    // first vocoder graph is ~795 HTP ops, so never send it as one message.
+    if (opt_arch >= 81 && opt_opbatch > 64) {
+        GGML_LOG_WARN(
+            "ggml-hex: v81 DSPQueue opbatch %d capped to 64 for reliability\n",
+            opt_opbatch
+        );
+        opt_opbatch = 64;
+    }
+
     opt_optrace   = str_optrace  ? strtoul(str_optrace, NULL, 0)          : (opt_opbatch * 256);
     opt_oppoll    = str_oppoll   ? strtoul(str_oppoll,  NULL, 0)          : opt_oppoll;
     opt_opfusion  = str_opfusion ? atoi(str_opfusion)                     : opt_opfusion;
