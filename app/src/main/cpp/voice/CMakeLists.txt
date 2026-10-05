@@ -13,6 +13,8 @@ if(NOT GGML_SOURCE_DIR OR NOT EXISTS "${GGML_SOURCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "GGML_SOURCE_DIR must point at the pinned ggml-hexagon ggml tree")
 endif()
 
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(GGML_STATIC ON CACHE BOOL "" FORCE)
 set(GGML_HEXAGON ON CACHE BOOL "" FORCE)
 set(GGML_HEXAGON_USE_MEMPOOL OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
@@ -85,3 +87,4 @@ target_include_directories(
 )
 find_package(Threads REQUIRED)
 target_link_libraries(breeze-server PRIVATE breeze_core Threads::Threads)
+target_link_options(breeze-server PRIVATE "-Wl,-z,defs")
