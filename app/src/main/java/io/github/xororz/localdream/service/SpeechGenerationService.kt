@@ -47,7 +47,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v152-stateful-vocoder-pcm-wav"
+            "breeze-a0e177-hexagon-ab9acc-v154-htp-resident-vocoder"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -224,11 +224,15 @@ class SpeechGenerationService : Service() {
             ).joinToString(";")
 
             val env = mutableMapOf(
+                // Keep /vendor/lib64 out of the loader path on SM8850. FastRPC
+                // falls back through the DSP HAL for app UIDs and the vendor-wide
+                // path can resolve an incompatible dependency before the staged
+                // copies below. This is a documented source of Hexagon session/
+                // dspqueue failures on Android 16.
                 "LD_LIBRARY_PATH" to listOf(
                     nativeDir,
                     runtimeDir.absolutePath,
                     "/system/lib64",
-                    "/vendor/lib64",
                 ).joinToString(":"),
                 "ADSP_LIBRARY_PATH" to dspPath,
                 "DSP_LIBRARY_PATH" to dspPath,
@@ -237,6 +241,9 @@ class SpeechGenerationService : Service() {
                 "GGML_HEXAGON_NHVX" to "0",
                 "GGML_HEXAGON_MM_SELECT" to "2",
                 "GGML_HEXAGON_OPFUSION" to "1",
+                // Busy-poll completions while speech is actively generating.
+                // It trades a little host CPU for lower DSPQueue hand-off latency.
+                "GGML_HEXAGON_OPPOLL" to "1",
             )
 
             BackendDiagnostics.beginSession(
@@ -247,7 +254,7 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
-                    "queue=backend-default opfusion=1 hmx=1 " +
+                    "queue=backend-default oppoll=1 opfusion=1 hmx=1 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
             runBackendSelfTest(env, modelId, started)
