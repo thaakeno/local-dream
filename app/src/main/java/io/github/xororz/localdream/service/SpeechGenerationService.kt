@@ -332,7 +332,7 @@ class SpeechGenerationService : Service() {
                         "instructions",
                         instruction.ifBlank { "Speak clearly and naturally." },
                     )
-                    put("response_format", "wav")
+                    put("response_format", "pcm")
                     put("cfg_scale", cfg.toDouble())
                     put("seed", seed)
                     put("temperature", temperature.toDouble())
@@ -359,27 +359,32 @@ class SpeechGenerationService : Service() {
                 )
                 val temp = File(output.parentFile, "${output.name}.part")
 
+                var sampleRate = 24000
+                var pcmBytes = 0L
                 call.execute().use { response ->
                     if (!response.isSuccessful) {
                         val message = response.body?.string()?.take(800)
                             ?: "HTTP ${response.code}"
                         throw IOException("Breeze generation failed: $message")
                     }
+                    sampleRate = response.header("X-Sample-Rate")?.toIntOrNull()
+                        ?.takeIf { it in 8000..192000 } ?: 24000
                     val body = response.body ?: throw IOException("Breeze returned no audio")
-                    var bytes = 0L
                     var lastUi = 0L
-                    body.byteStream().use { input ->
-                        temp.outputStream().buffered().use { out ->
+                    temp.outputStream().buffered().use { out ->
+                        // Reserve a canonical PCM WAV header. Breeze streams raw s16le PCM;
+                        // we finalize the exact RIFF/data lengths once generation ends.
+                        out.write(ByteArray(44))
+                        body.byteStream().use { input ->
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
                                 val n = input.read(buffer)
                                 if (n < 0) break
                                 out.write(buffer, 0, n)
-                                bytes += n
+                                pcmBytes += n
                                 val now = System.currentTimeMillis()
                                 if (now - lastUi >= 250L) {
-                                    val seconds =
-                                        ((bytes - 44L).coerceAtLeast(0L) / 2f / 24000f)
+                                    val seconds = pcmBytes / 2f / sampleRate.toFloat()
                                     val current = _state.value as? SpeechState.Generating
                                     if (current?.modelId == modelId) {
                                         _state.value = current.copy(
@@ -408,10 +413,11 @@ class SpeechGenerationService : Service() {
                     throw IOException(nativeFailure.message)
                 }
 
-                if (temp.length() < 64L) {
+                if (pcmBytes < 2L || pcmBytes % 2L != 0L) {
                     temp.delete()
-                    throw IOException("Breeze returned an empty/truncated WAV stream")
+                    throw IOException("Breeze returned empty or truncated PCM audio")
                 }
+                finalizePcmWav(temp, pcmBytes, sampleRate)
                 if (!temp.renameTo(output)) {
                     temp.copyTo(output, overwrite = true)
                     temp.delete()
@@ -446,6 +452,38 @@ class SpeechGenerationService : Service() {
             } finally {
                 activeCall = null
             }
+        }
+    }
+
+    private fun finalizePcmWav(file: File, pcmBytes: Long, sampleRate: Int) {
+        if (pcmBytes > 0xffffffffL - 36L) {
+            throw IOException("Generated audio is too large for a WAV file")
+        }
+        java.io.RandomAccessFile(file, "rw").use { raf ->
+            fun le16(value: Int) {
+                raf.write(value and 0xff)
+                raf.write((value ushr 8) and 0xff)
+            }
+            fun le32(value: Long) {
+                raf.write((value and 0xff).toInt())
+                raf.write(((value ushr 8) and 0xff).toInt())
+                raf.write(((value ushr 16) and 0xff).toInt())
+                raf.write(((value ushr 24) and 0xff).toInt())
+            }
+            raf.seek(0)
+            raf.writeBytes("RIFF")
+            le32(36L + pcmBytes)
+            raf.writeBytes("WAVE")
+            raf.writeBytes("fmt ")
+            le32(16)
+            le16(1) // PCM
+            le16(1) // mono
+            le32(sampleRate.toLong())
+            le32(sampleRate.toLong() * 2L)
+            le16(2)
+            le16(16)
+            raf.writeBytes("data")
+            le32(pcmBytes)
         }
     }
 
