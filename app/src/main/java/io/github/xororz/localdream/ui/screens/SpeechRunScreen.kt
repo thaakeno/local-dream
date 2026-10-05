@@ -1,11 +1,15 @@
 package io.github.xororz.localdream.ui.screens
 
 import android.content.Intent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -20,6 +24,12 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
@@ -30,6 +40,8 @@ import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
 import io.github.xororz.localdream.service.SpeechHistoryItem
 import io.github.xororz.localdream.service.SpeechHistoryStore
 import io.github.xororz.localdream.ui.components.MusicPlayerCard
+import io.github.xororz.localdream.ui.components.SmoothIndeterminateLinearWavyProgressIndicator
+import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
 import io.github.xororz.localdream.utils.AppHaptics
 import java.io.File
 import java.util.Locale
@@ -125,14 +137,38 @@ fun SpeechRunScreen(
         history = withContext(Dispatchers.IO) { SpeechHistoryStore.load(context) }
     }
 
+    var lastSpeechProgress by remember { mutableFloatStateOf(-1f) }
+    var lastTerminalHaptic by remember { mutableStateOf<String?>(null) }
+
     LaunchedEffect(speechState) {
-        when (speechState) {
+        when (val state = speechState) {
+            is SpeechState.Generating -> {
+                state.progress?.let { progress ->
+                    if (progress > lastSpeechProgress + 0.001f) {
+                        AppHaptics.perform(context, AppHaptics.Kind.Progress)
+                        lastSpeechProgress = progress
+                    }
+                }
+                lastTerminalHaptic = null
+            }
             is SpeechState.Complete -> {
                 history = withContext(Dispatchers.IO) { SpeechHistoryStore.load(context) }
-                AppHaptics.perform(context, AppHaptics.Kind.Success)
+                if (lastTerminalHaptic != "complete") {
+                    AppHaptics.perform(context, AppHaptics.Kind.Success)
+                    lastTerminalHaptic = "complete"
+                }
+                lastSpeechProgress = -1f
             }
-            is SpeechState.Error -> AppHaptics.perform(context, AppHaptics.Kind.Failure)
-            else -> Unit
+            is SpeechState.Error -> {
+                if (lastTerminalHaptic != "error") {
+                    AppHaptics.perform(context, AppHaptics.Kind.Failure)
+                    lastTerminalHaptic = "error"
+                }
+                lastSpeechProgress = -1f
+            }
+            SpeechState.Idle, is SpeechState.Ready, is SpeechState.Loading -> {
+                lastSpeechProgress = -1f
+            }
         }
     }
 
@@ -147,14 +183,15 @@ fun SpeechRunScreen(
 
     val busy = speechState is SpeechState.Loading || speechState is SpeechState.Generating
     val precision = model?.variantPrecision.orEmpty()
-    val profile = model?.variantProfile.orEmpty()
     val statusText = when (val state = speechState) {
         is SpeechState.Loading -> state.detail
-        is SpeechState.Ready -> precision + " · strict Hexagon HTP · ready"
-        is SpeechState.Generating -> state.detail
-        is SpeechState.Complete -> precision + " · strict Hexagon HTP · ready"
-        is SpeechState.Error -> "HTP runtime failed · no fallback"
-        SpeechState.Idle -> precision + " · strict Hexagon HTP"
+        is SpeechState.Ready -> "Ready"
+        is SpeechState.Generating -> state.progress?.let {
+            "Generating ${(it.coerceIn(0f, 1f) * 100f).roundToInt()}%"
+        } ?: "Starting generation"
+        is SpeechState.Complete -> "Ready"
+        is SpeechState.Error -> "Generation failed"
+        SpeechState.Idle -> if (model?.isDownloaded == true) "Ready" else "Model required"
     }
 
     Scaffold(
@@ -264,30 +301,49 @@ fun SpeechRunScreen(
                         }
                     }
 
-                    OutlinedTextField(
+                    InlineEventEditor(
                         value = text,
                         onValueChange = { text = it.take(12000) },
+                        events = events,
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Text") },
-                        placeholder = { Text("What should Breeze say?") },
-                        minLines = 5,
-                        supportingText = {
-                            Text(text.length.toString() + " characters · English + Mandarin")
-                        },
                     )
 
-                    Text(
-                        "Inline events",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Inline events",
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "Tap to insert",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(events) { event ->
+                            val chinese = event.startsWith("[")
                             AssistChip(
                                 onClick = {
                                     text = if (text.isBlank()) event else text + " " + event
+                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                                 },
                                 label = { Text(event) },
+                                colors = AssistChipDefaults.assistChipColors(
+                                    containerColor = if (chinese) {
+                                        MaterialTheme.colorScheme.secondaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.tertiaryContainer
+                                    },
+                                    labelColor = if (chinese) {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onTertiaryContainer
+                                    },
+                                ),
                             )
                         }
                     }
@@ -303,74 +359,21 @@ fun SpeechRunScreen(
                         minLines = 3,
                     )
 
-                    Surface(
-                        shape = MaterialTheme.shapes.large,
-                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Icon(Icons.Default.Memory, contentDescription = null)
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Qualcomm HTP only", fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    precision + " · " + profile + " · fallback disabled",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Text(
-                                "24 kHz",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    }
-
-                    if (speechState is SpeechState.Loading) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
-
                     when (val state = speechState) {
-                        is SpeechState.Generating -> {
-                            Surface(
-                                shape = MaterialTheme.shapes.large,
-                                color = MaterialTheme.colorScheme.secondaryContainer,
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                                ) {
-                                    Text("Generating on HTP", fontWeight = FontWeight.SemiBold)
-                                    Text(state.detail, style = MaterialTheme.typography.bodySmall)
-                                    if (state.generatedSeconds > 0f) {
-                                        Text(
-                                            String.format(
-                                                Locale.US,
-                                                "%.1f s synthesized",
-                                                state.generatedSeconds,
-                                            ),
-                                            style = MaterialTheme.typography.labelMedium,
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        is SpeechState.Loading -> SpeechLoadingCard(state.detail)
+                        is SpeechState.Generating -> SpeechProgressCard(state)
                         is SpeechState.Error -> {
                             Surface(
-                                shape = MaterialTheme.shapes.large,
+                                shape = MaterialTheme.shapes.extraLarge,
                                 color = MaterialTheme.colorScheme.errorContainer,
                             ) {
                                 Column(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
                                 ) {
                                     Text(
-                                        "Strict HTP runtime failed",
+                                        "Generation failed",
+                                        style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.SemiBold,
                                     )
                                     Text(state.message, style = MaterialTheme.typography.bodySmall)
@@ -390,7 +393,7 @@ fun SpeechRunScreen(
                                     ) {
                                         Icon(Icons.Default.Refresh, contentDescription = null)
                                         Spacer(Modifier.width(6.dp))
-                                        Text("Retry HTP")
+                                        Text("Restart")
                                     }
                                 }
                             }
@@ -487,7 +490,7 @@ fun SpeechRunScreen(
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            "Sampling only. The execution backend always stays strict Qualcomm HTP.",
+                            "Voice sampling, consistency and long-text controls.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -680,6 +683,314 @@ fun SpeechRunScreen(
                 }
             }
         }
+    }
+}
+
+
+@Composable
+private fun InlineEventEditor(
+    value: String,
+    onValueChange: (String) -> Unit,
+    events: List<String>,
+    modifier: Modifier = Modifier,
+) {
+    var textLayout by remember(value) { mutableStateOf<TextLayoutResult?>(null) }
+    val textColor = MaterialTheme.colorScheme.onSurface
+    val placeholderColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val borderColor = MaterialTheme.colorScheme.outline
+    val latinEventColor = MaterialTheme.colorScheme.tertiaryContainer
+    val chineseEventColor = MaterialTheme.colorScheme.secondaryContainer
+    val radius = 7.dp
+    val horizontalPad = 4.dp
+    val verticalPad = 2.dp
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Text(
+            "Text",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 170.dp)
+                    .padding(16.dp),
+            ) {
+                if (value.isEmpty()) {
+                    Text(
+                        "What should Breeze say?",
+                        color = placeholderColor,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .drawBehind {
+                            val layout = textLayout ?: return@drawBehind
+                            events.forEach { event ->
+                                var searchFrom = 0
+                                while (searchFrom < value.length) {
+                                    val start = value.indexOf(event, searchFrom)
+                                    if (start < 0) break
+                                    val end = (start + event.length).coerceAtMost(value.length)
+                                    var activeLine = -1
+                                    var left = Float.POSITIVE_INFINITY
+                                    var top = Float.POSITIVE_INFINITY
+                                    var right = Float.NEGATIVE_INFINITY
+                                    var bottom = Float.NEGATIVE_INFINITY
+
+                                    fun drawSegment() {
+                                        if (activeLine < 0 || !left.isFinite()) return
+                                        val hp = horizontalPad.toPx()
+                                        val vp = verticalPad.toPx()
+                                        drawRoundRect(
+                                            color = if (event.startsWith("[")) {
+                                                chineseEventColor
+                                            } else {
+                                                latinEventColor
+                                            },
+                                            topLeft = Offset(left - hp, top - vp),
+                                            size = Size(
+                                                (right - left) + hp * 2f,
+                                                (bottom - top) + vp * 2f,
+                                            ),
+                                            cornerRadius = CornerRadius(
+                                                radius.toPx(),
+                                                radius.toPx(),
+                                            ),
+                                        )
+                                    }
+
+                                    for (offset in start until end) {
+                                        val line = layout.getLineForOffset(offset)
+                                        val box = layout.getBoundingBox(offset)
+                                        if (activeLine != -1 && line != activeLine) {
+                                            drawSegment()
+                                            left = Float.POSITIVE_INFINITY
+                                            top = Float.POSITIVE_INFINITY
+                                            right = Float.NEGATIVE_INFINITY
+                                            bottom = Float.NEGATIVE_INFINITY
+                                        }
+                                        activeLine = line
+                                        left = minOf(left, box.left)
+                                        top = minOf(top, box.top)
+                                        right = maxOf(right, box.right)
+                                        bottom = maxOf(bottom, box.bottom)
+                                    }
+                                    drawSegment()
+                                    searchFrom = end.coerceAtLeast(start + 1)
+                                }
+                            }
+                        },
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = textColor),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    onTextLayout = { textLayout = it },
+                )
+            }
+        }
+        Text(
+            value.length.toString() + " characters · English + Mandarin",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun SpeechLoadingCard(detail: String) {
+    Surface(
+        shape = MaterialTheme.shapes.extraLarge,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                detail,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "The model stays warm after loading, so the next generation starts faster.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SmoothIndeterminateLinearWavyProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SpeechProgressCard(state: SpeechState.Generating) {
+    val progress = state.progress?.coerceIn(0f, 1f)
+    val percent = progress?.let { (it * 100f).roundToInt() }
+    val elapsedLive by produceState(
+        initialValue = 0f,
+        key1 = state.startedAtMillis,
+        key2 = state.elapsedSeconds,
+    ) {
+        while (true) {
+            value = state.elapsedSeconds ?: (
+                (System.currentTimeMillis() - state.startedAtMillis).coerceAtLeast(0L) / 1000f
+            )
+            kotlinx.coroutines.delay(500L)
+        }
+    }
+
+    Surface(
+        shape = MaterialTheme.shapes.extraLarge,
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(13.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Generating speech",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        state.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.72f),
+                    )
+                }
+                if (percent != null) {
+                    Text(
+                        "$percent%",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+
+            if (progress != null) {
+                SmoothLinearWavyProgressIndicator(
+                    progress = progress,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                SmoothIndeterminateLinearWavyProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SpeechMetric(
+                    label = "Audio",
+                    value = buildString {
+                        append(String.format(Locale.US, "%.1f s", state.generatedSeconds))
+                        state.estimatedSeconds?.let {
+                            append(" / ")
+                            append(String.format(Locale.US, "%.1f s", it))
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                SpeechMetric(
+                    label = "Elapsed",
+                    value = formatSpeechTime(elapsedLive),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SpeechMetric(
+                    label = "ETA",
+                    value = state.etaSeconds?.let(::formatSpeechTime) ?: "Calculating",
+                    modifier = Modifier.weight(1f),
+                )
+                SpeechMetric(
+                    label = "Speed",
+                    value = when {
+                        state.realtimeFactor != null && state.fps != null ->
+                            String.format(
+                                Locale.US,
+                                "%.2f× · %.1f fps",
+                                state.realtimeFactor,
+                                state.fps,
+                            )
+                        state.realtimeFactor != null ->
+                            String.format(Locale.US, "%.2f× realtime", state.realtimeFactor)
+                        else -> "Warming up"
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+
+            if (progress != null) {
+                Text(
+                    "Progress and ETA come from the native generator and are estimated from the spoken length.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.65f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SpeechMetric(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.38f),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                value,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+private fun formatSpeechTime(seconds: Float): String {
+    val total = seconds.coerceAtLeast(0f).roundToInt()
+    val minutes = total / 60
+    val remain = total % 60
+    return if (minutes > 0) {
+        String.format(Locale.US, "%d:%02d", minutes, remain)
+    } else {
+        "${remain}s"
     }
 }
 
