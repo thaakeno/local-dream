@@ -202,7 +202,7 @@ static ggml_tensor * stream_tconv(
     // This is algebraically identical to the offline convolution.
     if (trim <= 0) return convtr1d_causal(ctx, w, b, x, stride);
 
-    ggml_tensor * raw = ggml_conv_transpose_1d(ctx, w, x, stride, 0, 1);
+    ggml_tensor * raw = convtr1d_raw(ctx, w, x, stride);
     const int OC = (int) raw->ne[1];
     if (raw->ne[0] != emit + trim) {
         throw std::runtime_error("Breeze streaming ConvTranspose1d produced an unexpected length");
