@@ -44,6 +44,15 @@ private data class SpeechTemplate(
     val instruction: String,
 )
 
+private const val DEFAULT_SEED = 42L
+private const val DEFAULT_CFG = 1f
+private const val DEFAULT_TEMPERATURE = 0.9f
+private const val DEFAULT_TOP_K = 50
+private const val DEFAULT_TOP_P = 1f
+private const val DEFAULT_REPETITION = 1.1f
+private const val DEFAULT_SPLIT_CHARS = 600
+private const val DEFAULT_MAX_NEW_TOKENS = 750
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SpeechRunScreen(
@@ -63,14 +72,14 @@ fun SpeechRunScreen(
     var instruction by rememberSaveable {
         mutableStateOf("A warm, thoughtful young woman with a clear, calm delivery.")
     }
-    var seed by rememberSaveable { mutableLongStateOf(42L) }
-    var cfg by rememberSaveable { mutableFloatStateOf(1f) }
-    var temperature by rememberSaveable { mutableFloatStateOf(0.9f) }
-    var topK by rememberSaveable { mutableIntStateOf(50) }
-    var topP by rememberSaveable { mutableFloatStateOf(1f) }
-    var repetition by rememberSaveable { mutableFloatStateOf(1.1f) }
-    var splitChars by rememberSaveable { mutableIntStateOf(600) }
-    var maxNewTokens by rememberSaveable { mutableIntStateOf(750) }
+    var seed by rememberSaveable { mutableLongStateOf(DEFAULT_SEED) }
+    var cfg by rememberSaveable { mutableFloatStateOf(DEFAULT_CFG) }
+    var temperature by rememberSaveable { mutableFloatStateOf(DEFAULT_TEMPERATURE) }
+    var topK by rememberSaveable { mutableIntStateOf(DEFAULT_TOP_K) }
+    var topP by rememberSaveable { mutableFloatStateOf(DEFAULT_TOP_P) }
+    var repetition by rememberSaveable { mutableFloatStateOf(DEFAULT_REPETITION) }
+    var splitChars by rememberSaveable { mutableIntStateOf(DEFAULT_SPLIT_CHARS) }
+    var maxNewTokens by rememberSaveable { mutableIntStateOf(DEFAULT_MAX_NEW_TOKENS) }
     var showTune by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf<List<SpeechHistoryItem>>(emptyList()) }
@@ -466,58 +475,128 @@ fun SpeechRunScreen(
                     .padding(bottom = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text(
-                    "Breeze generation",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    "Official GGUF defaults stay visible and editable. Backend execution remains strict HTP.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                BreezeSettingSlider("CFG scale", cfg, 1f..4f, { cfg = it }) {
-                    String.format(Locale.US, "%.2f", it)
-                }
-                BreezeSettingSlider(
-                    "Temperature",
-                    temperature,
-                    0.3f..1.5f,
-                    { temperature = it },
-                ) { String.format(Locale.US, "%.2f", it) }
-                BreezeSettingSlider("Top P", topP, 0.5f..1f, { topP = it }) {
-                    String.format(Locale.US, "%.2f", it)
-                }
-                BreezeSettingSlider(
-                    "Repetition penalty",
-                    repetition,
-                    1f..1.5f,
-                    { repetition = it },
-                ) { String.format(Locale.US, "%.2f", it) }
-                BreezeSettingSlider("Top K", topK.toFloat(), 10f..100f, {
-                    topK = it.roundToInt()
-                }) { it.roundToInt().toString() }
-                BreezeSettingSlider(
-                    "Long-text split",
-                    splitChars.toFloat(),
-                    200f..1200f,
-                    { splitChars = it.roundToInt() },
-                ) { it.roundToInt().toString() + " chars" }
-                BreezeSettingSlider(
-                    "Frame cap / piece",
-                    maxNewTokens.toFloat(),
-                    250f..1500f,
-                    { maxNewTokens = it.roundToInt() },
-                ) { it.roundToInt().toString() }
-                HorizontalDivider()
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Breeze generation",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            "Sampling only. The execution backend always stays strict Qualcomm HTP.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            cfg = DEFAULT_CFG
+                            temperature = DEFAULT_TEMPERATURE
+                            topK = DEFAULT_TOP_K
+                            topP = DEFAULT_TOP_P
+                            repetition = DEFAULT_REPETITION
+                            splitChars = DEFAULT_SPLIT_CHARS
+                            maxNewTokens = DEFAULT_MAX_NEW_TOKENS
+                            seed = DEFAULT_SEED
+                            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                        },
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Reset defaults")
+                    }
+                }
+
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Text(
+                        "The defaults are the safe baseline. Change one thing at a time when tuning a voice so you can hear what actually helped.",
+                        modifier = Modifier.padding(14.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                BreezeSettingSlider(
+                    label = "CFG scale",
+                    value = cfg,
+                    range = 1f..4f,
+                    description = "How strongly Breeze follows the voice direction. 1.0 is the natural default; higher values push the requested style harder but can make speech sound forced.",
+                    onValueChange = { cfg = it },
+                ) { String.format(Locale.US, "%.2f", it) }
+
+                BreezeSettingSlider(
+                    label = "Temperature",
+                    value = temperature,
+                    range = 0.3f..1.5f,
+                    description = "Controls randomness and expressiveness. Lower is steadier and more repeatable; higher gives more variation and emotion but can increase odd pronunciations.",
+                    onValueChange = { temperature = it },
+                ) { String.format(Locale.US, "%.2f", it) }
+
+                BreezeSettingSlider(
+                    label = "Top P",
+                    value = topP,
+                    range = 0.5f..1f,
+                    description = "Nucleus sampling. Lower values keep only the most likely choices and sound safer; 1.0 keeps the full candidate distribution.",
+                    onValueChange = { topP = it },
+                ) { String.format(Locale.US, "%.2f", it) }
+
+                BreezeSettingSlider(
+                    label = "Repetition penalty",
+                    value = repetition,
+                    range = 1f..1.5f,
+                    description = "Discourages repeated sounds, syllables and phrases. Increase it only if Breeze gets stuck repeating; too high can damage fluency.",
+                    onValueChange = { repetition = it },
+                ) { String.format(Locale.US, "%.2f", it) }
+
+                BreezeSettingSlider(
+                    label = "Top K",
+                    value = topK.toFloat(),
+                    range = 10f..100f,
+                    description = "Maximum token choices considered at each step. Lower is more predictable; higher allows more varied delivery. 50 is a good general default.",
+                    onValueChange = { topK = it.roundToInt() },
+                ) { it.roundToInt().toString() }
+
+                BreezeSettingSlider(
+                    label = "Long-text split",
+                    value = splitChars.toFloat(),
+                    range = 200f..1200f,
+                    description = "Approximate characters per speech segment. Smaller chunks start sooner and use less memory; larger chunks preserve continuity but take longer before audio arrives.",
+                    onValueChange = { splitChars = it.roundToInt() },
+                ) { it.roundToInt().toString() + " chars" }
+
+                BreezeSettingSlider(
+                    label = "Frame cap / piece",
+                    value = maxNewTokens.toFloat(),
+                    range = 250f..1500f,
+                    description = "Maximum acoustic frames Breeze may generate for each segment. Raise it for long slow passages; setting it too low can cut a segment off.",
+                    onValueChange = { maxNewTokens = it.roundToInt() },
+                ) { it.roundToInt().toString() }
+
+                HorizontalDivider()
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Seed", fontWeight = FontWeight.SemiBold)
                         Text(
-                            seed.toString(),
+                            "Controls repeatability. Reuse the same seed with the same text/settings to get a similar result.",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            seed.toString(),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
                         )
                     }
                     TextButton(
@@ -527,8 +606,11 @@ fun SpeechRunScreen(
                     ) {
                         Text("Randomize")
                     }
-                    TextButton(onClick = { seed = 42L }) { Text("42") }
+                    TextButton(onClick = { seed = DEFAULT_SEED }) {
+                        Text("42")
+                    }
                 }
+
                 Button(
                     onClick = { showTune = false },
                     modifier = Modifier.fillMaxWidth(),
@@ -606,10 +688,11 @@ private fun BreezeSettingSlider(
     label: String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,
+    description: String,
     onValueChange: (Float) -> Unit,
     valueLabel: (Float) -> String,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -621,6 +704,11 @@ private fun BreezeSettingSlider(
                 style = MaterialTheme.typography.labelLarge,
             )
         }
+        Text(
+            description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Slider(
             value = value.coerceIn(range.start, range.endInclusive),
             onValueChange = onValueChange,
