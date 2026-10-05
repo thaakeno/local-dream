@@ -192,31 +192,25 @@ static ggml_tensor * stream_tconv(
     ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int stride
 ) {
     const int K = (int) w->ne[0];
-    const int OC = (int) w->ne[1];
-    const int IC = (int) w->ne[2];
     const int N = (int) x->ne[0];
     const int trim = K - stride;
     const int emit = N * stride;
 
+    // Causal ConvTranspose1d streaming is an output-overlap problem, not an
+    // input-context problem. Compute only the fresh chunk, add the previous
+    // raw tail to its head, emit N*stride rows, and carry K-stride raw rows.
+    // This is algebraically identical to the offline convolution.
     if (trim <= 0) return convtr1d_causal(ctx, w, b, x, stride);
-    if (emit < trim) {
-        throw std::runtime_error("unsupported Breeze transposed-conv streaming geometry");
-    }
 
-    // Exact Qwen causal ConvTranspose1d streaming: carry the raw output
-    // overlap [K-stride, OC] forward. This avoids recomputing cached inputs.
-    CodecStreamCacheBlock & block =
-        ensure_cache(state, state.tconv1d, name, trim, OC);
-    ggml_tensor * carry = cache_view(ctx, state, block, state.conv_bank);
-
-    ggml_tensor * w2 = ggml_reshape_2d(ctx, w, (int64_t) K * OC, IC);
-    w2 = ggml_cont(ctx, ggml_transpose(ctx, w2));
-    ggml_tensor * xt = ggml_cont(ctx, ggml_transpose(ctx, x));
-    ggml_tensor * projected = ggml_cont(ctx, ggml_mul_mat(ctx, w2, xt));
-    ggml_tensor * raw = ggml_col2im_1d(ctx, projected, stride, OC, 0);
+    ggml_tensor * raw = ggml_conv_transpose_1d(ctx, w, x, stride, 0, 1);
+    const int OC = (int) raw->ne[1];
     if (raw->ne[0] != emit + trim) {
         throw std::runtime_error("Breeze streaming ConvTranspose1d produced an unexpected length");
     }
+
+    CodecStreamCacheBlock & block =
+        ensure_cache(state, state.tconv1d, name, trim, OC);
+    ggml_tensor * carry = cache_view(ctx, state, block, state.conv_bank);
 
     ggml_tensor * head = ggml_view_2d(
         ctx, raw, trim, OC, raw->nb[1], 0
