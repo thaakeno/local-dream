@@ -5185,11 +5185,13 @@ static bool ggml_hexagon_matmul_is_hmx_eligible(
     const int ne12  = src1->ne[2];
     const int wtype = src0->type;
 
-    // The current v81 quantized HMX matmul path has public correctness
-    // regressions on Snapdragon 8 Elite-class parts. Keep those repacked
-    // weights on HVX, but leave F16/F32 HMX enabled for the heavy vocoder
-    // projections where it is both valid and materially faster.
-    if (opt_arch >= 81 && ggml_hexagon_is_repack_type((ggml_type) wtype)) {
+    // SM8850 / HTP v81 still has a documented same-batch visibility bug
+    // for HMX MUL_MAT outputs, including F16 models. Breeze chains linear
+    // outputs directly into ADD/GELU/residual ops, so using HMX here can
+    // silently corrupt speech. Stay entirely on the HTP backend, but select
+    // the mature HVX matmul kernels on v81 until that device-side issue is
+    // fixed upstream.
+    if (opt_arch >= 81) {
         return false;
     }
 
