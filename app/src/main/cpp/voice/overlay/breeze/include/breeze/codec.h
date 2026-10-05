@@ -14,6 +14,13 @@ struct CodecStreamCacheBlock {
     int channels = 0;
 };
 
+struct CodecDebugProbe {
+    std::string name;
+    ggml_tensor * tensor = nullptr;
+};
+
+using CodecDebugProbes = std::vector<CodecDebugProbe>;
+
 struct VocoderStreamState {
     bool initialized = false;
     int position = 0;
@@ -65,13 +72,17 @@ ggml_tensor * seanet_encoder(ggml_context * ctx, BreezeModel & m, ggml_tensor * 
 ggml_tensor * mimi_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, ggml_tensor * x,
                                const std::string & prefix, int seq_len);
 ggml_tensor * vocoder_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, ggml_tensor * x, int seq_len);
-ggml_tensor * vocoder_transformer_stream(ggml_context * ctx, BreezeModel & m, Graph & g,
-                                        VocoderStreamState & state, ggml_tensor * x, int seq_len);
+ggml_tensor * vocoder_transformer_stream(
+    ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
+    ggml_tensor * x, int seq_len, CodecDebugProbes * probes = nullptr
+);
 ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
                              const std::vector<int> & codes, int n_codebooks, int seq_len);
-ggml_tensor * vocoder_decode_stream(ggml_context * ctx, BreezeModel & m, Graph & g,
-                                    VocoderStreamState & state,
-                                    const std::vector<int> & codes, int n_codebooks, int seq_len);
+ggml_tensor * vocoder_decode_stream(
+    ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
+    const std::vector<int> & codes, int n_codebooks, int seq_len,
+    CodecDebugProbes * probes = nullptr
+);
 
 }
 
