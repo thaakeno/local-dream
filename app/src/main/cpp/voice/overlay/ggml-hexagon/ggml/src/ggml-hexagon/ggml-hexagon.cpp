@@ -115,6 +115,7 @@ static int opt_opqueue  = 32;   // max number of pending batches
 static int opt_optrace  = 0;    // trace buffer size per thread (0 means default)
 static int opt_oppoll   = 0;    // polling for batch completions
 static int opt_opfusion = 1;    // enable/disable op fusion
+static int opt_batchlog = 0;    // lightweight DSPQueue batch submit/complete logging
 
 enum ggml_hexagon_fusion_flags {
     GGML_HEXAGON_FUSE_ALLREDUCE_ADD = (1 << 1), // 2
@@ -4125,6 +4126,17 @@ void ggml_hexagon_session::flush_pending(bool all) {
 
         op_queue->pop(rsp, dbuf);
 
+        if (opt_batchlog) {
+            GGML_LOG_INFO(
+                "ggml-hex: %s BREEZE_HTP_BATCH complete seq=%llu n_ops=%u status=%s usec=%u\n",
+                this->c_name(),
+                (unsigned long long) rsp.seq,
+                rsp.n_ops,
+                status_to_str(rsp.status),
+                rsp.usecs
+            );
+        }
+
         GGML_ASSERT(rsp.seq == this->batch_rsp_seq + 1);
         this->batch_rsp_seq = rsp.seq;
 
@@ -4152,6 +4164,8 @@ void ggml_hexagon_session::flush_batch(size_t min_ops) {
     dspqueue_buffer dbuf{};
 
     const uint64_t seq = ++this->batch_req_seq;
+    const uint32_t submit_ops = op_batch->n_ops;
+    const uint32_t submit_bufs = op_batch->n_bufs;
 
     op_batch->update_mdev_group(this->mdev.idx);
 
@@ -4181,6 +4195,15 @@ void ggml_hexagon_session::flush_batch(size_t min_ops) {
     }
 
     HEX_VERBOSE("ggml-hex: %s queue-opbatch: %p size %u\n", this->c_name(), dbuf.ptr, dbuf.size);
+    if (opt_batchlog) {
+        GGML_LOG_INFO(
+            "ggml-hex: %s BREEZE_HTP_BATCH submit seq=%llu n_ops=%u n_bufs=%u\n",
+            this->c_name(),
+            (unsigned long long) seq,
+            submit_ops,
+            submit_bufs
+        );
+    }
 
     int err = dspqueue_write(this->queue, 0, 1, &dbuf, sizeof(req), (const uint8_t*) &req, DSPQUEUE_TIMEOUT);
     if (err != 0) {
@@ -5494,14 +5517,26 @@ static void ggml_hexagon_precompute_matmul_params_impl(
 
     const size_t vtcm_budget = sess->vtcm_size;
 
-    // Check HMX eligibility and try precomputing HMX parameters
-    // SM8850/v81 has open correctness reports for quantized HMX decode-sized
-    // matmuls. Keep HMX for the wide/batched work where it pays off (prefill
-    // and vocoder), but route 1-2 row autoregressive decode through the mature
-    // HVX path. This avoids corrupt next-frame logits without throwing away HMX
-    // throughput for the expensive batched codec graphs.
+    // Quantized HMX on HTP v81 has a reproducible public correctness regression.
+    // Breeze's Q4_K codec linears become multi-row after upsampling, so the old
+    // row-count gate re-enabled that path inside the first vocoder graph.
+    // Keep HMX for F16/F32 only; quantized v81 matmuls stay entirely on HVX.
     const int hmx_rows = ne11 * ne12 * ne13;
-    bool hmx_enabled = (sess->n_hmx > 0) && (opt_mm_select >= 2) && hmx_rows > 2;
+    const bool quantized_w = wtype != GGML_TYPE_F16 && wtype != GGML_TYPE_F32;
+    const bool v81_quant_hmx_safe = !(opt_arch >= 81 && quantized_w);
+    bool hmx_enabled =
+        (sess->n_hmx > 0) &&
+        (opt_mm_select >= 2) &&
+        hmx_rows > 2 &&
+        v81_quant_hmx_safe;
+    if (!v81_quant_hmx_safe) {
+        static std::atomic<bool> warned_v81_quant_hmx{false};
+        if (!warned_v81_quant_hmx.exchange(true)) {
+            GGML_LOG_INFO(
+                "ggml-hex: v81 quantized HMX disabled; routing quantized matmul through HVX\n"
+            );
+        }
+    }
     if (hmx_enabled && ggml_hexagon_matmul_is_hmx_eligible(src0, src1, dst, ne01_padded, is_matmul_id, is_batched)) {
         if (ggml_hexagon_precompute_hmx_mm_params(sess, src0, src1, dst, wtype, ne00_padded, ne01_padded, ne02, ne11, ne12, ne11_padded, is_matmul_id, is_batched, src2_size, vtcm_budget, kparams)) {
             goto finalize;
@@ -8851,6 +8886,7 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     const char * str_opqueue  = getenv("GGML_HEXAGON_OPQUEUE");
     const char * str_oppoll   = getenv("GGML_HEXAGON_OPPOLL");
     const char * str_opfusion = getenv("GGML_HEXAGON_OPFUSION");
+    const char * str_batchlog = getenv("GGML_HEXAGON_BATCHLOG");
     const char * str_opfilter = getenv("GGML_HEXAGON_OPFILTER");
     const char * str_profile  = getenv("GGML_HEXAGON_PROFILE");
     const char * str_etm      = getenv("GGML_HEXAGON_ETM");
@@ -8906,6 +8942,7 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     opt_optrace   = str_optrace  ? strtoul(str_optrace, NULL, 0)          : (opt_opbatch * 256);
     opt_oppoll    = str_oppoll   ? strtoul(str_oppoll,  NULL, 0)          : opt_oppoll;
     opt_opfusion  = str_opfusion ? atoi(str_opfusion)                     : opt_opfusion;
+    opt_batchlog  = str_batchlog ? atoi(str_batchlog)                     : opt_batchlog;
     opt_profile   = str_profile  ? atoi(str_profile)                      : 0;
     opt_etm       = str_etm      ? atoi(str_etm)                          : 0;
     opt_nhvx      = str_nhvx     ? strtoul(str_nhvx, NULL, 0)             : opt_nhvx;
