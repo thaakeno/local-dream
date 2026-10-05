@@ -55,6 +55,8 @@ for rel in \
     ggml/src/ggml-hexagon/htp/htp-ops.h \
     ggml/src/ggml-hexagon/htp/htp-ctx.h \
     ggml/src/ggml-hexagon/htp/main.c \
+    ggml/src/ggml-hexagon/htp/get-rows-ops.c \
+    ggml/src/ggml-hexagon/htp/get-rows-ops.h \
     ggml/src/ggml-hexagon/ggml-hexagon.cpp; do
     test -s "$HEXAGON_OVERLAY/$rel"
     cp "$HEXAGON_OVERLAY/$rel" "$HEXAGON_DIR/$rel"
@@ -87,6 +89,11 @@ grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'hmx_rows > 2' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'if (opt_arch >= 81)' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'GET_ROWS_THREAD_DT_FN(f32' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.c"
+grep -q 'case HTP_TYPE_F32:' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.h"
+grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'get-rows-f32-multi' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'vocoder_decode_stream' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 grep -q 'decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
 grep -q 'vocoder_transformer_stream' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
@@ -175,8 +182,8 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=backend-default
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im
-streaming_vocoder=reference-state-tensors-chunk1-first-frame-deep-diagnostics
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged
+streaming_vocoder=reference-state-tensors-chunk1-f32-getrows-vtcm
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
