@@ -850,6 +850,7 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             kotlinx.coroutines.delay(500L)
         }
     }
+    val finishing = state.detail.startsWith("Finishing speech")
     val adjustedEta = state.etaSeconds?.let { nativeEta ->
         val nativeElapsed = state.elapsedSeconds ?: elapsedLive
         maxOf(0f, nativeEta - maxOf(0f, elapsedLive - nativeElapsed))
@@ -926,7 +927,11 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             ) {
                 SpeechMetric(
                     label = "ETA",
-                    value = adjustedEta?.let(::formatSpeechTime) ?: "Calculating",
+                    value = when {
+                        finishing -> "Waiting for EOS"
+                        adjustedEta != null -> formatSpeechTime(adjustedEta)
+                        else -> "Calculating"
+                    },
                     modifier = Modifier.weight(1f),
                 )
                 SpeechMetric(
@@ -947,13 +952,15 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
                 )
             }
 
-            if (progress != null) {
-                Text(
-                    "Progress and ETA come from the native generator and are estimated from the spoken length.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.65f),
-                )
-            }
+            Text(
+                if (finishing) {
+                    "The duration estimate has been reached. Breeze is still decoding until it emits end-of-speech."
+                } else {
+                    "Progress and ETA come from the native generator and are estimates, not a hard completion boundary."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.65f),
+            )
         }
     }
 }
