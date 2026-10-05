@@ -43,13 +43,6 @@ struct MimiCodec {
     BreezeModel * m = nullptr;
     VocoderStreamState stream;
 
-    // Keep a bounded code history so a numerically bad incremental flush can
-    // fall back to the exact full decoder instead of returning broken PCM.
-    bool stream_safe_full = false;
-    int stream_history_frames = 0;
-    int stream_history_n_cb = 0;
-    std::vector<int> stream_history_codes;
-
     void init(BreezeModel & model);
     void stream_reset();
 
