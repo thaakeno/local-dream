@@ -24,6 +24,8 @@ env:
   BUILD_REPOSITORY: ${{ github.repository }}
   BUILD_UPSTREAM_REPOSITORY: 'xororz/local-dream'
   BUILD_IS_FORK: 'true'
+  BREEZE_NATIVE_BASE_SHA: '70a473e5ed09c1988eda2421ce604032727f3b7d'
+  BREEZE_NATIVE_BASE_CACHE_KEY: 'localdream-native-b0b0a31bb69f8750f08e0ceabd686873bac5bec8b7328afef3b26faf4b08c27a'
 
 permissions:
   contents: read
@@ -163,6 +165,39 @@ jobs:
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
 
+      # v152 is the last verified full native build before the stateful-vocoder
+      # mask fix. For Breeze-only native edits, all Xet/image/DiT/YuE2/QNN
+      # artifacts are reusable, so rebuild only voice/build.sh.
+      - name: Check Breeze-only native delta
+        id: breeze-native-delta
+        if: steps.native-cache.outputs.cache-hit != 'true' && github.ref_name == 'v141-stable-yue2-full'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git fetch --no-tags --depth=1 origin "$BREEZE_NATIVE_BASE_SHA"
+          if git diff --quiet "$BREEZE_NATIVE_BASE_SHA" HEAD -- \
+            app/src/main/cpp \
+            app/src/main/rust/xet_downloader \
+            ':(exclude)app/src/main/cpp/voice/**'; then
+            echo "only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bootstrap verified v152 native artifacts
+        id: breeze-native-bootstrap
+        if: steps.native-cache.outputs.cache-hit != 'true' && steps.breeze-native-delta.outputs.only == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a
+            app/src/main/assets/ditlibs
+            app/src/main/assets/yue2libs
+            app/src/main/assets/breezelibs
+            app/src/main/assets/qnnlibs
+            app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
+          key: ${{ env.BREEZE_NATIVE_BASE_CACHE_KEY }}
+
       # The alpha.58 native cache is the exact same Xet/image/DiT source
       # revision as this YuE2-only change. Reuse those immutable artifacts and
       # rebuild only the music backend when the new full cache key is absent.
@@ -188,6 +223,7 @@ jobs:
           docker run --rm -i --platform linux/amd64 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$QNN_SDK_ROOT:/qnn:ro" \
+            -e REUSE_BREEZE_BASE_NATIVE="${{ steps.breeze-native-bootstrap.outputs.cache-hit }}" \
             -e REUSE_STABLE_NATIVE="${{ steps.native-bootstrap.outputs.cache-hit }}" \
             ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
             bash -s <<'CONTAINER_SCRIPT'
@@ -250,7 +286,15 @@ jobs:
           test -f /data/android-ndk-r28/build/cmake/android.toolchain.cmake
 
           cd /workspace/app/src/main/cpp
-          if [ "${REUSE_STABLE_NATIVE:-false}" = "true" ]; then
+          if [ "${REUSE_BREEZE_BASE_NATIVE:-false}" = "true" ]; then
+            echo "Reusing verified v152 native artifacts; rebuilding Breeze only."
+            test -s /workspace/app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
+            test -s /workspace/app/src/main/jniLibs/arm64-v8a/libdit_engine.so
+            test -s /workspace/app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
+            test -s /workspace/app/src/main/jniLibs/arm64-v8a/libyue2_server.so
+            test -s /workspace/app/src/main/assets/qnnlibs/libQnnHtp.so
+            bash voice/build.sh
+          elif [ "${REUSE_STABLE_NATIVE:-false}" = "true" ]; then
             echo "Reusing unchanged alpha.58 Xet/image/DiT native artifacts; rebuilding Breeze and YuE2."
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
             test -s /workspace/app/src/main/jniLibs/arm64-v8a/libdit_engine.so
