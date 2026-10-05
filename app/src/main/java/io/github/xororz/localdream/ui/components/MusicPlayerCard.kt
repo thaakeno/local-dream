@@ -24,9 +24,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -57,6 +59,8 @@ fun MusicPlayerCard(
     title: String,
     subtitle: String,
     modifier: Modifier = Modifier,
+    onSave: (() -> Unit)? = null,
+    onShare: (() -> Unit)? = null,
 ) {
     var player by remember(file.absolutePath) { mutableStateOf<MediaPlayer?>(null) }
     var preparing by remember(file.absolutePath) { mutableStateOf(false) }
@@ -247,6 +251,34 @@ fun MusicPlayerCard(
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+            }
+
+            if (onSave != null || onShare != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (onSave != null) {
+                        OutlinedButton(
+                            onClick = onSave,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Save")
+                        }
+                    }
+                    if (onShare != null) {
+                        Button(
+                            onClick = onShare,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Share")
+                        }
+                    }
                 }
             }
         }
