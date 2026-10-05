@@ -46,7 +46,7 @@ class SpeechGenerationService : Service() {
         private const val EXECUTABLE = "libbreeze_server.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v3-fast-vocoder"
+            "breeze-a0e177-hexagon-ab9acc-v4-fastrpc-tg"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -528,8 +528,8 @@ class SpeechGenerationService : Service() {
     }
 
     private val nativeProgressRegex = Regex(
-        """(\\d{1,3})%\\|.*?\\|\\s*([0-9.]+)/([0-9.]+)s\\s*""" +
-            """\\[([0-9:]+)<([0-9:]+),\\s*([0-9.]+)\\s*fps,\\s*([0-9.]+)x\\]""",
+        """(\d{1,3})%\|.*?\|\s*([0-9.]+)/([0-9.]+)s\s*""" +
+            """\[([0-9:]+)<([0-9:]+),\s*([0-9.]+)\s*fps,\s*([0-9.]+)x\]""",
     )
 
     private fun parseClockSeconds(value: String): Float? {
@@ -577,13 +577,20 @@ class SpeechGenerationService : Service() {
         val fps = match.groupValues[6].toFloatOrNull()
         val realtime = match.groupValues[7].toFloatOrNull()
 
+        val nativeFinishedEstimate = percent != null && percent >= 100f
         _state.value = current.copy(
-            detail = "Synthesizing speech",
+            detail = if (nativeFinishedEstimate) {
+                "Finishing speech · waiting for end-of-speech"
+            } else {
+                "Synthesizing speech"
+            },
             generatedSeconds = maxOf(current.generatedSeconds, generated ?: 0f),
-            progress = percent?.div(100f),
-            estimatedSeconds = estimated,
+            // Breeze's 100% is only the text-length duration estimate. It may keep
+            // generating until the model emits EOS, so never show a fake completed bar.
+            progress = if (nativeFinishedEstimate) null else percent?.div(100f),
+            estimatedSeconds = if (nativeFinishedEstimate) null else estimated,
             elapsedSeconds = elapsed,
-            etaSeconds = eta,
+            etaSeconds = if (nativeFinishedEstimate) null else eta,
             fps = fps,
             realtimeFactor = realtime,
         )
