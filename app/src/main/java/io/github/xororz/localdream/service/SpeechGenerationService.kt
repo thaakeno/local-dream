@@ -208,8 +208,8 @@ class SpeechGenerationService : Service() {
                 "--host", "127.0.0.1",
                 "--port", "8082",
                 "--ws-port", "-1",
-                "--chunk-first", "8",
-                "--chunk-max", "64",
+                "--chunk-first", "4",
+                "--chunk-max", "32",
                 "--split-chars", "600",
                 "--verbose",
             )
@@ -232,13 +232,6 @@ class SpeechGenerationService : Service() {
                 "ADSP_LIBRARY_PATH" to dspPath,
                 "DSP_LIBRARY_PATH" to dspPath,
                 "GGML_HEXAGON_DEVICES" to "HTP0:0",
-                "GGML_HEXAGON_NHMX" to "1",
-                "GGML_HEXAGON_NHVX" to "0",
-                "GGML_HEXAGON_MM_SELECT" to "2",
-                "GGML_HEXAGON_OPFUSION" to "1",
-                "GGML_HEXAGON_OPPOLL" to "0",
-                "GGML_HEXAGON_OPBATCH" to "1280",
-                "GGML_HEXAGON_OPQUEUE" to "32",
             )
 
             BackendDiagnostics.beginSession(
@@ -248,8 +241,8 @@ class SpeechGenerationService : Service() {
             BackendDiagnostics.append(
                 this,
                 "BREEZE_ENV",
-                "backend=HTP0:0 fallback=disabled queue=1280/32 hmx=1 " +
-                    "runtime=${runtimeDir.absolutePath}",
+                "backend=HTP0:0 transport=FastRPC-mempool fallback=disabled " +
+                    "graph_cache=on threads=6 runtime=${runtimeDir.absolutePath}",
             )
             BackendDiagnostics.append(this, "BREEZE_CMD", command.joinToString(" "))
 
