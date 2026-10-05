@@ -50,7 +50,7 @@ static bool verify_decoder_codebook_on_backend(GGUFModel & model, Backend & be) 
         std::fprintf(stderr, "[BREEZE_MODEL] missing decoder codebook verification tensor\n");
         return false;
     }
-    if (book->type != GGML_TYPE_F32 || book->ne[0] != 256 || book->ne[1] <= 31) {
+    if (book->type != GGML_TYPE_F32 || book->ne[0] != 256 || book->ne[1] < 2048) {
         std::fprintf(
             stderr,
             "[BREEZE_MODEL] unexpected decoder codebook layout type=%s shape=%lldx%lld\n",
@@ -61,27 +61,30 @@ static bool verify_decoder_codebook_on_backend(GGUFModel & model, Backend & be) 
         return false;
     }
 
-    constexpr int row_id = 31;
-    std::vector<float> expected((size_t) book->ne[0]);
-    ggml_backend_tensor_get(
-        book,
-        expected.data(),
-        (size_t) row_id * book->nb[1],
-        expected.size() * sizeof(float)
-    );
+    const std::vector<int32_t> row_ids = { 31, 219, 1221, 1938, 2047 };
+    const size_t width = (size_t) book->ne[0];
+    std::vector<float> expected(width * row_ids.size());
+    for (size_t r = 0; r < row_ids.size(); ++r) {
+        ggml_backend_tensor_get(
+            book,
+            expected.data() + r * width,
+            (size_t) row_ids[r] * book->nb[1],
+            width * sizeof(float)
+        );
+    }
     for (size_t i = 0; i < expected.size(); ++i) {
         if (!std::isfinite(expected[i])) {
             std::fprintf(
                 stderr,
-                "[BREEZE_MODEL] uploaded codebook row is non-finite index=%zu\n",
+                "[BREEZE_MODEL] uploaded codebook rows are non-finite index=%zu\n",
                 i
             );
             return false;
         }
     }
 
-    Graph g(96);
-    auto * ids = g.input_i32({ row_id }, 1);
+    Graph g(128);
+    auto * ids = g.input_i32(row_ids, (int) row_ids.size());
     auto * out = ggml_get_rows(g.ctx, book, ids);
     g.compute(be, out);
     const std::vector<float> got = tensor_to_f32(out);
@@ -125,9 +128,9 @@ static bool verify_decoder_codebook_on_backend(GGUFModel & model, Backend & be) 
 
     std::fprintf(
         stderr,
-        "[BREEZE_MODEL] HTP decoder codebook row verified id=%d width=%zu worst=%.8g\n",
-        row_id,
-        got.size(),
+        "[BREEZE_MODEL] HTP decoder codebook rows verified count=%zu width=%zu worst=%.8g\n",
+        row_ids.size(),
+        width,
         worst
     );
     return true;
