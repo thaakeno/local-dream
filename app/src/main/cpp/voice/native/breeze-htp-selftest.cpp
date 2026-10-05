@@ -147,9 +147,12 @@ static void test_col2im_bias(Backend & be) {
     // Real Breeze/Oobleck transpose-conv family: kernel = 2 * stride.
     // Cover every stride used by the decoder and multiple channel counts.
     test_col2im_case(be, "col2im1d-bias-s2",  4, 5, 5, 2, 0);
-    test_col2im_case(be, "col2im1d-bias-s4",  8, 4, 4, 4, 0);
-    test_col2im_case(be, "col2im1d-bias-s5", 10, 3, 4, 5, 0);
-    test_col2im_case(be, "col2im1d-bias-s6", 12, 3, 4, 6, 0);
+    test_col2im_case(be, "col2im1d-bias-s3",  6, 7, 5, 3, 0);
+    test_col2im_case(be, "col2im1d-bias-s4",  8, 8, 5, 4, 0);
+    test_col2im_case(be, "col2im1d-bias-s5", 10, 9, 5, 5, 0);
+    test_col2im_case(be, "col2im1d-bias-s8", 16, 16, 5, 8, 0);
+    // Multi-thread stress case: more channels than the v81 HTP thread count.
+    test_col2im_case(be, "col2im1d-bias-s8-c64", 16, 64, 8, 8, 0);
 }
 
 static void test_sin(Backend & be) {
