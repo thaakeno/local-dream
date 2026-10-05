@@ -21,9 +21,10 @@ void VocoderStreamState::init(BreezeModel & model) {
     const int max_seq = std::max(model.cfg.max_new_tokens + 32, c.sliding_window + 64);
     kv.init(model.backend, c.n_layer, c.head_dim, c.n_kv_head, max_seq);
 
-    // One 16 MiB persistent state arena is comfortably larger than all Breeze
-    // decoder causal tails while keeping them in a single HTP buffer. A single
-    // buffer also avoids exploding the Hexagon batch buffer count.
+    // Two equally sized banks live in one HTP allocation. A streaming graph
+    // only reads bank A and writes bank B (then swaps them after a successful
+    // compute), so backend scheduling can never turn a state refresh into a
+    // read/write alias hazard.
     conv_capacity_f32 = (16u * 1024u * 1024u) / sizeof(float);
     ggml_init_params p{
         ggml_tensor_overhead() * 8 + 4096,
@@ -33,7 +34,7 @@ void VocoderStreamState::init(BreezeModel & model) {
     conv_ctx = ggml_init(p);
     if (!conv_ctx) throw std::runtime_error("failed to create Breeze vocoder state context");
     conv_storage = ggml_new_tensor_1d(
-        conv_ctx, GGML_TYPE_F32, (int64_t) conv_capacity_f32
+        conv_ctx, GGML_TYPE_F32, (int64_t) conv_capacity_f32 * 2
     );
     conv_buffer = ggml_backend_alloc_ctx_tensors(conv_ctx, model.backend.backend);
     if (!conv_buffer) {
@@ -45,21 +46,26 @@ void VocoderStreamState::init(BreezeModel & model) {
     }
 
     conv_used_f32 = 0;
+    conv_bank = 0;
     initialized = true;
     reset();
 }
 
 void VocoderStreamState::reset() {
     position = 0;
+    conv_bank = 0;
     if (initialized) kv.reset();
 
-    // Only clear the portion that has actually been carved into cache blocks.
-    // New blocks are explicitly zeroed when first allocated.
     if (conv_storage && conv_used_f32 > 0) {
         std::vector<float> zeros(conv_used_f32, 0.0f);
-        ggml_backend_tensor_set(
-            conv_storage, zeros.data(), 0, zeros.size() * sizeof(float)
-        );
+        for (int bank = 0; bank < 2; ++bank) {
+            ggml_backend_tensor_set(
+                conv_storage,
+                zeros.data(),
+                ((size_t) bank * conv_capacity_f32) * sizeof(float),
+                zeros.size() * sizeof(float)
+            );
+        }
     }
 }
 
@@ -72,6 +78,7 @@ void VocoderStreamState::free() {
     conv_storage = nullptr;
     conv_capacity_f32 = 0;
     conv_used_f32 = 0;
+    conv_bank = 0;
     initialized = false;
     position = 0;
     conv1d.clear();
@@ -81,12 +88,31 @@ void VocoderStreamState::free() {
 void MimiCodec::init(BreezeModel & model) {
     m = &model;
     stream.init(model);
+    stream_safe_full = false;
+    stream_history_frames = 0;
+    stream_history_n_cb = 0;
+    stream_history_codes.clear();
 }
 
 void MimiCodec::stream_reset() {
     if (!m) return;
     if (!stream.initialized) stream.init(*m);
     else stream.reset();
+    stream_safe_full = false;
+    stream_history_frames = 0;
+    stream_history_n_cb = 0;
+    stream_history_codes.clear();
+}
+
+static bool valid_stream_pcm(const std::vector<float> & audio, size_t want) {
+    if (audio.size() < want || want == 0) return false;
+    bool any_signal = false;
+    for (size_t i = 0; i < want; ++i) {
+        const float v = audio[i];
+        if (!std::isfinite(v)) return false;
+        any_signal = any_signal || v != 0.0f;
+    }
+    return any_signal;
 }
 
 std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int T, int n_cb) {
@@ -94,18 +120,74 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
     if (n_cb <= 0) n_cb = m->cfg.num_codebooks;
     if (!stream.initialized) stream.init(*m);
 
-    Graph g(32768);
-    ggml_tensor * x = vocoder_decode_stream(g.ctx, *m, g, stream, codes, n_cb, T);
-    ggml_tensor * audio = ggml_cont(g.ctx, ggml_reshape_1d(g.ctx, x, x->ne[0]));
+    const size_t code_count = (size_t) T * (size_t) n_cb;
+    if (codes.size() != code_count) {
+        throw std::runtime_error("Breeze streaming codec received a malformed code chunk");
+    }
+    if (stream_history_n_cb == 0) stream_history_n_cb = n_cb;
+    if (stream_history_n_cb != n_cb) {
+        throw std::runtime_error("Breeze streaming codec codebook count changed mid-stream");
+    }
 
-    // Cache updates are graph-side CPYs into the persistent HTP state arena.
-    // Only the actual audio crosses back to the application processor.
-    g.compute(m->backend, audio);
-    std::vector<float> out = tensor_to_f32(audio);
+    const int previous_frames = stream_history_frames;
+    stream_history_codes.insert(stream_history_codes.end(), codes.begin(), codes.end());
+    stream_history_frames += T;
 
-    stream.position += T;
-    stream.kv.len = stream.position;
-    return out;
+    const size_t chunk_samples = (size_t) T * (size_t) m->cfg.samples_per_frame;
+    auto exact_full_tail = [&]() -> std::vector<float> {
+        std::vector<float> full = decode(
+            stream_history_codes, stream_history_frames, stream_history_n_cb
+        );
+        const size_t total_samples =
+            (size_t) stream_history_frames * (size_t) m->cfg.samples_per_frame;
+        const size_t start =
+            (size_t) previous_frames * (size_t) m->cfg.samples_per_frame;
+        if (!valid_stream_pcm(full, total_samples) ||
+            start + chunk_samples > full.size()) {
+            return {};
+        }
+        return std::vector<float>(
+            full.begin() + (ptrdiff_t) start,
+            full.begin() + (ptrdiff_t) (start + chunk_samples)
+        );
+    };
+
+    if (stream_safe_full) {
+        return exact_full_tail();
+    }
+
+    std::vector<float> out;
+    bool fast_ok = false;
+    try {
+        Graph g(32768);
+        ggml_tensor * x = vocoder_decode_stream(g.ctx, *m, g, stream, codes, n_cb, T);
+        ggml_tensor * audio = ggml_cont(g.ctx, ggml_reshape_1d(g.ctx, x, x->ne[0]));
+
+        g.compute(m->backend, audio);
+        out = tensor_to_f32(audio);
+        fast_ok = valid_stream_pcm(out, chunk_samples);
+    } catch (const std::exception & e) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_VOCODER_FALLBACK] incremental decode failed: %s\n",
+            e.what()
+        );
+    }
+
+    if (fast_ok) {
+        stream.position += T;
+        stream.kv.len = stream.position;
+        stream.conv_bank ^= 1;
+        return out;
+    }
+
+    stream_safe_full = true;
+    std::fprintf(
+        stderr,
+        "[BREEZE_VOCODER_FALLBACK] invalid incremental PCM; switching to exact full-history decode at frame %d\n",
+        stream_history_frames
+    );
+    return exact_full_tail();
 }
 
 std::vector<float> MimiCodec::decode(const std::vector<int> & codes, int T, int n_cb) {
