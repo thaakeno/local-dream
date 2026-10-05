@@ -16,7 +16,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
@@ -844,11 +843,15 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
         key2 = state.elapsedSeconds,
     ) {
         while (true) {
-            value = state.elapsedSeconds ?: (
+            val wallElapsed =
                 (System.currentTimeMillis() - state.startedAtMillis).coerceAtLeast(0L) / 1000f
-            )
+            value = maxOf(state.elapsedSeconds ?: 0f, wallElapsed)
             kotlinx.coroutines.delay(500L)
         }
+    }
+    val adjustedEta = state.etaSeconds?.let { nativeEta ->
+        val nativeElapsed = state.elapsedSeconds ?: elapsedLive
+        maxOf(0f, nativeEta - maxOf(0f, elapsedLive - nativeElapsed))
     }
 
     Surface(
@@ -922,7 +925,7 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             ) {
                 SpeechMetric(
                     label = "ETA",
-                    value = state.etaSeconds?.let(::formatSpeechTime) ?: "Calculating",
+                    value = adjustedEta?.let(::formatSpeechTime) ?: "Calculating",
                     modifier = Modifier.weight(1f),
                 )
                 SpeechMetric(
