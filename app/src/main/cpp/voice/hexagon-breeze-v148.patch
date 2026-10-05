@@ -33,16 +33,14 @@ diff --git a/ggml/src/ggml-hexagon/htp/htp-ctx.h b/ggml/src/ggml-hexagon/htp/htp
 +++ b/ggml/src/ggml-hexagon/htp/htp-ctx.h
 @@ -174,4 +174,10 @@
  int op_pad(struct htp_ops_context * octx);
--int op_im2col(struct htp_ops_context * octx);
--int op_allreduce
-+int op_im2col(struct htp_ops_context * octx);
+ int op_im2col(struct htp_ops_context * octx);
 +int op_col2im_1d(struct htp_ops_context * octx);
 +int op_col2im_1d_bias(struct htp_ops_context * octx);
 +int op_sin(struct htp_ops_context * octx);
 +int op_snake(struct htp_ops_context * octx);
 +int op_channel_bcast_add(struct htp_ops_context * octx);
 +int op_channel_bcast_mul(struct htp_ops_context * octx);
-+int op_allreduce
+ int op_allreduce(struct htp_ops_context * octx);
  int op_roll(struct htp_ops_context * octx);
 diff --git a/ggml/src/ggml-hexagon/htp/main.c b/ggml/src/ggml-hexagon/htp/main.c
 --- a/ggml/src/ggml-hexagon/htp/main.c
