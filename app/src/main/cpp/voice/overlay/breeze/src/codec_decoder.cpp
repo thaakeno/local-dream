@@ -25,7 +25,7 @@ static ggml_tensor * snake_beta(
     ggml_tensor * inv_beta = ggml_div(ctx, one, ggml_add(ctx, beta, tiny));
 
     ggml_tensor * s = ggml_sin(ctx, ggml_mul(ctx, x, alpha));
-    return ggml_add(ctx, x, ggml_mul(ctx, inv_beta, ggml_sqr(ctx, s)));
+    return ggml_add(ctx, x, ggml_mul(ctx, ggml_sqr(ctx, s), inv_beta));
 }
 
 static ggml_tensor * convnext(ggml_context * ctx, BreezeModel & m, const std::string & p, ggml_tensor * x) {
