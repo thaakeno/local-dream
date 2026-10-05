@@ -76,49 +76,70 @@ static void test_snake(Backend & be) {
     require_close("snake-channel-broadcast", tensor_to_f32(out), expected, 3e-3f);
 }
 
-static void test_col2im_bias(Backend & be) {
-    constexpr int K = 3;
-    constexpr int OC = 3;
-    constexpr int TIN = 5;
-    constexpr int STRIDE = 2;
-    constexpr int PAD = 1;
-    constexpr int TOUT = (TIN - 1) * STRIDE + K - 2 * PAD;
+static void test_col2im_bias_case(
+    Backend & be,
+    const char * name,
+    int K,
+    int OC,
+    int TIN,
+    int STRIDE,
+    int PAD
+) {
+    const int TOUT = (TIN - 1) * STRIDE + K - 2 * PAD;
 
-    std::vector<float> cols(K * OC * TIN);
+    std::vector<float> cols((size_t) K * OC * TIN);
     for (int t = 0; t < TIN; ++t) {
         for (int k = 0; k < K; ++k) {
-            for (int c = 0; c < OC; ++c) {
-                cols[(k * OC + c) + (K * OC) * t] =
-                    0.03f * (1 + t * 11 + k * 3 + c);
+            for (int ch = 0; ch < OC; ++ch) {
+                // Exact ggml [K * OC, T] layout: flattened index = k * OC + ch.
+                cols[(size_t) (k * OC + ch) + (size_t) (K * OC) * t] =
+                    0.013f * (1 + t * 101 + k * 11 + ch * 3);
             }
         }
     }
-    std::vector<float> bias = {0.25f, -0.5f, 0.75f};
 
-    Graph g(128);
+    std::vector<float> bias(OC);
+    for (int ch = 0; ch < OC; ++ch) {
+        bias[ch] = -0.31f + 0.19f * ch;
+    }
+
+    Graph g(192);
     auto * tc = g.input_f32(cols, K * OC, TIN);
     auto * tb = g.input_f32(bias, 1, OC);
     auto * col = ggml_col2im_1d(g.ctx, tc, STRIDE, OC, PAD);
     auto * out = ggml_add(g.ctx, col, tb);
     g.compute(be, out);
 
-    std::vector<float> expected(TOUT * OC, 0.0f);
+    std::vector<float> expected((size_t) TOUT * OC, 0.0f);
     for (int t = 0; t < TIN; ++t) {
         for (int k = 0; k < K; ++k) {
             const int dst_t = t * STRIDE + k - PAD;
             if (dst_t < 0 || dst_t >= TOUT) continue;
-            for (int c = 0; c < OC; ++c) {
-                expected[dst_t + TOUT * c] +=
-                    cols[(k * OC + c) + (K * OC) * t];
+            for (int ch = 0; ch < OC; ++ch) {
+                expected[(size_t) dst_t + (size_t) TOUT * ch] +=
+                    cols[(size_t) (k * OC + ch) + (size_t) (K * OC) * t];
             }
         }
     }
-    for (int c = 0; c < OC; ++c) {
+    for (int ch = 0; ch < OC; ++ch) {
         for (int t = 0; t < TOUT; ++t) {
-            expected[t + TOUT * c] += bias[c];
+            expected[(size_t) t + (size_t) TOUT * ch] += bias[ch];
         }
     }
-    require_close("col2im1d-bias", tensor_to_f32(out), expected, 4e-3f);
+
+    require_close(name, tensor_to_f32(out), expected, 4e-3f);
+}
+
+static void test_col2im_bias(Backend & be) {
+    // Generic padded case catches indexing/range bugs.
+    test_col2im_bias_case(be, "col2im1d-bias-generic", 3, 3, 5, 2, 1);
+
+    // Real Breeze/Oobleck transpose-conv family: kernel = 2 * stride.
+    // Cover every stride used by the decoder and multiple channel counts.
+    test_col2im_bias_case(be, "col2im1d-bias-s2",  4, 5, 5, 2, 0);
+    test_col2im_bias_case(be, "col2im1d-bias-s4",  8, 4, 4, 4, 0);
+    test_col2im_bias_case(be, "col2im1d-bias-s5", 10, 3, 4, 5, 0);
+    test_col2im_bias_case(be, "col2im1d-bias-s6", 12, 3, 4, 6, 0);
 }
 
 static void test_sin(Backend & be) {
