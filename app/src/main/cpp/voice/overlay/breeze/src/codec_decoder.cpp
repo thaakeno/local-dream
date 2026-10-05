@@ -274,7 +274,7 @@ ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
                              const std::vector<int> & codes, int n_cb, int T) {
     const VocoderConfig & c = m.cfg.voc;
 
-    ggml_tensor * h = quantizer_decode(ctx, m, g, codes, n_cb, T);
+    ggml_tensor * h = quantizer_decode(ctx, m, g, codes, n_cb, T, nullptr);
     h = conv1d_causal(ctx, m.w("codec.dpre.conv.weight"), m.w("codec.dpre.conv.bias"), h, 1, 1);
 
     h = ggml_cont(ctx, ggml_transpose(ctx, h));
