@@ -76,7 +76,7 @@ static void test_snake(Backend & be) {
     require_close("snake-channel-broadcast", tensor_to_f32(out), expected, 3e-3f);
 }
 
-static void test_col2im_bias_case(
+static void test_col2im_case(
     Backend & be,
     const char * name,
     int K,
@@ -98,18 +98,6 @@ static void test_col2im_bias_case(
         }
     }
 
-    std::vector<float> bias(OC);
-    for (int ch = 0; ch < OC; ++ch) {
-        bias[ch] = -0.31f + 0.19f * ch;
-    }
-
-    Graph g(192);
-    auto * tc = g.input_f32(cols, K * OC, TIN);
-    auto * tb = g.input_f32(bias, 1, OC);
-    auto * col = ggml_col2im_1d(g.ctx, tc, STRIDE, OC, PAD);
-    auto * out = ggml_add(g.ctx, col, tb);
-    g.compute(be, out);
-
     std::vector<float> expected((size_t) TOUT * OC, 0.0f);
     for (int t = 0; t < TIN; ++t) {
         for (int k = 0; k < K; ++k) {
@@ -121,25 +109,47 @@ static void test_col2im_bias_case(
             }
         }
     }
+
+    // Raw COL2IM is the production Breeze path before its causal crop.
+    {
+        Graph g(192);
+        auto * tc = g.input_f32(cols, K * OC, TIN);
+        auto * out = ggml_col2im_1d(g.ctx, tc, STRIDE, OC, PAD);
+        g.compute(be, out);
+        require_close((std::string(name) + "-raw").c_str(), tensor_to_f32(out), expected, 4e-3f);
+    }
+
+    // Also validate the fused COL2IM+bias opcode independently.
+    std::vector<float> bias(OC);
+    for (int ch = 0; ch < OC; ++ch) {
+        bias[ch] = -0.31f + 0.19f * ch;
+    }
+    std::vector<float> expected_bias = expected;
     for (int ch = 0; ch < OC; ++ch) {
         for (int t = 0; t < TOUT; ++t) {
-            expected[(size_t) t + (size_t) TOUT * ch] += bias[ch];
+            expected_bias[(size_t) t + (size_t) TOUT * ch] += bias[ch];
         }
     }
 
-    require_close(name, tensor_to_f32(out), expected, 4e-3f);
+    Graph g(192);
+    auto * tc = g.input_f32(cols, K * OC, TIN);
+    auto * tb = g.input_f32(bias, 1, OC);
+    auto * col = ggml_col2im_1d(g.ctx, tc, STRIDE, OC, PAD);
+    auto * out = ggml_add(g.ctx, col, tb);
+    g.compute(be, out);
+    require_close((std::string(name) + "-bias").c_str(), tensor_to_f32(out), expected_bias, 4e-3f);
 }
 
 static void test_col2im_bias(Backend & be) {
     // Generic padded case catches indexing/range bugs.
-    test_col2im_bias_case(be, "col2im1d-bias-generic", 3, 3, 5, 2, 1);
+    test_col2im_case(be, "col2im1d-bias-generic", 3, 3, 5, 2, 1);
 
     // Real Breeze/Oobleck transpose-conv family: kernel = 2 * stride.
     // Cover every stride used by the decoder and multiple channel counts.
-    test_col2im_bias_case(be, "col2im1d-bias-s2",  4, 5, 5, 2, 0);
-    test_col2im_bias_case(be, "col2im1d-bias-s4",  8, 4, 4, 4, 0);
-    test_col2im_bias_case(be, "col2im1d-bias-s5", 10, 3, 4, 5, 0);
-    test_col2im_bias_case(be, "col2im1d-bias-s6", 12, 3, 4, 6, 0);
+    test_col2im_case(be, "col2im1d-bias-s2",  4, 5, 5, 2, 0);
+    test_col2im_case(be, "col2im1d-bias-s4",  8, 4, 4, 4, 0);
+    test_col2im_case(be, "col2im1d-bias-s5", 10, 3, 4, 5, 0);
+    test_col2im_case(be, "col2im1d-bias-s6", 12, 3, 4, 6, 0);
 }
 
 static void test_sin(Backend & be) {
