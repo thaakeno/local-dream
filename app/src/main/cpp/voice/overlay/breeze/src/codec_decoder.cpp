@@ -87,43 +87,57 @@ static CodecStreamCacheBlock & ensure_cache(
     state.conv_used_f32 = aligned + need;
 
     std::vector<float> zeros(need, 0.0f);
-    ggml_backend_tensor_set(
-        state.conv_storage,
-        zeros.data(),
-        b.offset_f32 * sizeof(float),
-        zeros.size() * sizeof(float)
-    );
+    for (int bank = 0; bank < 2; ++bank) {
+        ggml_backend_tensor_set(
+            state.conv_storage,
+            zeros.data(),
+            ((size_t) bank * state.conv_capacity_f32 + b.offset_f32) * sizeof(float),
+            zeros.size() * sizeof(float)
+        );
+    }
     return b;
 }
 
 static ggml_tensor * cache_view(
     ggml_context * ctx, VocoderStreamState & state,
-    const CodecStreamCacheBlock & block
+    const CodecStreamCacheBlock & block, int bank
 ) {
+    if (bank < 0 || bank > 1) {
+        throw std::runtime_error("invalid Breeze vocoder state bank");
+    }
+    const size_t base_f32 =
+        (size_t) bank * state.conv_capacity_f32 + block.offset_f32;
     return ggml_view_2d(
         ctx,
         state.conv_storage,
         block.left,
         block.channels,
         (size_t) block.left * sizeof(float),
-        block.offset_f32 * sizeof(float)
+        base_f32 * sizeof(float)
     );
 }
 
-static void keep_tail(
+static void write_state(
     ggml_context * ctx, Graph & g, VocoderStreamState & state,
-    ggml_tensor * joined, CodecStreamCacheBlock & block, int new_len
+    ggml_tensor * value, CodecStreamCacheBlock & block
 ) {
     if (block.left <= 0) return;
+    if (!ggml_is_contiguous(value)) value = ggml_cont(ctx, value);
+    ggml_tensor * dst = cache_view(ctx, state, block, state.conv_bank ^ 1);
+    g.write(ggml_cpy(ctx, value, dst));
+}
+
+static void keep_input_tail(
+    ggml_context * ctx, Graph & g, VocoderStreamState & state,
+    ggml_tensor * joined, CodecStreamCacheBlock & block
+) {
+    if (block.left <= 0) return;
+    const int start = (int) joined->ne[0] - block.left;
     ggml_tensor * tail = ggml_view_2d(
         ctx, joined, block.left, block.channels, joined->nb[1],
-        (size_t) new_len * joined->nb[0]
+        (size_t) start * joined->nb[0]
     );
-    tail = ggml_cont(ctx, tail);
-
-    // Commit the carry tail to the persistent HTP arena inside the same graph.
-    ggml_tensor * dst = cache_view(ctx, state, block);
-    g.write(ggml_cpy(ctx, tail, dst));
+    write_state(ctx, g, state, tail, block);
 }
 
 static ggml_tensor * stream_conv1d(
@@ -138,18 +152,16 @@ static ggml_tensor * stream_conv1d(
     if (left <= 0) return conv1d_causal(ctx, w, b, x, 1, dilation);
 
     CodecStreamCacheBlock & block = ensure_cache(state, state.conv1d, name, left, C);
-    ggml_tensor * cache = cache_view(ctx, state, block);
+    ggml_tensor * cache = cache_view(ctx, state, block, state.conv_bank);
     ggml_tensor * joined = ggml_concat(ctx, cache, x, 0);
 
+    // Persistent state already supplies the exact causal left context.
     ggml_tensor * y = ggml_conv_1d(ctx, w, joined, 1, 0, dilation);
     if (y->ne[0] != N) {
-        y = ggml_cont(ctx, ggml_view_2d(
-            ctx, y, N, y->ne[1], y->nb[1],
-            (size_t) (y->ne[0] - N) * y->nb[0]
-        ));
+        throw std::runtime_error("Breeze streaming Conv1d produced an unexpected length");
     }
     if (b) y = ggml_add(ctx, y, ggml_reshape_2d(ctx, b, 1, b->ne[0]));
-    keep_tail(ctx, g, state, joined, block, N);
+    keep_input_tail(ctx, g, state, joined, block);
     return y;
 }
 
@@ -164,13 +176,13 @@ static ggml_tensor * stream_depthwise(
     if (left <= 0) return depthwise1d_causal(ctx, w, b, x, K);
 
     CodecStreamCacheBlock & block = ensure_cache(state, state.conv1d, name, left, C);
-    ggml_tensor * cache = cache_view(ctx, state, block);
+    ggml_tensor * cache = cache_view(ctx, state, block, state.conv_bank);
     ggml_tensor * joined = ggml_concat(ctx, cache, x, 0);
     ggml_tensor * all = depthwise1d_causal(ctx, w, b, joined, K);
     ggml_tensor * y = ggml_cont(ctx, ggml_view_2d(
         ctx, all, N, C, all->nb[1], (size_t) left * all->nb[0]
     ));
-    keep_tail(ctx, g, state, joined, block, N);
+    keep_input_tail(ctx, g, state, joined, block);
     return y;
 }
 
@@ -180,22 +192,51 @@ static ggml_tensor * stream_tconv(
     ggml_tensor * w, ggml_tensor * b, ggml_tensor * x, int stride
 ) {
     const int K = (int) w->ne[0];
-    const int left = (K - 1) / stride;
-    const int C = (int) x->ne[1];
+    const int OC = (int) w->ne[1];
+    const int IC = (int) w->ne[2];
     const int N = (int) x->ne[0];
-    if (left <= 0) return convtr1d_causal(ctx, w, b, x, stride);
+    const int trim = K - stride;
+    const int emit = N * stride;
 
-    CodecStreamCacheBlock & block = ensure_cache(state, state.tconv1d, name, left, C);
-    ggml_tensor * cache = cache_view(ctx, state, block);
-    ggml_tensor * joined = ggml_concat(ctx, cache, x, 0);
-    ggml_tensor * all = convtr1d_causal(ctx, w, b, joined, stride);
-    const int prefix = left * stride;
-    const int new_len = N * stride;
-    ggml_tensor * y = ggml_cont(ctx, ggml_view_2d(
-        ctx, all, new_len, all->ne[1], all->nb[1],
-        (size_t) prefix * all->nb[0]
-    ));
-    keep_tail(ctx, g, state, joined, block, N);
+    if (trim <= 0) return convtr1d_causal(ctx, w, b, x, stride);
+    if (emit < trim) {
+        throw std::runtime_error("unsupported Breeze transposed-conv streaming geometry");
+    }
+
+    // Exact Qwen causal ConvTranspose1d streaming: carry the raw output
+    // overlap [K-stride, OC] forward. This avoids recomputing cached inputs.
+    CodecStreamCacheBlock & block =
+        ensure_cache(state, state.tconv1d, name, trim, OC);
+    ggml_tensor * carry = cache_view(ctx, state, block, state.conv_bank);
+
+    ggml_tensor * w2 = ggml_reshape_2d(ctx, w, (int64_t) K * OC, IC);
+    w2 = ggml_cont(ctx, ggml_transpose(ctx, w2));
+    ggml_tensor * xt = ggml_cont(ctx, ggml_transpose(ctx, x));
+    ggml_tensor * projected = ggml_cont(ctx, ggml_mul_mat(ctx, w2, xt));
+    ggml_tensor * raw = ggml_col2im_1d(ctx, projected, stride, OC, 0);
+    if (raw->ne[0] != emit + trim) {
+        throw std::runtime_error("Breeze streaming ConvTranspose1d produced an unexpected length");
+    }
+
+    ggml_tensor * head = ggml_view_2d(
+        ctx, raw, trim, OC, raw->nb[1], 0
+    );
+    ggml_tensor * y = ggml_add(ctx, head, carry);
+    if (emit > trim) {
+        ggml_tensor * mid = ggml_view_2d(
+            ctx, raw, emit - trim, OC, raw->nb[1],
+            (size_t) trim * raw->nb[0]
+        );
+        y = ggml_concat(ctx, y, mid, 0);
+    }
+
+    ggml_tensor * tail = ggml_view_2d(
+        ctx, raw, trim, OC, raw->nb[1],
+        (size_t) emit * raw->nb[0]
+    );
+    write_state(ctx, g, state, tail, block);
+
+    if (b) y = ggml_add(ctx, y, ggml_reshape_2d(ctx, b, 1, b->ne[0]));
     return y;
 }
 
@@ -226,6 +267,7 @@ static ggml_tensor * residual_unit_stream(
         m.w(p + ".conv1.conv.weight"), m.w(p + ".conv1.conv.bias"), h, dilation
     );
     h = snake_beta(ctx, h, m.w(p + ".a2"), m.w(p + ".b2"));
+    // conv2 is kernel 1 in the Qwen decoder and carries no temporal state.
     h = conv1d_causal(
         ctx, m.w(p + ".conv2.conv.weight"), m.w(p + ".conv2.conv.bias"), h, 1, 1
     );
