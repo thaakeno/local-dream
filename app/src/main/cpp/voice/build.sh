@@ -47,17 +47,31 @@ grep -q 'GGML_TYPE_Q6_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GGML_TYPE_Q4_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GGML_TYPE_Q2_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 
-# Apply versioned source patches against the exact pinned upstream commits.
-# This is normal git patching: no runtime monkey-patching, no regex/source
-# rewriting, and git apply --check fails immediately if either upstream moves.
-for src in     breeze-sin-ops.c     breeze-col2im-ops.c     breeze-channel-bcast-ops.c     breeze-snake-ops.c; do
+# Integrate the LocalDream Hexagon extension as complete pinned source overlays.
+# The upstream SHAs above are immutable; no fuzzy patch hunks or runtime rewriting.
+HEXAGON_OVERLAY="$(pwd)/overlay/ggml-hexagon"
+for rel in \
+    ggml/src/ggml-hexagon/htp/CMakeLists.txt \
+    ggml/src/ggml-hexagon/htp/htp-ops.h \
+    ggml/src/ggml-hexagon/htp/htp-ctx.h \
+    ggml/src/ggml-hexagon/htp/main.c \
+    ggml/src/ggml-hexagon/ggml-hexagon.cpp; do
+    test -s "$HEXAGON_OVERLAY/$rel"
+    cp "$HEXAGON_OVERLAY/$rel" "$HEXAGON_DIR/$rel"
+done
+
+for src in \
+    breeze-sin-ops.c \
+    breeze-col2im-ops.c \
+    breeze-channel-bcast-ops.c \
+    breeze-snake-ops.c; do
     cp "$(pwd)/native/$src" "$GGML_DIR/src/ggml-hexagon/htp/$src"
 done
 
-git -C "$HEXAGON_DIR" apply --check "$(pwd)/hexagon-breeze-v148.patch"
-git -C "$HEXAGON_DIR" apply "$(pwd)/hexagon-breeze-v148.patch"
-git -C "$BREEZE_DIR" apply --check "$(pwd)/breeze-core-v148.patch"
-git -C "$BREEZE_DIR" apply "$(pwd)/breeze-core-v148.patch"
+test -s "$(pwd)/overlay/breeze/include/breeze/backbone.h"
+test -s "$(pwd)/overlay/breeze/src/backbone.cpp"
+test -s "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+test -s "$(pwd)/overlay/breeze/src/generation.cpp"
 
 grep -q 'HTP_OP_SIN' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_COL2IM_1D_BIAS' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
@@ -68,18 +82,19 @@ grep -q 'ggml_hexagon_is_breeze_channel_binary' "$GGML_DIR/src/ggml-hexagon/ggml
 grep -q 'Fit binary staging to the available VTCM' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q '1 / exp(lb) == exp(-lb)' "$BREEZE_DIR/src/codec_decoder.cpp"
-grep -q 'struct AudioEmbedRunner' "$BREEZE_DIR/include/breeze/backbone.h"
+grep -q '1 / exp(lb) == exp(-lb)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'struct AudioEmbedRunner' "$(pwd)/overlay/breeze/include/breeze/backbone.h"
 
 rm -rf "$BUILD_DIR"
 
 cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=OFF     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
 
-cmake --build "$BUILD_DIR" --target breeze-server htp-v73 htp-v75 htp-v79 htp-v81 -j "$(nproc)"
+cmake --build "$BUILD_DIR" --target breeze-server breeze-htp-selftest htp-v73 htp-v75 htp-v79 htp-v81 -j "$(nproc)"
 
 READELF="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 test -x "$READELF"
 "$READELF" -d "$BUILD_DIR/breeze-server" | tee "$BUILD_DIR/breeze-needed.txt"
+"$READELF" -d "$BUILD_DIR/breeze-htp-selftest" | tee "$BUILD_DIR/breeze-selftest-needed.txt"
 if grep -Eq 'Shared library: \[libggml(-base|-hexagon)?\.so\]' "$BUILD_DIR/breeze-needed.txt"; then
     echo "Breeze server still depends on private ggml shared libraries" >&2
     exit 1
@@ -90,7 +105,8 @@ ASSET_DIR="$(cd ../.. && pwd)/assets/breezelibs"
 mkdir -p "$JNI_DIR" "$ASSET_DIR"
 
 cp "$BUILD_DIR/breeze-server" "$JNI_DIR/libbreeze_server.so"
-chmod +x "$JNI_DIR/libbreeze_server.so"
+cp "$BUILD_DIR/breeze-htp-selftest" "$JNI_DIR/libbreeze_selftest.so"
+chmod +x "$JNI_DIR/libbreeze_server.so" "$JNI_DIR/libbreeze_selftest.so"
 
 for arch in v73 v75 v79 v81; do
     skel="$(find "$BUILD_DIR" -type f -name "libggml-htp-${arch}.so" -print -quit)"
@@ -106,10 +122,12 @@ runtime=HoppouAI/Breeze-TTS-2.cpp
 runtime_commit=$BREEZE_COMMIT
 backend=kan-linux/ggml-hexagon
 backend_commit=$HEXAGON_COMMIT
-mode=strict-htp-only
+mode=strict-htp-dspqueue
 fallback=disabled
+integration=pinned-source-overlay
+queue=backend-default
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
-ls -lh "$JNI_DIR/libbreeze_server.so" "$ASSET_DIR"/libggml-htp-v*.so
+ls -lh "$JNI_DIR/libbreeze_server.so" "$JNI_DIR/libbreeze_selftest.so" "$ASSET_DIR"/libggml-htp-v*.so
