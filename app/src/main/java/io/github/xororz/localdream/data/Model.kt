@@ -1051,7 +1051,7 @@ class ModelRepository private constructor(private val context: Context) {
     ): Model = Model(
         id = id,
         name = "Breeze TTS 2 · $precision",
-        description = "$profile · 24 kHz · English + Mandarin · strict Hexagon HTP",
+        description = "$profile · English + Mandarin · 24 kHz",
         baseUrl = baseUrl,
         packageFiles = packageFiles,
         packageMarker = "BREEZE_TTS_2",
