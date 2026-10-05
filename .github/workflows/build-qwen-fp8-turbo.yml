@@ -314,7 +314,9 @@ jobs:
           done
           grep -q 'runtime_commit=a0e177f91242ebbd2ea8d61548d742c89e4b9e06' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'backend_commit=ab9acc4476cfe3add369379a3783fea190505a48' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'mode=strict-htp-only' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'mode=strict-htp-fastrpc-mempool' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'transport=fastrpc-single-pool' app/src/main/assets/breezelibs/backend-version.txt
+          test -s app/src/main/assets/breezelibs/ggml-hexagon.cfg
           grep -q 'fallback=disabled' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
