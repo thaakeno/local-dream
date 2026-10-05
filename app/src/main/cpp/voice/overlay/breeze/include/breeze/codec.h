@@ -60,6 +60,8 @@ namespace codec_detail {
 
 ggml_tensor * conv1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
                             ggml_tensor * x, int stride, int dilation);
+ggml_tensor * convtr1d_raw(ggml_context * ctx, ggml_tensor * w,
+                           ggml_tensor * x, int stride);
 ggml_tensor * convtr1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
                               ggml_tensor * x, int stride);
 ggml_tensor * depthwise1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
