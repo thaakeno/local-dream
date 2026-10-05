@@ -88,6 +88,9 @@ grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'vocoder_decode_stream' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 grep -q 'decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
 grep -q 'vocoder_transformer_stream' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
+# Stateful vocoder attention must expose the KV axis as GGML ne[0]. This
+# catches the flush-2 regression where T == KV only on the first chunk.
+grep -Fq 'g.input_f32(mask_v, kv_len, T)' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
 grep -q 'struct AudioEmbedRunner' "$(pwd)/overlay/breeze/include/breeze/backbone.h"
 
 rm -rf "$BUILD_DIR"
