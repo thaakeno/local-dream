@@ -51,7 +51,7 @@ diff --git a/ggml/src/ggml-hexagon/ggml-hexagon-fastrpc.cpp b/ggml/src/ggml-hexa
 +           op->ne[2] == 1 && op->ne[3] == 1;
 +}
 +
-@@ -4842,7 +4890,10 @@ static bool hexagon_validate_binary_op(ggml_backend_hexagon_context * ctx, const
+@@ -4842,5 +4890,8 @@ static bool hexagon_validate_binary_op(ggml_backend_hexagon_context * ctx, const
 +    if (breeze_is_channel_binary(op)) {
 +        return true;
 +    }
