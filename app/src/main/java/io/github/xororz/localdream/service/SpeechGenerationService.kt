@@ -44,9 +44,10 @@ class SpeechGenerationService : Service() {
         private const val NOTIFICATION_ID = 8
         private const val BACKEND = "http://127.0.0.1:8082"
         private const val EXECUTABLE = "libbreeze_server.so"
+        private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v4-fastrpc-tg"
+            "breeze-a0e177-hexagon-ab9acc-v150-clean-dspqueue"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -209,7 +210,7 @@ class SpeechGenerationService : Service() {
                 "--port", "8082",
                 "--ws-port", "-1",
                 "--chunk-first", "4",
-                "--chunk-max", "32",
+                "--chunk-max", "25",
                 "--split-chars", "600",
                 "--verbose",
             )
@@ -232,6 +233,10 @@ class SpeechGenerationService : Service() {
                 "ADSP_LIBRARY_PATH" to dspPath,
                 "DSP_LIBRARY_PATH" to dspPath,
                 "GGML_HEXAGON_DEVICES" to "HTP0:0",
+                "GGML_HEXAGON_NHMX" to "1",
+                "GGML_HEXAGON_NHVX" to "0",
+                "GGML_HEXAGON_MM_SELECT" to "2",
+                "GGML_HEXAGON_OPFUSION" to "1",
             )
 
             BackendDiagnostics.beginSession(
@@ -241,9 +246,11 @@ class SpeechGenerationService : Service() {
             BackendDiagnostics.append(
                 this,
                 "BREEZE_ENV",
-                "backend=HTP0:0 transport=FastRPC-mempool fallback=disabled " +
-                    "graph_cache=on threads=6 runtime=${runtimeDir.absolutePath}",
+                "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
+                    "queue=backend-default opfusion=1 hmx=1 " +
+                    "runtime=${runtimeDir.absolutePath}",
             )
+            runBackendSelfTest(env, modelId, started)
             BackendDiagnostics.append(this, "BREEZE_CMD", command.joinToString(" "))
 
             val proc = ProcessBuilder(command).apply {
@@ -468,6 +475,48 @@ class SpeechGenerationService : Service() {
         ).execute().use { it.isSuccessful }
     }.getOrDefault(false)
 
+    private fun runBackendSelfTest(
+        env: Map<String, String>,
+        modelId: String,
+        startedAtMillis: Long,
+    ) {
+        val marker = File(runtimeDir, ".selftest_ok")
+        if (runCatching { marker.readText() }.getOrNull() == RUNTIME_VERSION) return
+
+        _state.value = SpeechState.Loading(
+            modelId,
+            "Validating Hexagon speech kernels",
+            startedAtMillis,
+        )
+        val executable = File(applicationInfo.nativeLibraryDir, SELFTEST_EXECUTABLE)
+        if (!executable.isFile) {
+            throw IllegalStateException("Breeze HTP self-test is missing from this APK")
+        }
+
+        val proc = ProcessBuilder(executable.absolutePath).apply {
+            directory(runtimeDir)
+            redirectErrorStream(true)
+            environment().putAll(env)
+        }.start()
+
+        val output = proc.inputStream.bufferedReader().use { it.readText() }
+        val exited = proc.waitFor(15, TimeUnit.SECONDS)
+        if (!exited) {
+            proc.destroyForcibly()
+            throw IllegalStateException("Breeze HTP self-test timed out")
+        }
+        output.lineSequence()
+            .filter { it.isNotBlank() }
+            .forEach { BackendDiagnostics.append(this, "BREEZE_SELFTEST", it.take(2000)) }
+
+        if (proc.exitValue() != 0 || !output.contains("[BREEZE_SELFTEST] all-ok")) {
+            throw IllegalStateException(
+                "Hexagon speech kernel self-test failed before model loading",
+            )
+        }
+        marker.writeText(RUNTIME_VERSION)
+    }
+
     private fun prepareRuntime() {
         runtimeDir = File(filesDir, RUNTIME_DIR)
         val stamp = File(runtimeDir, ".runtime_version")
@@ -570,20 +619,20 @@ class SpeechGenerationService : Service() {
         val fps = match.groupValues[6].toFloatOrNull()
         val realtime = match.groupValues[7].toFloatOrNull()
 
-        val nativeFinishedEstimate = percent != null && percent >= 100f
+        val estimateReached = percent != null && percent >= 100f
         _state.value = current.copy(
-            detail = if (nativeFinishedEstimate) {
-                "Finishing speech · waiting for end-of-speech"
+            detail = if (estimateReached) {
+                "Waiting for end-of-speech"
             } else {
                 "Synthesizing speech"
             },
             generatedSeconds = maxOf(current.generatedSeconds, generated ?: 0f),
-            // Breeze's 100% is only the text-length duration estimate. It may keep
-            // generating until the model emits EOS, so never show a fake completed bar.
-            progress = if (nativeFinishedEstimate) null else percent?.div(100f),
-            estimatedSeconds = if (nativeFinishedEstimate) null else estimated,
+            // Breeze reports progress against an estimated spoken duration.
+            // 100% does not mean EOS has fired, so never show a fake completed bar.
+            progress = if (estimateReached) null else percent?.div(100f),
+            estimatedSeconds = if (estimateReached) null else estimated,
             elapsedSeconds = elapsed,
-            etaSeconds = if (nativeFinishedEstimate) null else eta,
+            etaSeconds = if (estimateReached) null else eta,
             fps = fps,
             realtimeFactor = realtime,
         )
