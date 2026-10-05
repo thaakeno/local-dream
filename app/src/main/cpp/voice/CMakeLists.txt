@@ -34,7 +34,7 @@ set(BREEZE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-common-htp.cpp"
     "${BREEZE_SOURCE_DIR}/src/audio.cpp"
     "${BREEZE_SOURCE_DIR}/src/config.cpp"
-    "${BREEZE_SOURCE_DIR}/src/gguf_loader.cpp"
+    "${BREEZE_OVERLAY_DIR}/src/gguf_loader.cpp"
     "${BREEZE_SOURCE_DIR}/src/tokenizer.cpp"
     "${BREEZE_SOURCE_DIR}/src/text_encoder.cpp"
     "${BREEZE_OVERLAY_DIR}/src/backbone.cpp"
