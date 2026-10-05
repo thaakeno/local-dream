@@ -7273,8 +7273,15 @@ static bool mm_is_hmx_eligible(const ggml_tensor * t) {
     const bool is_batched   = (src0->ne[2] * src0->ne[3] > 1 || src1->ne[2] * src1->ne[3] > 1);
 
     const int ne01_padded = is_repack ? hex_round_up(src0->ne[1], 32) : src0->ne[1];
+    const int hmx_rows = src1->ne[1] * src1->ne[2] * src1->ne[3];
 
-    return ggml_hexagon_matmul_is_hmx_eligible(src0, src1, t, ne01_padded, is_matmul_id, is_batched);
+    // Keep graph fusion decisions consistent with the v81 tiny-matmul policy
+    // used by kernel selection below. Otherwise a 1-row decode matmul can be
+    // merged as "HMX eligible" and later reach an incompatible fallback path.
+    return hmx_rows > 2 &&
+           ggml_hexagon_matmul_is_hmx_eligible(
+               src0, src1, t, ne01_padded, is_matmul_id, is_batched
+           );
 }
 
 static bool is_supported_mul_mat_nx_kernel(const ggml_tensor * src0, const struct htp_mm_kernel_params * kparams) {
