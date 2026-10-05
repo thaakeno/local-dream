@@ -5485,7 +5485,13 @@ static void ggml_hexagon_precompute_matmul_params_impl(
     const size_t vtcm_budget = sess->vtcm_size;
 
     // Check HMX eligibility and try precomputing HMX parameters
-    bool hmx_enabled = (sess->n_hmx > 0) && (opt_mm_select >= 2);
+    // SM8850/v81 has open correctness reports for quantized HMX decode-sized
+    // matmuls. Keep HMX for the wide/batched work where it pays off (prefill
+    // and vocoder), but route 1-2 row autoregressive decode through the mature
+    // HVX path. This avoids corrupt next-frame logits without throwing away HMX
+    // throughput for the expensive batched codec graphs.
+    const int hmx_rows = ne11 * ne12 * ne13;
+    bool hmx_enabled = (sess->n_hmx > 0) && (opt_mm_select >= 2) && hmx_rows > 2;
     if (hmx_enabled && ggml_hexagon_matmul_is_hmx_eligible(src0, src1, dst, ne01_padded, is_matmul_id, is_batched)) {
         if (ggml_hexagon_precompute_hmx_mm_params(sess, src0, src1, dst, wtype, ne00_padded, ne01_padded, ne02, ne11, ne12, ne11_padded, is_matmul_id, is_batched, src2_size, vtcm_budget, kparams)) {
             goto finalize;
@@ -6171,7 +6177,13 @@ static void ggml_hexagon_precompute_fused_mmnx_params(
     const size_t vtcm_budget = sess->vtcm_size;
     const bool is_batched = (ne02 * ne03 > 1 || ne12 * ne13 > 1);
 
-    bool hmx_enabled = (sess->n_hmx > 0) && (opt_mm_select >= 2);
+    // SM8850/v81 has open correctness reports for quantized HMX decode-sized
+    // matmuls. Keep HMX for the wide/batched work where it pays off (prefill
+    // and vocoder), but route 1-2 row autoregressive decode through the mature
+    // HVX path. This avoids corrupt next-frame logits without throwing away HMX
+    // throughput for the expensive batched codec graphs.
+    const int hmx_rows = ne11 * ne12 * ne13;
+    bool hmx_enabled = (sess->n_hmx > 0) && (opt_mm_select >= 2) && hmx_rows > 2;
     if (hmx_enabled && ggml_hexagon_matmul_is_hmx_eligible(src0, src1, nullptr, ne01_padded, false, is_batched)) {
         if (ggml_hexagon_precompute_hmx_mm_params(sess, src0, src1, nullptr, wtype, ne00_padded, ne01_padded, ne02, ne11, ne12, ne11_padded, false, is_batched, 0, vtcm_budget, kparams)) {
             kparams->n_weights = n_weights;
