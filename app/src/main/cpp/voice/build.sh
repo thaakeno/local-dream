@@ -86,6 +86,7 @@ grep -q 'Fit binary staging to the available VTCM' "$GGML_DIR/src/ggml-hexagon/g
 grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'hmx_rows > 2' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'opt_arch >= 81 && ggml_hexagon_is_repack_type' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'vocoder_decode_stream' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 grep -q 'decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
 grep -q 'vocoder_transformer_stream' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
