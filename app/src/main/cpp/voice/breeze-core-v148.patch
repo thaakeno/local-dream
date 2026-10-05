@@ -1,0 +1,136 @@
+diff --git a/src/codec_decoder.cpp b/src/codec_decoder.cpp
+--- a/src/codec_decoder.cpp
++++ b/src/codec_decoder.cpp
+@@ -11,6 +11,7 @@
+ static ggml_tensor * snake_beta(ggml_context * ctx, ggml_tensor * x, ggml_tensor * la, ggml_tensor * lb) {
+-    ggml_tensor * alpha = ggml_reshape_2d(ctx, ggml_exp(ctx, la), 1, la->ne[0]);
+-    ggml_tensor * beta = ggml_reshape_2d(ctx, ggml_exp(ctx, lb), 1, lb->ne[0]);
+-    ggml_tensor * s = ggml_sin(ctx, ggml_mul(ctx, x, alpha));
+-    return ggml_add(ctx, x, ggml_div(ctx, ggml_sqr(ctx, s), beta));
++    ggml_tensor * alpha = ggml_reshape_2d(ctx, ggml_exp(ctx, la), 1, la->ne[0]);
++    // Exact: 1 / exp(lb) == exp(-lb), which keeps the wide waveform path in MUL.
++    ggml_tensor * inv_beta = ggml_reshape_2d(ctx, ggml_exp(ctx, ggml_neg(ctx, lb)), 1, lb->ne[0]);
++    ggml_tensor * s = ggml_sin(ctx, ggml_mul(ctx, x, alpha));
++    return ggml_add(ctx, x, ggml_mul(ctx, ggml_sqr(ctx, s), inv_beta));
+ }
+diff --git a/include/breeze/backbone.h b/include/breeze/backbone.h
+--- a/include/breeze/backbone.h
++++ b/include/breeze/backbone.h
+@@ -21,6 +21,16 @@
+ 
+-struct StepOut {
+-    std::vector<float> hidden; // [hidden_size]
+-    std::vector<float> logits; // [audio_vocab_size + 1]
+-};
++struct StepOut {
++    std::vector<float> hidden; // [hidden_size]
++    std::vector<float> logits; // [audio_vocab_size + 1]
++};
++
++struct AudioEmbedRunner {
++    Graph graph{256};
++    ggml_tensor * ids = nullptr;
++    ggml_tensor * out = nullptr;
++    int n_codebooks = 0;
++    int vocab = 0;
++    void init(BreezeModel & m);
++    std::vector<float> run(BreezeModel & m, const std::vector<int> & codes);
++};
+ 
+diff --git a/src/backbone.cpp b/src/backbone.cpp
+--- a/src/backbone.cpp
++++ b/src/backbone.cpp
+@@ -22,12 +22,30 @@
+ 
+-static ggml_tensor * build_audio_embed(ggml_context * ctx, BreezeModel & m, ggml_tensor * idx, int n) {
+-    const int nc = m.cfg.num_codebooks;
+-    const int hidden = m.cfg.hidden_size;
+-    // get_rows only indexes along one axis, so the frames stay flat until after the lookup
+-    ggml_tensor * rows = ggml_get_rows(ctx, m.w("audio_embd.weight"), idx);    // [hidden, nc*n]
+-    rows = ggml_reshape_3d(ctx, rows, hidden, nc, n);
+-    ggml_tensor * perm = ggml_cont(ctx, ggml_permute(ctx, rows, 1, 0, 2, 3));  // [nc, hidden, n]
+-    ggml_tensor * summed = ggml_sum_rows(ctx, perm);                           // [1, hidden, n]
+-    return ggml_reshape_2d(ctx, summed, hidden, n);
+-}
++static ggml_tensor * build_audio_embed(ggml_context * ctx, BreezeModel & m, ggml_tensor * idx, int n) {
++    const int nc = m.cfg.num_codebooks;
++    const int hidden = m.cfg.hidden_size;
++    // get_rows only indexes along one axis, so the frames stay flat until after the lookup
++    ggml_tensor * rows = ggml_get_rows(ctx, m.w("audio_embd.weight"), idx);    // [hidden, nc*n]
++    rows = ggml_reshape_3d(ctx, rows, hidden, nc, n);
++    ggml_tensor * perm = ggml_cont(ctx, ggml_permute(ctx, rows, 1, 0, 2, 3));  // [nc, hidden, n]
++    ggml_tensor * summed = ggml_sum_rows(ctx, perm);                           // [1, hidden, n]
++    return ggml_reshape_2d(ctx, summed, hidden, n);
++}
++
++void AudioEmbedRunner::init(BreezeModel & m) {
++    n_codebooks = m.cfg.num_codebooks; vocab = m.cfg.audio_vocab_size;
++    std::vector<int32_t> zeros((size_t) n_codebooks, 0);
++    ids = graph.input_i32(zeros, n_codebooks);
++    out = build_audio_embed(graph.ctx, m, ids, 1);
++    graph.prepare(m.backend, out);
++}
++
++std::vector<float> AudioEmbedRunner::run(BreezeModel & m, const std::vector<int> & codes) {
++    if (!ids || !out) init(m);
++    if ((int) codes.size() != n_codebooks) throw std::runtime_error("audio embedding frame has wrong codebook count");
++    std::vector<int32_t> idx((size_t) n_codebooks);
++    for (int cb = 0; cb < n_codebooks; ++cb) idx[(size_t) cb] = codes[(size_t) cb] + cb * vocab;
++    ggml_backend_tensor_set(ids, idx.data(), 0, idx.size() * sizeof(int32_t));
++    graph.replay(m.backend);
++    return tensor_to_f32(out);
++}
+ 
+diff --git a/src/generation.cpp b/src/generation.cpp
+--- a/src/generation.cpp
++++ b/src/generation.cpp
+@@ -119,6 +119,8 @@
+ 
+-    DepthRunner depth;
+-    depth.init(m, use_cfg ? 2 : 1);
+-
+-    SampleParams bp;
++    DepthRunner depth;
++    depth.init(m, use_cfg ? 2 : 1);
++    AudioEmbedRunner audio_embed;
++    audio_embed.init(m);
++
++    SampleParams bp;
+     bp.temperature = req.temperature > 0.0f ? req.temperature : m.cfg.temperature;
+@@ -186,7 +188,7 @@
+         }
+-        hist.push_back(cb0);
+-
+-        auto tb = clock_now();
+-        std::vector<float> ae = audio_embed_forward(m, frame, 1);
+-        if (use_cfg) {
++        hist.push_back(cb0);
++
++        auto tb = clock_now();
++        std::vector<float> ae = audio_embed.run(m, frame);
++        if (use_cfg) {
+             auto pair = backbone_run_cfg(m, st_c, st_u, ae);
+@@ -335,6 +337,8 @@
+ 
+-    DepthRunner depth;
+-    depth.init(m, use_cfg ? 2 : 1);
+-
+-    std::vector<int> out((size_t) src_T * nc);
++    DepthRunner depth;
++    depth.init(m, use_cfg ? 2 : 1);
++    AudioEmbedRunner audio_embed;
++    audio_embed.init(m);
++
++    std::vector<int> out((size_t) src_T * nc);
+     const int keep = opt.keep_acoustic < nc - 1 ? opt.keep_acoustic : nc - 1;
+@@ -350,6 +354,6 @@
+ 
+-        const int * from = opt.feed_source ? &src_codes[(size_t) t * nc] : &out[(size_t) t * nc];
+-        std::vector<int> frame(from, from + nc);
+-        std::vector<float> ae = audio_embed_forward(m, frame, 1);
+-        if (use_cfg) {
++        const int * from = opt.feed_source ? &src_codes[(size_t) t * nc] : &out[(size_t) t * nc];
++        std::vector<int> frame(from, from + nc);
++        std::vector<float> ae = audio_embed.run(m, frame);
++        if (use_cfg) {
+             auto pair = backbone_run_cfg(m, st_c, st_u, ae);
