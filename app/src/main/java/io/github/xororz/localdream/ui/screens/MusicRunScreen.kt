@@ -243,13 +243,12 @@ fun MusicRunScreen(
                         Text("YuE2 · Text to music")
                         Text(
                             when {
-                                backendError != null -> "Native runtime failed"
-                                !backendReady && startupForModel != null -> startupForModel.detail
-                                !backendReady -> "Starting native YuE2 runtime…"
-                                !htpAccelerated ->
-                                    "Compatibility runtime · $precision"
-                                else ->
-                                    "$precision · HTP runtime ready"
+                                backendError != null -> "Music engine failed"
+                                !backendReady && startupForModel != null ->
+                                    startupPhaseLabel(startupForModel.phase)
+                                !backendReady -> "Starting music engine…"
+                                !htpAccelerated -> "This model variant is not supported"
+                                else -> "Ready"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = if (backendReady) {
@@ -459,13 +458,7 @@ fun MusicRunScreen(
                                     fontWeight = FontWeight.SemiBold,
                                 )
                                 Text(
-                                    buildString {
-                                        append(model?.variantPrecision ?: "GGUF")
-                                        append(" · 48 kHz stereo · ")
-                                        append(outputFormatLabel(outputFormat))
-                                        append(" · ")
-                                        append(if (htpAccelerated) "Hexagon HTP" else "NPU unavailable")
-                                    },
+                                    "48 kHz stereo · " + outputFormatLabel(outputFormat),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -516,11 +509,11 @@ fun MusicRunScreen(
                         Spacer(Modifier.width(8.dp))
                         Text(
                             when {
-                                backendError != null -> "Runtime unavailable"
+                                backendError != null -> "Engine unavailable"
                                 !backendReady && startupForModel != null ->
                                     startupButtonLabel(startupForModel.phase)
-                                !backendReady -> "Starting native runtime…"
-                                !htpAccelerated -> "Generate · compatibility"
+                                !backendReady -> "Starting music engine…"
+                                !htpAccelerated -> "Variant unsupported"
                                 else -> "Generate music"
                             },
                         )
@@ -537,7 +530,7 @@ fun MusicRunScreen(
                     color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f),
                 ) {
                     Text(
-                        "This YuE2 precision is not supported by the NPU-only music runtime.",
+                        "This YuE2 model variant is not supported for music generation. Choose Q8 or BF16.",
                         modifier = Modifier.padding(14.dp),
                         color = MaterialTheme.colorScheme.onErrorContainer,
                     )
@@ -564,8 +557,6 @@ fun MusicRunScreen(
                     )
                     is MusicState.Generating -> MusicProgressCard(
                         state = state,
-                        precision = model?.variantPrecision ?: "GGUF",
-                        runtimeLabel = "HTP0 · Native-only DSPQueue",
                         onCancel = {
                             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                             MusicGenerationService.stop(context)
@@ -657,7 +648,7 @@ fun MusicRunScreen(
                                             )
                                         },
                                     ) {
-                                        Text("Restart native runtime")
+                                        Text("Restart engine")
                                     }
                                 }
                             }
@@ -682,9 +673,9 @@ fun MusicRunScreen(
                                 )
                                 Text(
                                     if (q8FastPath) {
-                                        "Mobile-safe staged loading: AR → NAR → Oobleck. Only one heavy module stays on HTP at a time."
+                                        "Staged loading keeps memory stable while composing long tracks."
                                     } else {
-                                        "Pipeline: AR score → semantic codes → NAR flow → Oobleck decode"
+                                        "The music pipeline is ready for generation."
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -796,7 +787,7 @@ private fun NativeRuntimeStartupCard(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Starting YuE2 on Hexagon",
+                        "Starting music engine",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -842,8 +833,7 @@ private fun NativeRuntimeStartupCard(
             }
 
             Text(
-                "Live native milestones · FastRPC → HTP v81 → yue-server. " +
-                    "This progress updates from the actual backend log, not a timer.",
+                "Startup progress comes from the actual engine milestones, not a timer.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -870,7 +860,7 @@ private fun NativeRuntimeErrorCard(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(
-                "Native runtime failed",
+                "Music engine failed",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onErrorContainer,
@@ -939,26 +929,22 @@ private fun NativeStartupStageStrip(activePhase: String) {
 }
 
 private fun startupPhaseLabel(phase: String): String = when (phase) {
-    "launch" -> "Launching process"
-    "process" -> "Process started"
-    "tokenizer" -> "Tokenizer"
-    "model" -> "Model metadata"
-    "fastrpc" -> "FastRPC transport"
-    "htp" -> "Detecting Hexagon"
-    "session" -> "Opening HTP session"
-    "backend" -> "Selecting HTP backend"
-    "server" -> "Starting yue-server"
+    "launch", "process" -> "Starting engine"
+    "tokenizer" -> "Loading tokenizer"
+    "model" -> "Reading model"
+    "fastrpc" -> "Preparing runtime"
+    "htp", "session", "backend" -> "Preparing compute"
+    "server" -> "Finishing startup"
     "ready" -> "Ready"
     else -> phase.replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 
 private fun startupButtonLabel(phase: String): String = when (phase) {
-    "launch", "process" -> "Launching YuE2…"
+    "launch", "process" -> "Starting music engine…"
     "tokenizer", "model" -> "Reading model…"
-    "fastrpc" -> "Opening FastRPC…"
-    "htp", "session", "backend" -> "Initializing HTP…"
-    "server" -> "Starting server…"
-    else -> "Starting native runtime…"
+    "fastrpc", "htp", "session", "backend" -> "Preparing compute…"
+    "server" -> "Finishing startup…"
+    else -> "Starting music engine…"
 }
 
 @Composable
@@ -1276,8 +1262,6 @@ private fun MusicDeviceTelemetryCard(telemetry: MusicDeviceTelemetry) {
 @Composable
 private fun MusicProgressCard(
     state: MusicState.Generating,
-    precision: String,
-    runtimeLabel: String,
     onCancel: () -> Unit,
 ) {
     val elapsed by produceState(initialValue = 0L, state.startedAtMillis) {
@@ -1353,7 +1337,7 @@ private fun MusicProgressCard(
             }
 
             Text(
-                "$runtimeLabel · CPU offload disabled · $precision · ${state.targetSeconds * 25} frames · 48 kHz stereo",
+                "${state.targetSeconds}s target · 48 kHz stereo",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1399,10 +1383,10 @@ private fun MusicDecodeProgress(state: MusicState.Generating) {
             Text(
                 when {
                     state.total > 0 && hasActiveTile ->
-                        "HTP decoder · tile $activeTile/${state.total} running"
+                        "Audio decoder · tile $activeTile/${state.total} running"
                     state.total > 0 ->
-                        "HTP decoder · ${state.step}/${state.total} tiles complete"
-                    else -> "VAE · HTP decode"
+                        "Audio decoder · ${state.step}/${state.total} tiles complete"
+                    else -> "Decoding audio"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
@@ -1625,7 +1609,7 @@ private fun MusicGenerationConfigSheet(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
-                        "HTP transport",
+                        "Runtime mode",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
