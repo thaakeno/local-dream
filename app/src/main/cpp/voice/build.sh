@@ -96,6 +96,13 @@ grep -Fq 'g.input_f32(mask_v, kv_len, T)' "$(pwd)/overlay/breeze/src/codec_trans
 grep -q 'ggml_tensor \* tensor' "$(pwd)/overlay/breeze/include/breeze/codec.h"
 grep -q 'ggml_new_tensor_2d(conv_ctx, GGML_TYPE_F32' "$(pwd)/overlay/breeze/src/codec.cpp"
 grep -q 'ggml_concat(ctx, block.tensor, x, 0)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q '1.0e-9f' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'ggml_div(ctx, one, ggml_add(ctx, beta, tiny))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+if grep -q 'ggml_exp(ctx, ggml_neg(ctx, lb))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
+    echo "Unsafe exp(-beta) SnakeBeta rewrite returned" >&2
+    exit 1
+fi
+grep -q 'snake-beta-reference' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'const int left = (K - 1) / stride' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 grep -q 'const int prefix = left \* stride' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 if grep -q 'conv_storage\|conv_bank\|offset_f32\|conv_capacity_f32\|conv_used_f32' "$(pwd)/overlay/breeze/include/breeze/codec.h" "$(pwd)/overlay/breeze/src/codec.cpp" "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
@@ -158,7 +165,7 @@ fallback=disabled
 integration=pinned-source-overlay
 queue=backend-default
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im
-streaming_vocoder=reference-state-tensors-input-cache-tconv-windowed-kv
+streaming_vocoder=reference-state-tensors-input-cache-tconv-windowed-kv-chunk1-exact-snakebeta
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
