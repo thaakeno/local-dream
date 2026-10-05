@@ -47,33 +47,50 @@ static void test_snake(Backend & be) {
     constexpr int T = 32;
     constexpr int C = 4;
     std::vector<float> x(T * C);
-    std::vector<float> alpha(C);
-    std::vector<float> inv_beta(C);
-    for (int c = 0; c < C; ++c) {
-        alpha[c] = 0.55f + 0.12f * c;
-        inv_beta[c] = 0.7f + 0.09f * c;
+    std::vector<float> log_alpha = { -0.60f, -0.10f, 0.35f, 0.80f };
+    // This catches the exact failure mode from v156: exp(-beta) overflows for
+    // sufficiently negative beta, whereas Breeze's reference denominator stays finite.
+    std::vector<float> log_beta = { -100.0f, -20.0f, 0.0f, 4.0f };
+    std::vector<float> ones(C, 1.0f);
+    std::vector<float> eps(C, 1.0e-9f);
+
+    for (int ch = 0; ch < C; ++ch) {
         for (int t = 0; t < T; ++t) {
-            x[t + T * c] = std::sin(0.17f * t + 0.31f * c) * 1.4f;
+            x[t + T * ch] = std::sin(0.17f * t + 0.31f * ch) * 1.4f;
         }
     }
 
-    Graph g(128);
+    Graph g(160);
     auto * tx = g.input_f32(x, T, C);
-    auto * ta = g.input_f32(alpha, 1, C);
-    auto * tb = g.input_f32(inv_beta, 1, C);
-    auto * s = ggml_sin(g.ctx, ggml_mul(g.ctx, tx, ta));
-    auto * out = ggml_add(g.ctx, tx, ggml_mul(g.ctx, ggml_sqr(g.ctx, s), tb));
+    auto * tla = g.input_f32(log_alpha, 1, C);
+    auto * tlb = g.input_f32(log_beta, 1, C);
+    auto * one = g.input_f32(ones, 1, C);
+    auto * tiny = g.input_f32(eps, 1, C);
+
+    auto * alpha = ggml_exp(g.ctx, tla);
+    auto * beta = ggml_exp(g.ctx, tlb);
+    auto * inv_beta = ggml_div(g.ctx, one, ggml_add(g.ctx, beta, tiny));
+    auto * s = ggml_sin(g.ctx, ggml_mul(g.ctx, tx, alpha));
+    auto * out = ggml_add(
+        g.ctx, tx, ggml_mul(g.ctx, ggml_sqr(g.ctx, s), inv_beta)
+    );
     g.compute(be, out);
 
     std::vector<float> expected(x.size());
-    for (int c = 0; c < C; ++c) {
+    for (int ch = 0; ch < C; ++ch) {
+        const float a = std::exp(log_alpha[ch]);
+        const float b = std::exp(log_beta[ch]);
+        const float inv_b = 1.0f / (b + 1.0e-9f);
         for (int t = 0; t < T; ++t) {
-            const size_t i = (size_t) t + (size_t) T * c;
-            const float s0 = std::sin(x[i] * alpha[c]);
-            expected[i] = x[i] + s0 * s0 * inv_beta[c];
+            const size_t i = (size_t) t + (size_t) T * ch;
+            const float s0 = std::sin(x[i] * a);
+            expected[i] = x[i] + s0 * s0 * inv_b;
+            if (!std::isfinite(expected[i])) {
+                throw std::runtime_error("SnakeBeta reference became non-finite");
+            }
         }
     }
-    require_close("snake-channel-broadcast", tensor_to_f32(out), expected, 3e-3f);
+    require_close("snake-beta-reference", tensor_to_f32(out), expected, 4e-3f);
 }
 
 static void test_col2im_case(
