@@ -216,36 +216,9 @@ private fun gb(bytes: Long): String =
     if (bytes <= 0L) "—" else String.format(Locale.US, "%.2f GB", bytes / 1_000_000_000.0)
 
 @Composable
-private fun FamilyStatusPill(
-    text: String,
-    emphasized: Boolean = false,
-) {
-    Surface(
-        shape = MaterialTheme.shapes.extraLarge,
-        color = if (emphasized) {
-            MaterialTheme.colorScheme.primaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHighest
-        },
-    ) {
-        Text(
-            text = text,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            style = MaterialTheme.typography.labelMedium,
-            color = if (emphasized) {
-                MaterialTheme.colorScheme.onPrimaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
-        )
-    }
-}
-
-@Composable
 private fun AnimatedFamilyHero(
     title: String,
     subtitle: String,
-    badge: String,
     music: Boolean,
     voice: Boolean = false,
     modifier: Modifier = Modifier,
@@ -325,41 +298,8 @@ private fun AnimatedFamilyHero(
                     )
                 }
 
-                Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = Color.White.copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
-                ) {
-                    Text(
-                        badge,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = Color.White,
-                    )
-                }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                val capabilities = when {
-                    voice -> listOf("Q8", "Q6", "Q4", "24 kHz")
-                    music -> listOf("Q8", "BF16", "48 kHz")
-                    else -> listOf("Q4", "Q8", "FP8", "Viggle")
-                }
-                capabilities.forEach { label ->
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        color = Color.White.copy(alpha = 0.09f),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.07f)),
-                    ) {
-                        Text(
-                            label,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White.copy(alpha = 0.90f),
-                        )
-                    }
-                }
-            }
         }
     }
 }
@@ -530,12 +470,7 @@ fun QwenFamilyCard(
         Column {
             AnimatedFamilyHero(
                 title = "Qwen Image 2.1",
-                subtitle = "Image generation · Hexagon HTP",
-                badge = if (installedPrecisions.isEmpty()) {
-                    "NPU"
-                } else {
-                    "${installedPrecisions.size}/3 ready"
-                },
+                subtitle = "Image generation",
                 music = false,
             )
 
@@ -655,8 +590,7 @@ private fun QwenVariantSheet(
         ) {
             AnimatedFamilyHero(
                 title = "Qwen Image 2.1",
-                subtitle = "Build one runtime from shared assets",
-                badge = "HTP",
+                subtitle = "Choose quality and optional Viggle LoRA",
                 music = false,
             )
 
@@ -767,7 +701,7 @@ private fun QwenVariantSheet(
                                     if (adapter.isBlank()) {
                                         "Standard Qwen Image 2.1 runtime"
                                     } else {
-                                        "Exact Viggle v0.2.1 six-pass runtime"
+                                        "Viggle LoRA enabled"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -778,19 +712,6 @@ private fun QwenVariantSheet(
                                     Icons.Default.CheckCircle,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                        }
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FamilyStatusPill(
-                                if (baseReady) "Transformer installed" else "Transformer missing",
-                                emphasized = baseReady,
-                            )
-                            if (adapter.isNotBlank()) {
-                                FamilyStatusPill(
-                                    if (turboReady) "LoRA already installed" else "LoRA missing",
-                                    emphasized = turboReady,
                                 )
                             }
                         }
@@ -881,14 +802,7 @@ fun Yue2FamilyCard(
         Column {
             AnimatedFamilyHero(
                 title = "YuE2 3B",
-                subtitle = "Text to music · Hexagon HTP",
-                badge = if (supported.any { it.variantPrecision == "Q8_0" && it.isDownloaded }) {
-                    "Q8 ready"
-                } else if (installed > 0) {
-                    "$installed ready"
-                } else {
-                    "HTP"
-                },
+                subtitle = "Text to music",
                 music = true,
             )
 
@@ -993,8 +907,7 @@ private fun Yue2VariantSheet(
         ) {
             AnimatedFamilyHero(
                 title = "YuE2 3B",
-                subtitle = "Local text-to-music on Snapdragon",
-                badge = "48 kHz",
+                subtitle = "Choose model quality",
                 music = true,
             )
 
@@ -1009,8 +922,8 @@ private fun Yue2VariantSheet(
                             installed = variant.isDownloaded,
                             title = variant.variantPrecision,
                             subtitle = when (variant.variantPrecision) {
-                                "Q8_0" -> "HTP · near-lossless · 4.34 GB"
-                                else -> "HTP · BF16 · 7.70 GB"
+                                "Q8_0" -> "Near-lossless · 4.34 GB"
+                                else -> "Reference quality · 7.70 GB"
                             },
                             icon = when (variant.variantPrecision) {
                                 "Q8_0" -> Icons.Default.Memory
@@ -1051,9 +964,9 @@ private fun Yue2VariantSheet(
                                 Text(
                                     when (selected.variantPrecision) {
                                         "BF16" ->
-                                            "BF16 is the tensor data type; GGUF is only the model file/container format."
+                                            "Highest-memory reference option."
                                         else ->
-                                            "GGUF container · quantized backbone · Oobleck waveform decoder"
+                                            "Recommended mobile quality and memory balance."
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1068,25 +981,12 @@ private fun Yue2VariantSheet(
                             }
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FamilyStatusPill(
-                                if (selected.variantPrecision == "BF16") {
-                                    "BF16 weights"
-                                } else {
-                                    selected.variantPrecision
-                                },
-                                true,
-                            )
-                            FamilyStatusPill("GGUF container")
-                            FamilyStatusPill("Oobleck VAE")
-                        }
-
                         Text(
                             when (selected.variantPrecision) {
                                 "Q8_0" ->
-                                    "Near-lossless upstream default and the recommended Local Dream mobile path because Q8_0 is implemented by the Hexagon backend."
+                                    "Near-lossless upstream default and the recommended mobile option."
                                 else ->
-                                    "Full BF16 backbone stored inside a GGUF container. Kept as the high-memory reference option and supported by the Hexagon backend."
+                                    "Full BF16 reference option for devices with enough memory."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1317,8 +1217,7 @@ fun BreezeFamilyCard(
         Column {
             AnimatedFamilyHero(
                 title = "Breeze TTS 2",
-                subtitle = "Voice design · strict Hexagon HTP",
-                badge = if (installed > 0) installed.toString() + " ready" else "HTP only",
+                subtitle = "Text to speech",
                 music = false,
                 voice = true,
             )
@@ -1375,8 +1274,7 @@ fun BreezeFamilyCard(
             ) {
                 AnimatedFamilyHero(
                     title = "Breeze TTS 2",
-                    subtitle = "English + Mandarin · 24 kHz · no fallback",
-                    badge = "7 variants",
+                    subtitle = "English + Mandarin text to speech",
                     music = false,
                     voice = true,
                 )
@@ -1485,11 +1383,6 @@ fun BreezeFamilyCard(
                                     tint = MaterialTheme.colorScheme.primary,
                                 )
                             }
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FamilyStatusPill("Strict HTP", true)
-                            FamilyStatusPill("GGUF")
-                            FamilyStatusPill("24 kHz")
                         }
                         Text(
                             when (current.variantPrecision) {
