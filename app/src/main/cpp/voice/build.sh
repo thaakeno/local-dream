@@ -47,10 +47,17 @@ grep -q 'GGML_TYPE_Q6_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GGML_TYPE_Q4_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GGML_TYPE_Q2_K' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 
-# Compile Local Dream's maintained Breeze integration into the exact pinned
-# AP backend + DSP skels. The integration is fail-on-drift and adds only native
-# HTP paths; there is no runtime patching and no CPU/GPU compute fallback.
-python3 "$(pwd)/integrate_htp_breeze.py" "$HEXAGON_DIR" "$BREEZE_DIR" "$(pwd)/native"
+# Apply versioned source patches against the exact pinned upstream commits.
+# This is normal git patching: no runtime monkey-patching, no regex/source
+# rewriting, and git apply --check fails immediately if either upstream moves.
+for src in     breeze-sin-ops.c     breeze-col2im-ops.c     breeze-channel-bcast-ops.c     breeze-snake-ops.c; do
+    cp "$(pwd)/native/$src" "$GGML_DIR/src/ggml-hexagon/htp/$src"
+done
+
+git -C "$HEXAGON_DIR" apply --check "$(pwd)/hexagon-breeze-v148.patch"
+git -C "$HEXAGON_DIR" apply "$(pwd)/hexagon-breeze-v148.patch"
+git -C "$BREEZE_DIR" apply --check "$(pwd)/breeze-core-v148.patch"
+git -C "$BREEZE_DIR" apply "$(pwd)/breeze-core-v148.patch"
 
 grep -q 'HTP_OP_SIN' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_COL2IM_1D_BIAS' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
@@ -58,10 +65,11 @@ grep -q 'HTP_OP_SNAKE' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_ADD' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_MUL' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'ggml_hexagon_is_breeze_channel_binary' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'Breeze adaptive binary VTCM' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'Fit binary staging to the available VTCM' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'streaming MUL path' "$BREEZE_DIR/src/codec_decoder.cpp"
+grep -q '1 / exp(lb) == exp(-lb)' "$BREEZE_DIR/src/codec_decoder.cpp"
+grep -q 'struct AudioEmbedRunner' "$BREEZE_DIR/include/breeze/backbone.h"
 
 rm -rf "$BUILD_DIR"
 
