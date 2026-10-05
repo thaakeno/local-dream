@@ -402,6 +402,12 @@ class SpeechGenerationService : Service() {
                 }
                 activeCall = null
 
+                val nativeFailure = _state.value as? SpeechState.Error
+                if (nativeFailure?.modelId == modelId) {
+                    temp.delete()
+                    throw IOException(nativeFailure.message)
+                }
+
                 if (temp.length() < 64L) {
                     temp.delete()
                     throw IOException("Breeze returned an empty/truncated WAV stream")
@@ -545,6 +551,19 @@ class SpeechGenerationService : Service() {
             "BREEZE_NATIVE",
             line.take(3000),
         )
+
+        if (line.startsWith("generation error:", ignoreCase = true)) {
+            val nativeMessage = line.substringAfter(':').trim()
+            fail(
+                if (nativeMessage.isBlank()) {
+                    "Speech generation stopped inside the native engine."
+                } else {
+                    "Speech generation stopped: " + nativeMessage.take(280)
+                },
+                modelId,
+            )
+            return
+        }
 
         val match = nativeProgressRegex.find(line) ?: return
         val current = _state.value as? SpeechState.Generating ?: return
