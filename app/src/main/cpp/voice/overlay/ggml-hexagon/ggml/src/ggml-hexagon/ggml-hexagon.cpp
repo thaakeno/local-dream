@@ -113,11 +113,8 @@ static u32vec opt_pmu_evt { 0x3, 0x111, 0x100, 0x105, 0x240, 0x256, 0x7D, 0x8C }
 static int opt_opbatch  = 1280; // max number of ops in a batch
 static int opt_opqueue  = 32;   // max number of pending batches
 static int opt_optrace  = 0;    // trace buffer size per thread (0 means default)
-static int opt_oppoll      = 0; // polling for batch completions
-static int opt_opfusion    = 1; // enable/disable op fusion
-static int opt_batchlog    = 0; // lightweight DSPQueue batch submit/complete logging
-static int opt_depbarrier  = 1; // split v81 packets at tensor hazards when explicitly enabled
-static int opt_v81_legacy_batch = 0; // restore v153 large-packet scheduling on known-safe graphs
+static int opt_oppoll   = 0;    // polling for batch completions
+static int opt_opfusion = 1;    // enable/disable op fusion
 
 enum ggml_hexagon_fusion_flags {
     GGML_HEXAGON_FUSE_ALLREDUCE_ADD = (1 << 1), // 2
@@ -2906,50 +2903,6 @@ struct ggml_hexagon_opbatch {
 
     bool empty() const { return n_ops == 0; }
 
-    // HTP v81 has reproduced DSP response stalls/corruption when a producer and
-    // its consumer execute inside the same DSPQueue packet. Keep independent
-    // work batched, but force a packet boundary around RAW/WAR/WAW hazards so
-    // the DSP-side end-of-batch cache flush establishes visibility.
-    bool has_data_hazard(const htp_opnode & node) const {
-        if (empty()) return false;
-
-        auto overlaps = [](const ggml_tensor * a, const ggml_tensor * b) {
-            if (!a || !b) return false;
-            if (a == b) return true;
-            if (a->buffer && b->buffer && a->buffer != b->buffer) return false;
-            return ggml_hexagon_tensors_overlap(a, b);
-        };
-
-        const auto cur_inputs  = node.get_inputs();
-        const auto cur_outputs = node.get_outputs();
-
-        for (unsigned int i = 0; i < n_ops; ++i) {
-            const auto prev_inputs  = ops[i].get_inputs();
-            const auto prev_outputs = ops[i].get_outputs();
-
-            // Read-after-write: current op consumes a value produced in packet.
-            for (const auto * cur : cur_inputs) {
-                for (const auto * prev : prev_outputs) {
-                    if (overlaps(cur, prev)) return true;
-                }
-            }
-            // Write-after-write: two ops target overlapping storage.
-            for (const auto * cur : cur_outputs) {
-                for (const auto * prev : prev_outputs) {
-                    if (overlaps(cur, prev)) return true;
-                }
-            }
-            // Write-after-read: allocator/view reuse must not clobber a value
-            // still consumed by an earlier op in this packet.
-            for (const auto * cur : cur_outputs) {
-                for (const auto * prev : prev_inputs) {
-                    if (overlaps(cur, prev)) return true;
-                }
-            }
-        }
-        return false;
-    }
-
     // add buffer and return its index
     int add_buffer(ggml_hexagon_shared_buffer * sbuf) {
         // Lookup by fd
@@ -4172,17 +4125,6 @@ void ggml_hexagon_session::flush_pending(bool all) {
 
         op_queue->pop(rsp, dbuf);
 
-        if (opt_batchlog) {
-            GGML_LOG_INFO(
-                "ggml-hex: %s BREEZE_HTP_BATCH complete seq=%llu n_ops=%u status=%s usec=%u\n",
-                this->c_name(),
-                (unsigned long long) rsp.seq,
-                rsp.n_ops,
-                status_to_str(rsp.status),
-                rsp.usecs
-            );
-        }
-
         GGML_ASSERT(rsp.seq == this->batch_rsp_seq + 1);
         this->batch_rsp_seq = rsp.seq;
 
@@ -4239,21 +4181,6 @@ void ggml_hexagon_session::flush_batch(size_t min_ops) {
     }
 
     HEX_VERBOSE("ggml-hex: %s queue-opbatch: %p size %u\n", this->c_name(), dbuf.ptr, dbuf.size);
-    if (opt_batchlog) {
-        const uint32_t submit_ops = op_batch->n_ops;
-        const uint32_t submit_bufs = op_batch->n_bufs;
-        const std::string submit_first = submit_ops ? op_batch->ops[0].op_name() : "none";
-        const std::string submit_last  = submit_ops ? op_batch->ops[submit_ops - 1].op_name() : "none";
-        GGML_LOG_INFO(
-            "ggml-hex: %s BREEZE_HTP_BATCH submit seq=%llu n_ops=%u n_bufs=%u first=%s last=%s\n",
-            this->c_name(),
-            (unsigned long long) seq,
-            submit_ops,
-            submit_bufs,
-            submit_first.c_str(),
-            submit_last.c_str()
-        );
-    }
 
     int err = dspqueue_write(this->queue, 0, 1, &dbuf, sizeof(req), (const uint8_t*) &req, DSPQUEUE_TIMEOUT);
     if (err != 0) {
@@ -4280,19 +4207,6 @@ void ggml_hexagon_session::enqueue_op(const htp_opnode & node) {
     }
     for (auto t : node.get_outputs()) {
         clone_tensor_buffer(t);
-    }
-
-    // On v81, do not place dependent ops in the same DSPQueue packet. The
-    // packet boundary is also a DSP-side cache/scheduler completion boundary;
-    // independent work remains batched for throughput.
-    if (opt_depbarrier && opt_arch >= 81 && !op_batch->empty() && op_batch->has_data_hazard(node)) {
-        if (opt_batchlog) {
-            GGML_LOG_INFO(
-                "ggml-hex: %s BREEZE_HTP_BARRIER n_ops=%u next=%s reason=data-hazard\n",
-                this->c_name(), op_batch->n_ops, node.op_name().c_str()
-            );
-        }
-        flush_async();
     }
 
     if (opt_opfusion && op_batch->try_fuse(node)) {
@@ -5271,16 +5185,6 @@ static bool ggml_hexagon_matmul_is_hmx_eligible(
     const int ne12  = src1->ne[2];
     const int wtype = src0->type;
 
-    // Default v81 policy remains HVX because arbitrary graphs can expose
-    // HMX producer/consumer visibility issues. Breeze's explicit v153
-    // compatibility mode restores the exact large-packet scheduling under
-    // which F16/F32 HMX completed on SM8850. Quantized HMX remains blocked
-    // separately in precompute_matmul_params_impl, so Q4/Q8 correctness fixes
-    // stay intact.
-    if (opt_arch >= 81 && !opt_v81_legacy_batch) {
-        return false;
-    }
-
     // HMX weight tile requires N to be 32-aligned.
     if (ne01_padded % 32 != 0) {
         return false;
@@ -5580,26 +5484,13 @@ static void ggml_hexagon_precompute_matmul_params_impl(
 
     const size_t vtcm_budget = sess->vtcm_size;
 
-    // Quantized HMX on HTP v81 has a reproducible public correctness regression.
-    // Breeze's Q4_K codec linears become multi-row after upsampling, so the old
-    // row-count gate re-enabled that path inside the first vocoder graph.
-    // Keep HMX for F16/F32 only; quantized v81 matmuls stay entirely on HVX.
-    const int hmx_rows = ne11 * ne12 * ne13;
+    // Keep v153 scheduling, but not its broken quantized-HMX path on SM8850/v81.
+    // Float HMX remains exactly as v153; Q4/Q8 matmuls use HVX.
     const bool quantized_w = wtype != GGML_TYPE_F16 && wtype != GGML_TYPE_F32;
-    const bool v81_quant_hmx_safe = !(opt_arch >= 81 && quantized_w);
-    bool hmx_enabled =
+    const bool hmx_enabled =
         (sess->n_hmx > 0) &&
         (opt_mm_select >= 2) &&
-        hmx_rows > 2 &&
-        v81_quant_hmx_safe;
-    if (!v81_quant_hmx_safe) {
-        static std::atomic<bool> warned_v81_quant_hmx{false};
-        if (!warned_v81_quant_hmx.exchange(true)) {
-            GGML_LOG_INFO(
-                "ggml-hex: v81 quantized HMX disabled; routing quantized matmul through HVX\n"
-            );
-        }
-    }
+        !(opt_arch >= 81 && quantized_w);
     if (hmx_enabled && ggml_hexagon_matmul_is_hmx_eligible(src0, src1, dst, ne01_padded, is_matmul_id, is_batched)) {
         if (ggml_hexagon_precompute_hmx_mm_params(sess, src0, src1, dst, wtype, ne00_padded, ne01_padded, ne02, ne11, ne12, ne11_padded, is_matmul_id, is_batched, src2_size, vtcm_budget, kparams)) {
             goto finalize;
@@ -5874,10 +5765,8 @@ static void ggml_hexagon_precompute_get_rows_params(
     const bool tiled = src0->type == GGML_TYPE_Q4_0 || (extra && (extra->flags & GGML_HEXAGON_TENSOR_REPACK) != 0) ||
                        sess->needs_repack.count(src0_base) || sess->needs_repack.count(src0);
 
-    // F32 embedding/codebook gathers on v81 must not use the direct
-    // same-type DDR->DDR DMA copy path. Stage through VTCM so the row is
-    // explicitly materialized and written back before downstream consumers.
-    // This is a generic GET_ROWS backend correctness fix, not a Breeze special case.
+    // v153 completed the graph but its direct F32 codebook gather could return
+    // stale/non-finite rows on v81. Stage F32 rows through VTCM instead.
     if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
         kparams->kernel_type = HTP_GET_ROWS_KERNEL_FLAT;
     } else if (src0->type == dst->type) {
@@ -6291,13 +6180,11 @@ static void ggml_hexagon_precompute_fused_mmnx_params(
     const size_t vtcm_budget = sess->vtcm_size;
     const bool is_batched = (ne02 * ne03 > 1 || ne12 * ne13 > 1);
 
-    // SM8850/v81 has open correctness reports for quantized HMX decode-sized
-    // matmuls. Keep HMX for the wide/batched work where it pays off (prefill
-    // and vocoder), but route 1-2 row autoregressive decode through the mature
-    // HVX path. This avoids corrupt next-frame logits without throwing away HMX
-    // throughput for the expensive batched codec graphs.
-    const int hmx_rows = ne11 * ne12 * ne13;
-    bool hmx_enabled = (sess->n_hmx > 0) && (opt_mm_select >= 2) && hmx_rows > 2;
+    const bool quantized_w = wtype != GGML_TYPE_F16 && wtype != GGML_TYPE_F32;
+    const bool hmx_enabled =
+        (sess->n_hmx > 0) &&
+        (opt_mm_select >= 2) &&
+        !(opt_arch >= 81 && quantized_w);
     if (hmx_enabled && ggml_hexagon_matmul_is_hmx_eligible(src0, src1, nullptr, ne01_padded, false, is_batched)) {
         if (ggml_hexagon_precompute_hmx_mm_params(sess, src0, src1, nullptr, wtype, ne00_padded, ne01_padded, ne02, ne11, ne12, ne11_padded, false, is_batched, 0, vtcm_budget, kparams)) {
             kparams->n_weights = n_weights;
@@ -6683,16 +6570,6 @@ static bool ggml_hexagon_is_breeze_channel_binary(const struct ggml_tensor * op)
                                    src1->ne[2] == 1 && src1->ne[3] == 1;
     const bool same_shape = src1->ne[0] == src0->ne[0] && src1->ne[1] == src0->ne[1] &&
                             src1->ne[2] == 1 && src1->ne[3] == 1;
-
-    // SM8850 / HTP v81: only residual ADD needs the direct-HVX escape
-    // hatch. Keep same-shape MUL on the generic binary path: routing MUL here
-    // regressed autoregressive generation and deterministically wedged the DSP
-    // immediately after RMS_NORM. Channel-broadcast ADD/MUL stays on the
-    // existing direct-HVX path, as before v165.
-    if (!opt_v81_legacy_batch && opt_arch >= 81 && same_shape && op->op == GGML_OP_ADD) {
-        return true;
-    }
-
     return channel_broadcast || (same_shape && src0->ne[0] >= 262144);
 }
 
@@ -7397,15 +7274,12 @@ static bool mm_is_hmx_eligible(const ggml_tensor * t) {
     const bool is_batched   = (src0->ne[2] * src0->ne[3] > 1 || src1->ne[2] * src1->ne[3] > 1);
 
     const int ne01_padded = is_repack ? hex_round_up(src0->ne[1], 32) : src0->ne[1];
-    const int hmx_rows = src1->ne[1] * src1->ne[2] * src1->ne[3];
 
-    // Keep graph fusion decisions consistent with the v81 tiny-matmul policy
-    // used by kernel selection below. Otherwise a 1-row decode matmul can be
-    // merged as "HMX eligible" and later reach an incompatible fallback path.
-    return hmx_rows > 2 &&
-           ggml_hexagon_matmul_is_hmx_eligible(
-               src0, src1, t, ne01_padded, is_matmul_id, is_batched
-           );
+    const bool quantized_w = wtype != GGML_TYPE_F16 && wtype != GGML_TYPE_F32;
+    if (opt_arch >= 81 && quantized_w) {
+        return false;
+    }
+    return ggml_hexagon_matmul_is_hmx_eligible(src0, src1, t, ne01_padded, is_matmul_id, is_batched);
 }
 
 static bool is_supported_mul_mat_nx_kernel(const ggml_tensor * src0, const struct htp_mm_kernel_params * kparams) {
@@ -8959,9 +8833,6 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     const char * str_opqueue  = getenv("GGML_HEXAGON_OPQUEUE");
     const char * str_oppoll   = getenv("GGML_HEXAGON_OPPOLL");
     const char * str_opfusion = getenv("GGML_HEXAGON_OPFUSION");
-    const char * str_batchlog = getenv("GGML_HEXAGON_BATCHLOG");
-    const char * str_depbarrier = getenv("GGML_HEXAGON_DEPBARRIER");
-    const char * str_v81_legacy_batch = getenv("GGML_HEXAGON_V81_LEGACY_BATCH");
     const char * str_opfilter = getenv("GGML_HEXAGON_OPFILTER");
     const char * str_profile  = getenv("GGML_HEXAGON_PROFILE");
     const char * str_etm      = getenv("GGML_HEXAGON_ETM");
@@ -9014,26 +8885,10 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     opt_verbose   = str_verbose  ? atoi(str_verbose)                      : 0;
     opt_opbatch   = str_opbatch  ? strtoul(str_opbatch, NULL, 0)          : opt_opbatch;
     opt_opqueue   = str_opqueue  ? strtoul(str_opqueue, NULL, 0)          : opt_opqueue;
-    opt_v81_legacy_batch = str_v81_legacy_batch ? atoi(str_v81_legacy_batch) : opt_v81_legacy_batch;
-
-    // Default v81 safety cap. Breeze can explicitly opt into the v153
-    // large-packet schedule after restoring host-owned immutable carry state.
-    // That graph was device-proven to complete and avoids both arbitrary 64-op
-    // dependency cuts and one-op round-trip barriers.
-    if (!opt_v81_legacy_batch && opt_arch >= 81 && opt_opbatch > 64) {
-        GGML_LOG_WARN(
-            "ggml-hex: v81 DSPQueue opbatch %d capped to 64 for reliability\n",
-            opt_opbatch
-        );
-        opt_opbatch = 64;
-    }
-
     opt_optrace   = str_optrace  ? strtoul(str_optrace, NULL, 0)          : (opt_opbatch * 256);
     opt_oppoll    = str_oppoll   ? strtoul(str_oppoll,  NULL, 0)          : opt_oppoll;
     opt_opfusion  = str_opfusion ? atoi(str_opfusion)                     : opt_opfusion;
-    opt_batchlog   = str_batchlog ? atoi(str_batchlog)                    : opt_batchlog;
-    opt_depbarrier = str_depbarrier ? atoi(str_depbarrier)                : opt_depbarrier;
-    opt_profile    = str_profile  ? atoi(str_profile)                      : 0;
+    opt_profile   = str_profile  ? atoi(str_profile)                      : 0;
     opt_etm       = str_etm      ? atoi(str_etm)                          : 0;
     opt_nhvx      = str_nhvx     ? strtoul(str_nhvx, NULL, 0)             : opt_nhvx;
     opt_nhmx      = str_nhmx     ? atoi(str_nhmx)                         : opt_nhmx;
