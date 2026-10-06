@@ -108,9 +108,11 @@ grep -q '#define HEX_DCACHE_OP_SIZE         64' "$GGML_DIR/src/ggml-hexagon/htp/
 grep -q 'j += HEX_DCACHE_OP_SIZE' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
 grep -q 'i += HEX_DCACHE_OP_SIZE' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
 
-# Preserve v153 GET_ROWS exactly. The only codebook correction in v177 is
-# model-loader placement: decoder F32 tables are copied into a small ordinary
-# HTP allocation while the primary model allocation keeps exact v153 semantics.
+# Keep v153 GET_ROWS, but fix the quantized-weight contract. Hexagon MUL_MAT
+# consumes Q4_K/Q2_K/etc. from tiled REPACK storage. The loader briefly marks
+# the aggregate buffer as WEIGHTS while uploading (to repack), then switches it
+# back to ANY before first compute so SM8850 keeps ordinary delayed mapping
+# instead of the v161-v163 delayed-extended mapping that stalled the vocoder.
 if grep -q 'src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"; then
     echo "Non-v153 F32 GET_ROWS override returned" >&2
     exit 1
@@ -118,16 +120,20 @@ fi
 grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-multi' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-ordinary-2048-highrows' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'quant-matmul-q4k-repack-ordinary-map-n1' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'quant-matmul-q4k-repack-ordinary-map-n40' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'quant-matmul-q2k-repack-ordinary-map-n1' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'quant-matmul-q2k-repack-ordinary-map-n40' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'v81-dsp-gelu-erf-reference' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'v81-hvx-gelu-matmul-chain' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'Hexagon libm erff() per element' "$GGML_DIR/src/ggml-hexagon/htp/hvx-erf.h"
 grep -q 'ordinary HTP codebook mirrors verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
-grep -q 'primary model map remains exact-v153' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'quantized GGUF weights repacked for HTP' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'first decoder projection verified finite' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'GGML_BACKEND_BUFFER_USAGE_WEIGHTS' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'GGML_BACKEND_BUFFER_USAGE_ANY' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -q 'codebook_buffer' "$(pwd)/overlay/breeze/include/breeze/gguf_loader.h"
-if grep -q 'GGML_BACKEND_BUFFER_USAGE_WEIGHTS' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"; then
-    echo "Full-model WEIGHTS mapping regression returned" >&2
-    exit 1
-fi
+grep -q 'refusing %s with raw quantized HTP weight' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -Fq '"${BREEZE_OVERLAY_DIR}/src/gguf_loader.cpp"' "$(pwd)/CMakeLists.txt"
 
 # Exact v153 streaming graph invariants.
@@ -209,11 +215,11 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=v153-default-opbatch1280x32
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,exact-v153-model-map,decoder-codebook-ordinary-htp-mirror,exact-v153-hexagon-kernels,exact-v153-codec-graph,upstream-dcache-64b-pr29977
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,quant-weight-repack-ordinary-map,decoder-codebook-ordinary-htp-mirror,raw-quant-matmul-guard,exact-v153-hexagon-kernels,exact-v153-codec-graph,upstream-dcache-64b-pr29977
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
-vocoder=upstream-reference-window40-dq-op-probes-v191
+vocoder=upstream-reference-window40-quant-repack-fix-v192
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
