@@ -367,6 +367,7 @@ jobs:
           grep -q 'queue=depbarrier-opbatch64' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81-opbatch64' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81-data-hazard-barrier' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'v81-direct-residual-binary' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'batch-progress-log' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
