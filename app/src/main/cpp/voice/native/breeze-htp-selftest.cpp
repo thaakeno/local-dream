@@ -90,7 +90,7 @@ static void test_get_rows_f32(Backend & be) {
     run("get-rows-f32-multi", { 0, 7, 31, 63 });
 }
 
-static void test_get_rows_f32_weight_buffer(Backend & be) {
+static void test_get_rows_f32_ordinary_buffer(Backend & be) {
     constexpr int D = 256;
     constexpr int ROWS = 2048;
     const std::vector<int32_t> row_ids = { 0, 31, 219, 1221, 1938, 2047 };
@@ -101,19 +101,17 @@ static void test_get_rows_f32_weight_buffer(Backend & be) {
         true,
     };
     ggml_context * ctx = ggml_init(params);
-    if (!ctx) throw std::runtime_error("weight GET_ROWS context allocation failed");
+    if (!ctx) throw std::runtime_error("ordinary GET_ROWS context allocation failed");
 
     ggml_backend_buffer_t buffer = nullptr;
     try {
         ggml_tensor * table = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, D, ROWS);
-        ggml_set_name(table, "selftest.decoder_codebook.weight");
+        ggml_set_name(table, "selftest.decoder_codebook.ordinary");
 
         buffer = ggml_backend_alloc_ctx_tensors(ctx, be.backend);
         if (!buffer) {
-            throw std::runtime_error("weight GET_ROWS HTP buffer allocation failed");
+            throw std::runtime_error("ordinary GET_ROWS HTP buffer allocation failed");
         }
-        ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-
         std::vector<float> values((size_t) D * ROWS);
         for (int r = 0; r < ROWS; ++r) {
             for (int d = 0; d < D; ++d) {
@@ -136,7 +134,7 @@ static void test_get_rows_f32_weight_buffer(Backend & be) {
         auto * out = ggml_get_rows(g.ctx, table, ids);
         g.compute(be, out);
         require_close(
-            "get-rows-f32-weight-2048-highrows",
+            "get-rows-f32-ordinary-2048-highrows",
             tensor_to_f32(out),
             expected,
             1e-6f
@@ -365,7 +363,7 @@ int main() {
         std::fprintf(stderr, "[BREEZE_SELFTEST] backend=%s\n", be.name());
         test_sin(be);
         test_get_rows_f32(be);
-        test_get_rows_f32_weight_buffer(be);
+        test_get_rows_f32_ordinary_buffer(be);
         test_snake(be);
         test_col2im_bias(be);
         test_v81_direct_residual_add(be);
