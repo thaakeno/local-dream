@@ -182,7 +182,8 @@ jobs:
           OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
           mkdir -p "$OUT/contexts/sm8850" "$OUT/config"
 
-          # QAIRT 2.50 backend-extension schema uses graphs[] and soc_model. Public QAIRT docs map SM8850 to SoC model 87 / Hexagon V81.
+          # QAIRT HTP backend-extension schema uses graphs[] plus soc_id/dsp_arch.
+          # Current Qualcomm QAIRT docs map SM8850 to SoC model 87 / Hexagon V81.
           # The old --htp_socs path silently emitted a generic V68 context
           # (socModel=0), which loaded on V81 but returned constant near-zero PCM.
           cat > "$OUT/config/htp_config.json" <<'JSON'
@@ -195,8 +196,7 @@ jobs:
             ],
             "devices": [
               {
-                "device_id": 0,
-                "soc_model": 87,
+                "soc_id": 87,
                 "dsp_arch": "v81",
                 "cores": [
                   {
