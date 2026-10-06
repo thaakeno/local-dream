@@ -320,7 +320,7 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         );
         decode_job = std::async(
             std::launch::async,
-            [&codec, sub = std::move(sub), count, start]() mutable {
+            [&codec, sub = std::move(sub), count, start, clock_now, since]() mutable {
                 const auto tv = clock_now();
                 std::vector<float> audio = codec.decode_stream(sub, count);
                 DecodeResult result;
