@@ -214,8 +214,6 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
 
     DepthRunner depth;
     depth.init(m, use_cfg ? 2 : 1);
-    AudioEmbedRunner audio_embed;
-    audio_embed.init(m);
 
     SampleParams bp;
     bp.temperature = req.temperature > 0.0f ? req.temperature : m.cfg.temperature;
@@ -253,7 +251,7 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         hist.push_back(cb0);
 
         auto tb = clock_now();
-        std::vector<float> ae = audio_embed.run(m, frame);
+        std::vector<float> ae = audio_embed_forward(m, frame, 1);
         if (use_cfg) {
             auto pair = backbone_run_cfg(m, st_c, st_u, ae);
             o_c = std::move(pair[0]);
