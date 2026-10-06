@@ -47,7 +47,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v184-v81-fifo-split-dcache64"
+            "breeze-a0e177-hexagon-ab9acc-v185-live-op-prefix-dcache64"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -254,7 +254,7 @@ class SpeechGenerationService : Service() {
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
                     "queue=v153-default-1280x32 opfusion=1 hmx=1 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=exact-v153 " +
-                    "codebooks=ordinary-htp-mirror visibility=v81-fifo-split-hmx-unary-glu " +
+                    "codebooks=ordinary-htp-mirror visibility=v81-fifo-split-live-prefix-hmx-unary-glu " +
                     "vocoder=upstream-reference-window40 signal_validation=native+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
