@@ -600,8 +600,9 @@ fun SpeechRunScreen(
                     val soc = BreezeQnnVocoderArtifact.supportedSoc().orEmpty()
                     Text(
                         "Download the native SM8850 / V81 QNN HTP vocoder v3. It includes " +
-                            "by every Breeze Q4/Q6/Q8/F16/DD model on this phone and " +
-                            "replaces the slow ggml waveform decoder.",
+                            "a built-in numerical self-test, is shared by every Breeze " +
+                            "Q4/Q6/Q8/F16/DD model on this phone, and replaces the slow " +
+                            "ggml waveform decoder.",
                     )
                     when (accelerator) {
                         is BreezeQnnVocoderArtifact.Status.Downloading -> {
