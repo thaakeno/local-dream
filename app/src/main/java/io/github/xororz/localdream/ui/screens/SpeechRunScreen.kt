@@ -42,6 +42,8 @@ import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
 import io.github.xororz.localdream.service.SpeechHistoryItem
 import io.github.xororz.localdream.service.SpeechHistoryStore
 import io.github.xororz.localdream.ui.components.MusicPlayerCard
+import io.github.xororz.localdream.ui.components.SmoothIndeterminateLinearWavyProgressIndicator
+import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
 import io.github.xororz.localdream.utils.AppHaptics
 import java.io.File
 import java.text.DateFormat
@@ -1126,9 +1128,11 @@ private fun SpeechLoadingCard(state: SpeechState.Loading) {
                     fontWeight = FontWeight.Bold,
                 )
             }
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier.fillMaxWidth(),
+            SmoothLinearWavyProgressIndicator(
+                progress = progress,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp),
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1196,9 +1200,12 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
         }
     }
 
-    Surface(
+    ElevatedCard(
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -1209,16 +1216,42 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Generating speech",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "Generating speech",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                        ) {
+                            Text(
+                                "HTP",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                        ) {
+                            Text(
+                                "QNN",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            )
+                        }
+                    }
                     Text(
                         state.detail,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer
-                            .copy(alpha = 0.75f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 if (percent != null) {
@@ -1231,12 +1264,18 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             }
 
             if (progress != null) {
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier.fillMaxWidth(),
+                SmoothLinearWavyProgressIndicator(
+                    progress = progress,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(10.dp),
                 )
             } else {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                SmoothIndeterminateLinearWavyProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(10.dp),
+                )
             }
 
             SpeechStageProgress(
@@ -1301,7 +1340,7 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             Text(
                 "HTP-aware streaming alternates voice-token generation with QNN waveform decoding. The two engines never fight for the same Snapdragon HTP.",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.68f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
             )
         }
     }
@@ -1331,12 +1370,18 @@ private fun SpeechStageProgress(
             )
         }
         if (value != null) {
-            LinearProgressIndicator(
-                progress = { value },
-                modifier = Modifier.fillMaxWidth(),
+            SmoothLinearWavyProgressIndicator(
+                progress = value,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp),
             )
         } else {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            SmoothIndeterminateLinearWavyProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp),
+            )
         }
     }
 }

@@ -1,5 +1,6 @@
 package io.github.xororz.localdream.ui.components
 
+import android.content.Context
 import android.media.MediaPlayer
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -29,10 +30,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.io.RandomAccessFile
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -58,12 +65,19 @@ fun MusicPlayerCard(
     var position by remember(file.absolutePath) { mutableIntStateOf(0) }
     var duration by remember(file.absolutePath) { mutableIntStateOf(1) }
 
+    val context = LocalContext.current
+    val waveformKey = remember(file.absolutePath, file.lastModified(), file.length()) {
+        SpeechWaveformCache.key(file, 112)
+    }
     val waveform by produceState<List<Float>>(
-        initialValue = emptyList(),
-        key1 = file.absolutePath,
-        key2 = file.lastModified(),
+        initialValue = SpeechWaveformCache.peek(waveformKey) ?: emptyList(),
+        key1 = waveformKey,
     ) {
-        value = withContext(Dispatchers.IO) { readPcmWaveform(file, 112) }
+        if (value.isEmpty()) {
+            value = withContext(Dispatchers.IO) {
+                SpeechWaveformCache.load(context, file, 112, waveformKey)
+            }
+        }
     }
 
     fun releasePlayer() {
@@ -376,6 +390,90 @@ private fun RealAudioWaveform(
                 cap = StrokeCap.Round,
             )
         }
+    }
+}
+
+private object SpeechWaveformCache {
+    private const val MAX_MEMORY_ITEMS = 96
+    private const val CACHE_VERSION = 1
+
+    private val memory = object : LinkedHashMap<String, List<Float>>(
+        MAX_MEMORY_ITEMS,
+        0.75f,
+        true,
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, List<Float>>?,
+        ): Boolean = size > MAX_MEMORY_ITEMS
+    }
+
+    fun key(file: File, buckets: Int): String {
+        val raw = buildString {
+            append(file.absolutePath)
+            append('|')
+            append(file.length())
+            append('|')
+            append(file.lastModified())
+            append('|')
+            append(buckets)
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(raw.toByteArray(Charsets.UTF_8))
+        return digest.take(12).joinToString("") { "%02x".format(it) }
+    }
+
+    @Synchronized
+    fun peek(key: String): List<Float>? = memory[key]
+
+    private fun cacheFile(context: Context, key: String): File {
+        val root = File(context.cacheDir, "speech_waveforms")
+        if (!root.exists()) root.mkdirs()
+        return File(root, "v${CACHE_VERSION}_${key}.bin")
+    }
+
+    fun load(
+        context: Context,
+        file: File,
+        buckets: Int,
+        key: String = key(file, buckets),
+    ): List<Float> {
+        synchronized(this) {
+            memory[key]?.let { return it }
+        }
+
+        val disk = cacheFile(context, key)
+        val cached = runCatching {
+            if (!disk.isFile) return@runCatching null
+            DataInputStream(BufferedInputStream(disk.inputStream())).use { input ->
+                val version = input.readInt()
+                val count = input.readInt()
+                if (version != CACHE_VERSION || count != buckets) return@use null
+                List(count) { input.readFloat() }
+            }
+        }.getOrNull()
+        if (cached != null) {
+            synchronized(this) { memory[key] = cached }
+            return cached
+        }
+
+        val peaks = readPcmWaveform(file, buckets)
+        if (peaks.isNotEmpty()) {
+            val temp = File(disk.parentFile, disk.name + ".tmp")
+            runCatching {
+                DataOutputStream(BufferedOutputStream(temp.outputStream())).use { output ->
+                    output.writeInt(CACHE_VERSION)
+                    output.writeInt(peaks.size)
+                    peaks.forEach(output::writeFloat)
+                }
+                if (disk.exists()) disk.delete()
+                if (!temp.renameTo(disk)) {
+                    temp.copyTo(disk, overwrite = true)
+                    temp.delete()
+                }
+            }.onFailure { temp.delete() }
+            synchronized(this) { memory[key] = peaks }
+        }
+        return peaks
     }
 }
 
