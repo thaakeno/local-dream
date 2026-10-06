@@ -1,6 +1,8 @@
 #include "breeze/codec.h"
 
+#include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <string>
 
 namespace breeze {
