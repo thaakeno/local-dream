@@ -90,8 +90,13 @@ def main() -> None:
 
     # RoPE positions are also fixed for this graph. Precomputing them removes
     # the dynamic_rope_update decorator from the exported execution path.
-    with torch.inference_mode():
+    # Use no_grad rather than inference_mode here. ONNX's legacy tracer keeps
+    # registered buffers in an autograd-capable graph; PyTorch refuses to save
+    # inference tensors for backward even though export itself is inference.
+    with torch.no_grad():
         static_cos, static_sin = pt.rotary_emb(dummy_hidden, position_ids)
+    static_cos = static_cos.detach().clone()
+    static_sin = static_sin.detach().clone()
 
     class StaticVocoder(torch.nn.Module):
         def __init__(
