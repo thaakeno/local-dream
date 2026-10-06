@@ -314,6 +314,32 @@ static void test_col2im_bias(Backend & be) {
     test_col2im_case(be, "col2im1d-bias-s8-c64", 16, 64, 8, 8, 0);
 }
 
+static void test_v81_dsp_gelu_erf_reference(Backend & be) {
+    // Breeze uses GELU_ERF in both the codec transformer and decoder.
+    // Validate the activation itself before testing a downstream matmul so a
+    // backend activation bug cannot be mistaken for an HMX/HVX visibility bug.
+    constexpr int N = 1024;
+    std::vector<float> x(N);
+    std::vector<float> expected(N);
+    for (int i = 0; i < N; ++i) {
+        const float v = -6.0f + 12.0f * (float) i / (float) (N - 1);
+        x[i] = v;
+        expected[i] =
+            0.5f * v * (1.0f + std::erf(v * 0.7071067811865475f));
+    }
+
+    Graph g(96);
+    auto * tx = g.input_f32(x, N);
+    auto * out = ggml_gelu_erf(g.ctx, tx);
+    g.compute(be, out);
+    require_close(
+        "v81-dsp-gelu-erf-reference",
+        tensor_to_f32(out),
+        expected,
+        5e-6f
+    );
+}
+
 static void test_v81_hvx_gelu_matmul_chain(Backend & be) {
     // v181 reproduced a bad dependent GELU_ERF -> HMX MUL_MAT result on
     // SM8850/v81. v187 disables HMX completely; keep this exact dependency
@@ -419,6 +445,7 @@ int main() {
         test_snake(be);
         test_col2im_bias(be);
         test_v81_direct_residual_add(be);
+        test_v81_dsp_gelu_erf_reference(be);
         test_v81_hvx_gelu_matmul_chain(be);
         be.free();
         std::fprintf(stderr, "[BREEZE_SELFTEST] all-ok\n");
