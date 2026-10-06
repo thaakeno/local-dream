@@ -10,10 +10,10 @@
 
 namespace breeze {
 
-// GGUF model storage. The primary model allocation intentionally follows the
-// original v153 loader semantics. Decoder F32 codebooks are mirrored into one
-// small ordinary HTP allocation so their GET_ROWS path does not depend on the
-// large aggregate model mapping.
+// GGUF model storage. Quantized tensors are repacked during GGUF upload, then
+// the primary aggregate buffer is restored to ordinary delayed HTP mapping
+// before first compute. Decoder F32 codebooks stay mirrored in a small ordinary
+// allocation so GET_ROWS does not depend on the large aggregate mapping.
 struct GGUFModel {
     gguf_context * gguf = nullptr;
     ggml_context * meta = nullptr;
