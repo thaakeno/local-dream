@@ -55,6 +55,7 @@ for rel in \
     ggml/src/ggml-hexagon/htp/htp-ops.h \
     ggml/src/ggml-hexagon/htp/htp-ctx.h \
     ggml/src/ggml-hexagon/htp/hex-utils.h \
+    ggml/src/ggml-hexagon/htp/hvx-erf.h \
     ggml/src/ggml-hexagon/htp/main.c \
     ggml/src/ggml-hexagon/ggml-hexagon.cpp; do
     test -s "$HEXAGON_OVERLAY/$rel"
@@ -117,7 +118,9 @@ fi
 grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-multi' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-ordinary-2048-highrows' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'v81-dsp-gelu-erf-reference' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'v81-hvx-gelu-matmul-chain' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'Hexagon libm erff() per element' "$GGML_DIR/src/ggml-hexagon/htp/hvx-erf.h"
 grep -q 'ordinary HTP codebook mirrors verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -q 'primary model map remains exact-v153' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -q 'codebook_buffer' "$(pwd)/overlay/breeze/include/breeze/gguf_loader.h"
@@ -201,6 +204,7 @@ queue=v153-default-opbatch1280x32
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,exact-v153-model-map,decoder-codebook-ordinary-htp-mirror,exact-v153-hexagon-kernels,exact-v153-codec-graph,upstream-dcache-64b-pr29977
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
+gelu_erf=dsp-libm-reference-v81
 vocoder=upstream-reference-window40-signal-validated
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
