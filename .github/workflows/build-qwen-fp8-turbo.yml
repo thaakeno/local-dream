@@ -364,14 +364,12 @@ jobs:
           grep -q 'mode=strict-htp-dspqueue' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'fallback=disabled' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'integration=pinned-source-overlay' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'queue=v153-largepacket-compat' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'v81-opbatch64' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'v81-data-hazard-barrier-switch' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'v81-largepacket-compat' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'v81-float-hmx-legacy' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'v153-host-snapshot-cache' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'streaming_vocoder=v153-host-snapshot-chunk4-v81-largepacket-fused' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'batch-progress-log' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'queue=v153-default-opbatch1280x32' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'get-rows-f32-vtcm-staged' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'model-weights-extended-map' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'v81-quant-hmx-guard' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'exact-v153-codec-graph' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'streaming_vocoder=exact-v153-host-cache-chunk4' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im-bias-fused' app/src/main/assets/breezelibs/backend-version.txt
