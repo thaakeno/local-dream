@@ -48,7 +48,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v192-quant-repack-ordinary-map"
+            "breeze-a0e177-hexagon-ab9acc-v193-stateful-vocoder-stream"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -210,10 +210,10 @@ class SpeechGenerationService : Service() {
                 "--host", "127.0.0.1",
                 "--port", "8082",
                 "--ws-port", "-1",
-                // Generation now uses the upstream reference vocoder graph.
-                // These server knobs are kept conservative for API parity.
-                "--chunk-first", "40",
-                "--chunk-max", "40",
+                // First ~0.64 s of codec audio is decoded quickly, then larger
+                // chunks amortize the fixed DSPQueue/graph submission cost.
+                "--chunk-first", "8",
+                "--chunk-max", "32",
                 "--split-chars", "600",
                 "--verbose",
             )
@@ -263,7 +263,8 @@ class SpeechGenerationService : Service() {
                     "queue=v153-default-1280x32 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
-                    "vocoder=upstream-reference-window40 diag=dq-op-probes+projection-preflight-v192 signal_validation=native+pcm16 " +
+                    "vocoder=stateful-stream-once chunk=8x32 state=htp-pingpong tconv=exact-output-overlap " +
+                    "diag=projection-preflight-v193 signal_validation=stream+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
             runBackendSelfTest(env, modelId, started)
