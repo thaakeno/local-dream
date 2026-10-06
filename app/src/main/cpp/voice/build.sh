@@ -79,31 +79,28 @@ test -s "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
 test -s "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 test -s "$(pwd)/overlay/breeze/src/generation.cpp"
 
+# v174 is intentionally the exact v153 codec/transformer graph that completed
+# end-to-end on the target SM8850. Only backend/model-loader correctness fixes
+# that do not rewrite the graph are allowed here.
 grep -q 'HTP_OP_SIN' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_COL2IM_1D_BIAS' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_SNAKE' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_ADD' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_MUL' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
-grep -q 'ggml_hexagon_is_breeze_channel_binary' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'opt_arch >= 81 && same_shape && op->op == GGML_OP_ADD' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'v81-direct-residual-add' "$(pwd)/native/breeze-htp-selftest.cpp"
-grep -q 'Fit binary staging to the available VTCM' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'hmx_rows > 2' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'v81_quant_hmx_safe' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'opt_arch >= 81 && quantized_w' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'BREEZE_HTP_BATCH submit' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'BREEZE_HTP_BATCH complete' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'BREEZE_HTP_BARRIER' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'has_data_hazard' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'GGML_HEXAGON_DEPBARRIER' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'opt_depbarrier && opt_arch >= 81' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'GGML_HEXAGON_V81_LEGACY_BATCH' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q '!opt_v81_legacy_batch && opt_arch >= 81 && opt_opbatch > 64' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'opt_arch >= 81 && opt_opbatch > 64' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'opt_arch >= 81 && !opt_v81_legacy_batch' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+
+# Preserve the original v153 DSPQueue scheduler: 1280-op packets, 32 pending,
+# fusion on, with no dependency-barrier rewrite.
+grep -q 'static int opt_opbatch  = 1280' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'static int opt_opqueue  = 32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'static int opt_opfusion = 1' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+if grep -q 'GGML_HEXAGON_DEPBARRIER\|has_data_hazard\|V81_LEGACY_BATCH' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"; then
+    echo "Non-v153 DSPQueue scheduler code returned" >&2
+    exit 1
+fi
+
+# Keep only the silent-audio backend fixes learned after v153.
 grep -q 'src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'opt_arch >= 81 && quantized_w' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GET_ROWS_THREAD_DT_FN(f32' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.c"
 grep -q 'case HTP_TYPE_F32:' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.h"
 grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
@@ -113,53 +110,26 @@ grep -q 'GGML_BACKEND_BUFFER_USAGE_WEIGHTS' "$(pwd)/overlay/breeze/src/gguf_load
 grep -q 'HTP decoder codebook rows verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -q 'verified %zu finite decoder codebooks' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -Fq '"${BREEZE_OVERLAY_DIR}/src/gguf_loader.cpp"' "$(pwd)/CMakeLists.txt"
-grep -q 'vocoder_decode_stream' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-grep -q 'decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
-grep -q 'vocoder_transformer_stream' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
-# Stateful vocoder attention must expose the KV axis as GGML ne[0]. This
-# catches the flush-2 regression where T == KV only on the first chunk.
-grep -Fq 'g.input_f32(mask_v, kv_len, T)' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
+
+# Exact v153 streaming graph invariants.
 grep -q 'std::vector<float> data' "$(pwd)/overlay/breeze/include/breeze/codec.h"
 grep -q 'struct StreamCacheUpdate' "$(pwd)/overlay/breeze/include/breeze/codec.h"
 grep -q 'g.input_f32(block.data' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -Fq 'ggml_conv_1d(ctx, w, joined, 1, 0, dilation)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'keep_tail(ctx, g, joined, block, N, updates)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'ggml_exp(ctx, ggml_neg(ctx, lb))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -Fq 'g.input_f32(mask_v, kv_len, T)' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
 grep -q 'u.block->data = tensor_to_f32(u.tensor)' "$(pwd)/overlay/breeze/src/codec.cpp"
-grep -q '1.0e-9f' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-grep -q 'ggml_div(ctx, one, ggml_add(ctx, beta, tiny))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-grep -q 'ggml_mul(ctx, ggml_sqr(ctx, s), inv_beta)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-if grep -q 'ggml_mul(ctx, inv_beta, ggml_sqr(ctx, s))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
-    echo "Invalid SnakeBeta broadcast operand order returned" >&2
-    exit 1
-fi
-if grep -q 'ggml_exp(ctx, ggml_neg(ctx, lb))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
-    echo "Unsafe exp(-beta) SnakeBeta rewrite returned" >&2
-    exit 1
-fi
-grep -q 'snake-beta-reference' "$(pwd)/native/breeze-htp-selftest.cpp"
-grep -q 'snake-beta-extreme finite' "$(pwd)/native/breeze-htp-selftest.cpp"
-grep -q 'BREEZE_DIAG_FIRST_BAD' "$(pwd)/overlay/breeze/src/codec.cpp"
-grep -q 'BREEZE_DIAG_OFFLINE_SUMMARY' "$(pwd)/overlay/breeze/src/codec.cpp"
-grep -q 'BREEZE_DIAG_REPLAY_SUMMARY' "$(pwd)/overlay/breeze/src/codec.cpp"
-grep -q 'CodecDebugProbes \* probes' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-grep -q 'CodecDebugProbes \* probes' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
-grep -q 'const int left = (K - 1) / stride' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-grep -q 'const int prefix = left \* stride' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-if grep -q 'conv_storage\|conv_bank\|offset_f32\|conv_capacity_f32\|conv_used_f32' "$(pwd)/overlay/breeze/include/breeze/codec.h" "$(pwd)/overlay/breeze/src/codec.cpp" "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
-    echo "Legacy monolithic/ping-pong Breeze state returned" >&2
-    exit 1
-fi
-grep -q 'const int kv_start' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
-grep -q 'kv_store_future' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
-if grep -q 'stream_safe_full\|stream_history_\|VOCODER_FALLBACK' "$(pwd)/overlay/breeze/include/breeze/codec.h" "$(pwd)/overlay/breeze/src/codec.cpp"; then
-    echo "Breeze streaming must not contain a hidden full-decode fallback" >&2
-    exit 1
-fi
-if grep -q 'conv_ctx\|conv_buffer\|block.tensor\|ggml_new_tensor_2d(conv_ctx' \
+if grep -q 'CodecDebugProbes\|convtr1d_raw\|kv_store_future\|block.tensor\|conv_ctx\|conv_buffer' \
     "$(pwd)/overlay/breeze/include/breeze/codec.h" \
     "$(pwd)/overlay/breeze/src/codec.cpp" \
-    "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
-    echo "Unsafe persistent HTP vocoder carry state returned" >&2
+    "$(pwd)/overlay/breeze/src/codec_decoder.cpp" \
+    "$(pwd)/overlay/breeze/src/codec_transformer.cpp"; then
+    echo "Post-v153 codec graph rewrite returned" >&2
     exit 1
 fi
+
+# Keep later generation-side validation; it does not change the vocoder graph.
 grep -q 'step + 1 >= max_new' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q '\[BREEZE_AUDIO\]' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'struct AudioEmbedRunner' "$(pwd)/overlay/breeze/include/breeze/backbone.h"
@@ -204,9 +174,9 @@ backend_commit=$HEXAGON_COMMIT
 mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
-queue=v153-largepacket-compat
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map,v81-quant-hmx-guard,v81-opbatch64,v81-data-hazard-barrier-switch,v81-largepacket-compat,v81-float-hmx-legacy,v153-host-snapshot-cache,batch-progress-log
-streaming_vocoder=v153-host-snapshot-chunk4-v81-largepacket-fused
+queue=v153-default-opbatch1280x32
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map,v81-quant-hmx-guard,exact-v153-codec-graph
+streaming_vocoder=exact-v153-host-cache-chunk4
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
