@@ -5484,13 +5484,8 @@ static void ggml_hexagon_precompute_matmul_params_impl(
 
     const size_t vtcm_budget = sess->vtcm_size;
 
-    // Keep v153 scheduling, but not its broken quantized-HMX path on SM8850/v81.
-    // Float HMX remains exactly as v153; Q4/Q8 matmuls use HVX.
-    const bool quantized_w = wtype != GGML_TYPE_F16 && wtype != GGML_TYPE_F32;
-    const bool hmx_enabled =
-        (sess->n_hmx > 0) &&
-        (opt_mm_select >= 2) &&
-        !(opt_arch >= 81 && quantized_w);
+    // Check HMX eligibility and try precomputing HMX parameters
+    bool hmx_enabled = (sess->n_hmx > 0) && (opt_mm_select >= 2);
     if (hmx_enabled && ggml_hexagon_matmul_is_hmx_eligible(src0, src1, dst, ne01_padded, is_matmul_id, is_batched)) {
         if (ggml_hexagon_precompute_hmx_mm_params(sess, src0, src1, dst, wtype, ne00_padded, ne01_padded, ne02, ne11, ne12, ne11_padded, is_matmul_id, is_batched, src2_size, vtcm_budget, kparams)) {
             goto finalize;
@@ -5765,8 +5760,9 @@ static void ggml_hexagon_precompute_get_rows_params(
     const bool tiled = src0->type == GGML_TYPE_Q4_0 || (extra && (extra->flags & GGML_HEXAGON_TENSOR_REPACK) != 0) ||
                        sess->needs_repack.count(src0_base) || sess->needs_repack.count(src0);
 
-    // v153 completed the graph but its direct F32 codebook gather could return
-    // stale/non-finite rows on v81. Stage F32 rows through VTCM instead.
+    // The v153 graph/scheduler is device-proven. Its remaining silent-audio
+    // failure was the F32 codebook gather: stage those rows through VTCM rather
+    // than the direct same-type DDR copy path.
     if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
         kparams->kernel_type = HTP_GET_ROWS_KERNEL_FLAT;
     } else if (src0->type == dst->type) {
@@ -6180,11 +6176,7 @@ static void ggml_hexagon_precompute_fused_mmnx_params(
     const size_t vtcm_budget = sess->vtcm_size;
     const bool is_batched = (ne02 * ne03 > 1 || ne12 * ne13 > 1);
 
-    const bool quantized_w = wtype != GGML_TYPE_F16 && wtype != GGML_TYPE_F32;
-    const bool hmx_enabled =
-        (sess->n_hmx > 0) &&
-        (opt_mm_select >= 2) &&
-        !(opt_arch >= 81 && quantized_w);
+    bool hmx_enabled = (sess->n_hmx > 0) && (opt_mm_select >= 2);
     if (hmx_enabled && ggml_hexagon_matmul_is_hmx_eligible(src0, src1, nullptr, ne01_padded, false, is_batched)) {
         if (ggml_hexagon_precompute_hmx_mm_params(sess, src0, src1, nullptr, wtype, ne00_padded, ne01_padded, ne02, ne11, ne12, ne11_padded, false, is_batched, 0, vtcm_budget, kparams)) {
             kparams->n_weights = n_weights;
@@ -7275,10 +7267,6 @@ static bool mm_is_hmx_eligible(const ggml_tensor * t) {
 
     const int ne01_padded = is_repack ? hex_round_up(src0->ne[1], 32) : src0->ne[1];
 
-    const bool quantized_w = wtype != GGML_TYPE_F16 && wtype != GGML_TYPE_F32;
-    if (opt_arch >= 81 && quantized_w) {
-        return false;
-    }
     return ggml_hexagon_matmul_is_hmx_eligible(src0, src1, t, ne01_padded, is_matmul_id, is_batched);
 }
 
