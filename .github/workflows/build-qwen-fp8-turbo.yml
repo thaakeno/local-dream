@@ -367,7 +367,7 @@ jobs:
           grep -q 'queue=v153-default-opbatch1280x32' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'get-rows-f32-vtcm-staged' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'model-weights-extended-map' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'v81-quant-hmx-guard' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'exact-v153-hexagon-kernels' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'exact-v153-codec-graph' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'streaming_vocoder=exact-v153-host-cache-chunk4' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
