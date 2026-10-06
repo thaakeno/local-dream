@@ -44,9 +44,6 @@ ggml_tensor * mimi_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, g
         a = linear(ctx, m.w(p + ".attn_output.weight"), a);
         a = ggml_mul(ctx, a, m.w(p + ".attn_scale"));
         h = ggml_add(ctx, res, a);
-        h = vocoder_diag_probe(
-            ctx, g, probes, "dtf.blk." + std::to_string(il) + ".attn_residual", h
-        );
 
         res = h;
         cur = layer_norm(ctx, h, m.w(p + ".ffn_norm.weight"), m.w(p + ".ffn_norm.bias"), eps);
@@ -85,6 +82,9 @@ ggml_tensor * vocoder_transformer(ggml_context * ctx, BreezeModel & m, Graph & g
         a = linear(ctx, m.w(p + ".attn_output.weight"), a);
         a = ggml_mul(ctx, a, m.w(p + ".attn_scale"));
         h = ggml_add(ctx, res, a);
+        h = vocoder_diag_probe(
+            ctx, g, probes, "dtf.blk." + std::to_string(il) + ".attn_residual", h
+        );
 
         res = h;
         cur = rms_norm(ctx, h, m.w(p + ".ffn_norm.weight"), c.rms_eps);
