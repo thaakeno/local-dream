@@ -6260,6 +6260,35 @@ static bool ggml_hexagon_tensor_is_non_host(const struct ggml_hexagon_session * 
     GGML_UNUSED(sess);
 }
 
+static bool ggml_hexagon_prepare_quant_weight(
+    const struct ggml_hexagon_session * sess,
+    const struct ggml_tensor * weight,
+    const char * opname
+) {
+    if (!weight->buffer) {
+        sess->needs_repack.insert(weight);
+        return true;
+    }
+
+    if (!ggml_backend_buffer_is_hexagon(weight->buffer)) {
+        return true;
+    }
+
+    const auto * extra = (const ggml_hexagon_tensor_extra *) weight->extra;
+    if (!extra || (extra->flags & GGML_HEXAGON_TENSOR_REPACK) == 0) {
+        GGML_LOG_ERROR(
+            "ggml-hex: %s refusing %s with raw quantized HTP weight %s (%s); "
+            "model weights must be uploaded through REPACK\n",
+            sess->c_name(),
+            opname,
+            weight->name,
+            ggml_type_name(weight->type)
+        );
+        return false;
+    }
+    return true;
+}
+
 static bool ggml_hexagon_supported_mul_mat(const struct ggml_hexagon_session * sess, const struct ggml_tensor * dst) {
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
@@ -6299,8 +6328,8 @@ static bool ggml_hexagon_supported_mul_mat(const struct ggml_hexagon_session * s
                 return false;
             }
 
-            if (!src0->buffer) {
-                sess->needs_repack.insert(src0);
+            if (!ggml_hexagon_prepare_quant_weight(sess, src0, "MUL_MAT")) {
+                return false;
             }
             break;
 
@@ -6379,8 +6408,8 @@ static bool ggml_hexagon_supported_mul_mat_id(const struct ggml_hexagon_session 
                 return false;
             }
 
-            if (!src0->buffer) {
-                sess->needs_repack.insert(src0);
+            if (!ggml_hexagon_prepare_quant_weight(sess, src0, "MUL_MAT_ID")) {
+                return false;
             }
             break;
 
