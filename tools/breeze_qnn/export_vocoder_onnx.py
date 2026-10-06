@@ -122,6 +122,7 @@ def main():
       "reference_peak":float(ref.abs().max()),"reference_rms":float(torch.sqrt(torch.mean(ref.square()))),
       "reference_checksum":float(ref.sum())}
     out.with_suffix(".export.json").write_text(json.dumps(meta,indent=2)+"\n")
+    qfeatures.cpu().numpy().astype(np.float32).tofile(out.with_suffix(".features.raw"))
     torch.save({"features":qfeatures,"audio":ref,"codes":codes},out.with_suffix(".reference.pt"))
     print(json.dumps(meta,indent=2))
 if __name__=="__main__": main()
