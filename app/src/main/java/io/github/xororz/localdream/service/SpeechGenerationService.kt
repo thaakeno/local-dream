@@ -47,7 +47,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v178-v153-map-codebook-mirror"
+            "breeze-a0e177-hexagon-ab9acc-v179-reference-vocoder-audio-validated"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -209,11 +209,10 @@ class SpeechGenerationService : Service() {
                 "--host", "127.0.0.1",
                 "--port", "8082",
                 "--ws-port", "-1",
-                // Restore the last device-proven scheduling shape from v153.
-                // Four frames avoid the fragile T=1 vocoder graph while the
-                // decoder still streams subsequent chunks incrementally.
-                "--chunk-first", "4",
-                "--chunk-max", "25",
+                // Generation now uses the upstream reference vocoder graph.
+                // These server knobs are kept conservative for API parity.
+                "--chunk-first", "40",
+                "--chunk-max", "40",
                 "--split-chars", "600",
                 "--verbose",
             )
@@ -255,8 +254,8 @@ class SpeechGenerationService : Service() {
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
                     "queue=v153-default-1280x32 opfusion=1 hmx=1 " +
                     "getrows=exact-v153 dcache=exact-v153-128b modelmap=exact-v153 " +
-                    "codebooks=ordinary-htp-mirror vocoder_graph=exact-v153 chunk=4/25 " +
-                    "runtime=${runtimeDir.absolutePath}",
+                    "codebooks=ordinary-htp-mirror vocoder=upstream-reference-window40 " +
+                    "signal_validation=native+pcm16 runtime=${runtimeDir.absolutePath}",
             )
             runBackendSelfTest(env, modelId, started)
             BackendDiagnostics.append(this, "BREEZE_CMD", command.joinToString(" "))
@@ -425,6 +424,7 @@ class SpeechGenerationService : Service() {
                     temp.delete()
                     throw IOException("Breeze returned empty or truncated PCM audio")
                 }
+                validatePcm16Payload(temp, pcmBytes)
                 finalizePcmWav(temp, pcmBytes, sampleRate)
                 if (!temp.renameTo(output)) {
                     temp.copyTo(output, overwrite = true)
@@ -460,6 +460,68 @@ class SpeechGenerationService : Service() {
             } finally {
                 activeCall = null
             }
+        }
+    }
+
+    private fun validatePcm16Payload(file: File, pcmBytes: Long) {
+        var samples = 0L
+        var nonZero = 0L
+        var peak = 0
+        var sumSquares = 0.0
+        java.io.RandomAccessFile(file, "r").use { raf ->
+            raf.seek(44L)
+            val buffer = ByteArray(64 * 1024)
+            var remaining = pcmBytes
+            var carry = -1
+            while (remaining > 0L) {
+                val want = minOf(buffer.size.toLong(), remaining).toInt()
+                val n = raf.read(buffer, 0, want)
+                if (n <= 0) break
+                remaining -= n.toLong()
+                var i = 0
+                if (carry >= 0 && n > 0) {
+                    var v = carry or ((buffer[0].toInt() and 0xff) shl 8)
+                    if (v >= 0x8000) v -= 0x10000
+                    val a = kotlin.math.abs(v)
+                    if (v != 0) nonZero++
+                    if (a > peak) peak = a
+                    sumSquares += v.toDouble() * v.toDouble()
+                    samples++
+                    carry = -1
+                    i = 1
+                }
+                while (i + 1 < n) {
+                    var v = (buffer[i].toInt() and 0xff) or
+                        ((buffer[i + 1].toInt() and 0xff) shl 8)
+                    if (v >= 0x8000) v -= 0x10000
+                    val a = kotlin.math.abs(v)
+                    if (v != 0) nonZero++
+                    if (a > peak) peak = a
+                    sumSquares += v.toDouble() * v.toDouble()
+                    samples++
+                    i += 2
+                }
+                if (i < n) carry = buffer[i].toInt() and 0xff
+            }
+            if (remaining != 0L || carry >= 0) {
+                throw IOException("Breeze returned truncated PCM audio")
+            }
+        }
+
+        val rms = if (samples > 0L) kotlin.math.sqrt(sumSquares / samples.toDouble()) else 0.0
+        BackendDiagnostics.append(
+            this,
+            "BREEZE_PCM",
+            "samples=$samples nonzero=$nonZero peak_s16=$peak rms_s16=" +
+                String.format(Locale.US, "%.3f", rms),
+        )
+        val minNonZero = maxOf(32L, samples / 1000L)
+        if (peak < 33 || rms < 2.0 || nonZero < minNonZero) {
+            throw IOException(
+                "Breeze produced effectively silent PCM " +
+                    "(peak_s16=$peak, rms_s16=${String.format(Locale.US, "%.3f", rms)}, " +
+                    "nonzero=$nonZero)",
+            )
         }
     }
 
