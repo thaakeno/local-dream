@@ -74,12 +74,12 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y libc++1 libc++abi1
+          sudo apt-get install -y libc++1 libc++abi1 sox
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install export dependencies
         shell: bash
