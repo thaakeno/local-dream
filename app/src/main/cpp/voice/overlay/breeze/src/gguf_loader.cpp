@@ -17,6 +17,68 @@ static bool is_decoder_codebook(const char * name, const ggml_tensor * t) {
            n.compare(n.size() - 6, 6, ".embed") == 0;
 }
 
+enum class SnakeParamTransform {
+    None,
+    AlphaExp,
+    InvBeta,
+};
+
+static bool has_suffix(const std::string & value, const char * suffix) {
+    const size_t n = std::strlen(suffix);
+    return value.size() >= n && value.compare(value.size() - n, n, suffix) == 0;
+}
+
+static SnakeParamTransform snake_param_transform(const char * name, const ggml_tensor * t) {
+    if (!name || !t || t->type != GGML_TYPE_F32) return SnakeParamTransform::None;
+    const std::string n(name);
+    const bool decoder =
+        n.rfind("codec.dblk.", 0) == 0 || n.rfind("codec.dfin.", 0) == 0;
+    if (!decoder) return SnakeParamTransform::None;
+
+    if (has_suffix(n, ".alpha") || has_suffix(n, ".a1") || has_suffix(n, ".a2")) {
+        return SnakeParamTransform::AlphaExp;
+    }
+    if (has_suffix(n, ".beta") || has_suffix(n, ".b1") || has_suffix(n, ".b2")) {
+        return SnakeParamTransform::InvBeta;
+    }
+    return SnakeParamTransform::None;
+}
+
+static bool transform_snake_param(
+    const char * name,
+    SnakeParamTransform kind,
+    std::vector<uint8_t> & raw
+) {
+    if (kind == SnakeParamTransform::None) return true;
+    if ((raw.size() % sizeof(float)) != 0) return false;
+
+    for (size_t i = 0; i < raw.size() / sizeof(float); ++i) {
+        float v = 0.0f;
+        std::memcpy(&v, raw.data() + i * sizeof(float), sizeof(float));
+        if (!std::isfinite(v)) return false;
+
+        float out = 0.0f;
+        if (kind == SnakeParamTransform::AlphaExp) {
+            out = std::exp(v);
+        } else {
+            // Exact reference form: 1 / (exp(beta) + 1e-9). Precomputing this
+            // once removes four tiny HTP graph nodes from every SnakeBeta
+            // activation on every streaming flush.
+            out = 1.0f / (std::exp(v) + 1.0e-9f);
+        }
+        if (!std::isfinite(out)) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_MODEL] non-finite precomputed SnakeBeta parameter name=%s index=%zu\n",
+                name, i
+            );
+            return false;
+        }
+        std::memcpy(raw.data() + i * sizeof(float), &out, sizeof(float));
+    }
+    return true;
+}
+
 static bool validate_f32_blob(const char * name, const std::vector<uint8_t> & raw) {
     if ((raw.size() % sizeof(float)) != 0) {
         std::fprintf(stderr, "[BREEZE_MODEL] invalid F32 byte count for %s: %zu\n", name, raw.size());
@@ -246,6 +308,7 @@ bool GGUFModel::load(const std::string & path, Backend & be) {
     expected.reserve(codebook_count);
 
     size_t mirrored_codebooks = 0;
+    size_t precomputed_snake_params = 0;
     for (int64_t i = 0; i < n; i++) {
         const char * name = gguf_get_tensor_name(gguf, i);
         ggml_tensor * t = ggml_get_tensor(meta, name);
@@ -258,6 +321,17 @@ bool GGUFModel::load(const std::string & path, Backend & be) {
             fclose(f);
             free();
             return false;
+        }
+
+        const SnakeParamTransform snake_kind = snake_param_transform(name, t);
+        if (snake_kind != SnakeParamTransform::None) {
+            if (!transform_snake_param(name, snake_kind, buf)) {
+                std::fprintf(stderr, "[BREEZE_MODEL] failed to precompute SnakeBeta parameter %s\n", name);
+                fclose(f);
+                free();
+                return false;
+            }
+            precomputed_snake_params++;
         }
 
         // WEIGHTS usage is intentionally active here: this is what makes the
@@ -316,6 +390,17 @@ bool GGUFModel::load(const std::string & path, Backend & be) {
         stderr,
         "[BREEZE_MODEL] quantized GGUF weights repacked for HTP; primary model mapping restored to ordinary delayed mode\n"
     );
+    std::fprintf(
+        stderr,
+        "[BREEZE_MODEL] SnakeBeta reference parameters precomputed count=%zu (alpha=exp(a), inv_beta=1/(exp(b)+1e-9))\n",
+        precomputed_snake_params
+    );
+    if (precomputed_snake_params == 0) {
+        std::fprintf(stderr, "[BREEZE_MODEL] no SnakeBeta parameters were precomputed\n");
+        fclose(f);
+        free();
+        return false;
+    }
 
     fclose(f);
 
