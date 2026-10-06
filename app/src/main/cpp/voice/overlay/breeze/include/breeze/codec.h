@@ -9,7 +9,11 @@
 namespace breeze {
 
 struct CodecStreamCacheBlock {
-    ggml_tensor * tensor = nullptr;
+    // v153-safe execution model: causal carry state is owned by the host
+    // between decode calls. Each graph receives an immutable snapshot and
+    // publishes the next tail only after compute completes, so HTP can never
+    // overwrite a cache tensor that is still live as convolution input.
+    std::vector<float> data;
     int left = 0;
     int channels = 0;
 };
@@ -25,12 +29,6 @@ struct VocoderStreamState {
     bool initialized = false;
     int position = 0;
     KVCache kv;
-
-    // Breeze's reference fast runtime keeps one dedicated device tensor per
-    // causal-conv / transposed-conv cache. Mirror that layout on HTP instead of
-    // slicing views out of one giant arena.
-    ggml_context * conv_ctx = nullptr;
-    ggml_backend_buffer_t conv_buffer = nullptr;
 
     std::unordered_map<std::string, CodecStreamCacheBlock> conv1d;
     std::unordered_map<std::string, CodecStreamCacheBlock> tconv1d;
@@ -59,6 +57,11 @@ struct MimiCodec {
 
 namespace codec_detail {
 
+struct StreamCacheUpdate {
+    CodecStreamCacheBlock * block = nullptr;
+    ggml_tensor * tensor = nullptr;
+};
+
 ggml_tensor * conv1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
                             ggml_tensor * x, int stride, int dilation);
 ggml_tensor * convtr1d_raw(ggml_context * ctx, ggml_tensor * w,
@@ -81,6 +84,7 @@ ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
 ggml_tensor * vocoder_decode_stream(
     ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
     const std::vector<int> & codes, int n_codebooks, int seq_len,
+    std::vector<StreamCacheUpdate> & updates,
     CodecDebugProbes * probes = nullptr
 );
 
