@@ -4190,72 +4190,6 @@ void ggml_hexagon_session::flush_batch(size_t min_ops) {
     op_batch->reset();
 }
 
-static bool ggml_hexagon_v81_visibility_producer(uint32_t opcode) {
-    switch (opcode) {
-        // SM8850/v81 device reports reproduce two same-batch stale-read
-        // classes: HMX MUL_MAT -> ADD and worker-queue GELU/GLU -> downstream
-        // DSP consumers. Force a packet boundary after only those producer
-        // classes. The DSP processes DSPQueue packets FIFO and drains HMX /
-        // worker queues plus the data cache at every packet end.
-        case HTP_OP_MUL_MAT:
-        case HTP_OP_MUL_MAT_ADD:
-        case HTP_OP_MUL_MAT_ID:
-        case HTP_OP_MUL_MAT_NX:
-        case HTP_OP_MUL_MAT_ID_NX:
-        case HTP_OP_UNARY_GELU:
-        case HTP_OP_UNARY_GELU_ERF:
-        case HTP_OP_GLU_SWIGLU:
-        case HTP_OP_GLU_SWIGLU_OAI:
-        case HTP_OP_GLU_SWIGLU_CLAMP:
-        case HTP_OP_GLU_GEGLU:
-        case HTP_OP_GLU_GEGLU_QUICK:
-        case HTP_OP_GLU_GEGLU_ERF:
-        case HTP_OP_SNAKE:
-            return true;
-        default:
-            return false;
-    }
-}
-
-static bool ggml_hexagon_v81_visibility_hazard(
-    const htp_opnode & producer,
-    const htp_opnode & consumer
-) {
-    if (opt_arch != 81 || !ggml_hexagon_v81_visibility_producer(producer.opcode)) {
-        return false;
-    }
-
-    for (const ggml_tensor * out : producer.get_outputs()) {
-        if (!out) continue;
-        for (const ggml_tensor * in : consumer.get_inputs()) {
-            if (!in) continue;
-            if (out == in || out->data == in->data || ggml_hexagon_tensors_overlap(out, in)) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-static bool ggml_hexagon_v81_needs_visibility_split(
-    const ggml_hexagon_opbatch * batch,
-    const htp_opnode & consumer
-) {
-    if (opt_arch != 81 || !batch || batch->n_ops == 0) return false;
-
-    // IMPORTANT: ops is pre-sized to n_ops_max (1280) and reset() keeps that
-    // full size. Only [0, n_ops) entries are live. The old reverse-iterator
-    // implementation scanned all 1280 slots, including default/uninitialized
-    // htp_opnode entries, which can dereference invalid tensor metadata and
-    // segfault the host before frame 1. Scan only the active op prefix.
-    for (uint32_t i = batch->n_ops; i-- > 0;) {
-        if (ggml_hexagon_v81_visibility_hazard(batch->ops[i], consumer)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 void ggml_hexagon_session::enqueue_op(const htp_opnode & node) {
     auto clone_tensor_buffer = [this](const ggml_tensor * t) {
         auto sbuf = this->mmap_tensor(t);
@@ -4273,21 +4207,6 @@ void ggml_hexagon_session::enqueue_op(const htp_opnode & node) {
     }
     for (auto t : node.get_outputs()) {
         clone_tensor_buffer(t);
-    }
-
-    // SM8850 / v81 can expose stale producer data when a dependent consumer
-    // remains in the same DSP packet. End the current packet, but do NOT do a
-    // host-side flush_sync() from inside graph enqueue: v183 showed that this
-    // re-entrant wait can segfault the Breeze process before frame 1. DSPQueue
-    // itself is FIFO, and process_opbatch() fully drains HMX/work queues and
-    // cache-maintains at packet end before the next packet is processed.
-    if (ggml_hexagon_v81_needs_visibility_split(op_batch, node)) {
-        HEX_VERBOSE(
-            "ggml-hex: %s v81 visibility batch split before %s\n",
-            c_name(),
-            node.op_name().c_str()
-        );
-        flush_async();
     }
 
     if (opt_opfusion && op_batch->try_fuse(node)) {
