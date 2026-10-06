@@ -162,7 +162,7 @@ jobs:
           export LD_LIBRARY_PATH="${QNN_SDK_ROOT}/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
           OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
 
-          qnn-onnx-converter             --input_network "$OUT/breeze_vocoder_64.onnx"             --output_path "$OUT/breeze_vocoder_64.cpp"             --float_bitwidth 16             --preserve_io_datatype
+          qnn-onnx-converter             --input_network "$OUT/breeze_vocoder_64.onnx"             --output_path "$OUT/breeze_vocoder_64.cpp"             --float_bitwidth 16             --preserve_io
 
           qnn-model-lib-generator             -c "$OUT/breeze_vocoder_64.cpp"             -b "$OUT/breeze_vocoder_64.bin"             -t x86_64-linux-clang             -o "$OUT/model_lib"
 
