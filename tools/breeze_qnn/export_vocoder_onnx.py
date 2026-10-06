@@ -166,7 +166,9 @@ def main() -> None:
         dtype=torch.int32,
     )
     with torch.inference_mode():
-        eager_ref = decoder(codes_i32)
+        # The exported graph intentionally exposes native FP16 PCM, so compare
+        # the untouched eager decoder at the same graph-boundary precision.
+        eager_ref = decoder(codes_i32).to(torch.float16)
         ref = wrapper(codes_i32)
 
     if eager_ref.shape != ref.shape:
@@ -174,7 +176,7 @@ def main() -> None:
             f"static wrapper shape {tuple(ref.shape)} != eager {tuple(eager_ref.shape)}"
         )
     parity = float(torch.max(torch.abs(eager_ref - ref)))
-    if parity > 2e-5:
+    if parity > 2e-3:
         raise RuntimeError(f"static wrapper parity failed: max_abs={parity}")
 
     expected = (1, 1, frames * int(model.decode_upsample_rate))
