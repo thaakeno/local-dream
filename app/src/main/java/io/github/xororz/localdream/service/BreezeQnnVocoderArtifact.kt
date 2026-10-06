@@ -76,6 +76,9 @@ object BreezeQnnVocoderArtifact {
                 val req=Request.Builder().url(BASE_URL+"/"+name).get().build();Http.client.newCall(req).execute().use{r->if(!r.isSuccessful)error("License download failed");File(d,name).outputStream().use{o->r.body!!.byteStream().use{i->i.copyTo(o)}}}
             }
             File(d,"installed.json").writeText(JSONObject().put("version",2).put("soc",soc).put("contextFile",cn).put("contextBytes",cb).put("contextSha256",ch).put("lutFile",ln).put("lutBytes",lb).put("lutSha256",lh).toString())
+            // v1 was a silent-output experiment and is no longer used. Free its
+            // ~283 MB automatically only after v2 is fully verified on disk.
+            File(c.filesDir,"breeze_qnn_vocoder/v1").deleteRecursively()
             _status.value=Status.Ready(soc,cf)
         }.onFailure{_status.value=Status.Error(soc,it.message?:"Accelerator download failed")}
     }

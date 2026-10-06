@@ -57,7 +57,7 @@ def main():
 
     lut32=torch.cat([project_group_table(d.quantizer.rvq_first),
                      project_group_table(d.quantizer.rvq_rest)],0).contiguous()
-    lut=lut32.half().contiguous()
+    lut=lut32.detach().half().contiguous()
     nq=int(d.config.num_quantizers); bins=int(d.config.codebook_size)
     if lut.shape[0]!=nq or lut.shape[1]!=bins: raise RuntimeError(f"bad LUT {tuple(lut.shape)}")
     lut.cpu().numpy().tofile(lut_out)
