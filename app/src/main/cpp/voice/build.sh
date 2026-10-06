@@ -88,17 +88,16 @@ grep -q 'HTP_OP_SNAKE' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_ADD' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_MUL' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 
-# Preserve the proven v153 queue capacity/fusion defaults, but split the DSP
-# packet at known SM8850/v81 HMX/unary/GLU producer->consumer dependencies.
-# DSPQueue packets execute FIFO, and packet end drains worker/HMX queues and
-# performs cache maintenance without a re-entrant host flush_sync().
+# Preserve the proven v153 queue capacity/fusion defaults exactly. The v181-v185
+# producer/consumer visibility scheduler rewrites were experimental and caused
+# major regressions (startup SIGSEGVs and vocoder stalls), so they are forbidden.
 grep -q 'static int opt_opbatch  = 1280' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'static int opt_opqueue  = 32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'static int opt_opfusion = 1' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'ggml_hexagon_v81_needs_visibility_split' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'batch->n_ops == 0' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'for (uint32_t i = batch->n_ops; i-- > 0;)' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'v81 visibility batch split before' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+if grep -q 'ggml_hexagon_v81_needs_visibility_split\|v81 visibility batch split before\|v81 visibility sync before' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"; then
+    echo "Speculative v81 scheduler rewrite returned" >&2
+    exit 1
+fi
 
 # Apply upstream llama.cpp PR #29977 exactly: Hexagon SDK 6.6 performs one
 # dccleaninva every 64 bytes. A 128-byte step can leave half-lines stale after
@@ -118,7 +117,6 @@ fi
 grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-multi' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-ordinary-2048-highrows' "$(pwd)/native/breeze-htp-selftest.cpp"
-grep -q 'v81-hmx-mulmat-add-visibility' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'ordinary HTP codebook mirrors verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -q 'primary model map remains exact-v153' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -q 'codebook_buffer' "$(pwd)/overlay/breeze/include/breeze/gguf_loader.h"
@@ -200,8 +198,7 @@ fallback=disabled
 integration=pinned-source-overlay
 queue=v153-default-opbatch1280x32
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,exact-v153-model-map,decoder-codebook-ordinary-htp-mirror,exact-v153-hexagon-kernels,exact-v153-codec-graph,upstream-dcache-64b-pr29977
-v81_visibility=fifo-batch-split-live-prefix-hmx-unary-glu
-legacy_ci_marker=v81_visibility=dependency-batch-split-hmx-unary-glu
+v81_visibility=none-v153-scheduler
 vocoder=upstream-reference-window40-signal-validated
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
