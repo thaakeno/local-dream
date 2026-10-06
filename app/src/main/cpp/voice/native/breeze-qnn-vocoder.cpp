@@ -216,7 +216,7 @@ static bool load_qnn(
 struct BreezeQnnVocoder::Impl {
     std::unique_ptr<BreezeQnnApp> app;
     std::vector<int> history;
-    std::vector<_Float16> lut;
+    std::vector<float> lut;
     int fixed_frames=64,left_context=25,n_codebooks=16,codebook_size=2048,feature_channels=512,samples_per_frame=1920;
 };
 BreezeQnnVocoder::BreezeQnnVocoder():impl_(std::make_unique<Impl>()){}
@@ -225,7 +225,7 @@ bool BreezeQnnVocoder::init_from_environment(){
     const char *path=std::getenv("BREEZE_QNN_VOCODER_PATH"), *lp=std::getenv("BREEZE_QNN_VOCODER_LUT_PATH"), *lib=std::getenv("BREEZE_QNN_LIB_DIR");
     if(!path||!*path||!lp||!*lp||!lib||!*lib) return false;
     if(!std::filesystem::is_regular_file(path)||!std::filesystem::is_regular_file(lp)) return false;
-    const size_t elems=(size_t)impl_->n_codebooks*impl_->codebook_size*impl_->feature_channels, bytes=elems*sizeof(_Float16);
+    const size_t elems=(size_t)impl_->n_codebooks*impl_->codebook_size*impl_->feature_channels, bytes=elems*sizeof(float);
     std::error_code ec; const auto actual=std::filesystem::file_size(lp,ec);
     if(ec||actual!=bytes){std::fprintf(stderr,"[BREEZE_QNN] LUT size got=%llu expected=%zu\n",(unsigned long long)actual,bytes);return false;}
     impl_->lut.resize(elems); std::ifstream in(lp,std::ios::binary);
@@ -245,8 +245,8 @@ std::vector<float> BreezeQnnVocoder::decode_stream(const std::vector<int>&codes,
     std::vector<float> features((size_t)impl_->feature_channels*impl_->fixed_frames,0.0f);
     auto add=[&](int dt,const int*fc){
         for(int cb=0;cb<ncb;cb++){int code=fc[cb];if(code<0||code>=impl_->codebook_size)throw std::runtime_error("Breeze QNN code id out of range");
-            size_t row=((size_t)cb*impl_->codebook_size+(size_t)code)*impl_->feature_channels; const _Float16*src=impl_->lut.data()+row;
-            for(int ch=0;ch<impl_->feature_channels;ch++)features[(size_t)ch*impl_->fixed_frames+dt]+=(float)src[ch];
+            size_t row=((size_t)cb*impl_->codebook_size+(size_t)code)*impl_->feature_channels; const float*src=impl_->lut.data()+row;
+            for(int ch=0;ch<impl_->feature_channels;ch++)features[(size_t)ch*impl_->fixed_frames+dt]+=src[ch];
         }
     };
     for(int t=0;t<ctx;t++){int sf=hf-ctx+t;add(t,impl_->history.data()+(size_t)sf*ncb);}

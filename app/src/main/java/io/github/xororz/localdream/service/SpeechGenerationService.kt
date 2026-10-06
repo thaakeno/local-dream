@@ -285,7 +285,7 @@ class SpeechGenerationService : Service() {
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
                     "vocoder=" + (if (usingQnnVocoder) "qnn-htp-feature64-pipeline" else "ggml-stateful-fallback") + " " +
-                    "qnn_pipeline=24x39 qnn_left_context=25 qnn_host_lut=fp16 " +
+                    "qnn_pipeline=24x39 qnn_left_context=25 qnn_host_lut=fp32 " +
                     "snake=precomputed+fused diag=projection-preflight-v195 signal_validation=stream+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )

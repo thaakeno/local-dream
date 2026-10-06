@@ -114,7 +114,7 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p build/breeze-qnn
-          python tools/breeze_qnn/export_vocoder_onnx.py             --model-dir "${RUNNER_TEMP}/breeze/audio_tokenizer"             --frames "$VOCODER_FRAMES"             --output build/breeze-qnn/breeze_vocoder_64.onnx             --lut-output build/breeze-qnn/breeze_quantizer_lut_fp16.bin
+          python tools/breeze_qnn/export_vocoder_onnx.py             --model-dir "${RUNNER_TEMP}/breeze/audio_tokenizer"             --frames "$VOCODER_FRAMES"             --output build/breeze-qnn/breeze_vocoder_64.onnx             --lut-output build/breeze-qnn/breeze_quantizer_lut_fp32.bin
 
           python - <<'PY'
           import numpy as np, onnx, onnxruntime as ort, torch
@@ -132,7 +132,7 @@ jobs:
           if not np.isfinite(got).all() or err>2e-3 or peak<1e-3 or rms<5e-5:
               raise SystemExit("ONNX feature-vocoder parity/signal check failed")
           PY
-          test -s build/breeze-qnn/breeze_quantizer_lut_fp16.bin
+          test -s build/breeze-qnn/breeze_quantizer_lut_fp32.bin
 
       - name: Convert ONNX to FP16 QNN model library
         shell: bash
@@ -185,7 +185,7 @@ jobs:
           test -n "$file"; test -s "$file"
           mv "$file" "$OUT/contexts/breeze-vocoder-sm8850-feature64-fp16.bin"
           rm -rf "$OUT/contexts/sm8850"
-          cp "$OUT/breeze_quantizer_lut_fp16.bin" "$OUT/contexts/breeze-quantizer-lut-fp16.bin"
+          cp "$OUT/breeze_quantizer_lut_fp32.bin" "$OUT/contexts/breeze-quantizer-lut-fp32.bin"
 
       - name: Build manifest and licensing
         shell: bash
@@ -198,7 +198,7 @@ jobs:
           License Agreement. Copyright (c) 2026 RESONIA, INC. All Rights Reserved.
           Modification: the released decoder is converted to an SM8850 QAIRT/QNN
           HTP context. The residual-vector-quantizer rows are preprojected into an
-          FP16 lookup table to provide verified FLOAT32 features to QNN.
+          FP32 lookup table to provide verified FLOAT32 features to QNN.
           EOF
           python - <<'PY'
           import hashlib,json
@@ -217,7 +217,7 @@ jobs:
             "license":"BreezeBlue Research and Non-Commercial License v1.1",
             "files":{"SM8850":{
               "context":spec("breeze-vocoder-sm8850-feature64-fp16.bin"),
-              "lut":spec("breeze-quantizer-lut-fp16.bin")
+              "lut":spec("breeze-quantizer-lut-fp32.bin")
             }}
           }
           (root/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")

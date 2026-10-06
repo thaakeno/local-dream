@@ -57,7 +57,7 @@ def main():
 
     lut32=torch.cat([project_group_table(d.quantizer.rvq_first),
                      project_group_table(d.quantizer.rvq_rest)],0).contiguous()
-    lut=lut32.detach().half().contiguous()
+    lut=lut32.detach().float().contiguous()
     nq=int(d.config.num_quantizers); bins=int(d.config.codebook_size)
     if lut.shape[0]!=nq or lut.shape[1]!=bins: raise RuntimeError(f"bad LUT {tuple(lut.shape)}")
     lut.cpu().numpy().tofile(lut_out)
@@ -116,7 +116,7 @@ def main():
     meta={"frames":frames,"num_quantizers":nq,"codebook_size":bins,
       "feature_channels":int(lut.shape[-1]),"samples_per_frame":int(model.decode_upsample_rate),
       "sample_rate":int(model.output_sample_rate),"input_dtype":"float32","output_dtype":"float32",
-      "lut_dtype":"float16","lut_shape":list(lut.shape),"lut_bytes":int(lut.numel()*2),
+      "lut_dtype":"float32","lut_shape":list(lut.shape),"lut_bytes":int(lut.numel()*4),
       "lut_quantizer_max_abs":qmax,"lut_quantizer_mean_abs":qmean,
       "eager_feature_audio_max_abs":amax,"eager_feature_audio_mean_abs":amean,
       "reference_peak":float(ref.abs().max()),"reference_rms":float(torch.sqrt(torch.mean(ref.square()))),
