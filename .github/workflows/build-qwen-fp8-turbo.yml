@@ -372,9 +372,11 @@ jobs:
           grep -q 'quant-weight-repack-ordinary-map' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'raw-quant-matmul-guard' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'decoder-codebook-ordinary-htp-mirror' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'exact-v153-hexagon-kernels' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'exact-v153-codec-graph' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'vocoder=upstream-reference-window40-quant-repack-fix-v192' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'stateful-vocoder-htp-resident' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'pingpong-causal-state' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'exact-tconv-output-overlap' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'bounded-stream-kv' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'vocoder=stateful-stream-once-chunk8x32-repack-fix-v193' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im-bias-fused' app/src/main/assets/breezelibs/backend-version.txt
