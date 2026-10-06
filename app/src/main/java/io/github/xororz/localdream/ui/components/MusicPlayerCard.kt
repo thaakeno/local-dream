@@ -2,58 +2,42 @@ package io.github.xororz.localdream.ui.components
 
 import android.media.MediaPlayer
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.Button
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.io.File
+import java.io.RandomAccessFile
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlin.math.abs
+import kotlin.math.max
 
 @Composable
 fun MusicPlayerCard(
@@ -61,8 +45,11 @@ fun MusicPlayerCard(
     title: String,
     subtitle: String,
     modifier: Modifier = Modifier,
+    metadataLine: String? = null,
     onSave: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null,
+    onReproduce: (() -> Unit)? = null,
+    onUse: (() -> Unit)? = null,
 ) {
     var player by remember(file.absolutePath) { mutableStateOf<MediaPlayer?>(null) }
     var preparing by remember(file.absolutePath) { mutableStateOf(false) }
@@ -70,6 +57,14 @@ fun MusicPlayerCard(
     var playing by remember(file.absolutePath) { mutableStateOf(false) }
     var position by remember(file.absolutePath) { mutableIntStateOf(0) }
     var duration by remember(file.absolutePath) { mutableIntStateOf(1) }
+
+    val waveform by produceState<List<Float>>(
+        initialValue = emptyList(),
+        key1 = file.absolutePath,
+        key2 = file.lastModified(),
+    ) {
+        value = withContext(Dispatchers.IO) { readPcmWaveform(file, 112) }
+    }
 
     fun releasePlayer() {
         player?.let { current ->
@@ -110,7 +105,7 @@ fun MusicPlayerCard(
         }
         created.setOnCompletionListener {
             playing = false
-            position = 0
+            position = duration
         }
         created.setOnErrorListener { _, _, _ ->
             preparing = false
@@ -121,9 +116,7 @@ fun MusicPlayerCard(
         runCatching {
             created.setDataSource(file.absolutePath)
             created.prepareAsync()
-        }.onFailure {
-            releasePlayer()
-        }
+        }.onFailure { releasePlayer() }
     }
 
     DisposableEffect(file.absolutePath) {
@@ -133,7 +126,7 @@ fun MusicPlayerCard(
     LaunchedEffect(playing, player) {
         while (playing) {
             position = runCatching { player?.currentPosition ?: position }.getOrDefault(position)
-            delay(120)
+            delay(60)
         }
     }
 
@@ -153,28 +146,38 @@ fun MusicPlayerCard(
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Surface(
-                    modifier = Modifier.size(72.dp),
+                    modifier = Modifier.size(64.dp),
                     shape = MaterialTheme.shapes.extraLarge,
                     color = MaterialTheme.colorScheme.tertiaryContainer,
                 ) {
-                    EqualizerGlyph(
-                        active = playing,
+                    Icon(
+                        Icons.Default.GraphicEq,
+                        contentDescription = null,
                         modifier = Modifier.padding(18.dp),
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
                     )
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         title,
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 2,
                     )
                     Text(
                         subtitle,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
                     )
+                    metadataLine?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 2,
+                        )
+                    }
                     if (preparing) {
                         Text(
                             "Preparing playback…",
@@ -183,10 +186,7 @@ fun MusicPlayerCard(
                         )
                     }
                 }
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primary,
-                ) {
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
                     IconButton(
                         enabled = !preparing,
                         onClick = {
@@ -201,12 +201,14 @@ fun MusicPlayerCard(
                     ) {
                         AnimatedContent(
                             targetState = playing,
-                            transitionSpec = { fadeIn(tween(140)) togetherWith fadeOut(tween(100)) },
-                            label = "musicPlayPause",
-                        ) { isPlaying ->
+                            transitionSpec = {
+                                fadeIn(tween(120)) togetherWith fadeOut(tween(90))
+                            },
+                            label = "speechPlayPause",
+                        ) { active ->
                             Icon(
-                                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = if (isPlaying) "Pause" else "Play",
+                                if (active) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = if (active) "Pause" else "Play",
                                 tint = MaterialTheme.colorScheme.onPrimary,
                             )
                         }
@@ -214,18 +216,25 @@ fun MusicPlayerCard(
                 }
             }
 
-            Slider(
-                value = position.coerceIn(0, duration).toFloat(),
-                onValueChange = {
-                    if (prepared) {
-                        position = it.toInt()
-                        player?.seekTo(position)
-                    }
-                },
-                enabled = prepared,
-                valueRange = 0f..duration.toFloat(),
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (waveform.isNotEmpty()) {
+                RealAudioWaveform(
+                    peaks = waveform,
+                    progress = if (duration > 0) position.toFloat() / duration else 0f,
+                    playing = playing,
+                    enabled = prepared,
+                    onSeek = { fraction ->
+                        if (prepared) {
+                            position = (duration * fraction).toInt().coerceIn(0, duration)
+                            player?.seekTo(position)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(76.dp),
+                )
+            } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -256,26 +265,40 @@ fun MusicPlayerCard(
                 }
             }
 
+            if (onReproduce != null || onUse != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (onUse != null) {
+                        OutlinedButton(onClick = onUse, modifier = Modifier.weight(1f)) {
+                            Text("Use settings")
+                        }
+                    }
+                    if (onReproduce != null) {
+                        Button(onClick = onReproduce, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Replay, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Reproduce")
+                        }
+                    }
+                }
+            }
+
             if (onSave != null || onShare != null) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     if (onSave != null) {
-                        OutlinedButton(
-                            onClick = onSave,
-                            modifier = Modifier.weight(1f),
-                        ) {
+                        OutlinedButton(onClick = onSave, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Default.Download, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
                             Text("Save")
                         }
                     }
                     if (onShare != null) {
-                        Button(
-                            onClick = onShare,
-                            modifier = Modifier.weight(1f),
-                        ) {
+                        Button(onClick = onShare, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Default.Share, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
                             Text("Share")
@@ -288,41 +311,105 @@ fun MusicPlayerCard(
 }
 
 @Composable
-private fun EqualizerGlyph(active: Boolean, modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "equalizer")
-    val levels = List(5) { index ->
-        val animated by transition.animateFloat(
-            initialValue = 0.28f + index * 0.04f,
-            targetValue = 0.95f - index * 0.06f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(360 + index * 95),
-                repeatMode = RepeatMode.Reverse,
-            ),
-            label = "bar$index",
-        )
-        if (active) animated else 0.42f + (index % 3) * 0.12f
-    }
+private fun RealAudioWaveform(
+    peaks: List<Float>,
+    progress: Float,
+    playing: Boolean,
+    enabled: Boolean,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val playedColor = MaterialTheme.colorScheme.primary
+    val idleColor = MaterialTheme.colorScheme.outlineVariant
+    val playheadColor = MaterialTheme.colorScheme.onSurface
+    val transition = rememberInfiniteTransition(label = "waveformPulse")
+    val pulse by transition.animateFloat(
+        initialValue = 0.92f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(520),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "waveformPulseValue",
+    )
+    val clamped = progress.coerceIn(0f, 1f)
 
-    Row(
+    Canvas(
         modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = 32.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
+            .clip(MaterialTheme.shapes.large)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .pointerInput(enabled, peaks) {
+                if (enabled) {
+                    detectTapGestures { offset ->
+                        onSeek((offset.x / size.width.toFloat()).coerceIn(0f, 1f))
+                    }
+                }
+            }
+            .padding(horizontal = 8.dp, vertical = 10.dp),
     ) {
-        levels.forEach { level ->
-            Box(
-                modifier = Modifier
-                    .width(4.dp)
-                    .height((34f * level).dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.onTertiaryContainer),
+        if (peaks.isEmpty()) return@Canvas
+        val step = size.width / peaks.size.toFloat()
+        val stroke = max(1.4f, step * 0.48f)
+        val center = size.height / 2f
+        val maxHalf = size.height * 0.44f
+        val playX = size.width * clamped
+
+        peaks.forEachIndexed { index, raw ->
+            val x = step * (index + 0.5f)
+            var level = raw.coerceIn(0.04f, 1f)
+            if (playing && abs(x - playX) < step * 3f) level *= pulse
+            val half = maxHalf * level.coerceAtMost(1f)
+            drawLine(
+                color = if (x <= playX) playedColor else idleColor,
+                start = androidx.compose.ui.geometry.Offset(x, center - half),
+                end = androidx.compose.ui.geometry.Offset(x, center + half),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
+            )
+        }
+        if (enabled) {
+            drawLine(
+                color = playheadColor,
+                start = androidx.compose.ui.geometry.Offset(playX, 4f),
+                end = androidx.compose.ui.geometry.Offset(playX, size.height - 4f),
+                strokeWidth = 1.4.dp.toPx(),
+                cap = StrokeCap.Round,
             )
         }
     }
 }
 
+private fun readPcmWaveform(file: File, buckets: Int): List<Float> {
+    if (!file.isFile || file.length() <= 44L || buckets <= 0) return emptyList()
+    return runCatching {
+        RandomAccessFile(file, "r").use { raf ->
+            val dataBytes = (raf.length() - 44L).coerceAtLeast(0L)
+            val samples = dataBytes / 2L
+            if (samples <= 0L) return@use emptyList<Float>()
+            val bucketSamples = max(1L, samples / buckets.toLong())
+            val peaks = FloatArray(buckets)
+            raf.seek(44L)
+            var sampleIndex = 0L
+            while (sampleIndex < samples) {
+                val lo = raf.read()
+                val hi = raf.read()
+                if (lo < 0 || hi < 0) break
+                var value = lo or (hi shl 8)
+                if (value >= 0x8000) value -= 0x10000
+                val bucket = (sampleIndex / bucketSamples)
+                    .toInt()
+                    .coerceIn(0, buckets - 1)
+                val amplitude = abs(value) / 32768f
+                if (amplitude > peaks[bucket]) peaks[bucket] = amplitude
+                sampleIndex++
+            }
+            val maxPeak = peaks.maxOrNull()?.coerceAtLeast(0.001f) ?: 1f
+            peaks.map { (it / maxPeak).coerceIn(0.04f, 1f) }
+        }
+    }.getOrElse { emptyList() }
+}
+
 private fun formatTime(ms: Int): String {
-    val total = (ms.coerceAtLeast(0) / 1000)
+    val total = ms.coerceAtLeast(0) / 1000
     return "${total / 60}:${(total % 60).toString().padStart(2, '0')}"
 }
