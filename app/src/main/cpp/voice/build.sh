@@ -177,8 +177,13 @@ fi
 grep -q 'codec.decode_stream(sub, count)' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q '[BREEZE_AUDIO].*path=stateful-stream' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q '[BREEZE_VOCODER_STREAM]' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'chunk = chunk_max' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'audio_embed_forward(m, frame, 1)' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'fallback_chunk = chunk_max' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'audio_embed.run(m, frame)' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'BREEZE_GENERATION_DONE' "$(pwd)/overlay/breeze/src/generation.cpp"
+if grep -q 'std::async\|submit_qnn\|collect_qnn' "$(pwd)/overlay/breeze/src/generation.cpp"; then
+    echo "Concurrent HTP/QNN scheduling regression returned" >&2
+    exit 1
+fi
 
 # QNN vocoder fast path must remain optional and fall back to the proven ggml
 # stateful decoder when its downloaded context binary is absent.
