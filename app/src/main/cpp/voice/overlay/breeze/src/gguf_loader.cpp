@@ -1,5 +1,6 @@
 #include "breeze/gguf_loader.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
