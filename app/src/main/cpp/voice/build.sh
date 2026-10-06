@@ -136,7 +136,15 @@ grep -q 'struct StreamCacheUpdate' "$(pwd)/overlay/breeze/include/breeze/codec.h
 grep -q 'g.input_f32(block.data' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 grep -Fq 'ggml_conv_1d(ctx, w, joined, 1, 0, dilation)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 grep -q 'keep_tail(ctx, g, joined, block, N, updates)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-grep -q 'ggml_exp(ctx, ggml_neg(ctx, lb))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+# SnakeBeta must use the numerically safe reference form. The old exp(-beta)
+# rewrite can overflow on real decoder weights even though the tiny self-test
+# passes, producing all-NaN PCM on SM8850.
+grep -Fq 'ggml_div(ctx, one, ggml_add(ctx, beta, tiny))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q '1.0e-9f' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+if grep -q 'ggml_exp(ctx, ggml_neg(ctx, lb))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
+    echo "Unsafe SnakeBeta exp(-beta) regression returned" >&2
+    exit 1
+fi
 grep -Fq 'g.input_f32(mask_v, kv_len, T)' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
 grep -q 'u.block->data = tensor_to_f32(u.tensor)' "$(pwd)/overlay/breeze/src/codec.cpp"
 if grep -q 'CodecDebugProbes\|convtr1d_raw\|kv_store_future\|block.tensor\|conv_ctx\|conv_buffer' \
