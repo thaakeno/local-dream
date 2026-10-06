@@ -85,9 +85,8 @@ grep -q 'HTP_OP_SNAKE' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_ADD' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_MUL' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'ggml_hexagon_is_breeze_channel_binary' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'opt_arch >= 81 && same_shape' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'opt_arch >= 81 && same_shape && op->op == GGML_OP_ADD' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'v81-direct-residual-add' "$(pwd)/native/breeze-htp-selftest.cpp"
-grep -q 'v81-direct-residual-mul' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'Fit binary staging to the available VTCM' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_SNAKE' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'BREEZE_COL2IM_BIAS' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
@@ -198,8 +197,8 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=depbarrier-opbatch64
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map,v81-quant-hmx-guard,v81-opbatch64,v81-data-hazard-barrier,v81-direct-residual-binary,batch-progress-log
-streaming_vocoder=reference-state-tensors-chunk1-v81-hvx-depbarrier-direct-residual
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map,v81-quant-hmx-guard,v81-opbatch64,v81-data-hazard-barrier,v81-direct-residual-add,batch-progress-log
+streaming_vocoder=reference-state-tensors-chunk1-v81-hvx-depbarrier-direct-add
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
