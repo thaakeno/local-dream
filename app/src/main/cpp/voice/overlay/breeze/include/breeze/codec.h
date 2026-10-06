@@ -9,7 +9,7 @@
 namespace breeze {
 
 struct CodecStreamCacheBlock {
-    std::vector<float> data;
+    size_t offset_f32 = 0;
     int left = 0;
     int channels = 0;
 };
@@ -18,6 +18,17 @@ struct VocoderStreamState {
     bool initialized = false;
     int position = 0;
     KVCache kv;
+
+    // Two ping-pong banks in one persistent HTP allocation. A streaming graph
+    // reads only the current bank and writes only the next bank, so there is no
+    // same-graph read/write alias and no HTP -> CPU -> HTP cache round trip.
+    ggml_context * conv_ctx = nullptr;
+    ggml_backend_buffer_t conv_buffer = nullptr;
+    ggml_tensor * conv_storage = nullptr;
+    size_t conv_capacity_f32 = 0; // capacity per bank
+    size_t conv_used_f32 = 0;
+    int conv_bank = 0;
+
     std::unordered_map<std::string, CodecStreamCacheBlock> conv1d;
     std::unordered_map<std::string, CodecStreamCacheBlock> tconv1d;
 
@@ -45,11 +56,6 @@ struct MimiCodec {
 
 namespace codec_detail {
 
-struct StreamCacheUpdate {
-    CodecStreamCacheBlock * block = nullptr;
-    ggml_tensor * tensor = nullptr;
-};
-
 struct VocoderDiagProbe {
     std::string name;
     ggml_tensor * scalar = nullptr;
@@ -74,8 +80,7 @@ ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
                              std::vector<VocoderDiagProbe> * probes = nullptr);
 ggml_tensor * vocoder_decode_stream(ggml_context * ctx, BreezeModel & m, Graph & g,
                                     VocoderStreamState & state,
-                                    const std::vector<int> & codes, int n_codebooks, int seq_len,
-                                    std::vector<StreamCacheUpdate> & updates);
+                                    const std::vector<int> & codes, int n_codebooks, int seq_len);
 
 }
 
