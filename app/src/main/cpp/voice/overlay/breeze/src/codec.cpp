@@ -46,6 +46,7 @@ void VocoderStreamState::init(BreezeModel & model) {
         throw std::runtime_error("failed to allocate persistent Breeze vocoder state on HTP");
     }
 
+    ggml_backend_buffer_clear(conv_buffer, 0);
     conv_used_f32 = 0;
     conv_bank = 0;
     initialized = true;
@@ -58,13 +59,13 @@ void VocoderStreamState::reset() {
     if (initialized) kv.reset();
 
     if (conv_storage && conv_used_f32 > 0) {
-        std::vector<float> zeros(conv_used_f32, 0.0f);
+        const size_t bytes = conv_used_f32 * sizeof(float);
         for (int bank = 0; bank < 2; ++bank) {
-            ggml_backend_tensor_set(
+            ggml_backend_tensor_memset(
                 conv_storage,
-                zeros.data(),
-                ((size_t) bank * conv_capacity_f32) * sizeof(float),
-                zeros.size() * sizeof(float)
+                0,
+                (size_t) bank * conv_capacity_f32 * sizeof(float),
+                bytes
             );
         }
     }
