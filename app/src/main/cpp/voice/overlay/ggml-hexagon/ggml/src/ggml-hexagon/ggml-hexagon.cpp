@@ -113,9 +113,10 @@ static u32vec opt_pmu_evt { 0x3, 0x111, 0x100, 0x105, 0x240, 0x256, 0x7D, 0x8C }
 static int opt_opbatch  = 1280; // max number of ops in a batch
 static int opt_opqueue  = 32;   // max number of pending batches
 static int opt_optrace  = 0;    // trace buffer size per thread (0 means default)
-static int opt_oppoll   = 0;    // polling for batch completions
-static int opt_opfusion = 1;    // enable/disable op fusion
-static int opt_batchlog = 0;    // lightweight DSPQueue batch submit/complete logging
+static int opt_oppoll      = 0; // polling for batch completions
+static int opt_opfusion    = 1; // enable/disable op fusion
+static int opt_batchlog    = 0; // lightweight DSPQueue batch submit/complete logging
+static int opt_depbarrier  = 1; // split v81 packets at tensor hazards when explicitly enabled
 
 enum ggml_hexagon_fusion_flags {
     GGML_HEXAGON_FUSE_ALLREDUCE_ADD = (1 << 1), // 2
@@ -4283,7 +4284,7 @@ void ggml_hexagon_session::enqueue_op(const htp_opnode & node) {
     // On v81, do not place dependent ops in the same DSPQueue packet. The
     // packet boundary is also a DSP-side cache/scheduler completion boundary;
     // independent work remains batched for throughput.
-    if (opt_arch >= 81 && !op_batch->empty() && op_batch->has_data_hazard(node)) {
+    if (opt_depbarrier && opt_arch >= 81 && !op_batch->empty() && op_batch->has_data_hazard(node)) {
         if (opt_batchlog) {
             GGML_LOG_INFO(
                 "ggml-hex: %s BREEZE_HTP_BARRIER n_ops=%u next=%s reason=data-hazard\n",
@@ -8958,6 +8959,7 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     const char * str_oppoll   = getenv("GGML_HEXAGON_OPPOLL");
     const char * str_opfusion = getenv("GGML_HEXAGON_OPFUSION");
     const char * str_batchlog = getenv("GGML_HEXAGON_BATCHLOG");
+    const char * str_depbarrier = getenv("GGML_HEXAGON_DEPBARRIER");
     const char * str_opfilter = getenv("GGML_HEXAGON_OPFILTER");
     const char * str_profile  = getenv("GGML_HEXAGON_PROFILE");
     const char * str_etm      = getenv("GGML_HEXAGON_ETM");
@@ -9026,8 +9028,9 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     opt_optrace   = str_optrace  ? strtoul(str_optrace, NULL, 0)          : (opt_opbatch * 256);
     opt_oppoll    = str_oppoll   ? strtoul(str_oppoll,  NULL, 0)          : opt_oppoll;
     opt_opfusion  = str_opfusion ? atoi(str_opfusion)                     : opt_opfusion;
-    opt_batchlog  = str_batchlog ? atoi(str_batchlog)                     : opt_batchlog;
-    opt_profile   = str_profile  ? atoi(str_profile)                      : 0;
+    opt_batchlog   = str_batchlog ? atoi(str_batchlog)                    : opt_batchlog;
+    opt_depbarrier = str_depbarrier ? atoi(str_depbarrier)                : opt_depbarrier;
+    opt_profile    = str_profile  ? atoi(str_profile)                      : 0;
     opt_etm       = str_etm      ? atoi(str_etm)                          : 0;
     opt_nhvx      = str_nhvx     ? strtoul(str_nhvx, NULL, 0)             : opt_nhvx;
     opt_nhmx      = str_nhmx     ? atoi(str_nhmx)                         : opt_nhmx;
