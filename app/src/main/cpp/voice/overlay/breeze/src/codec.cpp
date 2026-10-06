@@ -20,19 +20,66 @@ void VocoderStreamState::init(BreezeModel & model) {
     const VocoderConfig & c = model.cfg.voc;
     const int max_seq = std::max(model.cfg.max_new_tokens + 32, c.sliding_window + 64);
     kv.init(model.backend, c.n_layer, c.head_dim, c.n_kv_head, max_seq);
+
+    // One allocation, two banks. 16 MiB per bank is comfortably above the
+    // complete Breeze decoder carry state and keeps Hexagon's buffer count low.
+    conv_capacity_f32 = (16u * 1024u * 1024u) / sizeof(float);
+    ggml_init_params p{
+        ggml_tensor_overhead() * 8 + 4096,
+        nullptr,
+        true,
+    };
+    conv_ctx = ggml_init(p);
+    if (!conv_ctx) {
+        kv.free();
+        throw std::runtime_error("failed to create Breeze vocoder state context");
+    }
+    conv_storage = ggml_new_tensor_1d(
+        conv_ctx, GGML_TYPE_F32, (int64_t) conv_capacity_f32 * 2
+    );
+    conv_buffer = ggml_backend_alloc_ctx_tensors(conv_ctx, model.backend.backend);
+    if (!conv_buffer) {
+        ggml_free(conv_ctx);
+        conv_ctx = nullptr;
+        conv_storage = nullptr;
+        kv.free();
+        throw std::runtime_error("failed to allocate persistent Breeze vocoder state on HTP");
+    }
+
+    conv_used_f32 = 0;
+    conv_bank = 0;
     initialized = true;
     reset();
 }
 
 void VocoderStreamState::reset() {
     position = 0;
+    conv_bank = 0;
     if (initialized) kv.reset();
-    for (auto & it : conv1d) std::fill(it.second.data.begin(), it.second.data.end(), 0.0f);
-    for (auto & it : tconv1d) std::fill(it.second.data.begin(), it.second.data.end(), 0.0f);
+
+    if (conv_storage && conv_used_f32 > 0) {
+        std::vector<float> zeros(conv_used_f32, 0.0f);
+        for (int bank = 0; bank < 2; ++bank) {
+            ggml_backend_tensor_set(
+                conv_storage,
+                zeros.data(),
+                ((size_t) bank * conv_capacity_f32) * sizeof(float),
+                zeros.size() * sizeof(float)
+            );
+        }
+    }
 }
 
 void VocoderStreamState::free() {
     if (initialized) kv.free();
+    if (conv_buffer) ggml_backend_buffer_free(conv_buffer);
+    if (conv_ctx) ggml_free(conv_ctx);
+    conv_buffer = nullptr;
+    conv_ctx = nullptr;
+    conv_storage = nullptr;
+    conv_capacity_f32 = 0;
+    conv_used_f32 = 0;
+    conv_bank = 0;
     initialized = false;
     position = 0;
     conv1d.clear();
@@ -55,64 +102,52 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
     if (n_cb <= 0) n_cb = m->cfg.num_codebooks;
     if (!stream.initialized) stream.init(*m);
 
+    const size_t code_count = (size_t) T * (size_t) n_cb;
+    if (codes.size() != code_count) {
+        throw std::runtime_error("Breeze streaming codec received a malformed code chunk");
+    }
+
     Graph g(32768);
-    std::vector<StreamCacheUpdate> updates;
-    ggml_tensor * x = vocoder_decode_stream(g.ctx, *m, g, stream, codes, n_cb, T, updates);
+    ggml_tensor * x = vocoder_decode_stream(g.ctx, *m, g, stream, codes, n_cb, T);
     ggml_tensor * audio = ggml_cont(g.ctx, ggml_reshape_1d(g.ctx, x, x->ne[0]));
-
-    // Cache tails are real graph outputs so gallocr cannot reuse their storage
-    // before we copy the small state blocks back for the next streaming step.
-    for (auto & u : updates) {
-        if (!u.block || !u.tensor) continue;
-        ggml_set_output(u.tensor);
-        g.write(u.tensor);
-    }
-
     g.compute(m->backend, audio);
+
+    // Only PCM crosses back to the application processor. All conv and KV
+    // carry state remains resident on HTP between chunks.
     std::vector<float> out = tensor_to_f32(audio);
-    for (auto & u : updates) {
-        if (!u.block || !u.tensor) continue;
-        u.block->data = tensor_to_f32(u.tensor);
+    const size_t want = (size_t) T * (size_t) m->cfg.samples_per_frame;
+    if (out.size() != want) {
+        throw std::runtime_error("Breeze streaming vocoder returned the wrong PCM length");
     }
 
+    bool any_signal = false;
+    for (float v : out) {
+        if (!std::isfinite(v)) {
+            throw std::runtime_error("Breeze streaming vocoder produced non-finite PCM");
+        }
+        any_signal = any_signal || std::fabs(v) >= (1.0f / 32767.0f);
+    }
+    if (!any_signal) {
+        throw std::runtime_error("Breeze streaming vocoder produced effectively silent PCM");
+    }
+
+    // Advance state only after the whole chunk completed and PCM validated.
     stream.position += T;
     stream.kv.len = stream.position;
+    stream.conv_bank ^= 1;
     return out;
 }
 
 std::vector<float> MimiCodec::decode(const std::vector<int> & codes, int T, int n_cb) {
     if (n_cb <= 0) n_cb = m->cfg.num_codebooks;
     Graph g(32768);
-    std::vector<VocoderDiagProbe> probes;
-    ggml_tensor * x = vocoder_decode(g.ctx, *m, g, codes, n_cb, T, &probes);
+
+    // Production reference decode no longer attaches dozens of full-tensor SUM
+    // probes. Those were invaluable for locating the v192 REPACK bug but make
+    // the waveform-resolution graph scan huge tensors for no useful work.
+    ggml_tensor * x = vocoder_decode(g.ctx, *m, g, codes, n_cb, T, nullptr);
     ggml_tensor * audio = ggml_cont(g.ctx, ggml_reshape_1d(g.ctx, x, x->ne[0]));
     g.compute(m->backend, audio);
-
-    for (const VocoderDiagProbe & probe : probes) {
-        if (!probe.scalar) continue;
-        const std::vector<float> value = tensor_to_f32(probe.scalar);
-        const float checksum = value.empty() ? NAN : value[0];
-        const bool finite = std::isfinite(checksum);
-        std::fprintf(
-            stderr,
-            "[BREEZE_VOCODER_DIAG] stage=%s checksum=%.9g finite=%d\n",
-            probe.name.c_str(),
-            checksum,
-            finite ? 1 : 0
-        );
-        if (!finite) {
-            std::fprintf(
-                stderr,
-                "[BREEZE_VOCODER_DIAG] FIRST_NONFINITE stage=%s checksum=%.9g\n",
-                probe.name.c_str(),
-                checksum
-            );
-            throw std::runtime_error(
-                "Breeze vocoder first non-finite stage: " + probe.name
-            );
-        }
-    }
-
     return tensor_to_f32(audio);
 }
 
