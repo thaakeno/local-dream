@@ -233,6 +233,7 @@ class SpeechGenerationService : Service() {
                 modelId, "Preparing accelerator runtime", started, 0.12f,
             )
             val qnnInstall = BreezeQnnVocoderArtifact.localInstall(this)
+            val qnnGeneratorInstall = BreezeQnnGeneratorArtifact.localInstall(this)
             val qnnVocoderFile = qnnInstall?.contextFile
             usingQnnVocoder = qnnInstall != null
             val qnnSelftestCached = qnnInstall?.let { qnnSelftestValidated(it) } == true
@@ -302,6 +303,11 @@ class SpeechGenerationService : Service() {
                 // autoregressive one-frame generator.
                 "GGML_HEXAGON_OPPOLL" to "1",
             )
+            qnnGeneratorInstall?.let { generator ->
+                env["BREEZE_QNN_GENERATOR_PATH"] = generator.contextFile.absolutePath
+                env["BREEZE_QNN_GENERATOR_ENGINE"] = generator.engine
+                env["BREEZE_QNN_GENERATOR_GRAPHS"] = generator.graphNames.joinToString(",")
+            }
             if (qnnVocoderFile != null) {
                 env["BREEZE_QNN_VOCODER_PATH"] = qnnVocoderFile.absolutePath
                 env["BREEZE_QNN_VOCODER_LUT_PATH"] = qnnInstall!!.lutFile.absolutePath
@@ -327,6 +333,7 @@ class SpeechGenerationService : Service() {
                     "queue=v198-opbatch1280x32-oppoll1 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
+                    "generator=" + (if (qnnGeneratorInstall != null) qnnGeneratorInstall.engine else "ggml-hexagon") + " " +
                     "vocoder=" + (if (usingQnnVocoder) "qnn-htp-feature64-serialized-v3" else "ggml-stateful-fallback") + " " +
                     "qnn_target=sm8850-v81 qnn_selftest=" +
                     (if (qnnSelftestCached) "cached" else "reference-pcm") + " " +

@@ -49,6 +49,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -59,9 +60,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
@@ -72,9 +76,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.xororz.localdream.data.Model
+import io.github.xororz.localdream.service.BreezeQnnGeneratorArtifact
 import java.io.File
 import io.github.xororz.localdream.utils.AppHaptics
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 enum class CatalogSortMode(val label: String) {
     Smart("Smart"),
@@ -1180,6 +1186,11 @@ fun BreezeFamilyCard(
     if (variants.isEmpty()) return
 
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val qnnGeneratorState by BreezeQnnGeneratorArtifact.status.collectAsState()
+    LaunchedEffect(Unit) {
+        BreezeQnnGeneratorArtifact.refresh(context)
+    }
     val order = listOf(
         "Q8_0",
         "Q6_K",
@@ -1353,6 +1364,136 @@ fun BreezeFamilyCard(
                             if (row.size == 1) Spacer(Modifier.weight(1f))
                         }
                     }
+
+                Text(
+                    "Snapdragon acceleration",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Surface(
+                                modifier = Modifier.size(46.dp),
+                                shape = MaterialTheme.shapes.large,
+                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                            ) {
+                                Icon(
+                                    Icons.Default.Bolt,
+                                    contentDescription = null,
+                                    modifier = Modifier.padding(11.dp),
+                                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "QNN Generator",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    when (val status = qnnGeneratorState) {
+                                        is BreezeQnnGeneratorArtifact.Status.Ready ->
+                                            "Installed · native SM8850/V81"
+                                        is BreezeQnnGeneratorArtifact.Status.Downloading ->
+                                            "Downloading accelerator"
+                                        is BreezeQnnGeneratorArtifact.Status.Unsupported ->
+                                            "Not available on this Snapdragon"
+                                        is BreezeQnnGeneratorArtifact.Status.Error ->
+                                            status.message
+                                        BreezeQnnGeneratorArtifact.Status.Checking ->
+                                            "Checking device"
+                                        is BreezeQnnGeneratorArtifact.Status.Missing ->
+                                            "Optional · optimized backbone/depth path"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Error) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    maxLines = 2,
+                                )
+                            }
+
+                            when (qnnGeneratorState) {
+                                is BreezeQnnGeneratorArtifact.Status.Ready -> {
+                                    AssistChip(
+                                        onClick = {},
+                                        enabled = false,
+                                        label = { Text("Ready") },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.CheckCircle, contentDescription = null)
+                                        },
+                                    )
+                                }
+                                is BreezeQnnGeneratorArtifact.Status.Downloading -> Unit
+                                is BreezeQnnGeneratorArtifact.Status.Unsupported -> Unit
+                                BreezeQnnGeneratorArtifact.Status.Checking -> Unit
+                                else -> {
+                                    Button(
+                                        onClick = {
+                                            scope.launch {
+                                                BreezeQnnGeneratorArtifact.download(context)
+                                            }
+                                        },
+                                    ) {
+                                        Icon(Icons.Default.CloudDownload, contentDescription = null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            if (qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Error) {
+                                                "Retry"
+                                            } else {
+                                                "Download"
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        val downloading =
+                            qnnGeneratorState as? BreezeQnnGeneratorArtifact.Status.Downloading
+                        if (downloading != null) {
+                            downloading.progress?.let {
+                                LinearProgressIndicator(
+                                    progress = { it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            } ?: LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Text(
+                                if (downloading.total > 0L) {
+                                    String.format(
+                                        Locale.US,
+                                        "%.0f / %.0f MB",
+                                        downloading.received / 1048576.0,
+                                        downloading.total / 1048576.0,
+                                    )
+                                } else {
+                                    "Preparing download"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+
+                        Text(
+                            "Separate from the Breeze GGUF. When installed, Local Dream can use the device-specific QNN generator while keeping the normal HTP path as fallback.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
 
                 val current = sorted.firstOrNull { it.id == selectedId } ?: selected
                 Surface(
