@@ -89,11 +89,22 @@ void VocoderStreamState::free() {
 
 void MimiCodec::init(BreezeModel & model) {
     m = &model;
-    stream.init(model);
+    qnn_vocoder = std::make_unique<BreezeQnnVocoder>();
+    if (qnn_vocoder->init_from_environment()) {
+        std::fprintf(stderr, "[BREEZE_VOCODER] backend=qnn-htp graph=causal64 left_context=25\n");
+    } else {
+        qnn_vocoder.reset();
+        stream.init(model);
+        std::fprintf(stderr, "[BREEZE_VOCODER] backend=ggml-hexagon-stateful fallback=1\n");
+    }
 }
 
 void MimiCodec::stream_reset() {
     if (!m) return;
+    if (qnn_vocoder && qnn_vocoder->ready()) {
+        qnn_vocoder->reset();
+        return;
+    }
     if (!stream.initialized) stream.init(*m);
     else stream.reset();
 }
@@ -101,6 +112,9 @@ void MimiCodec::stream_reset() {
 std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int T, int n_cb) {
     if (!m || T <= 0) return {};
     if (n_cb <= 0) n_cb = m->cfg.num_codebooks;
+    if (qnn_vocoder && qnn_vocoder->ready()) {
+        return qnn_vocoder->decode_stream(codes, T, n_cb, m->cfg.samples_per_frame);
+    }
     if (!stream.initialized) stream.init(*m);
 
     const size_t code_count = (size_t) T * (size_t) n_cb;

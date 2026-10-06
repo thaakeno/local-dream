@@ -5,6 +5,7 @@ set -euo pipefail
 
 : "${ANDROID_NDK_ROOT:?set ANDROID_NDK_ROOT}"
 : "${HEXAGON_SDK_ROOT:?set HEXAGON_SDK_ROOT}"
+: "${QNN_SDK_ROOT:?set QNN_SDK_ROOT}"
 
 cd "$(dirname "$0")"
 
@@ -179,6 +180,12 @@ grep -q '[BREEZE_VOCODER_STREAM]' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'chunk = chunk_max' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'audio_embed_forward(m, frame, 1)' "$(pwd)/overlay/breeze/src/generation.cpp"
 
+# QNN vocoder fast path must remain optional and fall back to the proven ggml
+# stateful decoder when its downloaded context binary is absent.
+grep -q 'BREEZE_QNN_VOCODER_PATH' "$(pwd)/native/breeze-qnn-vocoder.cpp"
+grep -q 'graph64_ms' "$(pwd)/native/breeze-qnn-vocoder.cpp"
+grep -q 'qnn_vocoder->decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
+
 # Full-clip decode remains available for voice conversion/reference work, but
 # production decode must not attach the old full-tensor SUM diagnostic probes.
 grep -Fq 'vocoder_decode(g.ctx, *m, g, codes, n_cb, T, nullptr)' "$(pwd)/overlay/breeze/src/codec.cpp"
@@ -189,7 +196,7 @@ fi
 
 rm -rf "$BUILD_DIR"
 
-cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=OFF     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
+cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=OFF     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
 
 cmake --build "$BUILD_DIR" --target breeze-server breeze-htp-selftest htp-v73 htp-v75 htp-v79 htp-v81 -j "$(nproc)"
 
@@ -232,8 +239,8 @@ extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-refere
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
-vocoder=stateful-stream-once-chunk8x32-repack-snakefast-v194
-formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
+vocoder=qnn-htp-causal64-or-stateful-ggml-fallback-v195
+qnn_vocoder=runtime-optional-download,causal64,left-context25,shared-all-gguf-variants\nformats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
 ls -lh "$JNI_DIR/libbreeze_server.so" "$JNI_DIR/libbreeze_selftest.so" "$ASSET_DIR"/libggml-htp-v*.so

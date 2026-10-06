@@ -1,7 +1,9 @@
 #pragma once
 
 #include "breeze/model.h"
+#include "breeze/qnn_vocoder.h"
 
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -40,6 +42,7 @@ struct VocoderStreamState {
 struct MimiCodec {
     BreezeModel * m = nullptr;
     VocoderStreamState stream;
+    std::unique_ptr<BreezeQnnVocoder> qnn_vocoder;
 
     void init(BreezeModel & model);
     void stream_reset();
