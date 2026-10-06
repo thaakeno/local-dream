@@ -903,6 +903,7 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
         }
     }
     val waitingForEos = state.detail == "Waiting for end-of-speech"
+    val decodingWaveform = state.detail == "Decoding waveform on Hexagon"
     val adjustedEta = state.etaSeconds?.let { nativeEta ->
         val nativeElapsed = state.elapsedSeconds ?: elapsedLive
         maxOf(0f, nativeEta - maxOf(0f, elapsedLive - nativeElapsed))
@@ -981,6 +982,7 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
                     label = "ETA",
                     value = when {
                         waitingForEos -> "Waiting for EOS"
+                        decodingWaveform -> "Decoding"
                         adjustedEta != null -> formatSpeechTime(adjustedEta)
                         else -> "Calculating"
                     },
@@ -989,6 +991,7 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
                 SpeechMetric(
                     label = "Speed",
                     value = when {
+                        decodingWaveform -> "HTP vocoder"
                         state.realtimeFactor != null && state.fps != null ->
                             String.format(
                                 Locale.US,
@@ -1005,10 +1008,13 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             }
 
             Text(
-                if (waitingForEos) {
-                    "The spoken-length estimate has been reached. Breeze is still decoding until the model emits end-of-speech."
-                } else {
-                    "Progress and ETA are native spoken-length estimates; the model itself decides the exact end."
+                when {
+                    waitingForEos ->
+                        "The spoken-length estimate has been reached. Breeze is still decoding until the model emits end-of-speech."
+                    decodingWaveform ->
+                        "Codec generation is finished. Hexagon is decoding the codec frames into the final waveform."
+                    else ->
+                        "Progress and ETA come directly from native codec-frame generation."
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.65f),
