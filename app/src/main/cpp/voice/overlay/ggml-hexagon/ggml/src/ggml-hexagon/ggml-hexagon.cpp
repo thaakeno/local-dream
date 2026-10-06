@@ -6682,12 +6682,12 @@ static bool ggml_hexagon_is_breeze_channel_binary(const struct ggml_tensor * op)
     const bool same_shape = src1->ne[0] == src0->ne[0] && src1->ne[1] == src0->ne[1] &&
                             src1->ne[2] == 1 && src1->ne[3] == 1;
 
-    // SM8850 / HTP v81: do not send Breeze's contiguous residual ADD/MUL
-    // through the generic chunked binary DMA/VTCM kernel. The direct HVX
-    // channel kernel below already supports same-shape tensors, is safe for
-    // allocator alias/in-place reuse, and avoids the deterministic DSPQueue
-    // stall reproduced by the first streamed vocoder residual ADD.
-    if (opt_arch >= 81 && same_shape) {
+    // SM8850 / HTP v81: only residual ADD needs the direct-HVX escape
+    // hatch. Keep same-shape MUL on the generic binary path: routing MUL here
+    // regressed autoregressive generation and deterministically wedged the DSP
+    // immediately after RMS_NORM. Channel-broadcast ADD/MUL stays on the
+    // existing direct-HVX path, as before v165.
+    if (opt_arch >= 81 && same_shape && op->op == GGML_OP_ADD) {
         return true;
     }
 
