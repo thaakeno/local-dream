@@ -46,6 +46,7 @@ struct MimiCodec {
 
     void init(BreezeModel & model);
     void stream_reset();
+    bool uses_qnn_vocoder() const;
 
     // Exact stateful decoder: only the newly generated frames are evaluated.
     // Transformer KV plus causal conv / transposed-conv carry state are preserved

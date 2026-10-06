@@ -109,6 +109,10 @@ void MimiCodec::stream_reset() {
     else stream.reset();
 }
 
+bool MimiCodec::uses_qnn_vocoder() const {
+    return qnn_vocoder && qnn_vocoder->ready();
+}
+
 std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int T, int n_cb) {
     if (!m || T <= 0) return {};
     if (n_cb <= 0) n_cb = m->cfg.num_codebooks;

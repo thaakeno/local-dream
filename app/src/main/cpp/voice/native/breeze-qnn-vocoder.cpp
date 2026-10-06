@@ -15,6 +15,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -42,7 +43,7 @@ public:
             "",
             false,
             qnn::tools::iotensor::OutputDataType::FLOAT_ONLY,
-            qnn::tools::iotensor::InputDataType::NATIVE,
+            qnn::tools::iotensor::InputDataType::FLOAT,
             ProfilingLevel::OFF,
             false,
             cachedBinaryPath,
@@ -81,70 +82,32 @@ public:
                                                   (*m_graphsInfo)[0]);
     }
 
-    bool execute(const int32_t * codes, size_t code_count, float * audio, size_t sample_count) {
+    bool execute(const float * features, size_t feature_count, float * audio, size_t sample_count) {
         if (!setup_io()) return false;
         auto & graph = (*m_graphsInfo)[0];
-        if (graph.numInputTensors != 1 || graph.numOutputTensors != 1) {
-            std::fprintf(stderr,
-                         "[BREEZE_QNN] graph IO mismatch inputs=%u outputs=%u\n",
-                         graph.numInputTensors, graph.numOutputTensors);
-            return false;
+        if (graph.numInputTensors != 1 || graph.numOutputTensors != 1) return false;
+        auto & in=inputs[0]; auto & out=outputs[0];
+        const auto ib=QNN_TENSOR_GET_CLIENT_BUF(in), ob=QNN_TENSOR_GET_CLIENT_BUF(out);
+        if (QNN_TENSOR_GET_DATA_TYPE(in)!=QNN_DATATYPE_FLOAT_32 ||
+            QNN_TENSOR_GET_DATA_TYPE(out)!=QNN_DATATYPE_FLOAT_32) {
+            std::fprintf(stderr,"[BREEZE_QNN] expected fp32 IO input=%d output=%d\n",
+                (int)QNN_TENSOR_GET_DATA_TYPE(in),(int)QNN_TENSOR_GET_DATA_TYPE(out)); return false;
         }
-
-        auto & in = inputs[0];
-        auto & out = outputs[0];
-        const auto in_buf = QNN_TENSOR_GET_CLIENT_BUF(in);
-        const auto out_buf = QNN_TENSOR_GET_CLIENT_BUF(out);
-        const auto in_type = QNN_TENSOR_GET_DATA_TYPE(in);
-        const auto out_type = QNN_TENSOR_GET_DATA_TYPE(out);
-
-        if (in_type != QNN_DATATYPE_INT_32 ||
-            (out_type != QNN_DATATYPE_FLOAT_16 &&
-             out_type != QNN_DATATYPE_FLOAT_32)) {
-            std::fprintf(stderr,
-                         "[BREEZE_QNN] unsupported IO dtype input=%d output=%d\n",
-                         (int) in_type, (int) out_type);
-            return false;
+        const size_t ibytes=feature_count*sizeof(float), obytes=sample_count*sizeof(float);
+        if (ib.dataSize!=ibytes || ob.dataSize!=obytes) {
+            std::fprintf(stderr,"[BREEZE_QNN] IO bytes in=%u/%zu out=%u/%zu\n",ib.dataSize,ibytes,ob.dataSize,obytes); return false;
         }
-        const size_t output_bytes =
-            sample_count * (out_type == QNN_DATATYPE_FLOAT_16
-                                ? sizeof(_Float16)
-                                : sizeof(float));
-        if (in_buf.dataSize != code_count * sizeof(int32_t) ||
-            out_buf.dataSize != output_bytes) {
-            std::fprintf(stderr,
-                         "[BREEZE_QNN] IO byte mismatch in=%u/%zu out=%u/%zu type=%d\n",
-                         in_buf.dataSize, code_count * sizeof(int32_t),
-                         out_buf.dataSize, output_bytes, (int) out_type);
-            return false;
-        }
-
-        std::memcpy(in_buf.data, codes, code_count * sizeof(int32_t));
-        const auto t0 = std::chrono::steady_clock::now();
-        const auto st = m_qnnFunctionPointers.qnnInterface.graphExecute(
-            graph.graph,
-            inputs, graph.numInputTensors,
-            outputs, graph.numOutputTensors,
-            m_profileBackendHandle, nullptr
-        );
-        const double ms = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - t0).count();
-        if (st != QNN_GRAPH_NO_ERROR) {
-            std::fprintf(stderr, "[BREEZE_QNN] graphExecute failed err=%d\n", (int) st);
-            return false;
-        }
-        if (qnn::tools::iotensor::StatusCode::SUCCESS !=
-            m_ioTensor.convertToFloatInto(audio, &out)) {
-            std::fprintf(stderr,
-                         "[BREEZE_QNN] failed to convert native PCM output type=%d\n",
-                         (int) out_type);
-            return false;
-        }
-        std::fprintf(stderr,
-                     "[BREEZE_QNN] graph64_ms=%.2f output=%s\n",
-                     ms,
-                     out_type == QNN_DATATYPE_FLOAT_16 ? "fp16" : "fp32");
-        return true;
+        std::memcpy(ib.data,features,ibytes);
+        const auto t0=std::chrono::steady_clock::now();
+        const auto st=m_qnnFunctionPointers.qnnInterface.graphExecute(graph.graph,inputs,graph.numInputTensors,outputs,graph.numOutputTensors,m_profileBackendHandle,nullptr);
+        const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
+        if(st!=QNN_GRAPH_NO_ERROR){ std::fprintf(stderr,"[BREEZE_QNN] graphExecute failed err=%d\n",(int)st); return false; }
+        std::memcpy(audio,ob.data,obytes);
+        double sum=0,sq=0; float peak=0; size_t bad=0;
+        for(size_t i=0;i<sample_count;i++){float v=audio[i]; if(!std::isfinite(v)){bad++;continue;} sum+=v;sq+=(double)v*v;peak=std::max(peak,std::fabs(v));}
+        const double rms=sample_count?std::sqrt(sq/sample_count):0;
+        std::fprintf(stderr,"[BREEZE_QNN] graph64_ms=%.2f output=fp32 checksum=%.7g peak=%.7g rms=%.7g nonfinite=%zu\n",ms,sum,peak,rms,bad);
+        return bad==0;
     }
 
     // Short speech flushes benefit from race-to-idle. QNN owns the HTP clock
@@ -253,105 +216,51 @@ static bool load_qnn(
 struct BreezeQnnVocoder::Impl {
     std::unique_ptr<BreezeQnnApp> app;
     std::vector<int> history;
-    int fixed_frames = 64;
-    int left_context = 25;
-    int n_codebooks = 16;
-    int samples_per_frame = 1920;
+    std::vector<_Float16> lut;
+    int fixed_frames=64,left_context=25,n_codebooks=16,codebook_size=2048,feature_channels=512,samples_per_frame=1920;
 };
-
-BreezeQnnVocoder::BreezeQnnVocoder() : impl_(std::make_unique<Impl>()) {}
-BreezeQnnVocoder::~BreezeQnnVocoder() = default;
-
-bool BreezeQnnVocoder::init_from_environment() {
-    const char * path = std::getenv("BREEZE_QNN_VOCODER_PATH");
-    const char * libdir = std::getenv("BREEZE_QNN_LIB_DIR");
-    if (!path || !*path || !libdir || !*libdir) return false;
-    if (!std::filesystem::is_regular_file(path)) {
-        std::fprintf(stderr, "[BREEZE_QNN] context missing: %s\n", path);
-        return false;
-    }
-    if (!load_qnn(libdir, path, impl_->app)) {
-        std::fprintf(stderr, "[BREEZE_QNN] accelerator init failed; using ggml vocoder\n");
-        return false;
-    }
+BreezeQnnVocoder::BreezeQnnVocoder():impl_(std::make_unique<Impl>()){}
+BreezeQnnVocoder::~BreezeQnnVocoder()=default;
+bool BreezeQnnVocoder::init_from_environment(){
+    const char *path=std::getenv("BREEZE_QNN_VOCODER_PATH"), *lp=std::getenv("BREEZE_QNN_VOCODER_LUT_PATH"), *lib=std::getenv("BREEZE_QNN_LIB_DIR");
+    if(!path||!*path||!lp||!*lp||!lib||!*lib) return false;
+    if(!std::filesystem::is_regular_file(path)||!std::filesystem::is_regular_file(lp)) return false;
+    const size_t elems=(size_t)impl_->n_codebooks*impl_->codebook_size*impl_->feature_channels, bytes=elems*sizeof(_Float16);
+    std::error_code ec; const auto actual=std::filesystem::file_size(lp,ec);
+    if(ec||actual!=bytes){std::fprintf(stderr,"[BREEZE_QNN] LUT size got=%llu expected=%zu\n",(unsigned long long)actual,bytes);return false;}
+    impl_->lut.resize(elems); std::ifstream in(lp,std::ios::binary);
+    if(!in.read(reinterpret_cast<char*>(impl_->lut.data()),(std::streamsize)bytes)){impl_->lut.clear();return false;}
+    if(!load_qnn(lib,path,impl_->app)){impl_->lut.clear();return false;}
     impl_->history.clear();
-    std::fprintf(stderr,
-                 "[BREEZE_QNN] ready path=%s graph_frames=%d left_context=%d backend=QNN-HTP\n",
-                 path, impl_->fixed_frames, impl_->left_context);
+    std::fprintf(stderr,"[BREEZE_QNN] ready path=%s lut=%s graph_frames=64 left_context=25 features=512 backend=QNN-HTP-v2\n",path,lp);
     return true;
 }
-
-bool BreezeQnnVocoder::ready() const {
-    return impl_ && impl_->app != nullptr;
-}
-
-void BreezeQnnVocoder::reset() {
-    if (impl_) impl_->history.clear();
-}
-
-std::vector<float> BreezeQnnVocoder::decode_stream(
-    const std::vector<int> & codes,
-    int T,
-    int n_cb,
-    int spf
-) {
-    if (!ready() || T <= 0) return {};
-    if (n_cb != impl_->n_codebooks || spf != impl_->samples_per_frame ||
-        codes.size() != (size_t) T * (size_t) n_cb) {
-        throw std::runtime_error("Breeze QNN vocoder shape mismatch");
-    }
-
-    const int history_frames = (int) impl_->history.size() / n_cb;
-    const int ctx = std::min(history_frames, impl_->left_context);
-    if (ctx + T > impl_->fixed_frames) {
-        throw std::runtime_error("Breeze QNN vocoder chunk exceeds fixed graph");
-    }
-
-    std::vector<int32_t> input(
-        (size_t) n_cb * (size_t) impl_->fixed_frames, 0);
-    // QNN graph contract is [1, codebook, time].
-    for (int cb = 0; cb < n_cb; ++cb) {
-        for (int t = 0; t < ctx; ++t) {
-            const int src_frame = history_frames - ctx + t;
-            input[(size_t) cb * impl_->fixed_frames + t] =
-                static_cast<int32_t>(impl_->history[(size_t) src_frame * n_cb + cb]);
+bool BreezeQnnVocoder::ready() const{return impl_&&impl_->app&&!impl_->lut.empty();}
+void BreezeQnnVocoder::reset(){if(impl_)impl_->history.clear();}
+std::vector<float> BreezeQnnVocoder::decode_stream(const std::vector<int>&codes,int T,int ncb,int spf){
+    if(!ready()||T<=0)return {};
+    if(ncb!=impl_->n_codebooks||spf!=impl_->samples_per_frame||codes.size()!=(size_t)T*ncb)throw std::runtime_error("Breeze QNN vocoder shape mismatch");
+    const int hf=(int)impl_->history.size()/ncb, ctx=std::min(hf,impl_->left_context);
+    if(ctx+T>impl_->fixed_frames)throw std::runtime_error("Breeze QNN vocoder chunk exceeds fixed graph");
+    std::vector<float> features((size_t)impl_->feature_channels*impl_->fixed_frames,0.0f);
+    auto add=[&](int dt,const int*fc){
+        for(int cb=0;cb<ncb;cb++){int code=fc[cb];if(code<0||code>=impl_->codebook_size)throw std::runtime_error("Breeze QNN code id out of range");
+            size_t row=((size_t)cb*impl_->codebook_size+(size_t)code)*impl_->feature_channels; const _Float16*src=impl_->lut.data()+row;
+            for(int ch=0;ch<impl_->feature_channels;ch++)features[(size_t)ch*impl_->fixed_frames+dt]+=(float)src[ch];
         }
-        for (int t = 0; t < T; ++t) {
-            input[(size_t) cb * impl_->fixed_frames + ctx + t] =
-                static_cast<int32_t>(codes[(size_t) t * n_cb + cb]);
-        }
-    }
-
-    std::vector<float> full(
-        (size_t) impl_->fixed_frames * (size_t) spf);
-    if (!impl_->app->execute(
-            input.data(), input.size(), full.data(), full.size())) {
-        throw std::runtime_error("Breeze QNN vocoder execution failed");
-    }
-
-    const size_t begin = (size_t) ctx * spf;
-    const size_t count = (size_t) T * spf;
-    std::vector<float> out(full.begin() + begin, full.begin() + begin + count);
-    for (float v : out) {
-        if (!std::isfinite(v)) {
-            throw std::runtime_error("Breeze QNN vocoder produced non-finite PCM");
-        }
-    }
-
-    // Keep at most the official 25-frame causal left context.
-    std::vector<int> merged;
-    merged.reserve((size_t) (ctx + T) * n_cb);
-    if (ctx > 0) {
-        const auto first = impl_->history.end() - (size_t) ctx * n_cb;
-        merged.insert(merged.end(), first, impl_->history.end());
-    }
-    merged.insert(merged.end(), codes.begin(), codes.end());
-    const int merged_frames = (int) merged.size() / n_cb;
-    const int keep = std::min(merged_frames, impl_->left_context);
-    impl_->history.assign(
-        merged.end() - (size_t) keep * n_cb, merged.end());
-
-    return out;
+    };
+    for(int t=0;t<ctx;t++){int sf=hf-ctx+t;add(t,impl_->history.data()+(size_t)sf*ncb);}
+    for(int t=0;t<T;t++)add(ctx+t,codes.data()+(size_t)t*ncb);
+    double fsum=0;float fpeak=0;for(float v:features){fsum+=v;fpeak=std::max(fpeak,std::fabs(v));}
+    std::fprintf(stderr,"[BREEZE_QNN_INPUT] ctx=%d new=%d checksum=%.7g peak=%.7g\n",ctx,T,fsum,fpeak);
+    std::vector<float> full((size_t)impl_->fixed_frames*spf);
+    if(!impl_->app->execute(features.data(),features.size(),full.data(),full.size()))throw std::runtime_error("Breeze QNN vocoder execution failed");
+    const size_t begin=(size_t)ctx*spf,count=(size_t)T*spf;std::vector<float> out(full.begin()+begin,full.begin()+begin+count);
+    for(float v:out)if(!std::isfinite(v))throw std::runtime_error("Breeze QNN vocoder produced non-finite PCM");
+    std::vector<int> merged;merged.reserve((size_t)(ctx+T)*ncb);
+    if(ctx>0){auto first=impl_->history.end()-(size_t)ctx*ncb;merged.insert(merged.end(),first,impl_->history.end());}
+    merged.insert(merged.end(),codes.begin(),codes.end());int mf=(int)merged.size()/ncb,keep=std::min(mf,impl_->left_context);
+    impl_->history.assign(merged.end()-(size_t)keep*ncb,merged.end());return out;
 }
 
 } // namespace breeze
