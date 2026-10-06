@@ -314,6 +314,58 @@ static void test_col2im_bias(Backend & be) {
     test_col2im_case(be, "col2im1d-bias-s8-c64", 16, 64, 8, 8, 0);
 }
 
+static void test_v81_hvx_gelu_matmul_chain(Backend & be) {
+    // v181 reproduced a bad dependent GELU_ERF -> HMX MUL_MAT result on
+    // SM8850/v81. v187 disables HMX completely; keep this exact dependency
+    // shape as a startup guard so the HVX-only replacement is verified on
+    // the real device before loading the 2+ GB model.
+    constexpr int K = 256;
+    constexpr int M = 64;
+    constexpr int N = 32;
+
+    std::vector<float> w((size_t) K * M);
+    std::vector<float> x((size_t) K * N);
+    for (int m = 0; m < M; ++m) {
+        for (int k = 0; k < K; ++k) {
+            w[(size_t) k + (size_t) K * m] =
+                0.018f * std::sin(0.013f * (float) (1 + k + 3 * m));
+        }
+    }
+    for (int n = 0; n < N; ++n) {
+        for (int k = 0; k < K; ++k) {
+            x[(size_t) k + (size_t) K * n] =
+                0.9f * std::sin(0.009f * (float) (3 + k + 5 * n));
+        }
+    }
+
+    std::vector<float> expected((size_t) M * N, 0.0f);
+    for (int n = 0; n < N; ++n) {
+        for (int m = 0; m < M; ++m) {
+            double acc = 0.0;
+            for (int k = 0; k < K; ++k) {
+                const float v = x[(size_t) k + (size_t) K * n];
+                const float gelu =
+                    0.5f * v * (1.0f + std::erf(v * 0.7071067811865475f));
+                acc += (double) w[(size_t) k + (size_t) K * m] * (double) gelu;
+            }
+            expected[(size_t) m + (size_t) M * n] = (float) acc;
+        }
+    }
+
+    Graph g(192);
+    auto * tw = g.input_f32(w, K, M);
+    auto * tx = g.input_f32(x, K, N);
+    auto * gelu = ggml_gelu_erf(g.ctx, tx);
+    auto * out = ggml_mul_mat(g.ctx, tw, gelu);
+    g.compute(be, out);
+    require_close(
+        "v81-hvx-gelu-matmul-chain",
+        tensor_to_f32(out),
+        expected,
+        1.2e-2f
+    );
+}
+
 static void test_v81_direct_residual_add(Backend & be) {
     // Mirrors the streamed ConvNeXt/residual geometry that previously reached
     // the generic chunked binary DMA/VTCM kernel and stalled the v81 DSP.
@@ -367,6 +419,7 @@ int main() {
         test_snake(be);
         test_col2im_bias(be);
         test_v81_direct_residual_add(be);
+        test_v81_hvx_gelu_matmul_chain(be);
         be.free();
         std::fprintf(stderr, "[BREEZE_SELFTEST] all-ok\n");
         return 0;
