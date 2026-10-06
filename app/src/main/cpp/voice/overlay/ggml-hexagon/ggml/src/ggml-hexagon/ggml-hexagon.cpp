@@ -4271,20 +4271,19 @@ void ggml_hexagon_session::enqueue_op(const htp_opnode & node) {
         clone_tensor_buffer(t);
     }
 
-    // SM8850 / v81 has a real same-batch visibility bug: an HMX MUL_MAT
-    // output (and some worker-queue unary outputs) can be correct when read
-    // back by the host but stale/non-finite when consumed by the next DSP op.
-    // Split only dependency edges that cross those producer classes. The DSP
-    // already performs a full HMX/work-queue drain and L2 clean+invalidate at
-    // every batch boundary, so this is the smallest strict-HTP correctness
-    // barrier and avoids the deadlock-prone per-op polling experiment.
+    // SM8850 / v81 has a real producer->consumer visibility hazard. A plain
+    // asynchronous packet split is not sufficient here: the host can submit
+    // the consumer packet while the producer packet is still in flight. Wait
+    // for the producer batch response before queuing its dependent consumer.
+    // This is intentionally narrow (only HMX/unary/GLU producers with a real
+    // tensor dependency) and remains strict HTP -- there is no CPU fallback.
     if (ggml_hexagon_v81_needs_visibility_split(op_batch, node)) {
         HEX_VERBOSE(
-            "ggml-hex: %s v81 visibility batch split before %s\n",
+            "ggml-hex: %s v81 visibility sync before %s\n",
             c_name(),
             node.op_name().c_str()
         );
-        flush_async();
+        flush_sync();
     }
 
     if (opt_opfusion && op_batch->try_fuse(node)) {
