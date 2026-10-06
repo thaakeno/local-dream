@@ -104,7 +104,7 @@ public:
             return false;
         }
 
-        const float * src_features = features;
+        float * src_features = features;
         std::vector<float> repacked;
         const char * layout = "NFC";
         if (rank == 3 && dims) {
