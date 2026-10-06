@@ -6,6 +6,18 @@
 namespace breeze {
 namespace codec_detail {
 
+static ggml_tensor * vocoder_diag_probe(
+    ggml_context * ctx, Graph & g, std::vector<VocoderDiagProbe> * probes,
+    const std::string & name, ggml_tensor * x
+) {
+    if (!probes) return x;
+    ggml_tensor * scalar = ggml_sum(ctx, x);
+    ggml_set_output(scalar);
+    g.write(scalar);
+    probes->push_back({ name, scalar });
+    return x;
+}
+
 ggml_tensor * mimi_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, ggml_tensor * x,
                                const std::string & prefix, int T) {
     const CodecConfig & c = m.cfg.codec;
@@ -32,6 +44,9 @@ ggml_tensor * mimi_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, g
         a = linear(ctx, m.w(p + ".attn_output.weight"), a);
         a = ggml_mul(ctx, a, m.w(p + ".attn_scale"));
         h = ggml_add(ctx, res, a);
+        h = vocoder_diag_probe(
+            ctx, g, probes, "dtf.blk." + std::to_string(il) + ".attn_residual", h
+        );
 
         res = h;
         cur = layer_norm(ctx, h, m.w(p + ".ffn_norm.weight"), m.w(p + ".ffn_norm.bias"), eps);
@@ -43,7 +58,8 @@ ggml_tensor * mimi_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, g
     return h;
 }
 
-ggml_tensor * vocoder_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, ggml_tensor * x, int T) {
+ggml_tensor * vocoder_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, ggml_tensor * x,
+                                  int T, std::vector<VocoderDiagProbe> * probes) {
     const VocoderConfig & c = m.cfg.voc;
     const float scale = 1.0f / std::sqrt((float) c.head_dim);
 
@@ -55,6 +71,7 @@ ggml_tensor * vocoder_transformer(ggml_context * ctx, BreezeModel & m, Graph & g
 
     ggml_tensor * h = ggml_add(ctx, linear(ctx, m.w("codec.dtf.in_proj.weight"), x),
                                m.w("codec.dtf.in_proj.bias"));
+    h = vocoder_diag_probe(ctx, g, probes, "dtf.in_proj", h);
     for (int il = 0; il < c.n_layer; il++) {
         const std::string p = "codec.dtf.blk." + std::to_string(il);
         ggml_tensor * res = h;
@@ -75,9 +92,14 @@ ggml_tensor * vocoder_transformer(ggml_context * ctx, BreezeModel & m, Graph & g
                          m.w(p + ".ffn_down.weight"));
         cur = ggml_mul(ctx, cur, m.w(p + ".ffn_scale"));
         h = ggml_add(ctx, res, cur);
+        h = vocoder_diag_probe(
+            ctx, g, probes, "dtf.blk." + std::to_string(il) + ".ffn_residual", h
+        );
     }
     h = rms_norm(ctx, h, m.w("codec.dtf.norm.weight"), c.rms_eps);
-    return ggml_add(ctx, linear(ctx, m.w("codec.dtf.out_proj.weight"), h), m.w("codec.dtf.out_proj.bias"));
+    h = vocoder_diag_probe(ctx, g, probes, "dtf.norm", h);
+    h = ggml_add(ctx, linear(ctx, m.w("codec.dtf.out_proj.weight"), h), m.w("codec.dtf.out_proj.bias"));
+    return vocoder_diag_probe(ctx, g, probes, "dtf.out_proj", h);
 }
 
 ggml_tensor * vocoder_transformer_stream(ggml_context * ctx, BreezeModel & m, Graph & g,
