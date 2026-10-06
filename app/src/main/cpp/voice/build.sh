@@ -89,14 +89,14 @@ grep -q 'HTP_OP_CHANNEL_BCAST_ADD' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_MUL' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 
 # Preserve the proven v153 queue capacity/fusion defaults, but add a narrowly
-# scoped v81 correctness split when a consumer depends on HMX/unary/GLU output.
-# This keeps all computation on HTP while forcing the DSP's existing batch-end
-# queue drain + cache clean/invalidate at the exact stale-read boundary.
+# scoped v81 correctness sync when a consumer depends on HMX matmul output.
+# This keeps all computation on HTP and waits for the producer batch response
+# before the dependent consumer is submitted.
 grep -q 'static int opt_opbatch  = 1280' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'static int opt_opqueue  = 32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'static int opt_opfusion = 1' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'ggml_hexagon_v81_needs_visibility_split' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'v81 visibility batch split before' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'v81 visibility sync before' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 
 # Apply upstream llama.cpp PR #29977 exactly: Hexagon SDK 6.6 performs one
 # dccleaninva every 64 bytes. A 128-byte step can leave half-lines stale after
