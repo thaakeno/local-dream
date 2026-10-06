@@ -9,27 +9,15 @@
 namespace breeze {
 
 struct CodecStreamCacheBlock {
-    // v153-safe execution model: causal carry state is owned by the host
-    // between decode calls. Each graph receives an immutable snapshot and
-    // publishes the next tail only after compute completes, so HTP can never
-    // overwrite a cache tensor that is still live as convolution input.
     std::vector<float> data;
     int left = 0;
     int channels = 0;
 };
 
-struct CodecDebugProbe {
-    std::string name;
-    ggml_tensor * tensor = nullptr;
-};
-
-using CodecDebugProbes = std::vector<CodecDebugProbe>;
-
 struct VocoderStreamState {
     bool initialized = false;
     int position = 0;
     KVCache kv;
-
     std::unordered_map<std::string, CodecStreamCacheBlock> conv1d;
     std::unordered_map<std::string, CodecStreamCacheBlock> tconv1d;
 
@@ -64,8 +52,6 @@ struct StreamCacheUpdate {
 
 ggml_tensor * conv1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
                             ggml_tensor * x, int stride, int dilation);
-ggml_tensor * convtr1d_raw(ggml_context * ctx, ggml_tensor * w,
-                           ggml_tensor * x, int stride);
 ggml_tensor * convtr1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
                               ggml_tensor * x, int stride);
 ggml_tensor * depthwise1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
@@ -75,18 +61,14 @@ ggml_tensor * seanet_encoder(ggml_context * ctx, BreezeModel & m, ggml_tensor * 
 ggml_tensor * mimi_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, ggml_tensor * x,
                                const std::string & prefix, int seq_len);
 ggml_tensor * vocoder_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, ggml_tensor * x, int seq_len);
-ggml_tensor * vocoder_transformer_stream(
-    ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
-    ggml_tensor * x, int seq_len, CodecDebugProbes * probes = nullptr
-);
+ggml_tensor * vocoder_transformer_stream(ggml_context * ctx, BreezeModel & m, Graph & g,
+                                        VocoderStreamState & state, ggml_tensor * x, int seq_len);
 ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
                              const std::vector<int> & codes, int n_codebooks, int seq_len);
-ggml_tensor * vocoder_decode_stream(
-    ggml_context * ctx, BreezeModel & m, Graph & g, VocoderStreamState & state,
-    const std::vector<int> & codes, int n_codebooks, int seq_len,
-    std::vector<StreamCacheUpdate> & updates,
-    CodecDebugProbes * probes = nullptr
-);
+ggml_tensor * vocoder_decode_stream(ggml_context * ctx, BreezeModel & m, Graph & g,
+                                    VocoderStreamState & state,
+                                    const std::vector<int> & codes, int n_codebooks, int seq_len,
+                                    std::vector<StreamCacheUpdate> & updates);
 
 }
 
