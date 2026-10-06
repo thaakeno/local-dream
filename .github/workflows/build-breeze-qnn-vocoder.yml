@@ -6,7 +6,7 @@ on:
     branches:
       - v141-stable-yue2-full
     paths:
-      - 'tools/breeze_qnn/**'
+      - 'tools/breeze_qnn/export_vocoder_onnx.py'
       - '.github/workflows/build-breeze-qnn-vocoder.yml'
 
 permissions:
