@@ -364,12 +364,12 @@ jobs:
           grep -q 'mode=strict-htp-dspqueue' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'fallback=disabled' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'integration=pinned-source-overlay' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'queue=opbatch64x32-depbarrier-switch' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'queue=depbarrier-opbatch64x32-no-batchlog' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81-opbatch64' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81-data-hazard-barrier-switch' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81-direct-residual-add' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v153-host-snapshot-cache' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'streaming_vocoder=v153-host-snapshot-chunk4-v81-hvx-opbatch64-fused' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'streaming_vocoder=v153-host-snapshot-chunk4-v81-hvx-depbarrier-fast' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'batch-progress-log' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
