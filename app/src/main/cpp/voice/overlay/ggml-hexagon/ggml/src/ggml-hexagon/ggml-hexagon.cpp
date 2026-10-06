@@ -4192,17 +4192,25 @@ void ggml_hexagon_session::flush_batch(size_t min_ops) {
 
 static bool ggml_hexagon_v81_visibility_producer(uint32_t opcode) {
     switch (opcode) {
-        // Keep this evidence-based. Public SM8850/v81 failures specifically
-        // implicate HMX matmul results / cache visibility. The earlier
-        // unary/GLU producer hypothesis was speculative and its synthetic
-        // GELU->HMX self-test produced a numerical mismatch unrelated to the
-        // Breeze startup path. Only HMX-producing matmul classes get the
-        // synchronous dependency barrier.
+        // SM8850/v81 device reports reproduce two same-batch stale-read
+        // classes: HMX MUL_MAT -> ADD and worker-queue GELU/GLU -> downstream
+        // DSP consumers. Force a packet boundary after only those producer
+        // classes. The DSP processes DSPQueue packets FIFO and drains HMX /
+        // worker queues plus the data cache at every packet end.
         case HTP_OP_MUL_MAT:
         case HTP_OP_MUL_MAT_ADD:
         case HTP_OP_MUL_MAT_ID:
         case HTP_OP_MUL_MAT_NX:
         case HTP_OP_MUL_MAT_ID_NX:
+        case HTP_OP_UNARY_GELU:
+        case HTP_OP_UNARY_GELU_ERF:
+        case HTP_OP_GLU_SWIGLU:
+        case HTP_OP_GLU_SWIGLU_OAI:
+        case HTP_OP_GLU_SWIGLU_CLAMP:
+        case HTP_OP_GLU_GEGLU:
+        case HTP_OP_GLU_GEGLU_QUICK:
+        case HTP_OP_GLU_GEGLU_ERF:
+        case HTP_OP_SNAKE:
             return true;
         default:
             return false;
@@ -4263,18 +4271,19 @@ void ggml_hexagon_session::enqueue_op(const htp_opnode & node) {
         clone_tensor_buffer(t);
     }
 
-    // SM8850 / v81 has a real HMX producer->consumer visibility hazard. A
-    // plain asynchronous packet split is not sufficient here: the host can
-    // submit the consumer packet while the producer packet is still in flight.
-    // Wait for the HMX producer batch response before queuing its dependent
-    // consumer. This remains strict HTP -- there is no CPU fallback.
+    // SM8850 / v81 can expose stale producer data when a dependent consumer
+    // remains in the same DSP packet. End the current packet, but do NOT do a
+    // host-side flush_sync() from inside graph enqueue: v183 showed that this
+    // re-entrant wait can segfault the Breeze process before frame 1. DSPQueue
+    // itself is FIFO, and process_opbatch() fully drains HMX/work queues and
+    // cache-maintains at packet end before the next packet is processed.
     if (ggml_hexagon_v81_needs_visibility_split(op_batch, node)) {
         HEX_VERBOSE(
-            "ggml-hex: %s v81 visibility sync before %s\n",
+            "ggml-hex: %s v81 visibility batch split before %s\n",
             c_name(),
             node.op_name().c_str()
         );
-        flush_sync();
+        flush_async();
     }
 
     if (opt_opfusion && op_batch->try_fuse(node)) {
