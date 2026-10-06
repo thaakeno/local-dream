@@ -102,7 +102,7 @@ grep -q 'opt_depbarrier && opt_arch >= 81' "$GGML_DIR/src/ggml-hexagon/ggml-hexa
 grep -q 'GGML_HEXAGON_V81_LEGACY_BATCH' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q '!opt_v81_legacy_batch && opt_arch >= 81 && opt_opbatch > 64' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'opt_arch >= 81 && opt_opbatch > 64' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'if (opt_arch >= 81)' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'opt_arch >= 81 && !opt_v81_legacy_batch' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GET_ROWS_THREAD_DT_FN(f32' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.c"
 grep -q 'case HTP_TYPE_F32:' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.h"
