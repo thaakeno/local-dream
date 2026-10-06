@@ -54,6 +54,7 @@ for rel in \
     ggml/src/ggml-hexagon/htp/CMakeLists.txt \
     ggml/src/ggml-hexagon/htp/htp-ops.h \
     ggml/src/ggml-hexagon/htp/htp-ctx.h \
+    ggml/src/ggml-hexagon/htp/hex-utils.h \
     ggml/src/ggml-hexagon/htp/main.c \
     ggml/src/ggml-hexagon/ggml-hexagon.cpp; do
     test -s "$HEXAGON_OVERLAY/$rel"
@@ -87,25 +88,23 @@ grep -q 'HTP_OP_SNAKE' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_ADD' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 grep -q 'HTP_OP_CHANNEL_BCAST_MUL' "$GGML_DIR/src/ggml-hexagon/htp/htp-ops.h"
 
-# Preserve the original v153 DSPQueue scheduler: 1280-op packets, 32 pending,
-# fusion on, with no dependency-barrier rewrite.
+# Preserve the proven v153 queue capacity/fusion defaults, but add a narrowly
+# scoped v81 correctness split when a consumer depends on HMX/unary/GLU output.
+# This keeps all computation on HTP while forcing the DSP's existing batch-end
+# queue drain + cache clean/invalidate at the exact stale-read boundary.
 grep -q 'static int opt_opbatch  = 1280' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'static int opt_opqueue  = 32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'static int opt_opfusion = 1' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-if grep -q 'GGML_HEXAGON_DEPBARRIER\|has_data_hazard\|V81_LEGACY_BATCH' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"; then
-    echo "Non-v153 DSPQueue scheduler code returned" >&2
-    exit 1
-fi
+grep -q 'ggml_hexagon_v81_needs_visibility_split' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'v81 visibility batch split before' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 
-# Preserve the exact v153 DSP kernels and cache-maintenance implementation.
-# PR #29977 is useful upstream evidence for stale-cache correctness, but it does
-# not explain this app's immediate DSPQueue 0x2e abort and must not be mixed
-# into the known-good v153 runtime while we isolate the real regression.
-if grep -q 'HEX_DCACHE_OP_SIZE' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"; then
-    echo "Non-v153 dcache maintenance override returned" >&2
-    exit 1
-fi
-grep -Fq 'Q6_dccleaninva_A((void *) (i + HEX_L2_LINE_SIZE * 3))' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
+# Apply upstream llama.cpp PR #29977 exactly: Hexagon SDK 6.6 performs one
+# dccleaninva every 64 bytes. A 128-byte step can leave half-lines stale after
+# DMA reuse on SM8850/v81. Alignment remains 128 bytes; only instruction stride
+# changes to 64 bytes.
+grep -q '#define HEX_DCACHE_OP_SIZE         64' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
+grep -q 'j += HEX_DCACHE_OP_SIZE' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
+grep -q 'i += HEX_DCACHE_OP_SIZE' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
 
 # Preserve v153 GET_ROWS exactly. The only codebook correction in v177 is
 # model-loader placement: decoder F32 tables are copied into a small ordinary
@@ -117,6 +116,8 @@ fi
 grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-multi' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-ordinary-2048-highrows' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'v81-hmx-mulmat-add-visibility' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'v81-gelu-hmx-visibility' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'ordinary HTP codebook mirrors verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -q 'primary model map remains exact-v153' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -q 'codebook_buffer' "$(pwd)/overlay/breeze/include/breeze/gguf_loader.h"
@@ -197,7 +198,8 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=v153-default-opbatch1280x32
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,exact-v153-model-map,decoder-codebook-ordinary-htp-mirror,exact-v153-hexagon-kernels,exact-v153-codec-graph,exact-v153-dcache-128b
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,exact-v153-model-map,decoder-codebook-ordinary-htp-mirror,exact-v153-hexagon-kernels,exact-v153-codec-graph,upstream-dcache-64b-pr29977
+v81_visibility=dependency-batch-split-hmx-unary-glu
 vocoder=upstream-reference-window40-signal-validated
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
