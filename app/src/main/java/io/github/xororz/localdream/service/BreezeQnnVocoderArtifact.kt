@@ -63,7 +63,7 @@ object BreezeQnnVocoderArtifact {
 
     fun supportedSoc(): String? {
         val detected = deviceFingerprint()
-        return listOf("SM8850", "SM8750", "SM8650", "SM8550", "SM8475", "SM8450")
+        return listOf("SM8850", "SM8750", "SM8650", "SM8550", "SM8475", "SM8450", "SM8350")
             .firstOrNull { detected.contains(it) }
     }
 
