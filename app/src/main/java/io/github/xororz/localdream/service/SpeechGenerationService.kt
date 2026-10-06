@@ -48,7 +48,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v191-dq-op-probes"
+            "breeze-a0e177-hexagon-ab9acc-v192-quant-repack-ordinary-map"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -261,9 +261,9 @@ class SpeechGenerationService : Service() {
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
                     "queue=v153-default-1280x32 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
-                    "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=exact-v153 " +
-                    "codebooks=ordinary-htp-mirror visibility=none-v153-scheduler " +
-                    "vocoder=upstream-reference-window40 diag=dq-code-range-and-op-probes-v191 signal_validation=native+pcm16 " +
+                    "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
+                    "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
+                    "vocoder=upstream-reference-window40 diag=dq-op-probes+projection-preflight-v192 signal_validation=native+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
             runBackendSelfTest(env, modelId, started)
