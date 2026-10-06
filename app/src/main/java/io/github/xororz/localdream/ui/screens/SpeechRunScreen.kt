@@ -42,10 +42,10 @@ import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
 import io.github.xororz.localdream.service.SpeechHistoryItem
 import io.github.xororz.localdream.service.SpeechHistoryStore
 import io.github.xororz.localdream.ui.components.MusicPlayerCard
-import io.github.xororz.localdream.ui.components.SmoothIndeterminateLinearWavyProgressIndicator
-import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
 import io.github.xororz.localdream.utils.AppHaptics
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
@@ -82,6 +82,54 @@ private fun shareSpeechFile(context: android.content.Context, file: File) {
         clipData = android.content.ClipData.newRawUri("Breeze TTS audio", uri)
     }
     context.startActivity(Intent.createChooser(send, "Share generated speech"))
+}
+
+private fun startSpeechGeneration(
+    context: android.content.Context,
+    modelId: String,
+    text: String,
+    instruction: String,
+    seed: Long,
+    cfg: Float,
+    temperature: Float,
+    topK: Int,
+    topP: Float,
+    repetition: Float,
+    splitChars: Int,
+    maxNewTokens: Int,
+) {
+    context.startForegroundService(
+        Intent(context, SpeechGenerationService::class.java)
+            .setAction(SpeechGenerationService.ACTION_GENERATE)
+            .putExtra("modelId", modelId)
+            .putExtra("text", text)
+            .putExtra("instruction", instruction)
+            .putExtra("seed", seed)
+            .putExtra("cfg", cfg)
+            .putExtra("temperature", temperature)
+            .putExtra("topK", topK)
+            .putExtra("topP", topP)
+            .putExtra("repetition", repetition)
+            .putExtra("splitChars", splitChars)
+            .putExtra("maxNewTokens", maxNewTokens),
+    )
+}
+
+private fun formatHistoryDate(timestamp: Long): String =
+    if (timestamp <= 0L) "Earlier generation"
+    else DateFormat.getDateTimeInstance(
+        DateFormat.MEDIUM,
+        DateFormat.SHORT,
+    ).format(Date(timestamp))
+
+private fun formatMillisCompact(ms: Long): String {
+    if (ms <= 0L) return "--"
+    return if (ms < 10_000L) {
+        String.format(Locale.US, "%.1fs", ms / 1000.0)
+    } else {
+        val total = (ms / 1000L).toInt()
+        String.format(Locale.US, "%d:%02d", total / 60, total % 60)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -231,7 +279,8 @@ fun SpeechRunScreen(
     val busy = speechState is SpeechState.Loading || speechState is SpeechState.Generating
     val precision = model?.variantPrecision.orEmpty()
     val statusText = when (val state = speechState) {
-        is SpeechState.Loading -> state.detail
+        is SpeechState.Loading ->
+            state.detail + " · " + (state.progress.coerceIn(0f, 1f) * 100f).roundToInt() + "%"
         is SpeechState.Ready -> "Ready"
         is SpeechState.Generating -> state.progress?.let {
             "Generating ${(it.coerceIn(0f, 1f) * 100f).roundToInt()}%"
@@ -407,7 +456,7 @@ fun SpeechRunScreen(
                     )
 
                     when (val state = speechState) {
-                        is SpeechState.Loading -> SpeechLoadingCard(state.detail)
+                        is SpeechState.Loading -> SpeechLoadingCard(state)
                         is SpeechState.Generating -> SpeechProgressCard(state)
                         is SpeechState.Error -> {
                             Surface(
@@ -473,20 +522,10 @@ fun SpeechRunScreen(
                         Button(
                             onClick = {
                                 AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                                context.startForegroundService(
-                                    Intent(context, SpeechGenerationService::class.java)
-                                        .setAction(SpeechGenerationService.ACTION_GENERATE)
-                                        .putExtra("modelId", modelId)
-                                        .putExtra("text", text)
-                                        .putExtra("instruction", instruction)
-                                        .putExtra("seed", seed)
-                                        .putExtra("cfg", cfg)
-                                        .putExtra("temperature", temperature)
-                                        .putExtra("topK", topK)
-                                        .putExtra("topP", topP)
-                                        .putExtra("repetition", repetition)
-                                        .putExtra("splitChars", splitChars)
-                                        .putExtra("maxNewTokens", maxNewTokens),
+                                startSpeechGeneration(
+                                    context, modelId, text, instruction, seed,
+                                    cfg, temperature, topK, topP, repetition,
+                                    splitChars, maxNewTokens,
                                 )
                             },
                             enabled = !busy && text.isNotBlank() && model?.isDownloaded == true,
@@ -507,7 +546,15 @@ fun SpeechRunScreen(
                     title = "Breeze TTS 2 · " + precision,
                     subtitle = "Seed " + complete.seed + " · " +
                         String.format(Locale.US, "%.1f s generation", complete.elapsedMillis / 1000f),
+                    metadataLine = "Just generated · QNN HTP ready",
                     modifier = Modifier.padding(horizontal = 16.dp),
+                    onReproduce = {
+                        startSpeechGeneration(
+                            context, modelId, complete.text, complete.instruction,
+                            complete.seed, cfg, temperature, topK, topP,
+                            repetition, splitChars, maxNewTokens,
+                        )
+                    },
                     onSave = {
                         scope.launch {
                             val saved = runCatching {
@@ -552,9 +599,9 @@ fun SpeechRunScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     val soc = BreezeQnnVocoderArtifact.supportedSoc().orEmpty()
                     Text(
-                        "Download the one-time Qualcomm HTP vocoder accelerator for " +
-                            soc + ". It is shared by every Breeze Q4/Q6/Q8/F16/DD model " +
-                            "and replaces the slow ggml waveform decoder.",
+                        "Download the SM8850 QNN HTP vocoder v2 (~315 MB). It is shared " +
+                            "by every Breeze Q4/Q6/Q8/F16/DD model on this phone and " +
+                            "replaces the slow ggml waveform decoder.",
                     )
                     when (accelerator) {
                         is BreezeQnnVocoderArtifact.Status.Downloading -> {
@@ -794,31 +841,80 @@ fun SpeechRunScreen(
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    "Generated WAV files stay local on this device.",
+                    "Local generations with the exact prompt, seed and sampling settings needed to reproduce them.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                val visibleHistory = history.filter { it.modelId == modelId }
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 560.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                        .heightIn(max = 620.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    if (history.isEmpty()) {
+                    if (visibleHistory.isEmpty()) {
                         item {
                             Text(
-                                "No speech generations yet.",
+                                "No generations for this Breeze model yet.",
                                 modifier = Modifier.padding(vertical = 24.dp),
                             )
                         }
                     }
-                    items(history, key = { it.id }) { item ->
+                    items(visibleHistory, key = { it.id }) { item ->
                         val file = File(item.filePath)
                         if (file.isFile) {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 MusicPlayerCard(
                                     file = file,
-                                    title = item.text.take(64),
-                                    subtitle = item.instruction.take(90),
+                                    title = item.text.take(76),
+                                    subtitle = formatHistoryDate(item.createdAt) + " · " +
+                                        formatMillisCompact(item.audioDurationMillis) + " audio · " +
+                                        formatMillisCompact(item.generationMillis) + " generated",
+                                    metadataLine = buildString {
+                                        append("Seed ")
+                                        append(item.seed)
+                                        append(" · CFG ")
+                                        append(String.format(Locale.US, "%.2f", item.cfg))
+                                        append(" · ")
+                                        append(if (item.accelerated) "QNN HTP" else "Fallback")
+                                    },
+                                    onUse = {
+                                        text = item.text
+                                        instruction = item.instruction
+                                        seed = item.seed
+                                        cfg = item.cfg
+                                        temperature = item.temperature
+                                        topK = item.topK
+                                        topP = item.topP
+                                        repetition = item.repetition
+                                        splitChars = item.splitChars
+                                        maxNewTokens = item.maxNewTokens
+                                        showHistory = false
+                                        AppHaptics.perform(
+                                            context,
+                                            AppHaptics.Kind.Interaction,
+                                        )
+                                    },
+                                    onReproduce = {
+                                        showHistory = false
+                                        AppHaptics.perform(
+                                            context,
+                                            AppHaptics.Kind.Interaction,
+                                        )
+                                        startSpeechGeneration(
+                                            context = context,
+                                            modelId = item.modelId,
+                                            text = item.text,
+                                            instruction = item.instruction,
+                                            seed = item.seed,
+                                            cfg = item.cfg,
+                                            temperature = item.temperature,
+                                            topK = item.topK,
+                                            topP = item.topP,
+                                            repetition = item.repetition,
+                                            splitChars = item.splitChars,
+                                            maxNewTokens = item.maxNewTokens,
+                                        )
+                                    },
                                     onSave = {
                                         scope.launch {
                                             val saved = runCatching {
@@ -837,17 +933,30 @@ fun SpeechRunScreen(
                                     },
                                     onShare = { shareSpeechFile(context, file) },
                                 )
-                                TextButton(
-                                    onClick = {
-                                        scope.launch {
-                                            SpeechHistoryStore.delete(context, item.id)
-                                            history = withContext(Dispatchers.IO) {
-                                                SpeechHistoryStore.load(context)
-                                            }
-                                        }
-                                    },
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Text("Delete")
+                                    Text(
+                                        item.instruction.take(100),
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                    )
+                                    TextButton(
+                                        onClick = {
+                                            scope.launch {
+                                                SpeechHistoryStore.delete(context, item.id)
+                                                history = withContext(Dispatchers.IO) {
+                                                    SpeechHistoryStore.load(context)
+                                                }
+                                            }
+                                        },
+                                    ) {
+                                        Text("Delete")
+                                    }
                                 }
                             }
                         }
@@ -981,29 +1090,99 @@ private fun InlineEventEditor(
 }
 
 @Composable
-private fun SpeechLoadingCard(detail: String) {
+private fun SpeechLoadingCard(state: SpeechState.Loading) {
+    val elapsed by produceState(
+        initialValue = 0f,
+        key1 = state.startedAtMillis,
+    ) {
+        while (true) {
+            value = (
+                System.currentTimeMillis() - state.startedAtMillis
+            ).coerceAtLeast(0L) / 1000f
+            kotlinx.coroutines.delay(250L)
+        }
+    }
+    val progress = state.progress.coerceIn(0f, 0.99f)
+
     Surface(
         shape = MaterialTheme.shapes.extraLarge,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                detail,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                "The model stays warm after loading, so the next generation starts faster.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            SmoothIndeterminateLinearWavyProgressIndicator(
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Loading Breeze",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        state.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    (progress * 100f).roundToInt().toString() + "%",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            LinearProgressIndicator(
+                progress = { progress },
                 modifier = Modifier.fillMaxWidth(),
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                LoadingStage("Runtime", progress >= 0.12f, Modifier.weight(1f))
+                LoadingStage("Model", progress >= 0.56f, Modifier.weight(1f))
+                LoadingStage("Vocoder", progress >= 0.84f, Modifier.weight(1f))
+                LoadingStage("Ready", progress >= 0.98f, Modifier.weight(1f))
+            }
+            Text(
+                "Elapsed " + formatSpeechTime(elapsed) +
+                    " · first load does the heavy setup; the model stays warm afterwards.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
+    }
+}
+
+@Composable
+private fun LoadingStage(
+    label: String,
+    complete: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(10.dp),
+        color = if (complete) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (complete) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            maxLines = 1,
+        )
     }
 }
 
@@ -1018,16 +1197,11 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
     ) {
         while (true) {
             val wallElapsed =
-                (System.currentTimeMillis() - state.startedAtMillis).coerceAtLeast(0L) / 1000f
+                (System.currentTimeMillis() - state.startedAtMillis)
+                    .coerceAtLeast(0L) / 1000f
             value = maxOf(state.elapsedSeconds ?: 0f, wallElapsed)
-            kotlinx.coroutines.delay(500L)
+            kotlinx.coroutines.delay(250L)
         }
-    }
-    val waitingForEos = state.detail == "Waiting for end-of-speech"
-    val decodingWaveform = state.detail == "Decoding waveform on Hexagon"
-    val adjustedEta = state.etaSeconds?.let { nativeEta ->
-        val nativeElapsed = state.elapsedSeconds ?: elapsedLive
-        maxOf(0f, nativeEta - maxOf(0f, elapsedLive - nativeElapsed))
     }
 
     Surface(
@@ -1051,12 +1225,13 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
                     Text(
                         state.detail,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.72f),
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                            .copy(alpha = 0.75f),
                     )
                 }
                 if (percent != null) {
                     Text(
-                        "$percent%",
+                        percent.toString() + "%",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                     )
@@ -1064,15 +1239,24 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             }
 
             if (progress != null) {
-                SmoothLinearWavyProgressIndicator(
-                    progress = progress,
+                LinearProgressIndicator(
+                    progress = { progress },
                     modifier = Modifier.fillMaxWidth(),
                 )
             } else {
-                SmoothIndeterminateLinearWavyProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
+
+            SpeechStageProgress(
+                label = "Voice tokens",
+                progress = state.codecProgress,
+                activeText = "Generating on Hexagon",
+            )
+            SpeechStageProgress(
+                label = "Waveform",
+                progress = state.vocoderProgress,
+                activeText = "QNN HTP decoder",
+            )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1081,10 +1265,10 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
                 SpeechMetric(
                     label = "Audio",
                     value = buildString {
-                        append(String.format(Locale.US, "%.1f s", state.generatedSeconds))
+                        append(String.format(Locale.US, "%.1fs", state.generatedSeconds))
                         state.estimatedSeconds?.let {
                             append(" / ")
-                            append(String.format(Locale.US, "%.1f s", it))
+                            append(String.format(Locale.US, "%.1fs", it))
                         }
                     },
                     modifier = Modifier.weight(1f),
@@ -1101,18 +1285,12 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             ) {
                 SpeechMetric(
                     label = "ETA",
-                    value = when {
-                        waitingForEos -> "Waiting for EOS"
-                        decodingWaveform -> "Decoding"
-                        adjustedEta != null -> formatSpeechTime(adjustedEta)
-                        else -> "Calculating"
-                    },
+                    value = state.etaSeconds?.let { formatSpeechTime(it) } ?: "Estimating",
                     modifier = Modifier.weight(1f),
                 )
                 SpeechMetric(
                     label = "Speed",
                     value = when {
-                        decodingWaveform -> "HTP vocoder"
                         state.realtimeFactor != null && state.fps != null ->
                             String.format(
                                 Locale.US,
@@ -1129,17 +1307,44 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             }
 
             Text(
-                when {
-                    waitingForEos ->
-                        "The spoken-length estimate has been reached. Breeze is still decoding until the model emits end-of-speech."
-                    decodingWaveform ->
-                        "Codec generation is finished. Hexagon is decoding the codec frames into the final waveform."
-                    else ->
-                        "Progress and ETA come directly from native codec-frame generation."
+                "Long speech is pipelined: QNN decodes completed audio while Breeze keeps generating the next codec frames.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.68f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SpeechStageProgress(
+    label: String,
+    progress: Float?,
+    activeText: String,
+) {
+    val value = progress?.coerceIn(0f, 1f)
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(label, style = MaterialTheme.typography.labelMedium)
+            Text(
+                if (value != null) {
+                    (value * 100f).roundToInt().toString() + "%"
+                } else {
+                    activeText
                 },
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.65f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        if (value != null) {
+            LinearProgressIndicator(
+                progress = { value },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
     }
 }
