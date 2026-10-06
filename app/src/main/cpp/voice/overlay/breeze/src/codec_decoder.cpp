@@ -1,6 +1,9 @@
 #include "breeze/codec.h"
 
 #include <cmath>
+#include <cstdio>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -79,28 +82,83 @@ static ggml_tensor * residual_unit(
     return vocoder_diag_probe(ctx, g, probes, p + ".residual", out);
 }
 
-static ggml_tensor * quantizer_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
-                                      const std::vector<int> & codes, int n_cb, int T) {
+static ggml_tensor * quantizer_decode(
+    ggml_context * ctx, BreezeModel & m, Graph & g,
+    const std::vector<int> & codes, int n_cb, int T,
+    std::vector<VocoderDiagProbe> * probes
+) {
+    const int book = m.cfg.codec_codebook_size;
+    if (n_cb <= 0 || T <= 0 || codes.size() != (size_t) n_cb * (size_t) T) {
+        throw std::runtime_error("Breeze vocoder received malformed codec indices");
+    }
+
+    int total_invalid = 0;
+    for (int cb = 0; cb < n_cb; ++cb) {
+        int lo = std::numeric_limits<int>::max();
+        int hi = std::numeric_limits<int>::min();
+        int invalid = 0;
+        for (int t = 0; t < T; ++t) {
+            const int v = codes[(size_t) t * (size_t) n_cb + (size_t) cb];
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+            if (v < 0 || v >= book) invalid++;
+        }
+        total_invalid += invalid;
+        std::fprintf(
+            stderr,
+            "[BREEZE_VOCODER_CODES] cb=%d min=%d max=%d invalid=%d book=%d pad=%d eos=%d\n",
+            cb, lo, hi, invalid, book,
+            m.cfg.codebook_pad_token_id,
+            m.cfg.codebook_eos_token_id
+        );
+    }
+    if (total_invalid != 0) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_VOCODER_CODES] INVALID_TOTAL=%d frames=%d codebooks=%d\n",
+            total_invalid, T, n_cb
+        );
+        throw std::runtime_error(
+            "Breeze vocoder received out-of-range codec index before dq lookup"
+        );
+    }
+
     auto lookup = [&](const std::string & name, int cb) {
         std::vector<int32_t> idx(T);
-        for (int t = 0; t < T; t++) idx[t] = codes[(size_t) t * n_cb + cb];
+        for (int t = 0; t < T; t++) {
+            idx[t] = codes[(size_t) t * (size_t) n_cb + (size_t) cb];
+        }
         ggml_tensor * ids = g.input_i32(idx, T);
-        return ggml_get_rows(ctx, m.w(name), ids);
+        ggml_tensor * rows = ggml_get_rows(ctx, m.w(name), ids);
+        return vocoder_diag_probe(
+            ctx, g, probes, "dq.cb." + std::to_string(cb) + ".lookup", rows
+        );
     };
 
     ggml_tensor * first = lookup("codec.dq.first.0.embed", 0);
     first = linear(ctx, m.w("codec.dq.first.out_proj.weight"), first);
+    first = vocoder_diag_probe(ctx, g, probes, "dq.first.proj", first);
 
     ggml_tensor * rest = nullptr;
     for (int cb = 1; cb < n_cb; cb++) {
         ggml_tensor * e = lookup("codec.dq.rest." + std::to_string(cb - 1) + ".embed", cb);
-        rest = rest ? ggml_add(ctx, rest, e) : e;
+        if (rest) {
+            rest = ggml_add(ctx, rest, e);
+            rest = vocoder_diag_probe(
+                ctx, g, probes, "dq.rest.sum." + std::to_string(cb), rest
+            );
+        } else {
+            rest = e;
+        }
     }
     if (rest) {
         rest = linear(ctx, m.w("codec.dq.rest.out_proj.weight"), rest);
+        rest = vocoder_diag_probe(ctx, g, probes, "dq.rest.proj", rest);
         first = ggml_add(ctx, first, rest);
+        first = vocoder_diag_probe(ctx, g, probes, "dq.merge", first);
     }
-    return ggml_cont(ctx, ggml_transpose(ctx, first));
+    ggml_tensor * out = ggml_cont(ctx, ggml_transpose(ctx, first));
+    return vocoder_diag_probe(ctx, g, probes, "dq.out", out);
 }
 
 static CodecStreamCacheBlock & ensure_cache(
@@ -245,8 +303,7 @@ ggml_tensor * vocoder_decode(
 ) {
     const VocoderConfig & c = m.cfg.voc;
 
-    ggml_tensor * h = quantizer_decode(ctx, m, g, codes, n_cb, T);
-    h = vocoder_diag_probe(ctx, g, probes, "dq.out", h);
+    ggml_tensor * h = quantizer_decode(ctx, m, g, codes, n_cb, T, probes);
 
     h = conv1d_causal(ctx, m.w("codec.dpre.conv.weight"), m.w("codec.dpre.conv.bias"), h, 1, 1);
     h = vocoder_diag_probe(ctx, g, probes, "dpre.conv", h);
@@ -297,7 +354,7 @@ ggml_tensor * vocoder_decode_stream(
 ) {
     const VocoderConfig & c = m.cfg.voc;
 
-    ggml_tensor * h = quantizer_decode(ctx, m, g, codes, n_cb, T);
+    ggml_tensor * h = quantizer_decode(ctx, m, g, codes, n_cb, T, nullptr);
     h = stream_conv1d(
         ctx, m, g, state, updates, "pre_conv",
         m.w("codec.dpre.conv.weight"), m.w("codec.dpre.conv.bias"), h, 1
