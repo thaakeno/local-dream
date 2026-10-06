@@ -86,55 +86,131 @@ public:
         if (!setup_io()) return false;
         auto & graph = (*m_graphsInfo)[0];
         if (graph.numInputTensors != 1 || graph.numOutputTensors != 1) return false;
-        auto & in=inputs[0]; auto & out=outputs[0];
-        const auto ib=QNN_TENSOR_GET_CLIENT_BUF(in), ob=QNN_TENSOR_GET_CLIENT_BUF(out);
-        if (QNN_TENSOR_GET_DATA_TYPE(in)!=QNN_DATATYPE_FLOAT_32 ||
-            QNN_TENSOR_GET_DATA_TYPE(out)!=QNN_DATATYPE_FLOAT_32) {
-            std::fprintf(stderr,"[BREEZE_QNN] expected fp32 IO input=%d output=%d\n",
-                (int)QNN_TENSOR_GET_DATA_TYPE(in),(int)QNN_TENSOR_GET_DATA_TYPE(out)); return false;
+
+        auto & in = inputs[0];
+        auto & out = outputs[0];
+
+        const uint32_t rank = QNN_TENSOR_GET_RANK(in);
+        const uint32_t * dims = QNN_TENSOR_GET_DIMENSIONS(in);
+        size_t input_elems = 1;
+        for (uint32_t i = 0; i < rank; ++i) input_elems *= dims ? dims[i] : 1;
+        if (input_elems != feature_count) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN] input element mismatch graph=%zu host=%zu\n",
+                input_elems,
+                feature_count
+            );
+            return false;
         }
-        const size_t ibytes=feature_count*sizeof(float), obytes=sample_count*sizeof(float);
-        if (ib.dataSize!=ibytes || ob.dataSize!=obytes) {
-            std::fprintf(stderr,"[BREEZE_QNN] IO bytes in=%u/%zu out=%u/%zu\n",ib.dataSize,ibytes,ob.dataSize,obytes); return false;
-        }
-        const uint32_t rank=QNN_TENSOR_GET_RANK(in);
-        const uint32_t *dims=QNN_TENSOR_GET_DIMENSIONS(in);
-        const float *src_features=features;
+
+        const float * src_features = features;
         std::vector<float> repacked;
-        const char *layout="NFC";
-        if(rank==3 && dims){
-            if(dims[1]==64 && dims[2]==512){
-                layout="NFC";
-            } else if(dims[1]==512 && dims[2]==64){
-                layout="NCF";
+        const char * layout = "NFC";
+        if (rank == 3 && dims) {
+            if (dims[1] == 64 && dims[2] == 512) {
+                layout = "NFC";
+            } else if (dims[1] == 512 && dims[2] == 64) {
+                layout = "NCF";
                 repacked.resize(feature_count);
-                for(size_t t=0;t<64;t++){
-                    for(size_t ch=0;ch<512;ch++){
-                        repacked[ch*64+t]=features[t*512+ch];
+                for (size_t t = 0; t < 64; ++t) {
+                    for (size_t ch = 0; ch < 512; ++ch) {
+                        repacked[ch * 64 + t] = features[t * 512 + ch];
                     }
                 }
-                src_features=repacked.data();
+                src_features = repacked.data();
             } else {
-                std::fprintf(stderr,"[BREEZE_QNN] unexpected input shape rank=3 dims=%u,%u,%u\n",
-                    dims[0],dims[1],dims[2]);
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN] unexpected input shape rank=3 dims=%u,%u,%u\n",
+                    dims[0], dims[1], dims[2]
+                );
                 return false;
             }
         }
-        std::memcpy(ib.data,src_features,ibytes);
-        if(rank==3 && dims){
-            std::fprintf(stderr,"[BREEZE_QNN_IO] input=%ux%ux%u layout=%s bytes=%u\n",
-                dims[0],dims[1],dims[2],layout,ib.dataSize);
+
+        // The compiled SM8850 context now exposes native FP16 graph IO.
+        // Use QAIRT's conversion helpers instead of memcpy so FP32 host LUT
+        // features are converted exactly to the graph's native tensor type.
+        if (
+            m_ioTensor.copyFromFloatToNative(src_features, &in) !=
+            qnn::tools::iotensor::StatusCode::SUCCESS
+        ) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN] failed to convert FP32 host features to native input type=%d\n",
+                (int) QNN_TENSOR_GET_DATA_TYPE(in)
+            );
+            return false;
         }
-        const auto t0=std::chrono::steady_clock::now();
-        const auto st=m_qnnFunctionPointers.qnnInterface.graphExecute(graph.graph,inputs,graph.numInputTensors,outputs,graph.numOutputTensors,m_profileBackendHandle,nullptr);
-        const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
-        if(st!=QNN_GRAPH_NO_ERROR){ std::fprintf(stderr,"[BREEZE_QNN] graphExecute failed err=%d\n",(int)st); return false; }
-        std::memcpy(audio,ob.data,obytes);
-        double sum=0,sq=0; float peak=0; size_t bad=0;
-        for(size_t i=0;i<sample_count;i++){float v=audio[i]; if(!std::isfinite(v)){bad++;continue;} sum+=v;sq+=(double)v*v;peak=std::max(peak,std::fabs(v));}
-        const double rms=sample_count?std::sqrt(sq/sample_count):0;
-        std::fprintf(stderr,"[BREEZE_QNN] graph64_ms=%.2f output=fp32 checksum=%.7g peak=%.7g rms=%.7g nonfinite=%zu\n",ms,sum,peak,rms,bad);
-        return bad==0;
+
+        if (rank == 3 && dims) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_IO] input=%ux%ux%u layout=%s native_type=%d bytes=%u\n",
+                dims[0], dims[1], dims[2], layout,
+                (int) QNN_TENSOR_GET_DATA_TYPE(in),
+                QNN_TENSOR_GET_CLIENT_BUF(in).dataSize
+            );
+        }
+
+        const auto t0 = std::chrono::steady_clock::now();
+        const auto st = m_qnnFunctionPointers.qnnInterface.graphExecute(
+            graph.graph,
+            inputs,
+            graph.numInputTensors,
+            outputs,
+            graph.numOutputTensors,
+            m_profileBackendHandle,
+            nullptr
+        );
+        const double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0
+        ).count();
+        if (st != QNN_GRAPH_NO_ERROR) {
+            std::fprintf(stderr, "[BREEZE_QNN] graphExecute failed err=%d\n", (int) st);
+            return false;
+        }
+
+        if (
+            m_ioTensor.convertToFloatInto(audio, &out) !=
+            qnn::tools::iotensor::StatusCode::SUCCESS
+        ) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN] failed to convert native PCM output type=%d to FP32\n",
+                (int) QNN_TENSOR_GET_DATA_TYPE(out)
+            );
+            return false;
+        }
+
+        double sum = 0.0;
+        double sq = 0.0;
+        float peak = 0.0f;
+        size_t bad = 0;
+        for (size_t i = 0; i < sample_count; ++i) {
+            const float v = audio[i];
+            if (!std::isfinite(v)) {
+                ++bad;
+                continue;
+            }
+            sum += v;
+            sq += (double) v * v;
+            peak = std::max(peak, std::fabs(v));
+        }
+        const double rms = sample_count ? std::sqrt(sq / sample_count) : 0.0;
+        std::fprintf(
+            stderr,
+            "[BREEZE_QNN] graph64_ms=%.2f input_type=%d output_type=%d checksum=%.7g peak=%.7g rms=%.7g nonfinite=%zu\n",
+            ms,
+            (int) QNN_TENSOR_GET_DATA_TYPE(in),
+            (int) QNN_TENSOR_GET_DATA_TYPE(out),
+            sum,
+            peak,
+            rms,
+            bad
+        );
+        return bad == 0;
     }
 
     // Short speech flushes benefit from race-to-idle. QNN owns the HTP clock

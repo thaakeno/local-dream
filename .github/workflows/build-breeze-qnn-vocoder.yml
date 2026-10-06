@@ -141,7 +141,7 @@ jobs:
           export PYTHONPATH="${QNN_SDK_ROOT}/lib/python:${PYTHONPATH:-}"
           export LD_LIBRARY_PATH="${QNN_SDK_ROOT}/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
           OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
-          qnn-onnx-converter             --input_network "$OUT/breeze_vocoder_64.onnx"             --output_path "$OUT/breeze_vocoder_64.cpp"             --float_bitwidth 16             --preserve_io datatype quantized audio
+          qnn-onnx-converter             --input_network "$OUT/breeze_vocoder_64.onnx"             --output_path "$OUT/breeze_vocoder_64.cpp"             --float_bitwidth 16             --preserve_io layout quantized audio
           qnn-model-lib-generator             -c "$OUT/breeze_vocoder_64.cpp"             -b "$OUT/breeze_vocoder_64.bin"             -t x86_64-linux-clang             -o "$OUT/model_lib"
           test -s "$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"
 
@@ -185,11 +185,25 @@ jobs:
           export LD_LIBRARY_PATH="${QNN_SDK_ROOT}/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
           OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
           mkdir -p "$OUT/contexts/sm8850"
-          qnn-context-binary-generator             --backend "${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtp.so"             --model "$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"             --htp_socs sm8850             --binary_file breeze-vocoder-sm8850-feature64-fp16             --output_dir "$OUT/contexts/sm8850"             --log_level info
+          qnn-context-binary-generator             --backend "${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtp.so"             --model "$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"             --htp_socs sm8850             --backend_extensions_lib_path "${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtpNetRunExtensions.so"             --binary_file breeze-vocoder-sm8850-feature64-fp16             --output_dir "$OUT/contexts/sm8850"             --log_level info
           file="$(find "$OUT/contexts/sm8850" -maxdepth 1 -type f -name 'breeze-vocoder-sm8850-feature64-fp16.*' -print -quit)"
           test -n "$file"; test -s "$file"
           mv "$file" "$OUT/contexts/breeze-vocoder-sm8850-feature64-fp16.bin"
           rm -rf "$OUT/contexts/sm8850"
+
+          qnn-context-binary-utility             --context_binary "$OUT/contexts/breeze-vocoder-sm8850-feature64-fp16.bin"             --json_file "$OUT/contexts/context-info.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("build/breeze-qnn/contexts/context-info.json")
+          data=json.loads(p.read_text())
+          text=json.dumps(data)
+          if "quantized" not in text or "audio" not in text:
+              raise SystemExit("compiled QNN context lost expected vocoder IO names")
+          if "FLOAT_16" not in text and "float16" not in text.lower():
+              raise SystemExit("compiled QNN context did not expose native FP16 IO")
+          print("compiled SM8850 context contract OK")
+          PY
           cp "$OUT/breeze_quantizer_lut_fp32.bin" "$OUT/contexts/breeze-quantizer-lut-fp32.bin"
 
       - name: Build manifest and licensing
@@ -218,6 +232,7 @@ jobs:
             "qnn_version":"2.50.0.260828",
             "frames":64,"left_context_frames":25,"samples_per_frame":1920,
             "sample_rate":24000,"feature_channels":512,"feature_layout":"NFC",
+            "qnn_input_dtype":"float16","qnn_output_dtype":"float16",
             "source":"BreezeBlue/Breeze-TTS-2 audio_tokenizer",
             "license":"BreezeBlue Research and Non-Commercial License v1.1",
             "files":{"SM8850":{
