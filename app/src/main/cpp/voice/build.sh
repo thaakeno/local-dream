@@ -137,43 +137,51 @@ grep -q 'codebook_buffer' "$(pwd)/overlay/breeze/include/breeze/gguf_loader.h"
 grep -q 'refusing %s with raw quantized HTP weight' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -Fq '"${BREEZE_OVERLAY_DIR}/src/gguf_loader.cpp"' "$(pwd)/CMakeLists.txt"
 
-# Exact v153 streaming graph invariants.
-grep -q 'std::vector<float> data' "$(pwd)/overlay/breeze/include/breeze/codec.h"
-grep -q 'struct StreamCacheUpdate' "$(pwd)/overlay/breeze/include/breeze/codec.h"
-grep -q 'g.input_f32(block.data' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-grep -Fq 'ggml_conv_1d(ctx, w, joined, 1, 0, dilation)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-grep -q 'keep_tail(ctx, g, joined, block, N, updates)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-# SnakeBeta must use the numerically safe reference form. The old exp(-beta)
-# rewrite can overflow on real decoder weights even though the tiny self-test
-# passes, producing all-NaN PCM on SM8850.
+# v193 production streaming invariants. v192 proved that the old silent
+# stateful runs were contaminated by raw quantized weights. Keep the v192
+# REPACK correctness fix, but restore an exact incremental vocoder that leaves
+# causal state resident on HTP and never re-decodes overlapping prefixes.
+grep -q 'conv_capacity_f32' "$(pwd)/overlay/breeze/include/breeze/codec.h"
+grep -q 'conv_bank' "$(pwd)/overlay/breeze/include/breeze/codec.h"
+if grep -q 'struct StreamCacheUpdate\|std::vector<float> data' "$(pwd)/overlay/breeze/include/breeze/codec.h"; then
+    echo "Host-roundtrip vocoder cache regression returned" >&2
+    exit 1
+fi
+grep -q 'cache_view(ctx, state, block, state.conv_bank)' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'state.conv_bank ^ 1' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'stream_convtr1d_raw' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'K - stride' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'kv_store_future' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
+grep -q 'kv_history_view' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
+if grep -q 'cache_append(ctx, g, state.kv' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"; then
+    echo "Streaming KV write-read alias regression returned" >&2
+    exit 1
+fi
+
+# SnakeBeta must remain numerically safe after the v192 correctness fix.
 grep -Fq 'ggml_div(ctx, one, ggml_add(ctx, beta, tiny))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 grep -q '1.0e-9f' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
 if grep -q 'ggml_exp(ctx, ggml_neg(ctx, lb))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
     echo "Unsafe SnakeBeta exp(-beta) regression returned" >&2
     exit 1
 fi
-grep -Fq 'g.input_f32(mask_v, kv_len, T)' "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
-grep -q 'u.block->data = tensor_to_f32(u.tensor)' "$(pwd)/overlay/breeze/src/codec.cpp"
-if grep -q 'CodecDebugProbes\|convtr1d_raw\|kv_store_future\|block.tensor\|conv_ctx\|conv_buffer' \
-    "$(pwd)/overlay/breeze/include/breeze/codec.h" \
-    "$(pwd)/overlay/breeze/src/codec.cpp" \
-    "$(pwd)/overlay/breeze/src/codec_decoder.cpp" \
-    "$(pwd)/overlay/breeze/src/codec_transformer.cpp"; then
-    echo "Post-v153 codec graph rewrite returned" >&2
-    exit 1
-fi
 
-# Generation keeps the fast backbone/depth runners, but audio decoding must use
-# the upstream reference vocoder graph. The custom stateful decode_stream path
-# completed on SM8850 but produced effectively silent PCM.
-grep -q '\[BREEZE_AUDIO\].*path=upstream-reference' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'decode_reference_audio' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'codec.decode(codes, n_frames)' "$(pwd)/overlay/breeze/src/generation.cpp"
-if grep -q 'codec.decode_stream' "$(pwd)/overlay/breeze/src/generation.cpp"; then
-    echo "Silent custom streaming vocoder returned to generation path" >&2
+# Normal TTS must decode each generated frame once. The old reference window
+# path decoded 40, then 80, then 94 frames for a 94-frame clip and caused the
+# 167-second run on SM8850.
+grep -q 'codec.decode_stream(sub, count)' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q '[BREEZE_AUDIO].*path=stateful-stream' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q '[BREEZE_VOCODER_STREAM]' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'chunk = chunk_max' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'audio_embed_forward(m, frame, 1)' "$(pwd)/overlay/breeze/src/generation.cpp"
+
+# Full-clip decode remains available for voice conversion/reference work, but
+# production decode must not attach the old full-tensor SUM diagnostic probes.
+grep -Fq 'vocoder_decode(g.ctx, *m, g, codes, n_cb, T, nullptr)' "$(pwd)/overlay/breeze/src/codec.cpp"
+if grep -q 'u.block->data = tensor_to_f32' "$(pwd)/overlay/breeze/src/codec.cpp"; then
+    echo "Per-flush HTP-to-host cache round trips returned" >&2
     exit 1
 fi
-grep -q 'audio_embed_forward(m, frame, 1)' "$(pwd)/overlay/breeze/src/generation.cpp"
 
 rm -rf "$BUILD_DIR"
 
@@ -216,11 +224,11 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=v153-default-opbatch1280x32
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,quant-weight-repack-ordinary-map,decoder-codebook-ordinary-htp-mirror,raw-quant-matmul-guard,exact-v153-hexagon-kernels,exact-v153-codec-graph,upstream-dcache-64b-pr29977
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,quant-weight-repack-ordinary-map,decoder-codebook-ordinary-htp-mirror,raw-quant-matmul-guard,stateful-vocoder-htp-resident,pingpong-causal-state,exact-tconv-output-overlap,bounded-stream-kv,upstream-dcache-64b-pr29977
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
-vocoder=upstream-reference-window40-quant-repack-fix-v192
+vocoder=stateful-stream-once-chunk8x32-repack-fix-v193
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
