@@ -314,6 +314,99 @@ static void test_col2im_bias(Backend & be) {
     test_col2im_case(be, "col2im1d-bias-s8-c64", 16, 64, 8, 8, 0);
 }
 
+static void test_v81_hmx_visibility_chains(Backend & be) {
+    // Reproduce the SM8850/v81 failure mode reported upstream: HMX MUL_MAT
+    // produces correct data in isolation, but a dependent ADD in the same
+    // DSP op-batch can observe stale data. Use dimensions large/aligned enough
+    // to select HMX, then verify the complete dependent chain numerically.
+    constexpr int K = 256;
+    constexpr int M = 64;
+    constexpr int N = 32;
+
+    std::vector<float> w((size_t) K * M);
+    std::vector<float> x((size_t) K * N);
+    std::vector<float> bias(M);
+    for (int m = 0; m < M; ++m) {
+        bias[m] = -0.04f + 0.001f * (float) m;
+        for (int k = 0; k < K; ++k) {
+            w[(size_t) k + (size_t) K * m] =
+                0.018f * std::sin(0.013f * (float) (1 + k + 3 * m));
+        }
+    }
+    for (int n = 0; n < N; ++n) {
+        for (int k = 0; k < K; ++k) {
+            x[(size_t) k + (size_t) K * n] =
+                0.021f * std::cos(0.017f * (float) (1 + 2 * k + n));
+        }
+    }
+
+    std::vector<float> expected((size_t) M * N);
+    for (int n = 0; n < N; ++n) {
+        for (int m = 0; m < M; ++m) {
+            double acc = bias[m];
+            for (int k = 0; k < K; ++k) {
+                acc += (double) w[(size_t) k + (size_t) K * m] *
+                       (double) x[(size_t) k + (size_t) K * n];
+            }
+            expected[(size_t) m + (size_t) M * n] = (float) acc;
+        }
+    }
+
+    {
+        Graph g(192);
+        auto * tw = g.input_f32(w, K, M);
+        auto * tx = g.input_f32(x, K, N);
+        auto * tb = g.input_f32(bias, M);
+        auto * mm = ggml_mul_mat(g.ctx, tw, tx);
+        auto * out = ggml_add(g.ctx, mm, tb);
+        g.compute(be, out);
+        require_close(
+            "v81-hmx-mulmat-add-visibility",
+            tensor_to_f32(out),
+            expected,
+            8e-3f
+        );
+    }
+
+    // The same v81 class of bug has also been observed for asynchronous GELU
+    // output consumed by the next DSP op. Verify GELU_ERF -> HMX MUL_MAT.
+    std::vector<float> gx((size_t) K * N);
+    for (int n = 0; n < N; ++n) {
+        for (int k = 0; k < K; ++k) {
+            gx[(size_t) k + (size_t) K * n] =
+                0.9f * std::sin(0.009f * (float) (3 + k + 5 * n));
+        }
+    }
+    std::vector<float> expected_gelu((size_t) M * N, 0.0f);
+    for (int n = 0; n < N; ++n) {
+        for (int m = 0; m < M; ++m) {
+            double acc = 0.0;
+            for (int k = 0; k < K; ++k) {
+                const float v = gx[(size_t) k + (size_t) K * n];
+                const float gelu =
+                    0.5f * v * (1.0f + std::erf(v * 0.7071067811865475f));
+                acc += (double) w[(size_t) k + (size_t) K * m] * (double) gelu;
+            }
+            expected_gelu[(size_t) m + (size_t) M * n] = (float) acc;
+        }
+    }
+
+    {
+        Graph g(192);
+        auto * tw = g.input_f32(w, K, M);
+        auto * tx = g.input_f32(gx, K, N);
+        auto * gelu = ggml_gelu_erf(g.ctx, tx);
+        auto * out = ggml_mul_mat(g.ctx, tw, gelu);
+        g.compute(be, out);
+        require_close(
+            "v81-gelu-hmx-visibility",
+            tensor_to_f32(out),
+            expected_gelu,
+            1.2e-2f
+        );
+    }
+}
+
 static void test_v81_direct_residual_add(Backend & be) {
     // Mirrors the streamed ConvNeXt/residual geometry that previously reached
     // the generic chunked binary DMA/VTCM kernel and stalled the v81 DSP.
@@ -367,6 +460,7 @@ int main() {
         test_snake(be);
         test_col2im_bias(be);
         test_v81_direct_residual_add(be);
+        test_v81_hmx_visibility_chains(be);
         be.free();
         std::fprintf(stderr, "[BREEZE_SELFTEST] all-ok\n");
         return 0;
