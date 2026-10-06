@@ -8,6 +8,18 @@
 namespace breeze {
 namespace codec_detail {
 
+static ggml_tensor * vocoder_diag_probe(
+    ggml_context * ctx, Graph & g, std::vector<VocoderDiagProbe> * probes,
+    const std::string & name, ggml_tensor * x
+) {
+    if (!probes) return x;
+    ggml_tensor * scalar = ggml_sum(ctx, x);
+    ggml_set_output(scalar);
+    g.write(scalar);
+    probes->push_back({ name, scalar });
+    return x;
+}
+
 static ggml_tensor * snake_beta(ggml_context * ctx, ggml_tensor * x, ggml_tensor * la, ggml_tensor * lb) {
     ggml_tensor * alpha = ggml_reshape_2d(ctx, ggml_exp(ctx, la), 1, la->ne[0]);
     ggml_tensor * inv_beta = ggml_reshape_2d(ctx, ggml_exp(ctx, ggml_neg(ctx, lb)), 1, lb->ne[0]);
@@ -15,25 +27,42 @@ static ggml_tensor * snake_beta(ggml_context * ctx, ggml_tensor * x, ggml_tensor
     return ggml_add(ctx, x, ggml_mul(ctx, ggml_sqr(ctx, s), inv_beta));
 }
 
-static ggml_tensor * convnext(ggml_context * ctx, BreezeModel & m, const std::string & p, ggml_tensor * x) {
+static ggml_tensor * convnext(
+    ggml_context * ctx, BreezeModel & m, Graph & g, std::vector<VocoderDiagProbe> * probes,
+    const std::string & p, ggml_tensor * x
+) {
     ggml_tensor * dw = m.w(p + ".dw.weight");
     ggml_tensor * h = depthwise1d_causal(ctx, dw, m.w(p + ".dw.bias"), x, (int) dw->ne[1]);
+    h = vocoder_diag_probe(ctx, g, probes, p + ".dw", h);
     h = ggml_cont(ctx, ggml_transpose(ctx, h));
     h = layer_norm(ctx, h, m.w(p + ".norm.weight"), m.w(p + ".norm.bias"), 1e-6f);
+    h = vocoder_diag_probe(ctx, g, probes, p + ".norm", h);
     h = ggml_add(ctx, linear(ctx, m.w(p + ".pw1.weight"), h), m.w(p + ".pw1.bias"));
+    h = vocoder_diag_probe(ctx, g, probes, p + ".pw1", h);
     h = ggml_gelu_erf(ctx, h);
+    h = vocoder_diag_probe(ctx, g, probes, p + ".gelu", h);
     h = ggml_add(ctx, linear(ctx, m.w(p + ".pw2.weight"), h), m.w(p + ".pw2.bias"));
+    h = vocoder_diag_probe(ctx, g, probes, p + ".pw2", h);
     h = ggml_mul(ctx, h, m.w(p + ".gamma"));
-    return ggml_add(ctx, x, ggml_cont(ctx, ggml_transpose(ctx, h)));
+    h = vocoder_diag_probe(ctx, g, probes, p + ".gamma", h);
+    ggml_tensor * out = ggml_add(ctx, x, ggml_cont(ctx, ggml_transpose(ctx, h)));
+    return vocoder_diag_probe(ctx, g, probes, p + ".residual", out);
 }
 
-static ggml_tensor * residual_unit(ggml_context * ctx, BreezeModel & m, const std::string & p,
-                                   ggml_tensor * x, int dilation) {
+static ggml_tensor * residual_unit(
+    ggml_context * ctx, BreezeModel & m, Graph & g, std::vector<VocoderDiagProbe> * probes,
+    const std::string & p, ggml_tensor * x, int dilation
+) {
     ggml_tensor * h = snake_beta(ctx, x, m.w(p + ".a1"), m.w(p + ".b1"));
+    h = vocoder_diag_probe(ctx, g, probes, p + ".snake1", h);
     h = conv1d_causal(ctx, m.w(p + ".conv1.conv.weight"), m.w(p + ".conv1.conv.bias"), h, 1, dilation);
+    h = vocoder_diag_probe(ctx, g, probes, p + ".conv1", h);
     h = snake_beta(ctx, h, m.w(p + ".a2"), m.w(p + ".b2"));
+    h = vocoder_diag_probe(ctx, g, probes, p + ".snake2", h);
     h = conv1d_causal(ctx, m.w(p + ".conv2.conv.weight"), m.w(p + ".conv2.conv.bias"), h, 1, 1);
-    return ggml_add(ctx, x, h);
+    h = vocoder_diag_probe(ctx, g, probes, p + ".conv2", h);
+    ggml_tensor * out = ggml_add(ctx, x, h);
+    return vocoder_diag_probe(ctx, g, probes, p + ".residual", out);
 }
 
 static ggml_tensor * quantizer_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
@@ -195,39 +224,56 @@ static ggml_tensor * residual_unit_stream(
     return ggml_add(ctx, x, h);
 }
 
-ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
-                             const std::vector<int> & codes, int n_cb, int T) {
+ggml_tensor * vocoder_decode(
+    ggml_context * ctx, BreezeModel & m, Graph & g,
+    const std::vector<int> & codes, int n_cb, int T,
+    std::vector<VocoderDiagProbe> * probes
+) {
     const VocoderConfig & c = m.cfg.voc;
 
     ggml_tensor * h = quantizer_decode(ctx, m, g, codes, n_cb, T);
+    h = vocoder_diag_probe(ctx, g, probes, "dq.out", h);
+
     h = conv1d_causal(ctx, m.w("codec.dpre.conv.weight"), m.w("codec.dpre.conv.bias"), h, 1, 1);
+    h = vocoder_diag_probe(ctx, g, probes, "dpre.conv", h);
 
     h = ggml_cont(ctx, ggml_transpose(ctx, h));
-    h = vocoder_transformer(ctx, m, g, h, T);
+    h = vocoder_transformer(ctx, m, g, h, T, probes);
     h = ggml_cont(ctx, ggml_transpose(ctx, h));
+    h = vocoder_diag_probe(ctx, g, probes, "dtf.transpose_out", h);
 
     for (size_t i = 0; i < c.upsampling_ratios.size(); i++) {
         const std::string p = "codec.dup." + std::to_string(i);
         h = convtr1d_causal(ctx, m.w(p + ".up.conv.weight"), m.w(p + ".up.conv.bias"), h,
                             c.upsampling_ratios[i]);
-        h = convnext(ctx, m, p, h);
+        h = vocoder_diag_probe(ctx, g, probes, p + ".up", h);
+        h = convnext(ctx, m, g, probes, p, h);
     }
 
     h = conv1d_causal(ctx, m.w("codec.dhead.conv.weight"), m.w("codec.dhead.conv.bias"), h, 1, 1);
+    h = vocoder_diag_probe(ctx, g, probes, "dhead.conv", h);
+
     const int dilations[3] = { 1, 3, 9 };
     for (size_t i = 0; i < c.upsample_rates.size(); i++) {
         const std::string p = "codec.dblk." + std::to_string(i);
         h = snake_beta(ctx, h, m.w(p + ".alpha"), m.w(p + ".beta"));
+        h = vocoder_diag_probe(ctx, g, probes, p + ".snake", h);
         h = convtr1d_causal(ctx, m.w(p + ".up.conv.weight"), m.w(p + ".up.conv.bias"), h,
                             c.upsample_rates[i]);
+        h = vocoder_diag_probe(ctx, g, probes, p + ".up", h);
         for (int j = 0; j < 3; j++) {
-            h = residual_unit(ctx, m, p + ".res." + std::to_string(j), h, dilations[j]);
+            h = residual_unit(
+                ctx, m, g, probes, p + ".res." + std::to_string(j), h, dilations[j]
+            );
         }
     }
 
     h = snake_beta(ctx, h, m.w("codec.dfin.alpha"), m.w("codec.dfin.beta"));
+    h = vocoder_diag_probe(ctx, g, probes, "dfin.snake", h);
     h = conv1d_causal(ctx, m.w("codec.dfin.conv.weight"), m.w("codec.dfin.conv.bias"), h, 1, 1);
-    return ggml_clamp(ctx, h, -1.0f, 1.0f);
+    h = vocoder_diag_probe(ctx, g, probes, "dfin.conv", h);
+    h = ggml_clamp(ctx, h, -1.0f, 1.0f);
+    return vocoder_diag_probe(ctx, g, probes, "output.clamp", h);
 }
 
 ggml_tensor * vocoder_decode_stream(
