@@ -369,11 +369,12 @@ jobs:
           grep -q 'v81_visibility=none-v153-scheduler' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81_execution=hvx-only-no-hmx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'gelu_erf=dsp-libm-reference-v81' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'exact-v153-model-map' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'quant-weight-repack-ordinary-map' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'raw-quant-matmul-guard' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'decoder-codebook-ordinary-htp-mirror' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'exact-v153-hexagon-kernels' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'exact-v153-codec-graph' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'vocoder=upstream-reference-window40-dq-op-probes-v191' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'vocoder=upstream-reference-window40-quant-repack-fix-v192' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im-bias-fused' app/src/main/assets/breezelibs/backend-version.txt
