@@ -96,6 +96,8 @@ grep -q 'static int opt_opbatch  = 1280' "$GGML_DIR/src/ggml-hexagon/ggml-hexago
 grep -q 'static int opt_opqueue  = 32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'static int opt_opfusion = 1' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'ggml_hexagon_v81_needs_visibility_split' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'batch->n_ops == 0' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'for (uint32_t i = batch->n_ops; i-- > 0;)' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'v81 visibility batch split before' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 
 # Apply upstream llama.cpp PR #29977 exactly: Hexagon SDK 6.6 performs one
@@ -198,7 +200,7 @@ fallback=disabled
 integration=pinned-source-overlay
 queue=v153-default-opbatch1280x32
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,exact-v153-model-map,decoder-codebook-ordinary-htp-mirror,exact-v153-hexagon-kernels,exact-v153-codec-graph,upstream-dcache-64b-pr29977
-v81_visibility=fifo-batch-split-hmx-unary-glu
+v81_visibility=fifo-batch-split-live-prefix-hmx-unary-glu
 legacy_ci_marker=v81_visibility=dependency-batch-split-hmx-unary-glu
 vocoder=upstream-reference-window40-signal-validated
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
