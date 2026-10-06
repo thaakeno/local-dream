@@ -13,13 +13,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: breeze-qnn-vocoder-sm8850-v2
+  group: breeze-qnn-vocoder-sm8850-v3
   cancel-in-progress: true
 
 env:
   QNN_VERSION: '2.50.0.260828'
   QNN_URL: 'https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip'
-  VOCODER_RELEASE: 'breeze-qnn-vocoder-sm8850-v2'
+  VOCODER_RELEASE: 'breeze-qnn-vocoder-sm8850-v3'
   VOCODER_FRAMES: '64'
 
 jobs:
@@ -64,6 +64,7 @@ jobs:
             fi
           done < <(find "$install_dir" -maxdepth 4 -type d)
           test -n "$sdk_root"
+          test -s "$sdk_root/lib/x86_64-linux-clang/libQnnHtpNetRunExtensions.so"
           echo "QNN_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
           echo "$sdk_root/bin/x86_64-linux-clang" >> "$GITHUB_PATH"
           echo "LD_LIBRARY_PATH=$sdk_root/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
@@ -133,6 +134,8 @@ jobs:
               raise SystemExit("ONNX feature-vocoder parity/signal check failed")
           PY
           test -s build/breeze-qnn/breeze_quantizer_lut_fp32.bin
+          test -s build/breeze-qnn/breeze_vocoder_64.features.raw
+          test -s build/breeze-qnn/breeze_vocoder_64.audio.raw
 
       - name: Convert ONNX to FP16 QNN model library
         shell: bash
@@ -150,18 +153,11 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
-
-          # The QAIRT CPU backend is only a reference/integration backend and
-          # rejects the converter's legal Conv1D->Reshape lowering used by the
-          # HTP graph. Validate semantics against ONNX (already done above),
-          # then let the actual SM8850 HTP context compiler be the authoritative
-          # backend compatibility check.
           test -s "$OUT/breeze_vocoder_64.onnx"
           test -s "$OUT/breeze_vocoder_64.features.raw"
-          test -s "$OUT/breeze_vocoder_64.reference.pt"
+          test -s "$OUT/breeze_vocoder_64.audio.raw"
           test -s "$OUT/breeze_quantizer_lut_fp32.bin"
           test -s "$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"
-
           python - <<'PY'
           import json
           from pathlib import Path
@@ -178,38 +174,86 @@ jobs:
           print("feature-vocoder contract OK", meta)
           PY
 
-      - name: Compile SM8850 HTP context
+      - name: Compile native SM8850 V81 HTP context
         shell: bash
         run: |
           set -euxo pipefail
           export LD_LIBRARY_PATH="${QNN_SDK_ROOT}/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
           OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
-          mkdir -p "$OUT/contexts/sm8850"
-          # Do not pass QnnHtpNetRunExtensions without a matching backend
-          # config file. QAIRT interprets that as graph-level configuration and
-          # rejects the model with "Graph configs specified without a graph
-          # name". The previously proven v1 flow compiled exact-SoC contexts
-          # with --htp_socs alone, which is all we need here.
-          qnn-context-binary-generator             --backend "${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtp.so"             --model "$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"             --htp_socs sm8850             --binary_file breeze-vocoder-sm8850-feature64-fp16             --output_dir "$OUT/contexts/sm8850"             --log_level info
-          file="$(find "$OUT/contexts/sm8850" -maxdepth 1 -type f -name 'breeze-vocoder-sm8850-feature64-fp16.*' -print -quit)"
+          mkdir -p "$OUT/contexts/sm8850" "$OUT/config"
+
+          # QAIRT's public device table maps SM8850 to SoC model 87 / Hexagon V81.
+          # The old --htp_socs path silently emitted a generic V68 context
+          # (socModel=0), which loaded on V81 but returned constant near-zero PCM.
+          cat > "$OUT/config/htp_config.json" <<'JSON'
+          {
+            "graphs": {
+              "vtcm_mb": 8,
+              "graph_names": ["breeze_vocoder_64"]
+            },
+            "devices": [
+              {
+                "soc_id": 87,
+                "dsp_arch": "v81",
+                "cores": [
+                  {
+                    "core_id": 0,
+                    "perf_profile": "burst",
+                    "rpc_control_latency": 100
+                  }
+                ]
+              }
+            ]
+          }
+          JSON
+
+          cat > "$OUT/config/context_config.json" <<JSON
+          {
+            "backend_extensions": {
+              "shared_library_path": "${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtpNetRunExtensions.so",
+              "config_file_path": "$OUT/config/htp_config.json"
+            }
+          }
+          JSON
+
+          qnn-context-binary-generator             --backend "${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtp.so"             --model "$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"             --binary_file breeze-vocoder-sm8850-v81-feature64-fp16             --output_dir "$OUT/contexts/sm8850"             --config_file "$OUT/config/context_config.json"             --log_level info
+
+          file="$(find "$OUT/contexts/sm8850" -maxdepth 1 -type f -name 'breeze-vocoder-sm8850-v81-feature64-fp16.*' -print -quit)"
           test -n "$file"; test -s "$file"
-          mv "$file" "$OUT/contexts/breeze-vocoder-sm8850-feature64-fp16.bin"
+          mv "$file" "$OUT/contexts/breeze-vocoder-sm8850-v81-feature64-fp16.bin"
           rm -rf "$OUT/contexts/sm8850"
 
-          qnn-context-binary-utility             --context_binary "$OUT/contexts/breeze-vocoder-sm8850-feature64-fp16.bin"             --json_file "$OUT/contexts/context-info.json"
+          qnn-context-binary-utility             --context_binary "$OUT/contexts/breeze-vocoder-sm8850-v81-feature64-fp16.bin"             --json_file "$OUT/contexts/context-info.json"
+
           python - <<'PY'
           import json
           from pathlib import Path
           p=Path("build/breeze-qnn/contexts/context-info.json")
           data=json.loads(p.read_text())
+          info=data["info"]
+          graph=info["graphs"][0]["info"]
           text=json.dumps(data)
-          if "quantized" not in text or "audio" not in text:
-              raise SystemExit("compiled QNN context lost expected vocoder IO names")
-          if "FLOAT_16" not in text and "float16" not in text.lower():
-              raise SystemExit("compiled QNN context did not expose native FP16 IO")
-          print("compiled SM8850 context contract OK")
+          dsp_arch=info["contextMetadata"]["info"]["dspArch"]
+          soc_model=info["socModel"]
+          print("compiled target socModel=",soc_model,"dspArch=",dsp_arch)
+          if dsp_arch != 81:
+              raise SystemExit(f"WRONG HTP ARCH: expected V81, context contains V{dsp_arch}")
+          if soc_model != 87:
+              raise SystemExit(f"WRONG SOC MODEL: expected SM8850/87, context contains {soc_model}")
+          if graph["graphName"] != "breeze_vocoder_64":
+              raise SystemExit("wrong graph name")
+          gi=graph["graphInputs"][0]["info"]
+          go=graph["graphOutputs"][0]["info"]
+          if gi["name"] != "quantized" or gi["dataType"] != "QNN_DATATYPE_FLOAT_16":
+              raise SystemExit("compiled QNN context lost expected FP16 input contract")
+          if go["name"] != "audio" or go["dataType"] != "QNN_DATATYPE_FLOAT_16":
+              raise SystemExit("compiled QNN context lost expected FP16 output contract")
+          print("native SM8850 V81 context contract OK")
           PY
+
           cp "$OUT/breeze_quantizer_lut_fp32.bin" "$OUT/contexts/breeze-quantizer-lut-fp32.bin"
+          cp "$OUT/breeze_vocoder_64.features.raw" "$OUT/contexts/breeze-vocoder-selftest-features-fp32.bin"
+          cp "$OUT/breeze_vocoder_64.audio.raw" "$OUT/contexts/breeze-vocoder-selftest-audio-fp32.bin"
 
       - name: Build manifest and licensing
         shell: bash
@@ -220,10 +264,12 @@ jobs:
           cat > "$OUT/NOTICE-Breeze-QNN-Vocoder.txt" <<'EOF'
           Breeze TTS 2 is licensed under the BreezeBlue Research and Non-Commercial
           License Agreement. Copyright (c) 2026 RESONIA, INC. All Rights Reserved.
-          Modification: the released decoder is converted to an SM8850 QAIRT/QNN
-          HTP context. The residual-vector-quantizer rows are preprojected into an
-          FP32 lookup table to provide verified FLOAT32 features to QNN.
+          Modification: the released decoder is converted to an SM8850 / Hexagon V81
+          QAIRT/QNN HTP context. The residual-vector-quantizer rows are preprojected
+          into an FP32 lookup table. Reference input/output tensors are included only
+          for on-device numerical self-validation.
           EOF
+
           python - <<'PY'
           import hashlib,json
           from pathlib import Path
@@ -232,17 +278,21 @@ jobs:
               d=(root/name).read_bytes()
               return {"file":name,"bytes":len(d),"sha256":hashlib.sha256(d).hexdigest()}
           manifest={
-            "version":2,
-            "backend":"QAIRT/QNN HTP FP16 feature-input",
+            "version":3,
+            "backend":"QAIRT/QNN HTP FP16 feature-input native SM8850 V81",
             "qnn_version":"2.50.0.260828",
+            "soc_model":87,
+            "htp_arch":"V81",
             "frames":64,"left_context_frames":25,"samples_per_frame":1920,
             "sample_rate":24000,"feature_channels":512,"feature_layout":"NFC",
             "qnn_input_dtype":"float16","qnn_output_dtype":"float16",
             "source":"BreezeBlue/Breeze-TTS-2 audio_tokenizer",
             "license":"BreezeBlue Research and Non-Commercial License v1.1",
             "files":{"SM8850":{
-              "context":spec("breeze-vocoder-sm8850-feature64-fp16.bin"),
-              "lut":spec("breeze-quantizer-lut-fp32.bin")
+              "context":spec("breeze-vocoder-sm8850-v81-feature64-fp16.bin"),
+              "lut":spec("breeze-quantizer-lut-fp32.bin"),
+              "selftest_features":spec("breeze-vocoder-selftest-features-fp32.bin"),
+              "selftest_audio":spec("breeze-vocoder-selftest-audio-fp32.bin")
             }}
           }
           (root/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
@@ -254,18 +304,18 @@ jobs:
       - name: Upload CI artifact
         uses: actions/upload-artifact@v6
         with:
-          name: Breeze-QNN-Vocoder-SM8850-v2
+          name: Breeze-QNN-Vocoder-SM8850-v3
           path: build/breeze-qnn/contexts/*
           retention-days: 14
           if-no-files-found: error
 
-      - name: Publish SM8850 v2 release
+      - name: Publish SM8850 v3 release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euxo pipefail
           if ! gh release view "$VOCODER_RELEASE" >/dev/null 2>&1; then
-            gh release create "$VOCODER_RELEASE"               --title "Breeze QNN Vocoder SM8850 v2"               --notes "SM8850-only QAIRT QNN HTP feature-input vocoder. Derived from Breeze TTS 2; research/non-commercial use only."
+            gh release create "$VOCODER_RELEASE"               --title "Breeze QNN Vocoder SM8850 v3"               --notes "SM8850/Hexagon V81 QAIRT QNN HTP vocoder with on-device numerical self-test. Derived from Breeze TTS 2; research/non-commercial use only."
           fi
           gh release upload "$VOCODER_RELEASE" build/breeze-qnn/contexts/* --clobber

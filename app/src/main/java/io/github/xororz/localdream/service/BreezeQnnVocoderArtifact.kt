@@ -15,15 +15,17 @@ import okhttp3.Request
 import org.json.JSONObject
 
 object BreezeQnnVocoderArtifact {
-    private const val RELEASE_TAG = "breeze-qnn-vocoder-sm8850-v2"
+    private const val RELEASE_TAG = "breeze-qnn-vocoder-sm8850-v3"
     private const val BASE_URL =
         "https://github.com/thaakeno/local-dream/releases/download/" + RELEASE_TAG
-    private const val DIR = "breeze_qnn_vocoder/v2-sm8850"
+    private const val DIR = "breeze_qnn_vocoder/v3-sm8850"
 
     data class Install(
         val soc: String,
         val contextFile: File,
         val lutFile: File,
+        val selftestFeaturesFile: File,
+        val selftestAudioFile: File,
     )
 
     sealed class Status {
@@ -71,25 +73,34 @@ object BreezeQnnVocoderArtifact {
 
         return runCatching {
             val json = JSONObject(marker.readText())
-            if (json.optInt("version") != 2 || json.optString("soc") != soc) {
+            if (json.optInt("version") != 3 || json.optString("soc") != soc) {
                 return@runCatching null
             }
 
-            val contextFile = File(dir(context), json.getString("contextFile"))
-            val lutFile = File(dir(context), json.getString("lutFile"))
-            val contextBytes = json.getLong("contextBytes")
-            val lutBytes = json.getLong("lutBytes")
-
-            if (
-                !contextFile.isFile ||
-                !lutFile.isFile ||
-                contextFile.length() != contextBytes ||
-                lutFile.length() != lutBytes
-            ) {
-                null
-            } else {
-                Install(soc, contextFile, lutFile)
+            fun checkedFile(nameKey: String, bytesKey: String): File? {
+                val file = File(dir(context), json.getString(nameKey))
+                val bytes = json.getLong(bytesKey)
+                return file.takeIf { it.isFile && it.length() == bytes }
             }
+
+            val contextFile = checkedFile("contextFile", "contextBytes")
+                ?: return@runCatching null
+            val lutFile = checkedFile("lutFile", "lutBytes")
+                ?: return@runCatching null
+            val selftestFeaturesFile =
+                checkedFile("selftestFeaturesFile", "selftestFeaturesBytes")
+                    ?: return@runCatching null
+            val selftestAudioFile =
+                checkedFile("selftestAudioFile", "selftestAudioBytes")
+                    ?: return@runCatching null
+
+            Install(
+                soc,
+                contextFile,
+                lutFile,
+                selftestFeaturesFile,
+                selftestAudioFile,
+            )
         }.getOrNull()
     }
 
@@ -170,37 +181,59 @@ object BreezeQnnVocoderArtifact {
         runCatching {
             val manifestRequest =
                 Request.Builder().url(BASE_URL + "/manifest.json").get().build()
-            val spec = Http.client.newCall(manifestRequest).execute().use { response ->
+            val root = Http.client.newCall(manifestRequest).execute().use { response ->
                 if (!response.isSuccessful) error("Accelerator manifest unavailable")
                 val body = response.body?.string() ?: error("Empty manifest")
-                JSONObject(body).getJSONObject("files").getJSONObject(soc)
+                JSONObject(body)
+            }
+            if (
+                root.optInt("version") != 3 ||
+                root.optInt("soc_model") != 87 ||
+                root.optString("htp_arch") != "V81"
+            ) {
+                error("Accelerator manifest is not native SM8850/V81")
             }
 
+            val spec = root.getJSONObject("files").getJSONObject(soc)
             val contextSpec = spec.getJSONObject("context")
             val lutSpec = spec.getJSONObject("lut")
+            val selftestFeaturesSpec = spec.getJSONObject("selftest_features")
+            val selftestAudioSpec = spec.getJSONObject("selftest_audio")
 
-            val contextName = contextSpec.getString("file")
-            val contextBytes = contextSpec.getLong("bytes")
-            val contextSha = contextSpec.getString("sha256")
+            data class DownloadSpec(
+                val name: String,
+                val bytes: Long,
+                val sha: String,
+            )
+            fun parse(obj: JSONObject) = DownloadSpec(
+                obj.getString("file"),
+                obj.getLong("bytes"),
+                obj.getString("sha256"),
+            )
 
-            val lutName = lutSpec.getString("file")
-            val lutBytes = lutSpec.getLong("bytes")
-            val lutSha = lutSpec.getString("sha256")
-            val total = contextBytes + lutBytes
-
+            val items = listOf(
+                parse(contextSpec),
+                parse(lutSpec),
+                parse(selftestFeaturesSpec),
+                parse(selftestAudioSpec),
+            )
+            val total = items.sumOf { it.bytes }
             val destination = dir(context)
             destination.mkdirs()
-            val contextFile = File(destination, contextName)
-            val lutFile = File(destination, lutName)
 
-            downloadFile(
-                contextName, contextBytes, contextSha,
-                contextFile, soc, 0L, total,
-            )
-            downloadFile(
-                lutName, lutBytes, lutSha,
-                lutFile, soc, contextBytes, total,
-            )
+            var base = 0L
+            items.forEach { item ->
+                downloadFile(
+                    item.name,
+                    item.bytes,
+                    item.sha,
+                    File(destination, item.name),
+                    soc,
+                    base,
+                    total,
+                )
+                base += item.bytes
+            }
 
             listOf(
                 "LICENSE-Breeze-TTS-2.txt",
@@ -216,23 +249,30 @@ object BreezeQnnVocoderArtifact {
                 }
             }
 
+            val context = items[0]
+            val lut = items[1]
+            val selftestFeatures = items[2]
+            val selftestAudio = items[3]
             File(destination, "installed.json").writeText(
                 JSONObject()
-                    .put("version", 2)
+                    .put("version", 3)
                     .put("soc", soc)
-                    .put("contextFile", contextName)
-                    .put("contextBytes", contextBytes)
-                    .put("contextSha256", contextSha)
-                    .put("lutFile", lutName)
-                    .put("lutBytes", lutBytes)
-                    .put("lutSha256", lutSha)
+                    .put("contextFile", context.name)
+                    .put("contextBytes", context.bytes)
+                    .put("lutFile", lut.name)
+                    .put("lutBytes", lut.bytes)
+                    .put("selftestFeaturesFile", selftestFeatures.name)
+                    .put("selftestFeaturesBytes", selftestFeatures.bytes)
+                    .put("selftestAudioFile", selftestAudio.name)
+                    .put("selftestAudioBytes", selftestAudio.bytes)
                     .toString(),
             )
 
-            // Remove the old silent-output v1 artifact only after v2 has been
-            // downloaded and verified completely.
+            // Only remove older artifacts after v3 + reference tensors are
+            // downloaded and checksum-verified.
             File(context.filesDir, "breeze_qnn_vocoder/v1").deleteRecursively()
-            _status.value = Status.Ready(soc, contextFile)
+            File(context.filesDir, "breeze_qnn_vocoder/v2-sm8850").deleteRecursively()
+            _status.value = Status.Ready(soc, File(destination, context.name))
         }.onFailure { error ->
             _status.value = Status.Error(
                 soc,
