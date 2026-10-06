@@ -188,10 +188,8 @@ jobs:
           OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
           mkdir -p "$OUT/contexts"
           BACKEND="${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtp.so"
-          EXTENSIONS="${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtpNetRunExtensions.so"
           MODEL="$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"
           test -s "$BACKEND"
-          test -s "$EXTENSIONS"
           test -s "$MODEL"
 
           # FP16 HTP contexts require v69+; SM8350/v68 has no FP16 execution.
@@ -199,7 +197,7 @@ jobs:
           for soc in sm8450 sm8475 sm8550 sm8650 sm8750 sm8850; do
             work="$OUT/contexts/$soc"
             mkdir -p "$work"
-            qnn-context-binary-generator               --backend "$BACKEND"               --model "$MODEL"               --htp_socs "$soc"               --backend_extensions_lib_path "$EXTENSIONS"               --binary_file "breeze-vocoder-$soc-fp16"               --output_dir "$work"               --log_level info
+            qnn-context-binary-generator               --backend "$BACKEND"               --model "$MODEL"               --htp_socs "$soc"               --binary_file "breeze-vocoder-$soc-fp16"               --output_dir "$work"               --log_level info
             file="$(find "$work" -maxdepth 1 -type f -name "breeze-vocoder-$soc-fp16.*" -print -quit)"
             test -n "$file"
             test -s "$file"
