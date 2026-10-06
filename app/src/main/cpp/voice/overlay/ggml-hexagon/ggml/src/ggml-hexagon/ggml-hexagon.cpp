@@ -4282,7 +4282,7 @@ void ggml_hexagon_session::enqueue_op(const htp_opnode & node) {
     if (opt_arch >= 81 && !op_batch->empty() && op_batch->has_data_hazard(node)) {
         if (opt_batchlog) {
             GGML_LOG_INFO(
-                "ggml-hex: %s BREEZE_HTP_BARRIER n_ops=%u next=%s reason=data-hazard\\n",
+                "ggml-hex: %s BREEZE_HTP_BARRIER n_ops=%u next=%s reason=data-hazard\n",
                 this->c_name(), op_batch->n_ops, node.op_name().c_str()
             );
         }
