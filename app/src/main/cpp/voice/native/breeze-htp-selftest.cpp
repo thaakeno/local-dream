@@ -317,8 +317,8 @@ static void test_col2im_bias(Backend & be) {
 static void test_v81_hmx_visibility_chain(Backend & be) {
     // Evidence-backed SM8850/v81 regression test: HMX MUL_MAT output consumed
     // by a dependent ADD. This exact class of producer/consumer corruption is
-    // reported publicly on v81 and directly exercises the synchronous HMX
-    // visibility barrier used by Breeze.
+    // reported publicly on v81 and directly exercises the FIFO packet-boundary
+    // visibility workaround used by Breeze.
     constexpr int K = 256;
     constexpr int M = 64;
     constexpr int N = 32;
