@@ -81,7 +81,7 @@ public:
                                                   (*m_graphsInfo)[0]);
     }
 
-    bool execute(const int32_t * codes, size_t code_count, float * audio, size_t sample_count) {
+    bool execute(const float * codes, size_t code_count, float * audio, size_t sample_count) {
         if (!setup_io()) return false;
         auto & graph = (*m_graphsInfo)[0];
         if (graph.numInputTensors != 1 || graph.numOutputTensors != 1) {
@@ -98,22 +98,22 @@ public:
         const auto in_type = QNN_TENSOR_GET_DATA_TYPE(in);
         const auto out_type = QNN_TENSOR_GET_DATA_TYPE(out);
 
-        if (in_type != QNN_DATATYPE_INT_32 || out_type != QNN_DATATYPE_FLOAT_32) {
+        if (in_type != QNN_DATATYPE_FLOAT_32 || out_type != QNN_DATATYPE_FLOAT_32) {
             std::fprintf(stderr,
                          "[BREEZE_QNN] unsupported IO dtype input=%d output=%d\n",
                          (int) in_type, (int) out_type);
             return false;
         }
-        if (in_buf.dataSize != code_count * sizeof(int32_t) ||
+        if (in_buf.dataSize != code_count * sizeof(float) ||
             out_buf.dataSize != sample_count * sizeof(float)) {
             std::fprintf(stderr,
                          "[BREEZE_QNN] IO byte mismatch in=%u/%zu out=%u/%zu\n",
-                         in_buf.dataSize, code_count * sizeof(int32_t),
+                         in_buf.dataSize, code_count * sizeof(float),
                          out_buf.dataSize, sample_count * sizeof(float));
             return false;
         }
 
-        std::memcpy(in_buf.data, codes, code_count * sizeof(int32_t));
+        std::memcpy(in_buf.data, codes, code_count * sizeof(float));
         const auto t0 = std::chrono::steady_clock::now();
         const auto st = m_qnnFunctionPointers.qnnInterface.graphExecute(
             graph.graph,
@@ -292,18 +292,18 @@ std::vector<float> BreezeQnnVocoder::decode_stream(
         throw std::runtime_error("Breeze QNN vocoder chunk exceeds fixed graph");
     }
 
-    std::vector<int32_t> input(
-        (size_t) n_cb * (size_t) impl_->fixed_frames, 0);
+    std::vector<float> input(
+        (size_t) n_cb * (size_t) impl_->fixed_frames, 0.0f);
     // QNN graph contract is [1, codebook, time].
     for (int cb = 0; cb < n_cb; ++cb) {
         for (int t = 0; t < ctx; ++t) {
             const int src_frame = history_frames - ctx + t;
             input[(size_t) cb * impl_->fixed_frames + t] =
-                impl_->history[(size_t) src_frame * n_cb + cb];
+                static_cast<float>(impl_->history[(size_t) src_frame * n_cb + cb]);
         }
         for (int t = 0; t < T; ++t) {
             input[(size_t) cb * impl_->fixed_frames + ctx + t] =
-                codes[(size_t) t * n_cb + cb];
+                static_cast<float>(codes[(size_t) t * n_cb + cb]);
         }
     }
 
