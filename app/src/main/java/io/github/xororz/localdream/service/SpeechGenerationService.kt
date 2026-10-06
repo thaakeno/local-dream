@@ -47,7 +47,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v179-reference-vocoder-audio-validated"
+            "breeze-a0e177-hexagon-ab9acc-v181-v81-visibility-dcache64"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -253,9 +253,10 @@ class SpeechGenerationService : Service() {
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
                     "queue=v153-default-1280x32 opfusion=1 hmx=1 " +
-                    "getrows=exact-v153 dcache=exact-v153-128b modelmap=exact-v153 " +
-                    "codebooks=ordinary-htp-mirror vocoder=upstream-reference-window40 " +
-                    "signal_validation=native+pcm16 runtime=${runtimeDir.absolutePath}",
+                    "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=exact-v153 " +
+                    "codebooks=ordinary-htp-mirror visibility=v81-hmx-unary-glu-batch-split " +
+                    "vocoder=upstream-reference-window40 signal_validation=native+pcm16 " +
+                    "runtime=${runtimeDir.absolutePath}",
             )
             runBackendSelfTest(env, modelId, started)
             BackendDiagnostics.append(this, "BREEZE_CMD", command.joinToString(" "))
