@@ -24,24 +24,24 @@ static ggml_tensor * vocoder_diag_probe(
 }
 
 static ggml_tensor * snake_beta(
-    ggml_context * ctx, Graph & g, ggml_tensor * x, ggml_tensor * la, ggml_tensor * lb
+    ggml_context * ctx, Graph & g, ggml_tensor * x,
+    ggml_tensor * alpha_param, ggml_tensor * inv_beta_param
 ) {
-    // Match the tokenizer/reference implementation exactly:
-    // x + sin(x * exp(alpha))^2 / (exp(beta) + 1e-9).
-    // Do not rewrite this as exp(-beta): real Breeze decoder beta values can
-    // drive that form to +Inf on HTP before the final clamp.
-    const int C = (int) la->ne[0];
-    std::vector<float> ones((size_t) C, 1.0f);
-    std::vector<float> eps((size_t) C, 1.0e-9f);
-
-    ggml_tensor * alpha = ggml_reshape_2d(ctx, ggml_exp(ctx, la), 1, C);
-    ggml_tensor * beta = ggml_reshape_2d(ctx, ggml_exp(ctx, lb), 1, C);
-    ggml_tensor * one = g.input_f32(ones, 1, C);
-    ggml_tensor * tiny = g.input_f32(eps, 1, C);
-    ggml_tensor * inv_beta = ggml_div(ctx, one, ggml_add(ctx, beta, tiny));
-
-    ggml_tensor * s = ggml_sin(ctx, ggml_mul(ctx, x, alpha));
-    return ggml_add(ctx, x, ggml_mul(ctx, ggml_sqr(ctx, s), inv_beta));
+    // The loader precomputes the exact reference invariants once:
+    // alpha = exp(a), inv_beta = 1 / (exp(b) + 1e-9).
+    // Keeping only the five waveform ops here lets the Hexagon backend collapse
+    // the whole activation into one HTP_OP_SNAKE and removes >100 fixed-cost
+    // scalar/vector nodes from each streaming vocoder graph.
+    (void) g;
+    const int C = (int) alpha_param->ne[0];
+    ggml_tensor * alpha = ggml_reshape_2d(ctx, alpha_param, 1, C);
+    ggml_tensor * inv_beta = ggml_reshape_2d(ctx, inv_beta_param, 1, C);
+    ggml_tensor * sinusoid = ggml_sin(ctx, ggml_mul(ctx, x, alpha));
+    return ggml_add(
+        ctx,
+        x,
+        ggml_mul(ctx, ggml_sqr(ctx, sinusoid), inv_beta)
+    );
 }
 
 static ggml_tensor * convnext(
