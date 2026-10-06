@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <future>
 #include <random>
 #include <stdexcept>
 
@@ -229,13 +230,20 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
 
     std::vector<int> frames;
     int emitted = 0;
+    int submitted = 0;
     bool stopped = false;
     codec.stream_reset();
 
-    // Start with a small chunk for first-audio latency, then jump straight to
-    // the largest configured chunk to amortize DSPQueue/graph dispatch cost.
+    const bool qnn_pipeline = codec.uses_qnn_vocoder();
+    const bool qnn_long = qnn_pipeline && max_new > 64;
+    // Short utterances are fastest as one fixed QNN graph at the end. For long
+    // speech, start a small first job then settle at 39 new frames: 25 frames
+    // of left context + 39 new = the fixed 64-frame graph.
+    const int qnn_first_new = 24;
+    const int qnn_steady_new = 39;
+
     const int chunk_max = std::max(1, req.chunk_max);
-    int chunk = std::min(std::max(1, req.chunk_first), chunk_max);
+    int fallback_chunk = std::min(std::max(1, req.chunk_first), chunk_max);
 
     size_t streamed_samples = 0;
     size_t streamed_nonfinite = 0;
@@ -243,58 +251,121 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     double streamed_sumsq = 0.0;
     float streamed_peak = 0.0f;
 
-    auto flush = [&](bool final_flush) {
+    struct DecodeResult {
+        std::vector<float> audio;
+        double ms = 0.0;
+        int count = 0;
+        int start = 0;
+    };
+    std::future<DecodeResult> decode_job;
+    bool decode_active = false;
+    int qnn_next_new = qnn_first_new;
+
+    auto consume_audio = [&](DecodeResult result) {
+        const size_t want = (size_t) result.count * (size_t) spf;
+        if (result.audio.size() != want) {
+            throw std::runtime_error("Breeze streaming vocoder returned the wrong PCM chunk length");
+        }
+
+        tm.vocoder += result.ms;
+        tm.flushes++;
+        const AudioStats ast = audio_stats(result.audio);
+        streamed_samples += ast.samples;
+        streamed_nonfinite += ast.nonfinite;
+        streamed_pcm_nonzero += ast.pcm_nonzero;
+        streamed_peak = std::max(streamed_peak, ast.peak);
+        streamed_sumsq += ast.rms * ast.rms * (double) ast.samples;
+
+        std::fprintf(
+            stderr,
+            "[BREEZE_VOCODER_STREAM] flush=%d new_frames=%d samples=%zu ms=%.2f "
+            "total_ms=%.2f peak=%.6g rms=%.6g pipeline=%d\n",
+            tm.flushes, result.count, result.audio.size(), result.ms,
+            tm.vocoder, ast.peak, ast.rms, qnn_pipeline ? 1 : 0
+        );
+
+        if (!tm.first_audio) {
+            tm.first_vocoder = result.ms;
+            tm.first_frames = result.count;
+            tm.first_audio = since(t_start);
+        }
+        if (!cb(result.audio.data(), result.audio.size())) return false;
+        emitted += result.count;
+        return true;
+    };
+
+    auto collect_qnn = [&](bool block) {
+        if (!decode_active) return true;
+        if (!block &&
+            decode_job.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+            return true;
+        }
+        DecodeResult result = decode_job.get();
+        decode_active = false;
+        return consume_audio(std::move(result));
+    };
+
+    auto submit_qnn = [&](int count) {
+        if (decode_active || count <= 0) return;
+        const int start = submitted;
+        std::vector<int> sub(
+            frames.begin() + (size_t) start * (size_t) nc,
+            frames.begin() + (size_t) (start + count) * (size_t) nc
+        );
+        submitted += count;
+        std::fprintf(
+            stderr,
+            "[BREEZE_PIPELINE] submit start=%d frames=%d generated=%d\n",
+            start, count, (int) frames.size() / nc
+        );
+        decode_job = std::async(
+            std::launch::async,
+            [&codec, sub = std::move(sub), count, start]() mutable {
+                const auto tv = clock_now();
+                std::vector<float> audio = codec.decode_stream(sub, count);
+                DecodeResult result;
+                result.audio = std::move(audio);
+                result.ms = since(tv);
+                result.count = count;
+                result.start = start;
+                return result;
+            }
+        );
+        decode_active = true;
+    };
+
+    auto pump_qnn = [&]() {
+        if (!qnn_pipeline) return true;
+        if (!collect_qnn(false)) return false;
+        if (!qnn_long || decode_active) return true;
         const int have = (int) frames.size() / nc;
-        while (have - emitted >= chunk || (final_flush && have > emitted)) {
+        const int pending = have - submitted;
+        if (pending >= qnn_next_new) {
+            submit_qnn(qnn_next_new);
+            qnn_next_new = qnn_steady_new;
+        }
+        return true;
+    };
+
+    auto flush_fallback = [&](bool final_flush) {
+        const int have = (int) frames.size() / nc;
+        while (have - emitted >= fallback_chunk || (final_flush && have > emitted)) {
             const int count = final_flush
                 ? std::min(chunk_max, have - emitted)
-                : chunk;
+                : fallback_chunk;
             const int start = emitted;
             std::vector<int> sub(
                 frames.begin() + (size_t) start * (size_t) nc,
                 frames.begin() + (size_t) (start + count) * (size_t) nc
             );
-
             const auto tv = clock_now();
-            std::vector<float> audio = codec.decode_stream(sub, count);
-            const double vtime = since(tv);
-            tm.vocoder += vtime;
-            tm.flushes++;
-
-            const size_t want = (size_t) count * (size_t) spf;
-            if (audio.size() != want) {
-                throw std::runtime_error("Breeze streaming vocoder returned the wrong PCM chunk length");
-            }
-
-            const AudioStats ast = audio_stats(audio);
-            streamed_samples += ast.samples;
-            streamed_nonfinite += ast.nonfinite;
-            streamed_pcm_nonzero += ast.pcm_nonzero;
-            streamed_peak = std::max(streamed_peak, ast.peak);
-            streamed_sumsq += ast.rms * ast.rms * (double) ast.samples;
-
-            std::fprintf(
-                stderr,
-                "[BREEZE_VOCODER_STREAM] flush=%d new_frames=%d samples=%zu ms=%.2f "
-                "total_ms=%.2f peak=%.6g rms=%.6g\n",
-                tm.flushes,
-                count,
-                audio.size(),
-                vtime,
-                tm.vocoder,
-                ast.peak,
-                ast.rms
-            );
-
-            if (!tm.first_audio) {
-                tm.first_vocoder = vtime;
-                tm.first_frames = count;
-                tm.first_audio = since(t_start);
-            }
-            if (!cb(audio.data(), audio.size())) return false;
-
-            emitted += count;
-            chunk = chunk_max;
+            DecodeResult result;
+            result.audio = codec.decode_stream(sub, count);
+            result.ms = since(tv);
+            result.count = count;
+            result.start = start;
+            if (!consume_audio(std::move(result))) return false;
+            fallback_chunk = chunk_max;
         }
         return true;
     };
@@ -316,7 +387,12 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         if (!pad) {
             frames.insert(frames.end(), frame.begin(), frame.end());
             tm.frames++;
-            if (!flush(false)) {
+            if (qnn_pipeline) {
+                if (!pump_qnn()) {
+                    stopped = true;
+                    break;
+                }
+            } else if (!flush_fallback(false)) {
                 stopped = true;
                 break;
             }
@@ -335,6 +411,11 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         tm.backbone += since(tb);
         comb = combine_logits(o_c.logits, o_u.logits, use_cfg, req.cfg_scale);
         cb0 = sample_token(comb, bp, rng, &hist, &suppress);
+
+        if (qnn_pipeline && !pump_qnn()) {
+            stopped = true;
+            break;
+        }
 
         if (tm.frames == 1 || (tm.frames > 0 && tm.frames % 4 == 0)) {
             const double denom = std::max(1, tm.frames);
@@ -359,7 +440,28 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         );
     }
 
-    if (!stopped && !flush(true)) stopped = true;
+    if (!stopped) {
+        if (qnn_pipeline) {
+            if (!collect_qnn(true)) {
+                stopped = true;
+            }
+            // Drain whatever was not submitted while generation was running.
+            // The first/only call may contain all <=64 frames. Once history
+            // exists, 39 new frames is the maximum alongside 25-frame context.
+            while (!stopped) {
+                const int have = (int) frames.size() / nc;
+                const int pending = have - submitted;
+                if (pending <= 0) break;
+                const int count = submitted == 0
+                    ? std::min(64, pending)
+                    : std::min(qnn_steady_new, pending);
+                submit_qnn(count);
+                if (!collect_qnn(true)) stopped = true;
+            }
+        } else if (!flush_fallback(true)) {
+            stopped = true;
+        }
+    }
 
     st_c.free();
     if (use_cfg) st_u.free();
