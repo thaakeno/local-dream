@@ -5271,13 +5271,13 @@ static bool ggml_hexagon_matmul_is_hmx_eligible(
     const int ne12  = src1->ne[2];
     const int wtype = src0->type;
 
-    // SM8850 / HTP v81 still has a documented same-batch visibility bug
-    // for HMX MUL_MAT outputs, including F16 models. Breeze chains linear
-    // outputs directly into ADD/GELU/residual ops, so using HMX here can
-    // silently corrupt speech. Stay entirely on the HTP backend, but select
-    // the mature HVX matmul kernels on v81 until that device-side issue is
-    // fixed upstream.
-    if (opt_arch >= 81) {
+    // Default v81 policy remains HVX because arbitrary graphs can expose
+    // HMX producer/consumer visibility issues. Breeze's explicit v153
+    // compatibility mode restores the exact large-packet scheduling under
+    // which F16/F32 HMX completed on SM8850. Quantized HMX remains blocked
+    // separately in precompute_matmul_params_impl, so Q4/Q8 correctness fixes
+    // stay intact.
+    if (opt_arch >= 81 && !opt_v81_legacy_batch) {
         return false;
     }
 
