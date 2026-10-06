@@ -249,7 +249,7 @@ object BreezeQnnVocoderArtifact {
                 }
             }
 
-            val context = items[0]
+            val contextItem = items[0]
             val lut = items[1]
             val selftestFeatures = items[2]
             val selftestAudio = items[3]
@@ -257,8 +257,8 @@ object BreezeQnnVocoderArtifact {
                 JSONObject()
                     .put("version", 3)
                     .put("soc", soc)
-                    .put("contextFile", context.name)
-                    .put("contextBytes", context.bytes)
+                    .put("contextFile", contextItem.name)
+                    .put("contextBytes", contextItem.bytes)
                     .put("lutFile", lut.name)
                     .put("lutBytes", lut.bytes)
                     .put("selftestFeaturesFile", selftestFeatures.name)
@@ -272,7 +272,7 @@ object BreezeQnnVocoderArtifact {
             // downloaded and checksum-verified.
             File(context.filesDir, "breeze_qnn_vocoder/v1").deleteRecursively()
             File(context.filesDir, "breeze_qnn_vocoder/v2-sm8850").deleteRecursively()
-            _status.value = Status.Ready(soc, File(destination, context.name))
+            _status.value = Status.Ready(soc, File(destination, contextItem.name))
         }.onFailure { error ->
             _status.value = Status.Error(
                 soc,
