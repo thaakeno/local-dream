@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <future>
 #include <random>
 #include <stdexcept>
 
@@ -186,20 +185,23 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         (double) m.cfg.sample_rate / (double) m.cfg.samples_per_frame;
     const int estimated_frames =
         (int) (estimated_seconds * frames_per_second + 0.999);
-    // Keep generous room for slow delivery, but do not let a missing EOS turn
-    // a two-second sentence into six seconds of useless codec work.
+
+    // The text estimate is useful for UI/progress, not as a stopping rule.
+    // Breeze decides when speech is complete via EOS. The previous adaptive
+    // cap could chop slow/expressive delivery before the model emitted EOS.
     const int adaptive_slack = std::max(12, estimated_frames / 2);
-    int adaptive_cap = std::max(32, estimated_frames + adaptive_slack);
-    // Keep ordinary short utterances inside one proven upstream vocoder graph.
-    // 40 codec frames are 3.2 seconds at 24 kHz / 1920 samples per frame.
-    if (estimated_frames <= 32) adaptive_cap = std::min(adaptive_cap, 40);
-    const int max_new = std::min(configured_max, adaptive_cap);
+    const int soft_target = std::min(
+        configured_max,
+        std::max(32, estimated_frames + adaptive_slack)
+    );
+    const int max_new = configured_max;
     std::fprintf(
         stderr,
-        "[BREEZE_LIMIT] estimate=%.2fs estimated_frames=%d configured=%d effective=%d\n",
+        "[BREEZE_LIMIT] estimate=%.2fs estimated_frames=%d configured=%d soft=%d hard=%d eos_first=1\n",
         estimated_seconds,
         estimated_frames,
         configured_max,
+        soft_target,
         max_new
     );
 
@@ -215,6 +217,11 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
 
     DepthRunner depth;
     depth.init(m, use_cfg ? 2 : 1);
+
+    // This one-frame graph is shape-stable. Replaying it avoids rebuilding and
+    // repartitioning an HTP graph for every generated codec frame.
+    AudioEmbedRunner audio_embed;
+    audio_embed.init(m);
 
     SampleParams bp;
     bp.temperature = req.temperature > 0.0f ? req.temperature : m.cfg.temperature;
@@ -235,11 +242,12 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     codec.stream_reset();
 
     const bool qnn_pipeline = codec.uses_qnn_vocoder();
-    const bool qnn_long = qnn_pipeline && max_new > 64;
-    // Short utterances are fastest as one fixed QNN graph at the end. For long
-    // speech, start a small first job then settle at 39 new frames: 25 frames
-    // of left context + 39 new = the fixed 64-frame graph.
-    const int qnn_first_new = 24;
+    // QNN and ggml-hexagon share the same physical HTP. Running them at the
+    // same time made a ~2 s QNN graph take ~8 s on SM8850. Serialize HTP work:
+    // short lines generate fully then decode once; long lines alternate large
+    // generation bursts with 64-frame/39-new-frame vocoder calls.
+    const bool qnn_streaming = qnn_pipeline && estimated_frames > 64;
+    const int qnn_first_new = 64;
     const int qnn_steady_new = 39;
 
     const int chunk_max = std::max(1, req.chunk_max);
@@ -257,9 +265,6 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         int count = 0;
         int start = 0;
     };
-    std::future<DecodeResult> decode_job;
-    bool decode_active = false;
-    int qnn_next_new = qnn_first_new;
 
     auto consume_audio = [&](DecodeResult result) {
         const size_t want = (size_t) result.count * (size_t) spf;
@@ -279,7 +284,7 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         std::fprintf(
             stderr,
             "[BREEZE_VOCODER_STREAM] flush=%d new_frames=%d samples=%zu ms=%.2f "
-            "total_ms=%.2f peak=%.6g rms=%.6g pipeline=%d\n",
+            "total_ms=%.2f peak=%.6g rms=%.6g qnn=%d scheduler=serialized\n",
             tm.flushes, result.count, result.audio.size(), result.ms,
             tm.vocoder, ast.peak, ast.rms, qnn_pipeline ? 1 : 0
         );
@@ -294,19 +299,10 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         return true;
     };
 
-    auto collect_qnn = [&](bool block) {
-        if (!decode_active) return true;
-        if (!block &&
-            decode_job.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
-            return true;
-        }
-        DecodeResult result = decode_job.get();
-        decode_active = false;
-        return consume_audio(std::move(result));
-    };
+    int qnn_next_new = qnn_first_new;
 
-    auto submit_qnn = [&](int count) {
-        if (decode_active || count <= 0) return;
+    auto run_qnn = [&](int count) {
+        if (count <= 0) return true;
         const int start = submitted;
         std::vector<int> sub(
             frames.begin() + (size_t) start * (size_t) nc,
@@ -315,34 +311,27 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         submitted += count;
         std::fprintf(
             stderr,
-            "[BREEZE_PIPELINE] submit start=%d frames=%d generated=%d\n",
+            "[BREEZE_SCHEDULER] qnn start=%d frames=%d generated=%d mode=serialized-htp\n",
             start, count, (int) frames.size() / nc
         );
-        decode_job = std::async(
-            std::launch::async,
-            [&codec, sub = std::move(sub), count, start, clock_now, since]() mutable {
-                const auto tv = clock_now();
-                std::vector<float> audio = codec.decode_stream(sub, count);
-                DecodeResult result;
-                result.audio = std::move(audio);
-                result.ms = since(tv);
-                result.count = count;
-                result.start = start;
-                return result;
-            }
-        );
-        decode_active = true;
+        const auto tv = clock_now();
+        DecodeResult result;
+        result.audio = codec.decode_stream(sub, count);
+        result.ms = since(tv);
+        result.count = count;
+        result.start = start;
+        return consume_audio(std::move(result));
     };
 
     auto pump_qnn = [&]() {
-        if (!qnn_pipeline) return true;
-        if (!collect_qnn(false)) return false;
-        if (!qnn_long || decode_active) return true;
-        const int have = (int) frames.size() / nc;
-        const int pending = have - submitted;
-        if (pending >= qnn_next_new) {
-            submit_qnn(qnn_next_new);
+        if (!qnn_pipeline || !qnn_streaming) return true;
+        int have = (int) frames.size() / nc;
+        int pending = have - submitted;
+        while (pending >= qnn_next_new) {
+            if (!run_qnn(qnn_next_new)) return false;
             qnn_next_new = qnn_steady_new;
+            have = (int) frames.size() / nc;
+            pending = have - submitted;
         }
         return true;
     };
@@ -400,7 +389,7 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         hist.push_back(cb0);
 
         auto tb = clock_now();
-        std::vector<float> ae = audio_embed_forward(m, frame, 1);
+        std::vector<float> ae = audio_embed.run(m, frame);
         if (use_cfg) {
             auto pair = backbone_run_cfg(m, st_c, st_u, ae);
             o_c = std::move(pair[0]);
@@ -432,31 +421,37 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         }
     }
 
-    if (generated_steps >= max_new && cb0 != m.cfg.backbone_eos_token_id) {
+    const bool reached_eos = cb0 == m.cfg.backbone_eos_token_id;
+    const int generated_frames = (int) frames.size() / nc;
+    std::fprintf(
+        stderr,
+        "[BREEZE_GENERATION_DONE] frames=%d eos=%d hard_limit=%d\n",
+        generated_frames,
+        reached_eos ? 1 : 0,
+        max_new
+    );
+    if (generated_steps >= max_new && !reached_eos) {
         std::fprintf(
             stderr,
-            "[BREEZE_LIMIT] adaptive ceiling reached after %d frames; returning bounded audio\n",
+            "[BREEZE_LIMIT] hard safety ceiling reached after %d steps; "
+            "audio may end at the configured frame cap\n",
             generated_steps
         );
     }
 
     if (!stopped) {
         if (qnn_pipeline) {
-            if (!collect_qnn(true)) {
-                stopped = true;
-            }
-            // Drain whatever was not submitted while generation was running.
-            // The first/only call may contain all <=64 frames. Once history
-            // exists, 39 new frames is the maximum alongside 25-frame context.
+            // No overlapping HTP jobs here: QAIRT explicitly warns that
+            // simultaneous graph execution can significantly degrade
+            // performance. Drain with the largest valid fixed-graph chunks.
             while (!stopped) {
                 const int have = (int) frames.size() / nc;
                 const int pending = have - submitted;
                 if (pending <= 0) break;
                 const int count = submitted == 0
-                    ? std::min(64, pending)
+                    ? std::min(qnn_first_new, pending)
                     : std::min(qnn_steady_new, pending);
-                submit_qnn(count);
-                if (!collect_qnn(true)) stopped = true;
+                if (!run_qnn(count)) stopped = true;
             }
         } else if (!flush_fallback(true)) {
             stopped = true;

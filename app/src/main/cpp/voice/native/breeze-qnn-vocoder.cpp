@@ -426,19 +426,27 @@ bool BreezeQnnVocoder::init_from_environment(){
                *lp=std::getenv("BREEZE_QNN_VOCODER_LUT_PATH"),
                *lib=std::getenv("BREEZE_QNN_LIB_DIR"),
                *stf=std::getenv("BREEZE_QNN_SELFTEST_FEATURES_PATH"),
-               *sta=std::getenv("BREEZE_QNN_SELFTEST_AUDIO_PATH");
-    if(!path||!*path||!lp||!*lp||!lib||!*lib||!stf||!*stf||!sta||!*sta) return false;
+               *sta=std::getenv("BREEZE_QNN_SELFTEST_AUDIO_PATH"),
+               *skip_st=std::getenv("BREEZE_QNN_SKIP_SELFTEST");
+    const bool skip_selftest=skip_st&&*skip_st&&std::atoi(skip_st)!=0;
+    if(!path||!*path||!lp||!*lp||!lib||!*lib) return false;
+    if(!skip_selftest&&(!stf||!*stf||!sta||!*sta)) return false;
     if(!std::filesystem::is_regular_file(path)||
-       !std::filesystem::is_regular_file(lp)||
-       !std::filesystem::is_regular_file(stf)||
-       !std::filesystem::is_regular_file(sta)) return false;
+       !std::filesystem::is_regular_file(lp)) return false;
+    if(!skip_selftest&&
+       (!std::filesystem::is_regular_file(stf)||
+        !std::filesystem::is_regular_file(sta))) return false;
     const size_t elems=(size_t)impl_->n_codebooks*impl_->codebook_size*impl_->feature_channels, bytes=elems*sizeof(float);
     std::error_code ec; const auto actual=std::filesystem::file_size(lp,ec);
     if(ec||actual!=bytes){std::fprintf(stderr,"[BREEZE_QNN] LUT size got=%llu expected=%zu\n",(unsigned long long)actual,bytes);return false;}
     impl_->lut.resize(elems); std::ifstream in(lp,std::ios::binary);
     if(!in.read(reinterpret_cast<char*>(impl_->lut.data()),(std::streamsize)bytes)){impl_->lut.clear();return false;}
     if(!load_qnn(lib,path,impl_->app)){impl_->lut.clear();return false;}
-    if(!run_qnn_reference_selftest(*impl_->app, stf, sta)){
+    const char * selftest_state="passed";
+    if(skip_selftest){
+        selftest_state="cached";
+        std::fprintf(stderr,"[BREEZE_QNN_SELFTEST] skipped cached=1\n");
+    }else if(!run_qnn_reference_selftest(*impl_->app, stf, sta)){
         std::fprintf(
             stderr,
             "[BREEZE_QNN_SELFTEST] FAILED; refusing broken QNN artifact and falling back\n"
@@ -448,7 +456,7 @@ bool BreezeQnnVocoder::init_from_environment(){
         return false;
     }
     impl_->history.clear();
-    std::fprintf(stderr,"[BREEZE_QNN] ready path=%s lut=%s graph_frames=64 left_context=25 features=512 layout=NFC backend=QNN-HTP-v3-sm8850-v81 selftest=passed\n",path,lp);
+    std::fprintf(stderr,"[BREEZE_QNN] ready path=%s lut=%s graph_frames=64 left_context=25 features=512 layout=NFC backend=QNN-HTP-v3-sm8850-v81 selftest=%s\n",path,lp,selftest_state);
     return true;
 }
 bool BreezeQnnVocoder::ready() const{return impl_&&impl_->app&&!impl_->lut.empty();}

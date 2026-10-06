@@ -267,15 +267,6 @@ fun SpeechRunScreen(
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            context.startService(
-                Intent(context, SpeechGenerationService::class.java)
-                    .setAction(SpeechGenerationService.ACTION_STOP),
-            )
-        }
-    }
-
     val busy = speechState is SpeechState.Loading || speechState is SpeechState.Generating
     val precision = model?.variantPrecision.orEmpty()
     val statusText = when (val state = speechState) {
@@ -1308,7 +1299,7 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             }
 
             Text(
-                "Long speech is pipelined: QNN decodes completed audio while Breeze keeps generating the next codec frames.",
+                "HTP-aware streaming alternates voice-token generation with QNN waveform decoding. The two engines never fight for the same Snapdragon HTP.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.68f),
             )

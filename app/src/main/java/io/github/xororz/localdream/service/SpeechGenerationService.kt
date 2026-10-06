@@ -43,6 +43,9 @@ class SpeechGenerationService : Service() {
     @Volatile private var nativeGeneratedFrames: Int = 0
     @Volatile private var nativeVocoderMsPerFrame: Float = 0f
     @Volatile private var usingQnnVocoder: Boolean = false
+    @Volatile private var nativeGenerationDone: Boolean = false
+    private var activeQnnSelftestMarker: File? = null
+    private var activeQnnSelftestKey: String? = null
 
     companion object {
         private const val CHANNEL_ID = "speech_generation_channel"
@@ -52,7 +55,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v197-qnn-sm8850-v81-selftest"
+            "breeze-a0e177-hexagon-ab9acc-v198-qnn-sm8850-v81-serialized-eos"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -155,7 +158,9 @@ class SpeechGenerationService : Service() {
 
             ACTION_GENERATE -> generate(intent)
             ACTION_STOP -> stopEverything()
-            else -> stopEverything()
+            // A recreated/startForegroundService call without an action must
+            // never tear down a warm 2+ GB Breeze process.
+            else -> Unit
         }
         return START_NOT_STICKY
     }
@@ -172,16 +177,40 @@ class SpeechGenerationService : Service() {
         if (servingModelId == modelId && process?.isAlive == true) {
             workJob?.cancel()
             workJob = scope.launch {
-                if (healthReady()) {
-                    _state.value = SpeechState.Ready(modelId, 0L)
-                } else {
-                    startServer(modelId)
+                repeat(8) {
+                    if (healthReady()) {
+                        _state.value = SpeechState.Ready(modelId, 0L)
+                        return@launch
+                    }
+                    delay(75)
                 }
+                startServer(modelId)
             }
             return
         }
         workJob?.cancel()
         workJob = scope.launch { startServer(modelId) }
+    }
+
+    private fun qnnSelftestKey(install: BreezeQnnVocoderArtifact.Install): String =
+        listOf(
+            RUNTIME_VERSION,
+            install.contextFile.name,
+            install.contextFile.length(),
+            install.contextFile.lastModified(),
+            install.lutFile.name,
+            install.lutFile.length(),
+            install.selftestFeaturesFile.length(),
+            install.selftestAudioFile.length(),
+        ).joinToString("|")
+
+    private fun qnnSelftestMarker(install: BreezeQnnVocoderArtifact.Install): File =
+        File(install.contextFile.parentFile, ".runtime_selftest_ok")
+
+    private fun qnnSelftestValidated(install: BreezeQnnVocoderArtifact.Install): Boolean {
+        val marker = qnnSelftestMarker(install)
+        val key = qnnSelftestKey(install)
+        return marker.isFile && runCatching { marker.readText() }.getOrNull() == key
     }
 
     private suspend fun startServer(modelId: String) {
@@ -206,6 +235,9 @@ class SpeechGenerationService : Service() {
             val qnnInstall = BreezeQnnVocoderArtifact.localInstall(this)
             val qnnVocoderFile = qnnInstall?.contextFile
             usingQnnVocoder = qnnInstall != null
+            val qnnSelftestCached = qnnInstall?.let { qnnSelftestValidated(it) } == true
+            activeQnnSelftestMarker = qnnInstall?.let { qnnSelftestMarker(it) }
+            activeQnnSelftestKey = qnnInstall?.let { qnnSelftestKey(it) }
             prepareRuntime(usingQnnVocoder)
             val executable = File(applicationInfo.nativeLibraryDir, EXECUTABLE)
             if (!executable.isFile) {
@@ -265,6 +297,10 @@ class SpeechGenerationService : Service() {
                 "GGML_HEXAGON_FA_SELECT" to "1",
                 "GGML_HEXAGON_GDN_SELECT" to "1",
                 "GGML_HEXAGON_OPFUSION" to "1",
+                // Busy-poll the DSPQueue completion ring in latency mode.
+                // This removes the response sleep/wake path used by the
+                // autoregressive one-frame generator.
+                "GGML_HEXAGON_OPPOLL" to "1",
             )
             if (qnnVocoderFile != null) {
                 env["BREEZE_QNN_VOCODER_PATH"] = qnnVocoderFile.absolutePath
@@ -275,6 +311,9 @@ class SpeechGenerationService : Service() {
                     qnnInstall.selftestAudioFile.absolutePath
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
                 env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
+                if (qnnSelftestCached) {
+                    env["BREEZE_QNN_SKIP_SELFTEST"] = "1"
+                }
             }
 
             BackendDiagnostics.beginSession(
@@ -285,12 +324,13 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
-                    "queue=v153-default-1280x32 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
+                    "queue=v198-opbatch1280x32-oppoll1 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
-                    "vocoder=" + (if (usingQnnVocoder) "qnn-htp-feature64-pipeline-v3" else "ggml-stateful-fallback") + " " +
-                    "qnn_target=sm8850-v81 qnn_selftest=reference-pcm " +
-                    "qnn_pipeline=24x39 qnn_left_context=25 qnn_host_lut=fp32 " +
+                    "vocoder=" + (if (usingQnnVocoder) "qnn-htp-feature64-serialized-v3" else "ggml-stateful-fallback") + " " +
+                    "qnn_target=sm8850-v81 qnn_selftest=" +
+                    (if (qnnSelftestCached) "cached" else "reference-pcm") + " " +
+                    "qnn_scheduler=serialized64x39 qnn_left_context=25 qnn_host_lut=fp32 eos=eos-first " +
                     "snake=precomputed+fused diag=projection-preflight-v195 signal_validation=stream+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
@@ -362,7 +402,20 @@ class SpeechGenerationService : Service() {
         workJob?.cancel()
         workJob = scope.launch {
             try {
-                if (servingModelId != modelId || process?.isAlive != true || !healthReady()) {
+                if (servingModelId == modelId && process?.isAlive == true) {
+                    var ready = false
+                    repeat(8) {
+                        if (healthReady()) {
+                            ready = true
+                            return@repeat
+                        }
+                        delay(75)
+                    }
+                    if (!ready) {
+                        startServer(modelId)
+                        if (_state.value !is SpeechState.Ready) return@launch
+                    }
+                } else {
                     startServer(modelId)
                     if (_state.value !is SpeechState.Ready) return@launch
                 }
@@ -371,7 +424,8 @@ class SpeechGenerationService : Service() {
                 nativeEffectiveFrames = 0
                 nativeDecodedFrames = 0
                 nativeGeneratedFrames = 0
-                nativeVocoderMsPerFrame = 0f
+                nativeGenerationDone = false
+                nativeVocoderMsPerFrame = if (usingQnnVocoder) 50f else 0f
                 _state.value = SpeechState.Generating(
                     modelId = modelId,
                     detail = "Starting speech generation",
@@ -756,7 +810,10 @@ class SpeechGenerationService : Service() {
             """\[([0-9:]+)<([0-9:]+),\s*([0-9.]+)\s*fps,\s*([0-9.]+)x\]""",
     )
     private val nativeLimitRegex = Regex(
-        """\[BREEZE_LIMIT\] estimate=([0-9.]+)s estimated_frames=(\d+) configured=(\d+) effective=(\d+)""",
+        """\[BREEZE_LIMIT\] estimate=([0-9.]+)s estimated_frames=(\d+) configured=(\d+) soft=(\d+) hard=(\d+) eos_first=1""",
+    )
+    private val nativeGenerationDoneRegex = Regex(
+        """\[BREEZE_GENERATION_DONE\] frames=(\d+) eos=(\d+) hard_limit=(\d+)""",
     )
     private val nativeStageRegex = Regex(
         """\[BREEZE_STAGE\] frames=(\d+) depth_ms_per_frame=([0-9.]+) backbone_ms_per_frame=([0-9.]+)""",
@@ -798,6 +855,8 @@ class SpeechGenerationService : Service() {
                     "Model validation complete" to 0.72f
                 line.contains("[BREEZE_QNN_SELFTEST] max_abs=", ignoreCase = true) ->
                     "Validating QNN waveform numerics" to 0.80f
+                line.contains("[BREEZE_QNN_SELFTEST] skipped cached=1", ignoreCase = true) ->
+                    "Using validated QNN cache" to 0.82f
                 line.contains("[BREEZE_QNN] ready", ignoreCase = true) ->
                     "QNN vocoder validated" to 0.86f
                 line.startsWith("loading ") ->
@@ -811,6 +870,20 @@ class SpeechGenerationService : Service() {
                     detail = milestone.first,
                     progress = milestone.second,
                 )
+            }
+        }
+
+        if (
+            line.contains("[BREEZE_QNN] ready", ignoreCase = true) &&
+            line.contains("selftest=passed", ignoreCase = true)
+        ) {
+            val marker = activeQnnSelftestMarker
+            val key = activeQnnSelftestKey
+            if (marker != null && key != null) {
+                runCatching {
+                    marker.parentFile?.mkdirs()
+                    marker.writeText(key)
+                }
             }
         }
 
@@ -839,6 +912,33 @@ class SpeechGenerationService : Service() {
                     progress = 0f,
                     codecProgress = 0f,
                     vocoderProgress = 0f,
+                )
+            }
+            return
+        }
+
+        nativeGenerationDoneRegex.find(line)?.let { match ->
+            val frames = match.groupValues[1].toIntOrNull() ?: 0
+            if (frames > 0) {
+                nativeGenerationDone = true
+                nativeGeneratedFrames = frames
+                nativeEffectiveFrames = frames
+                val latest = _state.value as? SpeechState.Generating ?: return
+                val vocoderP = (nativeDecodedFrames.toFloat() / frames.toFloat()).coerceIn(0f, 1f)
+                _state.value = latest.copy(
+                    detail = if (nativeDecodedFrames < frames) {
+                        "Decoding waveform on QNN HTP"
+                    } else {
+                        "Finalizing audio"
+                    },
+                    codecProgress = 1f,
+                    vocoderProgress = vocoderP,
+                    progress = if (usingQnnVocoder) {
+                        0.72f + 0.28f * vocoderP
+                    } else {
+                        0.58f + 0.42f * vocoderP
+                    },
+                    estimatedSeconds = frames * 0.08f,
                 )
             }
             return
@@ -877,19 +977,29 @@ class SpeechGenerationService : Service() {
             } else 0f
             _state.value = current.copy(
                 detail = when {
+                    !nativeGenerationDone && effective > 0 && frames >= effective ->
+                        "Extending to natural end-of-speech"
                     nativeDecodedFrames > 0 && frames < effective ->
-                        "Generating + decoding on HTP"
-                    frames >= effective && nativeDecodedFrames < effective ->
+                        "Alternating voice tokens and QNN waveform"
+                    nativeGenerationDone && nativeDecodedFrames < effective ->
                         "Finishing QNN waveform"
                     else -> "Generating voice tokens"
                 },
                 generatedSeconds = maxOf(current.generatedSeconds, generated),
-                progress = progress,
-                codecProgress = codecP,
+                progress = if (!nativeGenerationDone && effective > 0 && frames >= effective) null else progress,
+                codecProgress = if (!nativeGenerationDone && effective > 0 && frames >= effective) null else codecP,
                 vocoderProgress = vocoderP,
-                estimatedSeconds = if (effective > 0) effective * 0.08f else null,
+                estimatedSeconds = if (!nativeGenerationDone && effective > 0 && frames >= effective) {
+                    null
+                } else if (effective > 0) {
+                    effective * 0.08f
+                } else null,
                 elapsedSeconds = elapsed,
-                etaSeconds = maxOf(generationEta, vocoderEta),
+                etaSeconds = if (!nativeGenerationDone && effective > 0 && frames >= effective) {
+                    null
+                } else {
+                    generationEta + vocoderEta
+                },
                 fps = fps,
                 realtimeFactor = generated / elapsed,
             )
@@ -931,7 +1041,7 @@ class SpeechGenerationService : Service() {
             _state.value = latest.copy(
                 detail = when {
                     nativeGeneratedFrames < effective ->
-                        "Generating + decoding on HTP"
+                        "Alternating voice tokens and QNN waveform"
                     nativeDecodedFrames < effective ->
                         "Finishing QNN waveform"
                     else -> "Finalizing audio"
