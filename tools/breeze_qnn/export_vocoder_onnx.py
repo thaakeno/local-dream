@@ -144,7 +144,10 @@ def main() -> None:
             wav = hidden
             for block in d.decoder:
                 wav = block(wav)
-            # Keep graph output native FP16. QAIRT HTP already computes this\n            # decoder in FP16; forcing FLOAT32 at the graph boundary inserts a\n            # QNN_Convert that fails graph finalization on v69/v73 targets.\n            return wav.clamp(min=-1, max=1).to(torch.float16).contiguous()
+            # Keep graph output native FP16. QAIRT HTP already computes this
+            # decoder in FP16; forcing FLOAT32 at the graph boundary inserts a
+            # QNN_Convert that fails graph finalization on v69/v73 targets.
+            return wav.clamp(min=-1, max=1).to(torch.float16).contiguous()
 
     wrapper = StaticVocoder(
         decoder,
