@@ -4241,13 +4241,17 @@ static bool ggml_hexagon_v81_needs_visibility_split(
     const ggml_hexagon_opbatch * batch,
     const htp_opnode & consumer
 ) {
-    if (opt_arch != 81 || !batch || batch->ops.empty()) return false;
+    if (opt_arch != 81 || !batch || batch->n_ops == 0) return false;
 
-    // Do not assume the producer is immediately before its consumer. GGML can
-    // interleave independent nodes, so scan every still-unflushed producer in
-    // the current op-batch.
-    for (auto it = batch->ops.rbegin(); it != batch->ops.rend(); ++it) {
-        if (ggml_hexagon_v81_visibility_hazard(*it, consumer)) return true;
+    // IMPORTANT: ops is pre-sized to n_ops_max (1280) and reset() keeps that
+    // full size. Only [0, n_ops) entries are live. The old reverse-iterator
+    // implementation scanned all 1280 slots, including default/uninitialized
+    // htp_opnode entries, which can dereference invalid tensor metadata and
+    // segfault the host before frame 1. Scan only the active op prefix.
+    for (uint32_t i = batch->n_ops; i-- > 0;) {
+        if (ggml_hexagon_v81_visibility_hazard(batch->ops[i], consumer)) {
+            return true;
+        }
     }
     return false;
 }
