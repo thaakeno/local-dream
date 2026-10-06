@@ -47,7 +47,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v163-v81-opbatch64"
+            "breeze-a0e177-hexagon-ab9acc-v164-v81-hvx-depbarrier"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -237,14 +237,21 @@ class SpeechGenerationService : Service() {
                 "ADSP_LIBRARY_PATH" to dspPath,
                 "DSP_LIBRARY_PATH" to dspPath,
                 "GGML_HEXAGON_DEVICES" to "HTP0:0",
-                "GGML_HEXAGON_NHMX" to "1",
+                // Correctness-first SM8850/v81 path. MUL_MAT was already
+                // forced to HVX in the backend; disable HMX for FA/GDN too so
+                // the first vocoder graph cannot enter the known-fragile HMX
+                // queue at all. This remains strict HTP: HVX runs on Hexagon.
+                "GGML_HEXAGON_NHMX" to "0",
                 "GGML_HEXAGON_NHVX" to "0",
-                "GGML_HEXAGON_MM_SELECT" to "2",
-                "GGML_HEXAGON_OPFUSION" to "1",
-                // SM8850 / HTP v81 DSPQueue is reliable with small op batches.
-                // Public sweeps on this exact SoC found 4..64 stable with
-                // essentially flat throughput, while larger batches can hang
-                // waiting forever for the DSP response. Keep Breeze at 64.
+                "GGML_HEXAGON_MM_SELECT" to "1",
+                "GGML_HEXAGON_FA_SELECT" to "1",
+                "GGML_HEXAGON_GDN_SELECT" to "1",
+                // Producer/consumer fusion defeats the v81 DSPQueue dependency
+                // barrier, so keep Breeze's real vocoder graph unfused.
+                "GGML_HEXAGON_OPFUSION" to "0",
+                // 64 remains an upper bound, but the backend now additionally
+                // splits at real tensor dependencies. Independent work can still
+                // batch; producer/consumer chains get a cache-visible boundary.
                 "GGML_HEXAGON_OPBATCH" to "64",
                 "GGML_HEXAGON_BATCHLOG" to "1",
                 // Busy-poll completions while speech is actively generating.
@@ -260,8 +267,8 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
-                    "queue=opbatch64 oppoll=1 opfusion=1 hmx=fp-only " +
-                    "quant-matmul=hvx-v81 batchlog=1 " +
+                    "queue=depbarrier-opbatch64 oppoll=1 opfusion=0 hmx=disabled-v81 " +
+                    "matmul=hvx fa=hvx gdn=hvx batchlog=1 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
             runBackendSelfTest(env, modelId, started)
