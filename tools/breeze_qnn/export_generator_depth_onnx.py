@@ -316,9 +316,8 @@ def parity(depth, prefill: DepthPrefill, step: DepthStep):
     if d.backbone_hidden_state_projector is not None:
         b = d.backbone_hidden_state_projector(b)
     pair = torch.stack((b, token_embed), dim=1)
-    emb = d.inputs_embeds_projector(pair)
     ref = d(
-        inputs_embeds=emb,
+        inputs_embeds=pair,
         use_cache=False,
         cache_position=torch.tensor([0, 1], dtype=torch.long),
     ).last_hidden_state
@@ -334,7 +333,6 @@ def parity(depth, prefill: DepthPrefill, step: DepthStep):
     offset_idx = sampled.long() + depth.config.vocab_size
     third = d.embed_tokens(offset_idx)
     full_emb = torch.cat((pair, third.unsqueeze(1)), dim=1)
-    full_emb = d.inputs_embeds_projector(full_emb)
     ref3 = d(
         inputs_embeds=full_emb,
         use_cache=False,
