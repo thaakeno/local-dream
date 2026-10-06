@@ -39,6 +39,8 @@ class SpeechGenerationService : Service() {
     private var servingModelId: String? = null
     private lateinit var runtimeDir: File
     @Volatile private var nativeEffectiveFrames: Int = 0
+    @Volatile private var nativeDecodedFrames: Int = 0
+    @Volatile private var usingQnnVocoder: Boolean = false
 
     companion object {
         private const val CHANNEL_ID = "speech_generation_channel"
@@ -48,7 +50,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v194-stateful-vocoder-snakefast"
+            "breeze-a0e177-hexagon-ab9acc-v195-qnn-vocoder-causal64"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -192,7 +194,9 @@ class SpeechGenerationService : Service() {
                 throw IllegalStateException("Breeze model.gguf is missing or incomplete")
             }
 
-            prepareRuntime()
+            val qnnVocoderFile = BreezeQnnVocoderArtifact.localFile(this)
+            usingQnnVocoder = qnnVocoderFile != null
+            prepareRuntime(usingQnnVocoder)
             val executable = File(applicationInfo.nativeLibraryDir, EXECUTABLE)
             if (!executable.isFile) {
                 throw IllegalStateException("Breeze native server is missing from this APK")
@@ -251,6 +255,11 @@ class SpeechGenerationService : Service() {
                 "GGML_HEXAGON_GDN_SELECT" to "1",
                 "GGML_HEXAGON_OPFUSION" to "1",
             )
+            if (qnnVocoderFile != null) {
+                env["BREEZE_QNN_VOCODER_PATH"] = qnnVocoderFile.absolutePath
+                env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
+                env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
+            }
 
             BackendDiagnostics.beginSession(
                 this,
@@ -263,8 +272,9 @@ class SpeechGenerationService : Service() {
                     "queue=v153-default-1280x32 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
-                    "vocoder=stateful-stream-once chunk=8x32 state=htp-pingpong tconv=exact-output-overlap " +
-                    "snake=precomputed+fused diag=projection-preflight-v194 signal_validation=stream+pcm16 " +
+                    "vocoder=" + (if (usingQnnVocoder) "qnn-htp-causal64" else "ggml-stateful-fallback") + " " +
+                    "chunk=8x32 qnn_left_context=25 qnn_shared_all_gguf=1 " +
+                    "snake=precomputed+fused diag=projection-preflight-v195 signal_validation=stream+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
             runBackendSelfTest(env, modelId, started)
@@ -336,6 +346,7 @@ class SpeechGenerationService : Service() {
 
                 val started = System.currentTimeMillis()
                 nativeEffectiveFrames = 0
+                nativeDecodedFrames = 0
                 _state.value = SpeechState.Generating(
                     modelId = modelId,
                     detail = "Starting speech generation",
@@ -636,7 +647,7 @@ class SpeechGenerationService : Service() {
         marker.writeText(RUNTIME_VERSION)
     }
 
-    private fun prepareRuntime() {
+    private fun prepareRuntime(includeQnn: Boolean) {
         runtimeDir = File(filesDir, RUNTIME_DIR)
         val stamp = File(runtimeDir, ".runtime_version")
         if (
@@ -657,6 +668,20 @@ class SpeechGenerationService : Service() {
             }
             target.setReadable(true, true)
             target.setExecutable(true, true)
+        }
+        if (includeQnn) {
+            assets.list("qnnlibs").orEmpty().forEach { name ->
+                if (!name.endsWith(".so")) return@forEach
+                val target = File(runtimeDir, name)
+                val assetSize = assets.open("qnnlibs/" + name).use { it.available().toLong() }
+                if (!target.isFile || target.length() != assetSize) {
+                    assets.open("qnnlibs/" + name).use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    }
+                }
+                target.setReadable(true, true)
+                target.setExecutable(true, true)
+            }
         }
         stamp.writeText(RUNTIME_VERSION)
         stageDeviceFastRpcLibraries()
@@ -697,6 +722,9 @@ class SpeechGenerationService : Service() {
     )
     private val nativeStageRegex = Regex(
         """\[BREEZE_STAGE\] frames=(\d+) depth_ms_per_frame=([0-9.]+) backbone_ms_per_frame=([0-9.]+)""",
+    )
+    private val nativeVocoderStreamRegex = Regex(
+        """\[BREEZE_VOCODER_STREAM\] flush=(\d+) new_frames=(\d+) samples=(\d+) ms=([0-9.]+)""",
     )
 
     private fun parseClockSeconds(value: String): Float? {
@@ -755,20 +783,44 @@ class SpeechGenerationService : Service() {
             val generated = frames * 0.08f
             val effective = nativeEffectiveFrames
             val progress =
-                if (effective > 0) (frames.toFloat() / effective.toFloat()).coerceIn(0f, 1f)
-                else null
-            val eta =
-                if (effective > frames && fps > 0f) (effective - frames) / fps
-                else 0f
+                if (effective > 0) {
+                    ((frames + nativeDecodedFrames).toFloat() / (effective * 2f))
+                        .coerceIn(0f, 1f)
+                } else null
             _state.value = current.copy(
                 detail = "Generating codec frames",
                 generatedSeconds = maxOf(current.generatedSeconds, generated),
                 progress = progress,
                 estimatedSeconds = if (effective > 0) effective * 0.08f else null,
                 elapsedSeconds = elapsed,
-                etaSeconds = eta,
+                etaSeconds = null,
                 fps = fps,
                 realtimeFactor = generated / elapsed,
+            )
+            return
+        }
+
+        nativeVocoderStreamRegex.find(line)?.let { match ->
+            val decoded = match.groupValues[2].toIntOrNull() ?: 0
+            nativeDecodedFrames += decoded
+            val latest = _state.value as? SpeechState.Generating ?: return
+            val effective = nativeEffectiveFrames
+            val generatedFrames =
+                (latest.generatedSeconds / 0.08f).toInt().coerceAtLeast(nativeDecodedFrames)
+            val progress =
+                if (effective > 0) {
+                    ((generatedFrames + nativeDecodedFrames).toFloat() / (effective * 2f))
+                        .coerceIn(0f, 1f)
+                } else null
+            _state.value = latest.copy(
+                detail = if (usingQnnVocoder) {
+                    "Decoding waveform on Qualcomm HTP"
+                } else {
+                    "Decoding waveform"
+                },
+                generatedSeconds = maxOf(latest.generatedSeconds, nativeDecodedFrames * 0.08f),
+                progress = progress,
+                etaSeconds = null,
             )
             return
         }
@@ -785,6 +837,10 @@ class SpeechGenerationService : Service() {
             return
         }
 
+        // Once the native engine gave us the exact frame ceiling, its old
+        // tqdm percentage is only a spoken-duration estimate and becomes
+        // misleading while a vocoder flush is running.
+        if (nativeEffectiveFrames > 0) return
         val match = nativeProgressRegex.find(line) ?: return
 
         val percent = match.groupValues[1].toFloatOrNull()?.coerceIn(0f, 100f)

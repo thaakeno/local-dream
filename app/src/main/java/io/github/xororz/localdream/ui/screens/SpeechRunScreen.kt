@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import io.github.xororz.localdream.data.ModelRepository
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
+import io.github.xororz.localdream.service.BreezeQnnVocoderArtifact
 import io.github.xororz.localdream.service.SpeechGenerationService
 import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
 import io.github.xororz.localdream.service.SpeechHistoryItem
@@ -48,6 +49,7 @@ import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -94,6 +96,9 @@ fun SpeechRunScreen(
     LaunchedEffect(Unit) { repository.ensureLoaded() }
     val model = repository.models.firstOrNull { it.id == modelId }
     val speechState by SpeechGenerationService.state.collectAsState()
+    val acceleratorState by BreezeQnnVocoderArtifact.status.collectAsState()
+    var acceleratorPromptDismissed by remember { mutableStateOf(false) }
+    var acceleratorDownloadRequested by remember { mutableStateOf(false) }
 
     var text by rememberSaveable {
         mutableStateOf("Welcome aboard. Your journey begins now.")
@@ -143,7 +148,33 @@ fun SpeechRunScreen(
     )
 
     LaunchedEffect(modelId, model?.isDownloaded) {
+        BreezeQnnVocoderArtifact.refresh(context)
         if (model?.isDownloaded == true && model.isVoice) {
+            val supported = BreezeQnnVocoderArtifact.supportedSoc() != null
+            val acceleratorReady = BreezeQnnVocoderArtifact.localFile(context) != null
+            if (!supported || acceleratorReady) {
+                SpeechGenerationService.resetForModel(modelId)
+                context.startForegroundService(
+                    Intent(context, SpeechGenerationService::class.java)
+                        .setAction(SpeechGenerationService.ACTION_PRELOAD)
+                        .putExtra("modelId", modelId),
+                )
+            }
+        }
+        history = withContext(Dispatchers.IO) { SpeechHistoryStore.load(context) }
+    }
+
+    LaunchedEffect(acceleratorState) {
+        if (
+            acceleratorDownloadRequested &&
+            acceleratorState is BreezeQnnVocoderArtifact.Status.Ready
+        ) {
+            acceleratorDownloadRequested = false
+            context.startService(
+                Intent(context, SpeechGenerationService::class.java)
+                    .setAction(SpeechGenerationService.ACTION_STOP),
+            )
+            delay(180)
             SpeechGenerationService.resetForModel(modelId)
             context.startForegroundService(
                 Intent(context, SpeechGenerationService::class.java)
@@ -151,7 +182,6 @@ fun SpeechRunScreen(
                     .putExtra("modelId", modelId),
             )
         }
-        history = withContext(Dispatchers.IO) { SpeechHistoryStore.load(context) }
     }
 
     var lastSpeechProgress by remember { mutableFloatStateOf(-1f) }
@@ -500,6 +530,97 @@ fun SpeechRunScreen(
 
             Spacer(Modifier.height(4.dp))
         }
+    }
+
+    val accelerator = acceleratorState
+    val showAcceleratorDialog =
+        !acceleratorPromptDismissed &&
+        model?.isDownloaded == true &&
+        accelerator !is BreezeQnnVocoderArtifact.Status.Ready &&
+        accelerator !is BreezeQnnVocoderArtifact.Status.Unsupported &&
+        accelerator !is BreezeQnnVocoderArtifact.Status.Checking
+
+    if (showAcceleratorDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (accelerator !is BreezeQnnVocoderArtifact.Status.Downloading) {
+                    acceleratorPromptDismissed = true
+                }
+            },
+            title = { Text("Fast Snapdragon vocoder") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val soc = BreezeQnnVocoderArtifact.supportedSoc().orEmpty()
+                    Text(
+                        "Download the one-time Qualcomm HTP vocoder accelerator for " +
+                            soc + ". It is shared by every Breeze Q4/Q6/Q8/F16/DD model " +
+                            "and replaces the slow ggml waveform decoder.",
+                    )
+                    when (accelerator) {
+                        is BreezeQnnVocoderArtifact.Status.Downloading -> {
+                            accelerator.progress?.let { progress ->
+                                LinearProgressIndicator(
+                                    progress = { progress },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            } ?: LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Text(
+                                String.format(
+                                    Locale.US,
+                                    "%.0f / %.0f MB",
+                                    accelerator.received / 1048576.0,
+                                    accelerator.total / 1048576.0,
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        is BreezeQnnVocoderArtifact.Status.Error -> {
+                            Text(
+                                accelerator.message,
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        else -> Unit
+                    }
+                }
+            },
+            confirmButton = {
+                if (accelerator !is BreezeQnnVocoderArtifact.Status.Downloading) {
+                    TextButton(
+                        onClick = {
+                            acceleratorDownloadRequested = true
+                            scope.launch { BreezeQnnVocoderArtifact.download(context) }
+                        },
+                    ) {
+                        Text(
+                            if (accelerator is BreezeQnnVocoderArtifact.Status.Error) {
+                                "Retry"
+                            } else {
+                                "Download"
+                            },
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                if (accelerator !is BreezeQnnVocoderArtifact.Status.Downloading) {
+                    TextButton(
+                        onClick = {
+                            acceleratorPromptDismissed = true
+                            SpeechGenerationService.resetForModel(modelId)
+                            context.startForegroundService(
+                                Intent(context, SpeechGenerationService::class.java)
+                                    .setAction(SpeechGenerationService.ACTION_PRELOAD)
+                                    .putExtra("modelId", modelId),
+                            )
+                        },
+                    ) {
+                        Text("Use slow fallback")
+                    }
+                }
+            },
+        )
     }
 
     if (showTune) {
