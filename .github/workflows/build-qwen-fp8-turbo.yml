@@ -368,6 +368,7 @@ jobs:
           grep -q 'v81-opbatch64' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81-data-hazard-barrier-switch' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81-largepacket-compat' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'v81-float-hmx-legacy' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v153-host-snapshot-cache' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'streaming_vocoder=v153-host-snapshot-chunk4-v81-largepacket-fused' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'batch-progress-log' app/src/main/assets/breezelibs/backend-version.txt
