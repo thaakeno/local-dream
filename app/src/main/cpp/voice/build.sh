@@ -100,7 +100,6 @@ fi
 
 # Keep only the silent-audio backend fixes learned after v153.
 grep -q 'src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'opt_arch >= 81 && quantized_w' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GET_ROWS_THREAD_DT_FN(f32' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.c"
 grep -q 'case HTP_TYPE_F32:' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.h"
 grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
@@ -175,7 +174,7 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=v153-default-opbatch1280x32
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map,v81-quant-hmx-guard,exact-v153-codec-graph
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map,exact-v153-hexagon-kernels,exact-v153-codec-graph
 streaming_vocoder=exact-v153-host-cache-chunk4
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
