@@ -228,7 +228,76 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     int cb0 = sample_token(comb, bp, rng, &hist, &suppress);
 
     std::vector<int> frames;
+    int emitted = 0;
     bool stopped = false;
+    codec.stream_reset();
+
+    // Start with a small chunk for first-audio latency, then jump straight to
+    // the largest configured chunk to amortize DSPQueue/graph dispatch cost.
+    const int chunk_max = std::max(1, req.chunk_max);
+    int chunk = std::min(std::max(1, req.chunk_first), chunk_max);
+
+    size_t streamed_samples = 0;
+    size_t streamed_nonfinite = 0;
+    size_t streamed_pcm_nonzero = 0;
+    double streamed_sumsq = 0.0;
+    float streamed_peak = 0.0f;
+
+    auto flush = [&](bool final_flush) {
+        const int have = (int) frames.size() / nc;
+        while (have - emitted >= chunk || (final_flush && have > emitted)) {
+            const int count = final_flush
+                ? std::min(chunk_max, have - emitted)
+                : chunk;
+            const int start = emitted;
+            std::vector<int> sub(
+                frames.begin() + (size_t) start * (size_t) nc,
+                frames.begin() + (size_t) (start + count) * (size_t) nc
+            );
+
+            const auto tv = clock_now();
+            std::vector<float> audio = codec.decode_stream(sub, count);
+            const double vtime = since(tv);
+            tm.vocoder += vtime;
+            tm.flushes++;
+
+            const size_t want = (size_t) count * (size_t) spf;
+            if (audio.size() != want) {
+                throw std::runtime_error("Breeze streaming vocoder returned the wrong PCM chunk length");
+            }
+
+            const AudioStats ast = audio_stats(audio);
+            streamed_samples += ast.samples;
+            streamed_nonfinite += ast.nonfinite;
+            streamed_pcm_nonzero += ast.pcm_nonzero;
+            streamed_peak = std::max(streamed_peak, ast.peak);
+            streamed_sumsq += ast.rms * ast.rms * (double) ast.samples;
+
+            std::fprintf(
+                stderr,
+                "[BREEZE_VOCODER_STREAM] flush=%d new_frames=%d samples=%zu ms=%.2f "
+                "total_ms=%.2f peak=%.6g rms=%.6g\n",
+                tm.flushes,
+                count,
+                audio.size(),
+                vtime,
+                tm.vocoder,
+                ast.peak,
+                ast.rms
+            );
+
+            if (!tm.first_audio) {
+                tm.first_vocoder = vtime;
+                tm.first_frames = count;
+                tm.first_audio = since(t_start);
+            }
+            if (!cb(audio.data(), audio.size())) return false;
+
+            emitted += count;
+            chunk = chunk_max;
+        }
+        return true;
+    };
 
     int generated_steps = 0;
     for (int step = 0; step < max_new; step++) {
@@ -247,6 +316,10 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         if (!pad) {
             frames.insert(frames.end(), frame.begin(), frame.end());
             tm.frames++;
+            if (!flush(false)) {
+                stopped = true;
+                break;
+            }
         }
         hist.push_back(cb0);
 
@@ -286,6 +359,8 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         );
     }
 
+    if (!stopped && !flush(true)) stopped = true;
+
     st_c.free();
     if (use_cfg) st_u.free();
     depth.free();
@@ -295,66 +370,45 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         throw std::runtime_error("Breeze generated no codec frames");
     }
 
-    std::fprintf(
-        stderr,
-        "[BREEZE_VOCODER] reference begin frames=%d codes=%zu\n",
-        total_frames,
-        frames.size()
-    );
-    const auto tv = clock_now();
-    std::vector<float> audio = decode_reference_audio(m, codec, frames, total_frames);
-    const double vtime = since(tv);
-    std::fprintf(
-        stderr,
-        "[BREEZE_VOCODER] reference end frames=%d samples=%zu ms=%.2f\n",
-        total_frames,
-        audio.size(),
-        vtime
-    );
-    tm.vocoder += vtime;
-    tm.flushes++;
-    const AudioStats ast = audio_stats(audio);
-    const double dbfs = ast.rms > 0.0 ? 20.0 * std::log10(ast.rms) : -240.0;
-    std::fprintf(
-        stderr,
-        "[BREEZE_AUDIO] path=upstream-reference frames=%d samples=%zu ms=%.2f "
-        "finite=%zu nonfinite=%zu pcm_nonzero=%zu peak=%.8g rms=%.8g dbfs=%.2f\n",
-        total_frames,
-        ast.samples,
-        vtime,
-        ast.samples - ast.nonfinite,
-        ast.nonfinite,
-        ast.pcm_nonzero,
-        ast.peak,
-        ast.rms,
-        dbfs
-    );
+    if (!stopped) {
+        const size_t expected_samples = (size_t) total_frames * (size_t) spf;
+        const double rms = streamed_samples > 0
+            ? std::sqrt(streamed_sumsq / (double) streamed_samples)
+            : 0.0;
+        const double dbfs = rms > 0.0 ? 20.0 * std::log10(rms) : -240.0;
+        const size_t min_nonzero = std::max<size_t>(32, streamed_samples / 1000);
 
-    const size_t expected_samples = (size_t) total_frames * (size_t) spf;
-    if (audio.size() != expected_samples) {
-        throw std::runtime_error("Breeze reference vocoder returned the wrong PCM length");
-    }
-    if (ast.nonfinite != 0) {
-        throw std::runtime_error("Breeze reference vocoder produced non-finite PCM");
-    }
-    // Refuse to turn numerically tiny decoder garbage into another fake
-    // successful-but-silent WAV. These thresholds are far below normal speech.
-    const size_t min_nonzero = std::max<size_t>(32, ast.samples / 1000);
-    if (ast.peak < 1.0e-3f || ast.rms < 5.0e-5 || ast.pcm_nonzero < min_nonzero) {
-        throw std::runtime_error(
-            "Breeze reference vocoder produced effectively silent PCM "
-            "(peak=" + std::to_string(ast.peak) +
-            ", rms=" + std::to_string(ast.rms) +
-            ", pcm_nonzero=" + std::to_string(ast.pcm_nonzero) + ")"
+        std::fprintf(
+            stderr,
+            "[BREEZE_AUDIO] path=stateful-stream frames=%d samples=%zu vocoder_ms=%.2f "
+            "finite=%zu nonfinite=%zu pcm_nonzero=%zu peak=%.8g rms=%.8g dbfs=%.2f "
+            "flushes=%d first_audio_ms=%.2f\n",
+            total_frames,
+            streamed_samples,
+            tm.vocoder,
+            streamed_samples - streamed_nonfinite,
+            streamed_nonfinite,
+            streamed_pcm_nonzero,
+            streamed_peak,
+            rms,
+            dbfs,
+            tm.flushes,
+            tm.first_audio
         );
-    }
 
-    if (!tm.first_audio) {
-        tm.first_vocoder = vtime;
-        tm.first_frames = total_frames;
-        tm.first_audio = since(t_start);
+        if (streamed_samples != expected_samples) {
+            throw std::runtime_error("Breeze streaming vocoder emitted the wrong total PCM length");
+        }
+        if (streamed_nonfinite != 0) {
+            throw std::runtime_error("Breeze streaming vocoder produced non-finite PCM");
+        }
+        if (streamed_peak < 1.0e-3f || rms < 5.0e-5 ||
+            streamed_pcm_nonzero < min_nonzero) {
+            throw std::runtime_error(
+                "Breeze streaming vocoder produced effectively silent PCM"
+            );
+        }
     }
-    stopped = !cb(audio.data(), (int) audio.size());
 
     out.codes = std::move(frames);
     out.n_frames = (int) out.codes.size() / nc;
