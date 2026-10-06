@@ -366,7 +366,7 @@ jobs:
           grep -q 'integration=pinned-source-overlay' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'queue=v153-default-opbatch1280x32' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'upstream-dcache-64b-pr29977' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'v81_visibility=dependency-batch-split-hmx-unary-glu' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'v81_visibility=fifo-batch-split-live-prefix-hmx-unary-glu' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'exact-v153-model-map' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'decoder-codebook-ordinary-htp-mirror' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'exact-v153-hexagon-kernels' app/src/main/assets/breezelibs/backend-version.txt
