@@ -41,8 +41,8 @@ public:
             backendHandle,
             "",
             false,
-            qnn::tools::iotensor::OutputDataType::NATIVE_ONLY,
-            qnn::tools::iotensor::InputDataType::NATIVE,
+            qnn::tools::iotensor::OutputDataType::FLOAT_ONLY,
+            qnn::tools::iotensor::InputDataType::FLOAT,
             ProfilingLevel::OFF,
             false,
             cachedBinaryPath,
@@ -191,13 +191,12 @@ static bool load_qnn(
     std::unique_ptr<BreezeQnnApp> & app
 ) {
     QnnFunctionPointers systemFuncs;
-    void * systemHandle = nullptr;
     const std::string systemPath = lib_dir + "/libQnnSystem.so";
     const std::string backendPath = lib_dir + "/libQnnHtp.so";
 
-    if (DynamicLoadUtil::getQnnSystemFunctionPointers(
-            systemPath, &systemFuncs, &systemHandle) !=
-        DynamicLoadUtil::StatusCode::SUCCESS) {
+    if (qnn::tools::dynamicloadutil::getQnnSystemFunctionPointers(
+            systemPath, &systemFuncs) !=
+        qnn::tools::dynamicloadutil::StatusCode::SUCCESS) {
         std::fprintf(stderr, "[BREEZE_QNN] failed to load %s\n", systemPath.c_str());
         return false;
     }
@@ -205,11 +204,10 @@ static bool load_qnn(
     QnnFunctionPointers funcs;
     void * backendHandle = nullptr;
     void * modelHandle = nullptr;
-    if (DynamicLoadUtil::getQnnFunctionPointers(
+    if (qnn::tools::dynamicloadutil::getQnnFunctionPointers(
             backendPath, context_path, &funcs, &backendHandle,
-            false, &modelHandle) != DynamicLoadUtil::StatusCode::SUCCESS) {
+            false, &modelHandle) != qnn::tools::dynamicloadutil::StatusCode::SUCCESS) {
         std::fprintf(stderr, "[BREEZE_QNN] failed to load QNN HTP backend\n");
-        if (systemHandle) dlclose(systemHandle);
         return false;
     }
     funcs.qnnSystemInterface = systemFuncs.qnnSystemInterface;
@@ -220,7 +218,6 @@ static bool load_qnn(
 
     auto fail = [&]() {
         candidate.reset();
-        if (systemHandle) dlclose(systemHandle);
         return false;
     };
 
@@ -231,9 +228,6 @@ static bool load_qnn(
     if (candidate->registerOpPackages() != StatusCode::SUCCESS) return fail();
     if (candidate->createFromBinary() != StatusCode::SUCCESS) return fail();
 
-    // QnnSystem is needed while parsing the context; the instantiated context
-    // itself is owned by the backend after createFromBinary.
-    if (systemHandle) dlclose(systemHandle);
     candidate->set_burst_power();
     app = std::move(candidate);
     return true;

@@ -78,6 +78,7 @@ def main() -> None:
         do_constant_folding=True,
         export_params=True,
         dynamic_axes=None,
+        dynamo=False,
     )
 
     meta = {

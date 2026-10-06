@@ -94,10 +94,11 @@ jobs:
           set -euxo pipefail
           mkdir -p "${RUNNER_TEMP}/breeze"
           python - <<'PY'
+          import os
           from huggingface_hub import snapshot_download
           snapshot_download(
               "BreezeBlue/Breeze-TTS-2",
-              local_dir="${RUNNER_TEMP}/breeze",
+              local_dir=os.path.join(os.environ["RUNNER_TEMP"], "breeze"),
               allow_patterns=["audio_tokenizer/*"],
           )
           PY
