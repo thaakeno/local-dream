@@ -376,7 +376,9 @@ jobs:
           grep -q 'pingpong-causal-state' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'exact-tconv-output-overlap' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'bounded-stream-kv' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'vocoder=stateful-stream-once-chunk8x32-repack-fix-v193' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'precomputed-snake-params' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'snake-hotgraph-fused' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'vocoder=stateful-stream-once-chunk8x32-repack-snakefast-v194' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im-bias-fused' app/src/main/assets/breezelibs/backend-version.txt
