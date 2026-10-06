@@ -364,7 +364,7 @@ jobs:
           grep -q 'mode=strict-htp-dspqueue' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'fallback=disabled' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'integration=pinned-source-overlay' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'queue=v153-default-opbatch1280x32' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'queue=v198-opbatch1280x32-oppoll1' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'upstream-dcache-64b-pr29977' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81_visibility=none-v153-scheduler' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81_execution=hvx-only-no-hmx' app/src/main/assets/breezelibs/backend-version.txt
