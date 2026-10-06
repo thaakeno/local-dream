@@ -181,7 +181,11 @@ static void log_cache_map(
     const std::unordered_map<std::string, CodecStreamCacheBlock> & map
 ) {
     for (const auto & it : map) {
-        log_tensor(tag, it.first, it.second.tensor);
+        const CodecStreamCacheBlock & block = it.second;
+        log_values(
+            tag, it.first, block.data,
+            std::to_string(block.left) + "x" + std::to_string(block.channels)
+        );
     }
 }
 
@@ -200,95 +204,13 @@ static void log_kv_first_slot(const char * tag, const KVCache & kv) {
 
 void VocoderStreamState::init(BreezeModel & model) {
     if (initialized) free();
-
     const VocoderConfig & c = model.cfg.voc;
     const int max_seq = std::max(model.cfg.max_new_tokens + 32, c.sliding_window + 64);
     kv.init(model.backend, c.n_layer, c.head_dim, c.n_kv_head, max_seq);
 
-    // Match Breeze's reference fast-streaming runtime: every state block is a
-    // real persistent device tensor with its own shape. Do not manufacture
-    // cross-context views into a monolithic arena.
-    ggml_init_params p{
-        ggml_tensor_overhead() * 256 + 65536,
-        nullptr,
-        true,
-    };
-    conv_ctx = ggml_init(p);
-    if (!conv_ctx) {
-        kv.free();
-        throw std::runtime_error("failed to create Breeze vocoder state context");
-    }
-
-    auto add_state = [&](std::unordered_map<std::string, CodecStreamCacheBlock> & map,
-                         const std::string & name, int left, int channels) {
-        if (left <= 0) return;
-        CodecStreamCacheBlock block;
-        block.left = left;
-        block.channels = channels;
-        block.tensor = ggml_new_tensor_2d(conv_ctx, GGML_TYPE_F32, left, channels);
-        ggml_set_name(block.tensor, name.c_str());
-        map.emplace(name, block);
-    };
-
-    auto add_conv = [&](const std::string & name, const std::string & weight, int dilation) {
-        ggml_tensor * w = model.w(weight);
-        add_state(conv1d, name, ((int) w->ne[0] - 1) * dilation, (int) w->ne[1]);
-    };
-    auto add_tconv = [&](const std::string & name, const std::string & weight, int stride) {
-        ggml_tensor * w = model.w(weight);
-        add_state(tconv1d, name, ((int) w->ne[0] - 1) / stride, (int) w->ne[2]);
-    };
-
-    add_conv("pre_conv", "codec.dpre.conv.weight", 1);
-
-    for (size_t i = 0; i < c.upsampling_ratios.size(); ++i) {
-        const std::string p = "codec.dup." + std::to_string(i);
-        add_tconv(
-            "upsample_" + std::to_string(i) + "_tconv",
-            p + ".up.conv.weight",
-            c.upsampling_ratios[i]
-        );
-        ggml_tensor * dw = model.w(p + ".dw.weight");
-        add_state(
-            conv1d,
-            "upsample_" + std::to_string(i) + "_dwconv",
-            (int) dw->ne[1] - 1,
-            (int) dw->ne[0]
-        );
-    }
-
-    add_conv("decoder_pre_conv", "codec.dhead.conv.weight", 1);
-
-    const int dilations[3] = { 1, 3, 9 };
-    for (size_t i = 0; i < c.upsample_rates.size(); ++i) {
-        const std::string p = "codec.dblk." + std::to_string(i);
-        add_tconv(
-            "decoder_block_" + std::to_string(i) + "_tconv",
-            p + ".up.conv.weight",
-            c.upsample_rates[i]
-        );
-        for (int j = 0; j < 3; ++j) {
-            add_conv(
-                "decoder_block_" + std::to_string(i) +
-                    "_residual_" + std::to_string(j) + "_conv1",
-                p + ".res." + std::to_string(j) + ".conv1.conv.weight",
-                dilations[j]
-            );
-        }
-    }
-
-    add_conv("final_conv", "codec.dfin.conv.weight", 1);
-
-    conv_buffer = ggml_backend_alloc_ctx_tensors(conv_ctx, model.backend.backend);
-    if (!conv_buffer) {
-        ggml_free(conv_ctx);
-        conv_ctx = nullptr;
-        conv1d.clear();
-        tconv1d.clear();
-        kv.free();
-        throw std::runtime_error("failed to allocate persistent Breeze vocoder state on HTP");
-    }
-
+    // Restore the v153 ownership boundary: convolution carry state lives on
+    // the host between chunks. A graph reads a snapshot and publishes new
+    // tails only after HTP compute completes, eliminating in-graph state alias.
     initialized = true;
     reset();
 }
@@ -296,27 +218,16 @@ void VocoderStreamState::init(BreezeModel & model) {
 void VocoderStreamState::reset() {
     position = 0;
     if (initialized) kv.reset();
-
-    auto clear_map = [](auto & map) {
-        for (auto & it : map) {
-            CodecStreamCacheBlock & block = it.second;
-            const size_t count = (size_t) block.left * (size_t) block.channels;
-            std::vector<float> zeros(count, 0.0f);
-            ggml_backend_tensor_set(
-                block.tensor, zeros.data(), 0, zeros.size() * sizeof(float)
-            );
-        }
-    };
-    clear_map(conv1d);
-    clear_map(tconv1d);
+    for (auto & it : conv1d) {
+        std::fill(it.second.data.begin(), it.second.data.end(), 0.0f);
+    }
+    for (auto & it : tconv1d) {
+        std::fill(it.second.data.begin(), it.second.data.end(), 0.0f);
+    }
 }
 
 void VocoderStreamState::free() {
     if (initialized) kv.free();
-    if (conv_buffer) ggml_backend_buffer_free(conv_buffer);
-    if (conv_ctx) ggml_free(conv_ctx);
-    conv_buffer = nullptr;
-    conv_ctx = nullptr;
     initialized = false;
     position = 0;
     conv1d.clear();
@@ -387,8 +298,21 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
     }
 
     Graph g(32768);
-    ggml_tensor * x = vocoder_decode_stream(g.ctx, *m, g, stream, codes, n_cb, T, nullptr);
+    std::vector<StreamCacheUpdate> updates;
+    ggml_tensor * x = vocoder_decode_stream(
+        g.ctx, *m, g, stream, codes, n_cb, T, updates, nullptr
+    );
     ggml_tensor * audio = ggml_cont(g.ctx, ggml_reshape_1d(g.ctx, x, x->ne[0]));
+
+    // Make every next-tail tensor a retained graph output. The host cache is
+    // not changed here; it is committed only after this graph finishes and
+    // the PCM chunk passes validation.
+    for (auto & u : updates) {
+        if (!u.block || !u.tensor) continue;
+        ggml_set_output(u.tensor);
+        g.write(u.tensor);
+    }
+
     const auto compute_started = std::chrono::steady_clock::now();
     if (first_frame) {
         std::fprintf(stderr, "[BREEZE_VOCODER] first-frame HTP compute begin\n");
@@ -436,14 +360,24 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
             log_cache_map("BREEZE_DIAG_REPLAY_CACHE_PRE", diag_state.tconv1d);
 
             CodecDebugProbes probes;
+            std::vector<StreamCacheUpdate> diag_updates;
             Graph dg(65536);
             ggml_tensor * dx = vocoder_decode_stream(
-                dg.ctx, *m, dg, diag_state, codes, n_cb, T, &probes
+                dg.ctx, *m, dg, diag_state, codes, n_cb, T, diag_updates, &probes
             );
             ggml_tensor * daudio =
                 ggml_cont(dg.ctx, ggml_reshape_1d(dg.ctx, dx, dx->ne[0]));
             ggml_set_output(daudio);
+            for (auto & u : diag_updates) {
+                if (!u.block || !u.tensor) continue;
+                ggml_set_output(u.tensor);
+                dg.write(u.tensor);
+            }
             dg.compute(m->backend, daudio);
+            for (auto & u : diag_updates) {
+                if (!u.block || !u.tensor) continue;
+                u.block->data = tensor_to_f32(u.tensor);
+            }
 
             std::string first_bad;
             std::string previous_good = "none";
@@ -522,6 +456,14 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
     }
     if (!any_signal) {
         throw std::runtime_error("Breeze streaming vocoder produced an all-zero PCM chunk");
+    }
+
+    // Commit the v153-style host snapshots only after successful PCM. This is
+    // the key ordering guarantee: no persistent convolution state is writable
+    // while HTP is still consuming it in the current graph.
+    for (auto & u : updates) {
+        if (!u.block || !u.tensor) continue;
+        u.block->data = tensor_to_f32(u.tensor);
     }
 
     stream.position += T;
