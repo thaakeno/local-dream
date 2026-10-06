@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace breeze {
 
@@ -15,123 +16,76 @@ static bool is_decoder_codebook(const char * name, const ggml_tensor * t) {
            n.compare(n.size() - 6, 6, ".embed") == 0;
 }
 
-static bool validate_f32_blob(
-    const char * name,
-    const std::vector<uint8_t> & raw
-) {
+static bool validate_f32_blob(const char * name, const std::vector<uint8_t> & raw) {
     if ((raw.size() % sizeof(float)) != 0) {
-        std::fprintf(
-            stderr,
-            "[BREEZE_MODEL] invalid F32 byte count for %s: %zu\n",
-            name,
-            raw.size()
-        );
+        std::fprintf(stderr, "[BREEZE_MODEL] invalid F32 byte count for %s: %zu\n", name, raw.size());
         return false;
     }
     for (size_t i = 0; i < raw.size() / sizeof(float); ++i) {
         float v = 0.0f;
         std::memcpy(&v, raw.data() + i * sizeof(float), sizeof(float));
         if (!std::isfinite(v)) {
-            std::fprintf(
-                stderr,
-                "[BREEZE_MODEL] non-finite GGUF codebook value name=%s index=%zu\n",
-                name,
-                i
-            );
+            std::fprintf(stderr, "[BREEZE_MODEL] non-finite GGUF codebook value name=%s index=%zu\n", name, i);
             return false;
         }
     }
     return true;
 }
 
-static bool verify_decoder_codebook_on_backend(GGUFModel & model, Backend & be) {
-    ggml_tensor * book = model.find("codec.dq.first.0.embed");
-    if (!book) {
-        std::fprintf(stderr, "[BREEZE_MODEL] missing decoder codebook verification tensor\n");
-        return false;
-    }
-    if (book->type != GGML_TYPE_F32 || book->ne[0] != 256 || book->ne[1] < 2048) {
-        std::fprintf(
-            stderr,
-            "[BREEZE_MODEL] unexpected decoder codebook layout type=%s shape=%lldx%lld\n",
-            ggml_type_name(book->type),
-            (long long) book->ne[0],
-            (long long) book->ne[1]
-        );
-        return false;
-    }
+static bool verify_decoder_codebook_mirrors(
+    GGUFModel & model,
+    Backend & be,
+    const std::unordered_map<std::string, std::vector<float>> & expected,
+    const std::vector<int32_t> & row_ids
+) {
+    float global_worst = 0.0f;
+    size_t checked = 0;
 
-    const std::vector<int32_t> row_ids = { 31, 219, 1221, 1938, 2047 };
-    const size_t width = (size_t) book->ne[0];
-    std::vector<float> expected(width * row_ids.size());
-    for (size_t r = 0; r < row_ids.size(); ++r) {
-        ggml_backend_tensor_get(
-            book,
-            expected.data() + r * width,
-            (size_t) row_ids[r] * book->nb[1],
-            width * sizeof(float)
-        );
-    }
-    for (size_t i = 0; i < expected.size(); ++i) {
-        if (!std::isfinite(expected[i])) {
+    for (const auto & it : expected) {
+        ggml_tensor * book = model.find(it.first);
+        if (!book) {
+            std::fprintf(stderr, "[BREEZE_MODEL] missing mirrored codebook %s\n", it.first.c_str());
+            return false;
+        }
+
+        Graph g(128);
+        auto * ids = g.input_i32(row_ids, (int) row_ids.size());
+        auto * out = ggml_get_rows(g.ctx, book, ids);
+        g.compute(be, out);
+        const std::vector<float> got = tensor_to_f32(out);
+
+        if (got.size() != it.second.size()) {
             std::fprintf(
                 stderr,
-                "[BREEZE_MODEL] uploaded codebook rows are non-finite index=%zu\n",
-                i
+                "[BREEZE_MODEL] mirrored codebook size mismatch name=%s got=%zu expected=%zu\n",
+                it.first.c_str(), got.size(), it.second.size()
             );
             return false;
         }
-    }
 
-    Graph g(128);
-    auto * ids = g.input_i32(row_ids, (int) row_ids.size());
-    auto * out = ggml_get_rows(g.ctx, book, ids);
-    g.compute(be, out);
-    const std::vector<float> got = tensor_to_f32(out);
-
-    if (got.size() != expected.size()) {
-        std::fprintf(
-            stderr,
-            "[BREEZE_MODEL] HTP codebook verification size mismatch got=%zu expected=%zu\n",
-            got.size(),
-            expected.size()
-        );
-        return false;
-    }
-
-    float worst = 0.0f;
-    size_t worst_i = 0;
-    for (size_t i = 0; i < got.size(); ++i) {
-        if (!std::isfinite(got[i])) {
-            std::fprintf(
-                stderr,
-                "[BREEZE_MODEL] HTP codebook verification non-finite index=%zu\n",
-                i
-            );
-            return false;
+        for (size_t i = 0; i < got.size(); ++i) {
+            if (!std::isfinite(got[i])) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_MODEL] mirrored HTP codebook non-finite name=%s index=%zu\n",
+                    it.first.c_str(), i
+                );
+                return false;
+            }
+            global_worst = std::max(global_worst, std::fabs(got[i] - it.second[i]));
         }
-        const float err = std::fabs(got[i] - expected[i]);
-        if (err > worst) {
-            worst = err;
-            worst_i = i;
-        }
+        checked++;
     }
-    if (worst > 1.0e-6f) {
-        std::fprintf(
-            stderr,
-            "[BREEZE_MODEL] HTP codebook verification mismatch index=%zu err=%.8g\n",
-            worst_i,
-            worst
-        );
+
+    if (global_worst > 1.0e-6f) {
+        std::fprintf(stderr, "[BREEZE_MODEL] mirrored HTP codebook mismatch worst=%.8g\n", global_worst);
         return false;
     }
 
     std::fprintf(
         stderr,
-        "[BREEZE_MODEL] HTP decoder codebook rows verified count=%zu width=%zu worst=%.8g\n",
-        row_ids.size(),
-        width,
-        worst
+        "[BREEZE_MODEL] ordinary HTP codebook mirrors verified count=%zu rows=%zu width=256 worst=%.8g\n",
+        checked, row_ids.size(), global_worst
     );
     return true;
 }
@@ -147,55 +101,163 @@ bool GGUFModel::load(const std::string & path, Backend & be) {
     gguf = gguf_init_from_file(path.c_str(), gp);
     if (!gguf) return false;
 
+    // Keep the primary model allocation exactly like the device-proven v153
+    // loader. In particular, DO NOT mark the full aggregate allocation as
+    // GGML_BACKEND_BUFFER_USAGE_WEIGHTS: doing that changes the Hexagon mapping
+    // and repack policy for the whole model.
     buffer = ggml_backend_alloc_ctx_tensors(meta, be.backend);
-    if (!buffer) return false;
+    if (!buffer) {
+        free();
+        return false;
+    }
 
-    // This entire allocation is immutable model data. Mark it as WEIGHTS
-    // before the first upload. The Hexagon backend uses this bit to select its
-    // v81 extended read-only mapping for large model buffers and to tag/repack
-    // quantized tensors correctly.
-    ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    const int64_t n = gguf_get_n_tensors(gguf);
+    size_t codebook_count = 0;
+    for (int64_t i = 0; i < n; ++i) {
+        const char * name = gguf_get_tensor_name(gguf, i);
+        ggml_tensor * t = ggml_get_tensor(meta, name);
+        if (is_decoder_codebook(name, t)) codebook_count++;
+    }
+    if (codebook_count == 0) {
+        std::fprintf(stderr, "[BREEZE_MODEL] no decoder codebooks found\n");
+        free();
+        return false;
+    }
+
+    // The v153 graph completed end-to-end on SM8850, but its decoder F32
+    // codebooks lived inside the large aggregate model mapping. Mirror only
+    // those small tables into a dedicated ordinary HTP buffer. This preserves
+    // v153 scheduling/kernels for every op while keeping codebook GET_ROWS off
+    // the fragile large-buffer/weight mapping path.
+    ggml_init_params cp{
+        ggml_tensor_overhead() * (codebook_count + 8) + 4096,
+        nullptr,
+        true,
+    };
+    codebook_meta = ggml_init(cp);
+    if (!codebook_meta) {
+        std::fprintf(stderr, "[BREEZE_MODEL] failed to allocate codebook metadata context\n");
+        free();
+        return false;
+    }
+
+    std::unordered_map<std::string, ggml_tensor *> mirrors;
+    mirrors.reserve(codebook_count);
+    for (int64_t i = 0; i < n; ++i) {
+        const char * name = gguf_get_tensor_name(gguf, i);
+        ggml_tensor * src = ggml_get_tensor(meta, name);
+        if (!is_decoder_codebook(name, src)) continue;
+
+        ggml_tensor * dst = ggml_new_tensor_4d(
+            codebook_meta,
+            src->type,
+            src->ne[0],
+            src->ne[1],
+            src->ne[2],
+            src->ne[3]
+        );
+        ggml_set_name(dst, name);
+        mirrors.emplace(name, dst);
+    }
+
+    codebook_buffer = ggml_backend_alloc_ctx_tensors(codebook_meta, be.backend);
+    if (!codebook_buffer) {
+        std::fprintf(stderr, "[BREEZE_MODEL] failed to allocate ordinary HTP codebook mirror buffer\n");
+        free();
+        return false;
+    }
 
     FILE * f = fopen(path.c_str(), "rb");
-    if (!f) return false;
+    if (!f) {
+        free();
+        return false;
+    }
 
     const size_t data_off = gguf_get_data_offset(gguf);
-    const int64_t n = gguf_get_n_tensors(gguf);
     std::vector<uint8_t> buf;
-    size_t verified_codebooks = 0;
+    const std::vector<int32_t> verify_rows = { 31, 219, 1221, 1938, 2047 };
+    std::unordered_map<std::string, std::vector<float>> expected;
+    expected.reserve(codebook_count);
+
+    size_t mirrored_codebooks = 0;
     for (int64_t i = 0; i < n; i++) {
         const char * name = gguf_get_tensor_name(gguf, i);
         ggml_tensor * t = ggml_get_tensor(meta, name);
         const size_t off = data_off + gguf_get_tensor_offset(gguf, i);
         const size_t sz = ggml_nbytes(t);
         buf.resize(sz);
-        if (breeze_fseek(f, (long long) off, SEEK_SET) != 0) { fclose(f); return false; }
-        if (fread(buf.data(), 1, sz, f) != sz) { fclose(f); return false; }
-        if (is_decoder_codebook(name, t)) {
-            if (!validate_f32_blob(name, buf)) {
+
+        if (breeze_fseek(f, (long long) off, SEEK_SET) != 0 ||
+            fread(buf.data(), 1, sz, f) != sz) {
+            fclose(f);
+            free();
+            return false;
+        }
+
+        // Exact v153 upload for the primary model tensor.
+        ggml_backend_tensor_set(t, buf.data(), 0, sz);
+
+        auto mit = mirrors.find(name);
+        if (mit == mirrors.end()) {
+            tensors[name] = t;
+            continue;
+        }
+
+        if (!validate_f32_blob(name, buf)) {
+            fclose(f);
+            free();
+            return false;
+        }
+        if (t->ne[0] != 256 || t->ne[1] < 2048) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_MODEL] unexpected decoder codebook shape name=%s shape=%lldx%lld\n",
+                name, (long long) t->ne[0], (long long) t->ne[1]
+            );
+            fclose(f);
+            free();
+            return false;
+        }
+
+        ggml_tensor * mirror = mit->second;
+        ggml_backend_tensor_set(mirror, buf.data(), 0, sz);
+        tensors[name] = mirror;
+        mirrored_codebooks++;
+
+        std::vector<float> rows((size_t) t->ne[0] * verify_rows.size());
+        for (size_t r = 0; r < verify_rows.size(); ++r) {
+            const size_t src_off = (size_t) verify_rows[r] * t->nb[1];
+            const size_t row_bytes = (size_t) t->ne[0] * sizeof(float);
+            if (src_off + row_bytes > buf.size()) {
+                std::fprintf(stderr, "[BREEZE_MODEL] codebook verification row out of bounds name=%s\n", name);
                 fclose(f);
+                free();
                 return false;
             }
-            verified_codebooks++;
+            std::memcpy(rows.data() + r * (size_t) t->ne[0], buf.data() + src_off, row_bytes);
         }
-        ggml_backend_tensor_set(t, buf.data(), 0, sz);
-        tensors[name] = t;
+        expected.emplace(name, std::move(rows));
     }
     fclose(f);
 
-    if (verified_codebooks == 0) {
-        std::fprintf(stderr, "[BREEZE_MODEL] no decoder codebooks were verified\n");
+    if (mirrored_codebooks != codebook_count || expected.size() != codebook_count) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_MODEL] incomplete codebook mirroring mirrored=%zu expected=%zu\n",
+            mirrored_codebooks, codebook_count
+        );
+        free();
         return false;
     }
+
     std::fprintf(
         stderr,
-        "[BREEZE_MODEL] verified %zu finite decoder codebooks from GGUF before HTP execution\n",
-        verified_codebooks
+        "[BREEZE_MODEL] mirrored %zu decoder codebooks into dedicated ordinary HTP buffer; primary model map remains exact-v153\n",
+        mirrored_codebooks
     );
 
-    // Exercise the real uploaded model weight, not a synthetic compute tensor.
-    // This catches large-buffer / extended-map failures before generation.
-    if (!verify_decoder_codebook_on_backend(*this, be)) {
+    if (!verify_decoder_codebook_mirrors(*this, be, expected, verify_rows)) {
+        free();
         return false;
     }
 
@@ -203,6 +265,13 @@ bool GGUFModel::load(const std::string & path, Backend & be) {
 }
 
 void GGUFModel::free() {
+    tensors.clear();
+
+    if (codebook_buffer) ggml_backend_buffer_free(codebook_buffer);
+    if (codebook_meta) ggml_free(codebook_meta);
+    codebook_buffer = nullptr;
+    codebook_meta = nullptr;
+
     if (buffer) ggml_backend_buffer_free(buffer);
     if (meta) ggml_free(meta);
     if (gguf) gguf_free(gguf);
