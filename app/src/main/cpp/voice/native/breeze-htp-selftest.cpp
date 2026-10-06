@@ -368,26 +368,46 @@ static void test_v81_hmx_visibility_chains(Backend & be) {
         );
     }
 
-    // The same v81 class of bug has also been observed for asynchronous GELU
-    // output consumed by the next DSP op. Verify GELU_ERF -> HMX MUL_MAT.
+    // The same class of v81 visibility bug can happen when a worker-queue
+    // unary result feeds HMX. Validate the unary kernel independently first,
+    // then use the actual HTP unary result as the reference input to matmul so
+    // this test measures visibility/order rather than conflating two kernels.
     std::vector<float> gx((size_t) K * N);
+    std::vector<float> gelu_exact((size_t) K * N);
     for (int n = 0; n < N; ++n) {
         for (int k = 0; k < K; ++k) {
-            gx[(size_t) k + (size_t) K * n] =
-                0.9f * std::sin(0.009f * (float) (3 + k + 5 * n));
+            const size_t i = (size_t) k + (size_t) K * n;
+            const float v = 0.9f * std::sin(0.009f * (float) (3 + k + 5 * n));
+            gx[i] = v;
+            gelu_exact[i] =
+                0.5f * v * (1.0f + std::erf(v * 0.7071067811865475f));
         }
     }
-    std::vector<float> expected_gelu((size_t) M * N, 0.0f);
+
+    std::vector<float> gelu_htp;
+    {
+        Graph g(128);
+        auto * tx = g.input_f32(gx, K, N);
+        auto * gelu = ggml_gelu_erf(g.ctx, tx);
+        g.compute(be, gelu);
+        gelu_htp = tensor_to_f32(gelu);
+        require_close(
+            "v81-gelu-erf-standalone",
+            gelu_htp,
+            gelu_exact,
+            2.0e-4f
+        );
+    }
+
+    std::vector<float> expected_gelu_mm((size_t) M * N, 0.0f);
     for (int n = 0; n < N; ++n) {
         for (int m = 0; m < M; ++m) {
             double acc = 0.0;
             for (int k = 0; k < K; ++k) {
-                const float v = gx[(size_t) k + (size_t) K * n];
-                const float gelu =
-                    0.5f * v * (1.0f + std::erf(v * 0.7071067811865475f));
-                acc += (double) w[(size_t) k + (size_t) K * m] * (double) gelu;
+                acc += (double) w[(size_t) k + (size_t) K * m] *
+                       (double) gelu_htp[(size_t) k + (size_t) K * n];
             }
-            expected_gelu[(size_t) m + (size_t) M * n] = (float) acc;
+            expected_gelu_mm[(size_t) m + (size_t) M * n] = (float) acc;
         }
     }
 
@@ -401,8 +421,8 @@ static void test_v81_hmx_visibility_chains(Backend & be) {
         require_close(
             "v81-gelu-hmx-visibility",
             tensor_to_f32(out),
-            expected_gelu,
-            1.2e-2f
+            expected_gelu_mm,
+            8.0e-3f
         );
     }
 }
