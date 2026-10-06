@@ -392,6 +392,121 @@ static void test_v81_hvx_gelu_matmul_chain(Backend & be) {
     );
 }
 
+static void test_quantized_repack_matmul(
+    Backend & be,
+    enum ggml_type type,
+    const char * type_name,
+    int N
+) {
+    constexpr int K = 256;
+    constexpr int M = 64;
+
+    std::vector<float> w((size_t) K * M);
+    std::vector<float> x((size_t) K * N);
+    for (int m = 0; m < M; ++m) {
+        for (int k = 0; k < K; ++k) {
+            w[(size_t) k + (size_t) K * m] =
+                0.18f * std::sin(0.013f * (float) (k + 3 * m)) +
+                0.03f * std::cos(0.031f * (float) (2 * k - m));
+        }
+    }
+    for (int n = 0; n < N; ++n) {
+        for (int k = 0; k < K; ++k) {
+            x[(size_t) k + (size_t) K * n] =
+                0.7f * std::sin(0.019f * (float) (k + 5 * n)) +
+                0.2f * std::cos(0.011f * (float) (3 * k + n));
+        }
+    }
+
+    const size_t row_bytes = ggml_row_size(type, K);
+    std::vector<uint8_t> q(row_bytes * M);
+    const size_t written = ggml_quantize_chunk(type, w.data(), q.data(), 0, M, K, nullptr);
+    if (written != q.size()) {
+        throw std::runtime_error(std::string(type_name) + " quantized byte count mismatch");
+    }
+
+    const ggml_type_traits * traits = ggml_get_type_traits(type);
+    if (!traits || !traits->to_float) {
+        throw std::runtime_error(std::string(type_name) + " has no host dequantizer");
+    }
+
+    std::vector<float> wdq((size_t) K * M);
+    for (int m = 0; m < M; ++m) {
+        traits->to_float(
+            q.data() + (size_t) m * row_bytes,
+            wdq.data() + (size_t) m * K,
+            K
+        );
+    }
+
+    std::vector<float> expected((size_t) M * N, 0.0f);
+    for (int n = 0; n < N; ++n) {
+        for (int m = 0; m < M; ++m) {
+            double sum = 0.0;
+            for (int k = 0; k < K; ++k) {
+                sum += (double) wdq[(size_t) k + (size_t) K * m] *
+                       (double) x[(size_t) k + (size_t) K * n];
+            }
+            expected[(size_t) m + (size_t) M * n] = (float) sum;
+        }
+    }
+
+    ggml_init_params params{
+        ggml_tensor_overhead() * 8 + 4096,
+        nullptr,
+        true,
+    };
+    ggml_context * wctx = ggml_init(params);
+    if (!wctx) throw std::runtime_error("quantized repack context allocation failed");
+
+    ggml_backend_buffer_t wbuf = nullptr;
+    try {
+        ggml_tensor * tw = ggml_new_tensor_2d(wctx, type, K, M);
+        ggml_set_name(tw, "selftest.quantized_repack.weight");
+
+        wbuf = ggml_backend_alloc_ctx_tensors(wctx, be.backend);
+        if (!wbuf) throw std::runtime_error("quantized repack HTP buffer allocation failed");
+
+        // Critical production contract: WEIGHTS is needed while bytes are
+        // uploaded so Hexagon creates tiled REPACK data, but leaving the large
+        // model buffer in WEIGHTS mode makes its first lazy map use the
+        // delayed-extended FastRPC path. Restore ANY before compute.
+        ggml_backend_buffer_set_usage(wbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        ggml_backend_tensor_set(tw, q.data(), 0, q.size());
+        ggml_backend_buffer_set_usage(wbuf, GGML_BACKEND_BUFFER_USAGE_ANY);
+
+        Graph g(128);
+        auto * tx = g.input_f32(x, K, N);
+        auto * out = ggml_mul_mat(g.ctx, tw, tx);
+        g.compute(be, out);
+
+        char name[128];
+        std::snprintf(
+            name,
+            sizeof(name),
+            "quant-matmul-%s-repack-ordinary-map-n%d",
+            type_name,
+            N
+        );
+        require_close(name, tensor_to_f32(out), expected, 0.15f);
+
+        ggml_backend_buffer_free(wbuf);
+        wbuf = nullptr;
+        ggml_free(wctx);
+    } catch (...) {
+        if (wbuf) ggml_backend_buffer_free(wbuf);
+        ggml_free(wctx);
+        throw;
+    }
+}
+
+static void test_quantized_repack_matmuls(Backend & be) {
+    test_quantized_repack_matmul(be, GGML_TYPE_Q4_K, "q4k", 1);
+    test_quantized_repack_matmul(be, GGML_TYPE_Q4_K, "q4k", 40);
+    test_quantized_repack_matmul(be, GGML_TYPE_Q2_K, "q2k", 1);
+    test_quantized_repack_matmul(be, GGML_TYPE_Q2_K, "q2k", 40);
+}
+
 static void test_v81_direct_residual_add(Backend & be) {
     // Mirrors the streamed ConvNeXt/residual geometry that previously reached
     // the generic chunked binary DMA/VTCM kernel and stalled the v81 DSP.
@@ -442,6 +557,7 @@ int main() {
         test_sin(be);
         test_get_rows_f32(be);
         test_get_rows_f32_ordinary_buffer(be);
+        test_quantized_repack_matmuls(be);
         test_snake(be);
         test_col2im_bias(be);
         test_v81_direct_residual_add(be);
