@@ -40,6 +40,8 @@ class SpeechGenerationService : Service() {
     private lateinit var runtimeDir: File
     @Volatile private var nativeEffectiveFrames: Int = 0
     @Volatile private var nativeDecodedFrames: Int = 0
+    @Volatile private var nativeGeneratedFrames: Int = 0
+    @Volatile private var nativeVocoderMsPerFrame: Float = 0f
     @Volatile private var usingQnnVocoder: Boolean = false
 
     companion object {
@@ -50,7 +52,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v195-qnn-vocoder-causal64"
+            "breeze-a0e177-hexagon-ab9acc-v196-qnn-feature-pipeline"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -80,6 +82,7 @@ class SpeechGenerationService : Service() {
             val modelId: String,
             val detail: String,
             val startedAtMillis: Long,
+            val progress: Float = 0f,
         ) : SpeechState()
 
         data class Ready(
@@ -98,6 +101,8 @@ class SpeechGenerationService : Service() {
             val etaSeconds: Float? = null,
             val fps: Float? = null,
             val realtimeFactor: Float? = null,
+            val codecProgress: Float? = null,
+            val vocoderProgress: Float? = null,
         ) : SpeechState()
 
         data class Complete(
@@ -185,6 +190,7 @@ class SpeechGenerationService : Service() {
             modelId,
             "Preparing speech engine",
             started,
+            0.06f,
         )
         try {
             destroyProcess()
@@ -194,8 +200,12 @@ class SpeechGenerationService : Service() {
                 throw IllegalStateException("Breeze model.gguf is missing or incomplete")
             }
 
-            val qnnVocoderFile = BreezeQnnVocoderArtifact.localFile(this)
-            usingQnnVocoder = qnnVocoderFile != null
+            _state.value = SpeechState.Loading(
+                modelId, "Preparing accelerator runtime", started, 0.12f,
+            )
+            val qnnInstall = BreezeQnnVocoderArtifact.localInstall(this)
+            val qnnVocoderFile = qnnInstall?.contextFile
+            usingQnnVocoder = qnnInstall != null
             prepareRuntime(usingQnnVocoder)
             val executable = File(applicationInfo.nativeLibraryDir, EXECUTABLE)
             if (!executable.isFile) {
@@ -204,8 +214,9 @@ class SpeechGenerationService : Service() {
 
             _state.value = SpeechState.Loading(
                 modelId,
-                "Starting voice model",
+                "Loading model weights",
                 started,
+                0.32f,
             )
 
             val command = listOf(
@@ -257,6 +268,7 @@ class SpeechGenerationService : Service() {
             )
             if (qnnVocoderFile != null) {
                 env["BREEZE_QNN_VOCODER_PATH"] = qnnVocoderFile.absolutePath
+                env["BREEZE_QNN_VOCODER_LUT_PATH"] = qnnInstall!!.lutFile.absolutePath
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
                 env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
             }
@@ -272,8 +284,8 @@ class SpeechGenerationService : Service() {
                     "queue=v153-default-1280x32 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
-                    "vocoder=" + (if (usingQnnVocoder) "qnn-htp-causal64" else "ggml-stateful-fallback") + " " +
-                    "chunk=8x32 qnn_left_context=25 qnn_shared_all_gguf=1 " +
+                    "vocoder=" + (if (usingQnnVocoder) "qnn-htp-feature64-pipeline" else "ggml-stateful-fallback") + " " +
+                    "qnn_pipeline=24x39 qnn_left_context=25 qnn_host_lut=fp16 " +
                     "snake=precomputed+fused diag=projection-preflight-v195 signal_validation=stream+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
@@ -300,12 +312,18 @@ class SpeechGenerationService : Service() {
                         "Speech engine stopped during startup.",
                     )
                 }
-                if (attempt % 8 == 0) {
-                    _state.value = SpeechState.Loading(
-                        modelId,
-                        "Loading voice model · ${attempt / 2}s",
-                        started,
-                    )
+                if (attempt % 12 == 0) {
+                    val current = _state.value as? SpeechState.Loading
+                    if (current?.modelId == modelId && current.progress < 0.98f) {
+                        _state.value = current.copy(
+                            detail = if (usingQnnVocoder) {
+                                "Finalizing QNN + Breeze runtime"
+                            } else {
+                                "Finalizing Breeze runtime"
+                            },
+                            progress = maxOf(current.progress, 0.92f),
+                        )
+                    }
                 }
                 delay(500)
             }
@@ -347,6 +365,8 @@ class SpeechGenerationService : Service() {
                 val started = System.currentTimeMillis()
                 nativeEffectiveFrames = 0
                 nativeDecodedFrames = 0
+                nativeGeneratedFrames = 0
+                nativeVocoderMsPerFrame = 0f
                 _state.value = SpeechState.Generating(
                     modelId = modelId,
                     detail = "Starting speech generation",
@@ -453,6 +473,9 @@ class SpeechGenerationService : Service() {
                     temp.delete()
                 }
 
+                val elapsed = System.currentTimeMillis() - started
+                val audioDurationMillis =
+                    (pcmBytes / 2L * 1000L / sampleRate.toLong()).coerceAtLeast(0L)
                 val item = SpeechHistoryStore.add(
                     context = this@SpeechGenerationService,
                     file = output,
@@ -460,8 +483,17 @@ class SpeechGenerationService : Service() {
                     instruction = instruction.ifBlank { "Speak clearly and naturally." },
                     modelId = modelId,
                     seed = seed,
+                    generationMillis = elapsed,
+                    audioDurationMillis = audioDurationMillis,
+                    cfg = cfg,
+                    temperature = temperature,
+                    topK = topK,
+                    topP = topP,
+                    repetition = repetition,
+                    splitChars = splitChars,
+                    maxNewTokens = maxNewTokens,
+                    accelerated = usingQnnVocoder,
                 )
-                val elapsed = System.currentTimeMillis() - started
                 _state.value = SpeechState.Complete(
                     output,
                     text,
@@ -617,6 +649,7 @@ class SpeechGenerationService : Service() {
             modelId,
             "Validating Hexagon speech kernels",
             startedAtMillis,
+            0.22f,
         )
         val executable = File(applicationInfo.nativeLibraryDir, SELFTEST_EXECUTABLE)
         if (!executable.isFile) {
@@ -747,6 +780,33 @@ class SpeechGenerationService : Service() {
             line.take(3000),
         )
 
+        val loading = _state.value as? SpeechState.Loading
+        if (loading?.modelId == modelId) {
+            val milestone = when {
+                line.contains("new session", ignoreCase = true) ->
+                    "Connecting to Hexagon HTP" to 0.38f
+                line.contains("quantized GGUF weights repacked", ignoreCase = true) ->
+                    "Preparing quantized model weights" to 0.56f
+                line.contains("codebook mirrors verified", ignoreCase = true) ->
+                    "Verifying audio codebooks" to 0.64f
+                line.contains("first decoder projection verified", ignoreCase = true) ->
+                    "Model validation complete" to 0.72f
+                line.contains("[BREEZE_QNN] ready", ignoreCase = true) ->
+                    "Loading fast QNN vocoder" to 0.84f
+                line.startsWith("loading ") ->
+                    "Starting Breeze server" to 0.90f
+                line.contains("listening on", ignoreCase = true) ->
+                    "Speech engine is almost ready" to 0.98f
+                else -> null
+            }
+            if (milestone != null && milestone.second >= loading.progress) {
+                _state.value = loading.copy(
+                    detail = milestone.first,
+                    progress = milestone.second,
+                )
+            }
+        }
+
         if (line.startsWith("generation error:", ignoreCase = true)) {
             val nativeMessage = line.substringAfter(':').trim()
             fail(
@@ -767,8 +827,11 @@ class SpeechGenerationService : Service() {
             nativeEffectiveFrames = match.groupValues[4].toIntOrNull() ?: 0
             if (nativeEffectiveFrames > 0) {
                 _state.value = current.copy(
-                    detail = "Generating codec frames",
+                    detail = "Generating voice tokens",
                     estimatedSeconds = nativeEffectiveFrames * 0.08f,
+                    progress = 0f,
+                    codecProgress = 0f,
+                    vocoderProgress = 0f,
                 )
             }
             return
@@ -776,24 +839,50 @@ class SpeechGenerationService : Service() {
 
         nativeStageRegex.find(line)?.let { match ->
             val frames = match.groupValues[1].toIntOrNull() ?: return
+            nativeGeneratedFrames = frames
             val elapsed = (
                 System.currentTimeMillis() - current.startedAtMillis
             ).coerceAtLeast(1L) / 1000f
             val fps = frames / elapsed
             val generated = frames * 0.08f
             val effective = nativeEffectiveFrames
-            val progress =
-                if (effective > 0) {
-                    ((frames + nativeDecodedFrames).toFloat() / (effective * 2f))
-                        .coerceIn(0f, 1f)
-                } else null
+            val codecP = if (effective > 0) {
+                (frames.toFloat() / effective).coerceIn(0f, 1f)
+            } else null
+            val vocoderP = if (effective > 0) {
+                (nativeDecodedFrames.toFloat() / effective).coerceIn(0f, 1f)
+            } else null
+            val progress = if (codecP != null && vocoderP != null) {
+                if (usingQnnVocoder) {
+                    0.72f * codecP + 0.28f * vocoderP
+                } else {
+                    0.58f * codecP + 0.42f * vocoderP
+                }
+            } else null
+            val generationEta = if (effective > frames && fps > 0f) {
+                (effective - frames) / fps
+            } else 0f
+            val vocoderEta = if (
+                usingQnnVocoder && effective > nativeDecodedFrames &&
+                nativeVocoderMsPerFrame > 0f
+            ) {
+                (effective - nativeDecodedFrames) * nativeVocoderMsPerFrame / 1000f
+            } else 0f
             _state.value = current.copy(
-                detail = "Generating codec frames",
+                detail = when {
+                    nativeDecodedFrames > 0 && frames < effective ->
+                        "Generating + decoding on HTP"
+                    frames >= effective && nativeDecodedFrames < effective ->
+                        "Finishing QNN waveform"
+                    else -> "Generating voice tokens"
+                },
                 generatedSeconds = maxOf(current.generatedSeconds, generated),
                 progress = progress,
+                codecProgress = codecP,
+                vocoderProgress = vocoderP,
                 estimatedSeconds = if (effective > 0) effective * 0.08f else null,
                 elapsedSeconds = elapsed,
-                etaSeconds = null,
+                etaSeconds = maxOf(generationEta, vocoderEta),
                 fps = fps,
                 realtimeFactor = generated / elapsed,
             )
@@ -802,25 +891,53 @@ class SpeechGenerationService : Service() {
 
         nativeVocoderStreamRegex.find(line)?.let { match ->
             val decoded = match.groupValues[2].toIntOrNull() ?: 0
+            val flushMs = match.groupValues[4].toFloatOrNull() ?: 0f
             nativeDecodedFrames += decoded
+            if (decoded > 0 && flushMs > 0f) {
+                val sample = flushMs / decoded
+                nativeVocoderMsPerFrame = if (nativeVocoderMsPerFrame <= 0f) {
+                    sample
+                } else {
+                    nativeVocoderMsPerFrame * 0.7f + sample * 0.3f
+                }
+            }
             val latest = _state.value as? SpeechState.Generating ?: return
             val effective = nativeEffectiveFrames
-            val generatedFrames =
-                (latest.generatedSeconds / 0.08f).toInt().coerceAtLeast(nativeDecodedFrames)
-            val progress =
-                if (effective > 0) {
-                    ((generatedFrames + nativeDecodedFrames).toFloat() / (effective * 2f))
-                        .coerceIn(0f, 1f)
-                } else null
+            val codecP = if (effective > 0) {
+                (nativeGeneratedFrames.toFloat() / effective).coerceIn(0f, 1f)
+            } else null
+            val vocoderP = if (effective > 0) {
+                (nativeDecodedFrames.toFloat() / effective).coerceIn(0f, 1f)
+            } else null
+            val overall = if (codecP != null && vocoderP != null) {
+                if (usingQnnVocoder) 0.72f * codecP + 0.28f * vocoderP
+                else 0.58f * codecP + 0.42f * vocoderP
+            } else null
+            val elapsed = (
+                System.currentTimeMillis() - latest.startedAtMillis
+            ).coerceAtLeast(1L) / 1000f
+            val vocoderEta = if (
+                effective > nativeDecodedFrames && nativeVocoderMsPerFrame > 0f
+            ) {
+                (effective - nativeDecodedFrames) * nativeVocoderMsPerFrame / 1000f
+            } else 0f
             _state.value = latest.copy(
-                detail = if (usingQnnVocoder) {
-                    "Decoding waveform on Qualcomm HTP"
-                } else {
-                    "Decoding waveform"
+                detail = when {
+                    nativeGeneratedFrames < effective ->
+                        "Generating + decoding on HTP"
+                    nativeDecodedFrames < effective ->
+                        "Finishing QNN waveform"
+                    else -> "Finalizing audio"
                 },
-                generatedSeconds = maxOf(latest.generatedSeconds, nativeDecodedFrames * 0.08f),
-                progress = progress,
-                etaSeconds = null,
+                generatedSeconds = maxOf(
+                    latest.generatedSeconds,
+                    nativeDecodedFrames * 0.08f,
+                ),
+                progress = overall,
+                codecProgress = codecP,
+                vocoderProgress = vocoderP,
+                elapsedSeconds = elapsed,
+                etaSeconds = vocoderEta,
             )
             return
         }

@@ -23,6 +23,16 @@ data class SpeechHistoryItem(
     val modelId: String,
     val seed: Long,
     val createdAt: Long,
+    val generationMillis: Long = 0L,
+    val audioDurationMillis: Long = 0L,
+    val cfg: Float = 1f,
+    val temperature: Float = 0.9f,
+    val topK: Int = 50,
+    val topP: Float = 1f,
+    val repetition: Float = 1.1f,
+    val splitChars: Int = 600,
+    val maxNewTokens: Int = 750,
+    val accelerated: Boolean = false,
 )
 
 object SpeechHistoryStore {
@@ -44,6 +54,16 @@ object SpeechHistoryStore {
         instruction: String,
         modelId: String,
         seed: Long,
+        generationMillis: Long = 0L,
+        audioDurationMillis: Long = 0L,
+        cfg: Float = 1f,
+        temperature: Float = 0.9f,
+        topK: Int = 50,
+        topP: Float = 1f,
+        repetition: Float = 1.1f,
+        splitChars: Int = 600,
+        maxNewTokens: Int = 750,
+        accelerated: Boolean = false,
     ): SpeechHistoryItem = withContext(Dispatchers.IO) {
         mutex.withLock {
             val item = SpeechHistoryItem(
@@ -54,6 +74,16 @@ object SpeechHistoryStore {
                 modelId = modelId,
                 seed = seed,
                 createdAt = System.currentTimeMillis(),
+                generationMillis = generationMillis,
+                audioDurationMillis = audioDurationMillis,
+                cfg = cfg,
+                temperature = temperature,
+                topK = topK,
+                topP = topP,
+                repetition = repetition,
+                splitChars = splitChars,
+                maxNewTokens = maxNewTokens,
+                accelerated = accelerated,
             )
             val next = (listOf(item) + loadUnlocked(context))
                 .filter { File(it.filePath).isFile }
@@ -133,6 +163,16 @@ object SpeechHistoryStore {
                             modelId = obj.optString("modelId"),
                             seed = obj.optLong("seed", 42L),
                             createdAt = obj.optLong("createdAt", 0L),
+                            generationMillis = obj.optLong("generationMillis", 0L),
+                            audioDurationMillis = obj.optLong("audioDurationMillis", 0L),
+                            cfg = obj.optDouble("cfg", 1.0).toFloat(),
+                            temperature = obj.optDouble("temperature", 0.9).toFloat(),
+                            topK = obj.optInt("topK", 50),
+                            topP = obj.optDouble("topP", 1.0).toFloat(),
+                            repetition = obj.optDouble("repetition", 1.1).toFloat(),
+                            splitChars = obj.optInt("splitChars", 600),
+                            maxNewTokens = obj.optInt("maxNewTokens", 750),
+                            accelerated = obj.optBoolean("accelerated", false),
                         ),
                     )
                 }
@@ -152,6 +192,16 @@ object SpeechHistoryStore {
                     put("modelId", item.modelId)
                     put("seed", item.seed)
                     put("createdAt", item.createdAt)
+                    put("generationMillis", item.generationMillis)
+                    put("audioDurationMillis", item.audioDurationMillis)
+                    put("cfg", item.cfg.toDouble())
+                    put("temperature", item.temperature.toDouble())
+                    put("topK", item.topK)
+                    put("topP", item.topP.toDouble())
+                    put("repetition", item.repetition.toDouble())
+                    put("splitChars", item.splitChars)
+                    put("maxNewTokens", item.maxNewTokens)
+                    put("accelerated", item.accelerated)
                 },
             )
         }
