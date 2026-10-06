@@ -316,6 +316,46 @@ static void test_col2im_bias(Backend & be) {
     test_col2im_case(be, "col2im1d-bias-s8-c64", 16, 64, 8, 8, 0);
 }
 
+static void test_v81_direct_residual_binary(Backend & be) {
+    // Mirrors the streamed ConvNeXt/residual geometry that previously reached
+    // the generic chunked binary DMA/VTCM kernel and stalled the v81 DSP.
+    constexpr int T = 8;
+    constexpr int C = 512;
+
+    std::vector<float> a((size_t) T * C);
+    std::vector<float> b((size_t) T * C);
+    std::vector<float> expected_add(a.size());
+    std::vector<float> expected_mul(a.size());
+
+    for (int ch = 0; ch < C; ++ch) {
+        for (int t = 0; t < T; ++t) {
+            const size_t i = (size_t) t + (size_t) T * ch;
+            a[i] = -0.75f + 0.013f * (float) t + 0.001f * (float) ch;
+            b[i] =  0.25f - 0.007f * (float) t + 0.0005f * (float) ch;
+            expected_add[i] = a[i] + b[i];
+            expected_mul[i] = a[i] * b[i];
+        }
+    }
+
+    {
+        Graph g(96);
+        auto * ta = g.input_f32(a, T, C);
+        auto * tb = g.input_f32(b, T, C);
+        auto * out = ggml_add(g.ctx, ta, tb);
+        g.compute(be, out);
+        require_close("v81-direct-residual-add", tensor_to_f32(out), expected_add, 1e-6f);
+    }
+
+    {
+        Graph g(96);
+        auto * ta = g.input_f32(a, T, C);
+        auto * tb = g.input_f32(b, T, C);
+        auto * out = ggml_mul(g.ctx, ta, tb);
+        g.compute(be, out);
+        require_close("v81-direct-residual-mul", tensor_to_f32(out), expected_mul, 1e-6f);
+    }
+}
+
 static void test_sin(Backend & be) {
     std::vector<float> x(97);
     for (size_t i = 0; i < x.size(); ++i) x[i] = -2.0f + 4.0f * (float) i / (float) (x.size() - 1);
@@ -338,6 +378,7 @@ int main() {
         test_get_rows_f32_weight_buffer(be);
         test_snake(be);
         test_col2im_bias(be);
+        test_v81_direct_residual_binary(be);
         be.free();
         std::fprintf(stderr, "[BREEZE_SELFTEST] all-ok\n");
         return 0;
