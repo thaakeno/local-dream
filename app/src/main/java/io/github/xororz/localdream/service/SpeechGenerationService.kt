@@ -47,7 +47,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v169-host-cache-depbarrier-fast"
+            "breeze-a0e177-hexagon-ab9acc-v171-v153-largepacket-correctness"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -240,29 +240,26 @@ class SpeechGenerationService : Service() {
                 "ADSP_LIBRARY_PATH" to dspPath,
                 "DSP_LIBRARY_PATH" to dspPath,
                 "GGML_HEXAGON_DEVICES" to "HTP0:0",
-                // Correctness-first SM8850/v81 path. MUL_MAT was already
-                // forced to HVX in the backend; disable HMX for FA/GDN too so
-                // the first vocoder graph cannot enter the known-fragile HMX
-                // queue at all. This remains strict HTP: HVX runs on Hexagon.
-                "GGML_HEXAGON_NHMX" to "0",
-                "GGML_HEXAGON_NHVX" to "0",
-                "GGML_HEXAGON_MM_SELECT" to "1",
-                "GGML_HEXAGON_FA_SELECT" to "1",
-                "GGML_HEXAGON_GDN_SELECT" to "1",
-                // SM8850/v81 cannot safely execute Breeze's producer/consumer
-                // chain inside one DSPQueue packet. v168 proved that by failing
-                // immediately in dspqueue_read on the first vocoder graph.
+                // Restore the scheduling semantics of v153, the last build that
+                // completed the full vocoder on this exact SM8850 device:
+                // one large fused DSP packet instead of arbitrary 64-op cuts or
+                // one-op dependency round trips.
                 //
-                // Keep dependent ops separated exactly as in the stable v167
-                // run, but remove v167's huge per-packet logging overhead.
-                "GGML_HEXAGON_DEPBARRIER" to "1",
-                "GGML_HEXAGON_OPFUSION" to "0",
-                "GGML_HEXAGON_OPBATCH" to "64",
+                // Keep the later correctness fixes in the backend: quantized v81
+                // matmuls remain guarded onto HVX, F32 GET_ROWS is staged safely,
+                // and host-owned vocoder carry state removes the original alias.
+                "GGML_HEXAGON_V81_LEGACY_BATCH" to "1",
+                "GGML_HEXAGON_NHMX" to "1",
+                "GGML_HEXAGON_NHVX" to "0",
+                "GGML_HEXAGON_MM_SELECT" to "2",
+                "GGML_HEXAGON_FA_SELECT" to "2",
+                "GGML_HEXAGON_GDN_SELECT" to "2",
+                "GGML_HEXAGON_DEPBARRIER" to "0",
+                "GGML_HEXAGON_OPFUSION" to "1",
+                "GGML_HEXAGON_OPBATCH" to "1280",
                 "GGML_HEXAGON_OPQUEUE" to "32",
                 "GGML_HEXAGON_BATCHLOG" to "0",
-                // Thousands of tiny safe packets benefit from polling completion;
-                // unlike batch logging this does not perform Android file I/O.
-                "GGML_HEXAGON_OPPOLL" to "1",
+                "GGML_HEXAGON_OPPOLL" to "0",
             )
 
             BackendDiagnostics.beginSession(
@@ -273,8 +270,8 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
-                    "queue=depbarrier-opbatch64x32 depbarrier=1 oppoll=1 opfusion=0 hmx=disabled-v81 " +
-                    "matmul=hvx fa=hvx gdn=hvx add=direct-hvx-v81 mul=generic-hvx-v81 " +
+                    "queue=v153-opbatch1280x32 depbarrier=0 oppoll=0 opfusion=1 " +
+                    "hmx=float-enabled quant-matmul=hvx " +
                     "vocoder_state=host-snapshot-v153 chunk=4/25 batchlog=0 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
