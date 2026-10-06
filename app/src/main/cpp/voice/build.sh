@@ -240,7 +240,8 @@ v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
 vocoder=qnn-htp-causal64-or-stateful-ggml-fallback-v195
-qnn_vocoder=runtime-optional-download,causal64,left-context25,shared-all-gguf-variants\nformats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
+qnn_vocoder=runtime-optional-download,causal64,left-context25,shared-all-gguf-variants
+formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
 ls -lh "$JNI_DIR/libbreeze_server.so" "$JNI_DIR/libbreeze_selftest.so" "$ASSET_DIR"/libggml-htp-v*.so

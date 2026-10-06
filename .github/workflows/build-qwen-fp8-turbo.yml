@@ -378,7 +378,9 @@ jobs:
           grep -q 'bounded-stream-kv' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'precomputed-snake-params' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'snake-hotgraph-fused' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'vocoder=stateful-stream-once-chunk8x32-repack-snakefast-v194' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'vocoder=qnn-htp-causal64-or-stateful-ggml-fallback-v195' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'qnn_vocoder=runtime-optional-download,causal64,left-context25,shared-all-gguf-variants' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'col2im-bias-fused' app/src/main/assets/breezelibs/backend-version.txt
