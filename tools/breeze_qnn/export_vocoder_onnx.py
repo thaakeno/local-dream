@@ -144,7 +144,7 @@ def main() -> None:
             wav = hidden
             for block in d.decoder:
                 wav = block(wav)
-            return wav.clamp(min=-1, max=1).contiguous()
+            # Keep graph output native FP16. QAIRT HTP already computes this\n            # decoder in FP16; forcing FLOAT32 at the graph boundary inserts a\n            # QNN_Convert that fails graph finalization on v69/v73 targets.\n            return wav.clamp(min=-1, max=1).to(torch.float16).contiguous()
 
     wrapper = StaticVocoder(
         decoder,
@@ -200,7 +200,7 @@ def main() -> None:
         "samples_per_frame": int(model.decode_upsample_rate),
         "sample_rate": int(model.output_sample_rate),
         "input_dtype": "int32",
-        "output_dtype": "float32",
+        "output_dtype": "float16",
         "eager_static_max_abs": parity,
         "reference_peak": float(ref.abs().max()),
         "reference_rms": float(torch.sqrt(torch.mean(ref.float().square()))),

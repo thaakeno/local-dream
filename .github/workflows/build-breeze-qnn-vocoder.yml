@@ -151,9 +151,16 @@ jobs:
                   "Vocoder ONNX input must stay int32, got " +
                   session.get_inputs()[0].type
               )
+          if session.get_outputs()[0].type != "tensor(float16)":
+              raise SystemExit(
+                  "Vocoder ONNX output must stay float16, got " +
+                  session.get_outputs()[0].type
+              )
           got = session.run(["audio"], {"codes": ref["codes"].numpy()})[0]
           want = ref["audio"].numpy()
-          error = float(np.max(np.abs(got - want)))
+          error = float(
+              np.max(np.abs(got.astype(np.float32) - want.astype(np.float32)))
+          )
           print("ONNX max abs error:", error)
           if not np.isfinite(got).all() or error > 2e-3:
               raise SystemExit("ONNX parity check failed")
@@ -190,7 +197,7 @@ jobs:
           for soc in sm8450 sm8475 sm8550 sm8650 sm8750 sm8850; do
             work="$OUT/contexts/$soc"
             mkdir -p "$work"
-            qnn-context-binary-generator               --backend "$BACKEND"               --model "$MODEL"               --htp_socs "$soc"               --binary_file "breeze-vocoder-$soc-fp16"               --output_dir "$work"
+            qnn-context-binary-generator               --backend "$BACKEND"               --model "$MODEL"               --htp_socs "$soc"               --binary_file "breeze-vocoder-$soc-fp16"               --output_dir "$work"               --log_level info
             file="$(find "$work" -maxdepth 1 -type f -name "breeze-vocoder-$soc-fp16.*" -print -quit)"
             test -n "$file"
             test -s "$file"

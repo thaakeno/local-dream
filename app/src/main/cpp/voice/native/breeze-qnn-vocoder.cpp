@@ -98,18 +98,24 @@ public:
         const auto in_type = QNN_TENSOR_GET_DATA_TYPE(in);
         const auto out_type = QNN_TENSOR_GET_DATA_TYPE(out);
 
-        if (in_type != QNN_DATATYPE_INT_32 || out_type != QNN_DATATYPE_FLOAT_32) {
+        if (in_type != QNN_DATATYPE_INT_32 ||
+            (out_type != QNN_DATATYPE_FLOAT_16 &&
+             out_type != QNN_DATATYPE_FLOAT_32)) {
             std::fprintf(stderr,
                          "[BREEZE_QNN] unsupported IO dtype input=%d output=%d\n",
                          (int) in_type, (int) out_type);
             return false;
         }
+        const size_t output_bytes =
+            sample_count * (out_type == QNN_DATATYPE_FLOAT_16
+                                ? sizeof(_Float16)
+                                : sizeof(float));
         if (in_buf.dataSize != code_count * sizeof(int32_t) ||
-            out_buf.dataSize != sample_count * sizeof(float)) {
+            out_buf.dataSize != output_bytes) {
             std::fprintf(stderr,
-                         "[BREEZE_QNN] IO byte mismatch in=%u/%zu out=%u/%zu\n",
+                         "[BREEZE_QNN] IO byte mismatch in=%u/%zu out=%u/%zu type=%d\n",
                          in_buf.dataSize, code_count * sizeof(int32_t),
-                         out_buf.dataSize, sample_count * sizeof(float));
+                         out_buf.dataSize, output_bytes, (int) out_type);
             return false;
         }
 
@@ -127,8 +133,17 @@ public:
             std::fprintf(stderr, "[BREEZE_QNN] graphExecute failed err=%d\n", (int) st);
             return false;
         }
-        std::memcpy(audio, out_buf.data, sample_count * sizeof(float));
-        std::fprintf(stderr, "[BREEZE_QNN] graph64_ms=%.2f\n", ms);
+        if (qnn::tools::iotensor::StatusCode::SUCCESS !=
+            m_ioTensor.convertToFloatInto(audio, &out)) {
+            std::fprintf(stderr,
+                         "[BREEZE_QNN] failed to convert native PCM output type=%d\n",
+                         (int) out_type);
+            return false;
+        }
+        std::fprintf(stderr,
+                     "[BREEZE_QNN] graph64_ms=%.2f output=%s\n",
+                     ms,
+                     out_type == QNN_DATATYPE_FLOAT_16 ? "fp16" : "fp32");
         return true;
     }
 
