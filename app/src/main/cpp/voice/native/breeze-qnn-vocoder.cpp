@@ -82,7 +82,7 @@ public:
                                                   (*m_graphsInfo)[0]);
     }
 
-    bool execute(const float * features, size_t feature_count, float * audio, size_t sample_count) {
+    bool execute(float * features, size_t feature_count, float * audio, size_t sample_count) {
         if (!setup_io()) return false;
         auto & graph = (*m_graphsInfo)[0];
         if (graph.numInputTensors != 1 || graph.numOutputTensors != 1) return false;

@@ -185,7 +185,12 @@ jobs:
           export LD_LIBRARY_PATH="${QNN_SDK_ROOT}/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
           OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
           mkdir -p "$OUT/contexts/sm8850"
-          qnn-context-binary-generator             --backend "${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtp.so"             --model "$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"             --htp_socs sm8850             --backend_extensions_lib_path "${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtpNetRunExtensions.so"             --binary_file breeze-vocoder-sm8850-feature64-fp16             --output_dir "$OUT/contexts/sm8850"             --log_level info
+          # Do not pass QnnHtpNetRunExtensions without a matching backend
+          # config file. QAIRT interprets that as graph-level configuration and
+          # rejects the model with "Graph configs specified without a graph
+          # name". The previously proven v1 flow compiled exact-SoC contexts
+          # with --htp_socs alone, which is all we need here.
+          qnn-context-binary-generator             --backend "${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtp.so"             --model "$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"             --htp_socs sm8850             --binary_file breeze-vocoder-sm8850-feature64-fp16             --output_dir "$OUT/contexts/sm8850"             --log_level info
           file="$(find "$OUT/contexts/sm8850" -maxdepth 1 -type f -name 'breeze-vocoder-sm8850-feature64-fp16.*' -print -quit)"
           test -n "$file"; test -s "$file"
           mv "$file" "$OUT/contexts/breeze-vocoder-sm8850-feature64-fp16.bin"
