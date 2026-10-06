@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
+#include <stdexcept>
 #include <string>
 
 namespace breeze {
@@ -81,9 +83,36 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
 std::vector<float> MimiCodec::decode(const std::vector<int> & codes, int T, int n_cb) {
     if (n_cb <= 0) n_cb = m->cfg.num_codebooks;
     Graph g(32768);
-    ggml_tensor * x = vocoder_decode(g.ctx, *m, g, codes, n_cb, T);
+    std::vector<VocoderDiagProbe> probes;
+    ggml_tensor * x = vocoder_decode(g.ctx, *m, g, codes, n_cb, T, &probes);
     ggml_tensor * audio = ggml_cont(g.ctx, ggml_reshape_1d(g.ctx, x, x->ne[0]));
     g.compute(m->backend, audio);
+
+    for (const VocoderDiagProbe & probe : probes) {
+        if (!probe.scalar) continue;
+        const std::vector<float> value = tensor_to_f32(probe.scalar);
+        const float checksum = value.empty() ? NAN : value[0];
+        const bool finite = std::isfinite(checksum);
+        std::fprintf(
+            stderr,
+            "[BREEZE_VOCODER_DIAG] stage=%s checksum=%.9g finite=%d\n",
+            probe.name.c_str(),
+            checksum,
+            finite ? 1 : 0
+        );
+        if (!finite) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_VOCODER_DIAG] FIRST_NONFINITE stage=%s checksum=%.9g\n",
+                probe.name.c_str(),
+                checksum
+            );
+            throw std::runtime_error(
+                "Breeze vocoder first non-finite stage: " + probe.name
+            );
+        }
+    }
+
     return tensor_to_f32(audio);
 }
 
