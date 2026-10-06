@@ -295,9 +295,22 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         throw std::runtime_error("Breeze generated no codec frames");
     }
 
+    std::fprintf(
+        stderr,
+        "[BREEZE_VOCODER] reference begin frames=%d codes=%zu\n",
+        total_frames,
+        frames.size()
+    );
     const auto tv = clock_now();
     std::vector<float> audio = decode_reference_audio(m, codec, frames, total_frames);
     const double vtime = since(tv);
+    std::fprintf(
+        stderr,
+        "[BREEZE_VOCODER] reference end frames=%d samples=%zu ms=%.2f\n",
+        total_frames,
+        audio.size(),
+        vtime
+    );
     tm.vocoder += vtime;
     tm.flushes++;
     const AudioStats ast = audio_stats(audio);
