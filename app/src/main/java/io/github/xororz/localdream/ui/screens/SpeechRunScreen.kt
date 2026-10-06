@@ -599,7 +599,7 @@ fun SpeechRunScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     val soc = BreezeQnnVocoderArtifact.supportedSoc().orEmpty()
                     Text(
-                        "Download the SM8850 QNN HTP vocoder v2 (~315 MB). It is shared " +
+                        "Download the native SM8850 / V81 QNN HTP vocoder v3. It includes " +
                             "by every Breeze Q4/Q6/Q8/F16/DD model on this phone and " +
                             "replaces the slow ggml waveform decoder.",
                     )

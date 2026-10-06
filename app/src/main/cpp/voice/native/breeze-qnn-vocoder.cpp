@@ -314,6 +314,103 @@ static bool load_qnn(
     return true;
 }
 
+static bool read_exact_floats(
+    const std::string & path,
+    size_t count,
+    std::vector<float> & out
+) {
+    std::error_code ec;
+    const auto bytes = std::filesystem::file_size(path, ec);
+    if (ec || bytes != count * sizeof(float)) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_QNN_SELFTEST] bad reference size path=%s got=%llu expected=%zu\n",
+            path.c_str(),
+            (unsigned long long) bytes,
+            count * sizeof(float)
+        );
+        return false;
+    }
+    out.resize(count);
+    std::ifstream in(path, std::ios::binary);
+    return (bool) in.read(
+        reinterpret_cast<char *>(out.data()),
+        (std::streamsize) (count * sizeof(float))
+    );
+}
+
+static bool run_qnn_reference_selftest(
+    BreezeQnnApp & app,
+    const std::string & features_path,
+    const std::string & audio_path
+) {
+    constexpr size_t kFeatures = 64u * 512u;
+    constexpr size_t kSamples = 64u * 1920u;
+    std::vector<float> features;
+    std::vector<float> expected;
+    if (!read_exact_floats(features_path, kFeatures, features) ||
+        !read_exact_floats(audio_path, kSamples, expected)) {
+        return false;
+    }
+
+    std::vector<float> got(kSamples, 0.0f);
+    if (!app.execute(features.data(), features.size(), got.data(), got.size())) {
+        std::fprintf(stderr, "[BREEZE_QNN_SELFTEST] graph execution failed\n");
+        return false;
+    }
+
+    double abs_sum = 0.0;
+    double dot = 0.0;
+    double got_sq = 0.0;
+    double ref_sq = 0.0;
+    float max_abs = 0.0f;
+    float peak = 0.0f;
+    size_t bad = 0;
+    for (size_t i = 0; i < kSamples; ++i) {
+        const float a = got[i];
+        const float b = expected[i];
+        if (!std::isfinite(a) || !std::isfinite(b)) {
+            ++bad;
+            continue;
+        }
+        const float d = std::fabs(a - b);
+        max_abs = std::max(max_abs, d);
+        abs_sum += d;
+        peak = std::max(peak, std::fabs(a));
+        dot += (double) a * b;
+        got_sq += (double) a * a;
+        ref_sq += (double) b * b;
+    }
+    const double mean_abs = abs_sum / (double) kSamples;
+    const double got_rms = std::sqrt(got_sq / (double) kSamples);
+    const double ref_rms = std::sqrt(ref_sq / (double) kSamples);
+    const double corr = (got_sq > 0.0 && ref_sq > 0.0)
+        ? dot / std::sqrt(got_sq * ref_sq)
+        : 0.0;
+
+    std::fprintf(
+        stderr,
+        "[BREEZE_QNN_SELFTEST] max_abs=%.7g mean_abs=%.7g peak=%.7g "
+        "rms=%.7g ref_rms=%.7g corr=%.7g nonfinite=%zu\n",
+        max_abs,
+        mean_abs,
+        peak,
+        got_rms,
+        ref_rms,
+        corr,
+        bad
+    );
+
+    // FP16 HTP math can differ slightly from PyTorch/ONNX FP32, but a valid
+    // vocoder must have real signal and strongly agree with the reference.
+    return bad == 0 &&
+           peak > 1e-3f &&
+           got_rms > 5e-5 &&
+           ref_rms > 5e-5 &&
+           corr > 0.80 &&
+           mean_abs < 0.05;
+}
+
 } // namespace
 
 struct BreezeQnnVocoder::Impl {
@@ -325,17 +422,33 @@ struct BreezeQnnVocoder::Impl {
 BreezeQnnVocoder::BreezeQnnVocoder():impl_(std::make_unique<Impl>()){}
 BreezeQnnVocoder::~BreezeQnnVocoder()=default;
 bool BreezeQnnVocoder::init_from_environment(){
-    const char *path=std::getenv("BREEZE_QNN_VOCODER_PATH"), *lp=std::getenv("BREEZE_QNN_VOCODER_LUT_PATH"), *lib=std::getenv("BREEZE_QNN_LIB_DIR");
-    if(!path||!*path||!lp||!*lp||!lib||!*lib) return false;
-    if(!std::filesystem::is_regular_file(path)||!std::filesystem::is_regular_file(lp)) return false;
+    const char *path=std::getenv("BREEZE_QNN_VOCODER_PATH"),
+               *lp=std::getenv("BREEZE_QNN_VOCODER_LUT_PATH"),
+               *lib=std::getenv("BREEZE_QNN_LIB_DIR"),
+               *stf=std::getenv("BREEZE_QNN_SELFTEST_FEATURES_PATH"),
+               *sta=std::getenv("BREEZE_QNN_SELFTEST_AUDIO_PATH");
+    if(!path||!*path||!lp||!*lp||!lib||!*lib||!stf||!*stf||!sta||!*sta) return false;
+    if(!std::filesystem::is_regular_file(path)||
+       !std::filesystem::is_regular_file(lp)||
+       !std::filesystem::is_regular_file(stf)||
+       !std::filesystem::is_regular_file(sta)) return false;
     const size_t elems=(size_t)impl_->n_codebooks*impl_->codebook_size*impl_->feature_channels, bytes=elems*sizeof(float);
     std::error_code ec; const auto actual=std::filesystem::file_size(lp,ec);
     if(ec||actual!=bytes){std::fprintf(stderr,"[BREEZE_QNN] LUT size got=%llu expected=%zu\n",(unsigned long long)actual,bytes);return false;}
     impl_->lut.resize(elems); std::ifstream in(lp,std::ios::binary);
     if(!in.read(reinterpret_cast<char*>(impl_->lut.data()),(std::streamsize)bytes)){impl_->lut.clear();return false;}
     if(!load_qnn(lib,path,impl_->app)){impl_->lut.clear();return false;}
+    if(!run_qnn_reference_selftest(*impl_->app, stf, sta)){
+        std::fprintf(
+            stderr,
+            "[BREEZE_QNN_SELFTEST] FAILED; refusing broken QNN artifact and falling back\n"
+        );
+        impl_->app.reset();
+        impl_->lut.clear();
+        return false;
+    }
     impl_->history.clear();
-    std::fprintf(stderr,"[BREEZE_QNN] ready path=%s lut=%s graph_frames=64 left_context=25 features=512 layout=NFC backend=QNN-HTP-v2\n",path,lp);
+    std::fprintf(stderr,"[BREEZE_QNN] ready path=%s lut=%s graph_frames=64 left_context=25 features=512 layout=NFC backend=QNN-HTP-v3-sm8850-v81 selftest=passed\n",path,lp);
     return true;
 }
 bool BreezeQnnVocoder::ready() const{return impl_&&impl_->app&&!impl_->lut.empty();}

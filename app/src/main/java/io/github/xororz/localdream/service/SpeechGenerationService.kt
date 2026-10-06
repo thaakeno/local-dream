@@ -52,7 +52,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v196-qnn-feature-pipeline"
+            "breeze-a0e177-hexagon-ab9acc-v197-qnn-sm8850-v81-selftest"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -269,6 +269,10 @@ class SpeechGenerationService : Service() {
             if (qnnVocoderFile != null) {
                 env["BREEZE_QNN_VOCODER_PATH"] = qnnVocoderFile.absolutePath
                 env["BREEZE_QNN_VOCODER_LUT_PATH"] = qnnInstall!!.lutFile.absolutePath
+                env["BREEZE_QNN_SELFTEST_FEATURES_PATH"] =
+                    qnnInstall.selftestFeaturesFile.absolutePath
+                env["BREEZE_QNN_SELFTEST_AUDIO_PATH"] =
+                    qnnInstall.selftestAudioFile.absolutePath
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
                 env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
             }
@@ -791,8 +795,10 @@ class SpeechGenerationService : Service() {
                     "Verifying audio codebooks" to 0.64f
                 line.contains("first decoder projection verified", ignoreCase = true) ->
                     "Model validation complete" to 0.72f
+                line.contains("[BREEZE_QNN_SELFTEST] max_abs=", ignoreCase = true) ->
+                    "Validating QNN waveform numerics" to 0.80f
                 line.contains("[BREEZE_QNN] ready", ignoreCase = true) ->
-                    "Loading fast QNN vocoder" to 0.84f
+                    "QNN vocoder validated" to 0.86f
                 line.startsWith("loading ") ->
                     "Starting Breeze server" to 0.90f
                 line.contains("listening on", ignoreCase = true) ->

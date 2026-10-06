@@ -239,8 +239,8 @@ extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-refere
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
-vocoder=qnn-htp-feature64-pipeline-or-ggml-fallback-v196
-qnn_vocoder=sm8850-v2,feature64,host-lut-fp32,left-context25,pipeline24x39
+vocoder=qnn-htp-feature64-pipeline-or-ggml-fallback-v197
+qnn_vocoder=sm8850-v3-v81,feature64,host-lut-fp32,reference-selftest,left-context25,pipeline24x39
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
