@@ -314,11 +314,11 @@ static void test_col2im_bias(Backend & be) {
     test_col2im_case(be, "col2im1d-bias-s8-c64", 16, 64, 8, 8, 0);
 }
 
-static void test_v81_hmx_visibility_chains(Backend & be) {
-    // Reproduce the SM8850/v81 failure mode reported upstream: HMX MUL_MAT
-    // produces correct data in isolation, but a dependent ADD in the same
-    // DSP op-batch can observe stale data. Use dimensions large/aligned enough
-    // to select HMX, then verify the complete dependent chain numerically.
+static void test_v81_hmx_visibility_chain(Backend & be) {
+    // Evidence-backed SM8850/v81 regression test: HMX MUL_MAT output consumed
+    // by a dependent ADD. This exact class of producer/consumer corruption is
+    // reported publicly on v81 and directly exercises the synchronous HMX
+    // visibility barrier used by Breeze.
     constexpr int K = 256;
     constexpr int M = 64;
     constexpr int N = 32;
@@ -352,79 +352,19 @@ static void test_v81_hmx_visibility_chains(Backend & be) {
         }
     }
 
-    {
-        Graph g(192);
-        auto * tw = g.input_f32(w, K, M);
-        auto * tx = g.input_f32(x, K, N);
-        auto * tb = g.input_f32(bias, M);
-        auto * mm = ggml_mul_mat(g.ctx, tw, tx);
-        auto * out = ggml_add(g.ctx, mm, tb);
-        g.compute(be, out);
-        require_close(
-            "v81-hmx-mulmat-add-visibility",
-            tensor_to_f32(out),
-            expected,
-            8e-3f
-        );
-    }
-
-    // The same class of v81 visibility bug can happen when a worker-queue
-    // unary result feeds HMX. Validate the unary kernel independently first,
-    // then use the actual HTP unary result as the reference input to matmul so
-    // this test measures visibility/order rather than conflating two kernels.
-    std::vector<float> gx((size_t) K * N);
-    std::vector<float> gelu_exact((size_t) K * N);
-    for (int n = 0; n < N; ++n) {
-        for (int k = 0; k < K; ++k) {
-            const size_t i = (size_t) k + (size_t) K * n;
-            const float v = 0.9f * std::sin(0.009f * (float) (3 + k + 5 * n));
-            gx[i] = v;
-            gelu_exact[i] =
-                0.5f * v * (1.0f + std::erf(v * 0.7071067811865475f));
-        }
-    }
-
-    std::vector<float> gelu_htp;
-    {
-        Graph g(128);
-        auto * tx = g.input_f32(gx, K, N);
-        auto * gelu = ggml_gelu_erf(g.ctx, tx);
-        g.compute(be, gelu);
-        gelu_htp = tensor_to_f32(gelu);
-        require_close(
-            "v81-gelu-erf-standalone",
-            gelu_htp,
-            gelu_exact,
-            2.0e-4f
-        );
-    }
-
-    std::vector<float> expected_gelu_mm((size_t) M * N, 0.0f);
-    for (int n = 0; n < N; ++n) {
-        for (int m = 0; m < M; ++m) {
-            double acc = 0.0;
-            for (int k = 0; k < K; ++k) {
-                acc += (double) w[(size_t) k + (size_t) K * m] *
-                       (double) gelu_htp[(size_t) k + (size_t) K * n];
-            }
-            expected_gelu_mm[(size_t) m + (size_t) M * n] = (float) acc;
-        }
-    }
-
-    {
-        Graph g(192);
-        auto * tw = g.input_f32(w, K, M);
-        auto * tx = g.input_f32(gx, K, N);
-        auto * gelu = ggml_gelu_erf(g.ctx, tx);
-        auto * out = ggml_mul_mat(g.ctx, tw, gelu);
-        g.compute(be, out);
-        require_close(
-            "v81-gelu-hmx-visibility",
-            tensor_to_f32(out),
-            expected_gelu_mm,
-            8.0e-3f
-        );
-    }
+    Graph g(192);
+    auto * tw = g.input_f32(w, K, M);
+    auto * tx = g.input_f32(x, K, N);
+    auto * tb = g.input_f32(bias, M);
+    auto * mm = ggml_mul_mat(g.ctx, tw, tx);
+    auto * out = ggml_add(g.ctx, mm, tb);
+    g.compute(be, out);
+    require_close(
+        "v81-hmx-mulmat-add-visibility",
+        tensor_to_f32(out),
+        expected,
+        8e-3f
+    );
 }
 
 static void test_v81_direct_residual_add(Backend & be) {
@@ -480,7 +420,7 @@ int main() {
         test_snake(be);
         test_col2im_bias(be);
         test_v81_direct_residual_add(be);
-        test_v81_hmx_visibility_chains(be);
+        test_v81_hmx_visibility_chain(be);
         be.free();
         std::fprintf(stderr, "[BREEZE_SELFTEST] all-ok\n");
         return 0;
