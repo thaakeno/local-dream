@@ -51,8 +51,6 @@ jobs:
 
       - name: Export native-sampling depth graphs
         shell: bash
-        env:
-          HF_HUB_ENABLE_HF_TRANSFER: '1'
         run: |
           set -euxo pipefail
           mkdir -p build/breeze-qnn-generator
