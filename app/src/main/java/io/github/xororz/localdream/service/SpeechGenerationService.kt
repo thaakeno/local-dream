@@ -38,6 +38,7 @@ class SpeechGenerationService : Service() {
     private var monitorThread: Thread? = null
     private var servingModelId: String? = null
     private lateinit var runtimeDir: File
+    @Volatile private var nativeEffectiveFrames: Int = 0
 
     companion object {
         private const val CHANNEL_ID = "speech_generation_channel"
@@ -47,7 +48,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v186-v153-scheduler-dcache64"
+            "breeze-a0e177-hexagon-ab9acc-v187-v153-hvxonly-dcache64"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -238,9 +239,16 @@ class SpeechGenerationService : Service() {
                 "ADSP_LIBRARY_PATH" to dspPath,
                 "DSP_LIBRARY_PATH" to dspPath,
                 "GGML_HEXAGON_DEVICES" to "HTP0:0",
-                "GGML_HEXAGON_NHMX" to "1",
+                // SM8850 / HTP v81 has a reproducible dependent-op visibility
+                // failure when an HMX matmul is chained into unary/GLU work.
+                // Keep the proven large v153 DSPQueue packet, but run every
+                // accelerator kernel on HVX. This is still strict HTP: there is
+                // no CPU fallback and all model/vocoder compute stays on Hexagon.
+                "GGML_HEXAGON_NHMX" to "0",
                 "GGML_HEXAGON_NHVX" to "0",
-                "GGML_HEXAGON_MM_SELECT" to "2",
+                "GGML_HEXAGON_MM_SELECT" to "1",
+                "GGML_HEXAGON_FA_SELECT" to "1",
+                "GGML_HEXAGON_GDN_SELECT" to "1",
                 "GGML_HEXAGON_OPFUSION" to "1",
             )
 
@@ -252,7 +260,7 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
-                    "queue=v153-default-1280x32 opfusion=1 hmx=1 " +
+                    "queue=v153-default-1280x32 opfusion=1 hmx=0 execution=hvx-only-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=exact-v153 " +
                     "codebooks=ordinary-htp-mirror visibility=none-v153-scheduler " +
                     "vocoder=upstream-reference-window40 signal_validation=native+pcm16 " +
@@ -326,6 +334,7 @@ class SpeechGenerationService : Service() {
                 }
 
                 val started = System.currentTimeMillis()
+                nativeEffectiveFrames = 0
                 _state.value = SpeechState.Generating(
                     modelId = modelId,
                     detail = "Starting speech generation",
@@ -682,6 +691,12 @@ class SpeechGenerationService : Service() {
         """(\d{1,3})%\|.*?\|\s*([0-9.]+)/([0-9.]+)s\s*""" +
             """\[([0-9:]+)<([0-9:]+),\s*([0-9.]+)\s*fps,\s*([0-9.]+)x\]""",
     )
+    private val nativeLimitRegex = Regex(
+        """\[BREEZE_LIMIT\] estimate=([0-9.]+)s estimated_frames=(\d+) configured=(\d+) effective=(\d+)""",
+    )
+    private val nativeStageRegex = Regex(
+        """\[BREEZE_STAGE\] frames=(\d+) depth_ms_per_frame=([0-9.]+) backbone_ms_per_frame=([0-9.]+)""",
+    )
 
     private fun parseClockSeconds(value: String): Float? {
         val parts = value.split(':').mapNotNull { it.toFloatOrNull() }
@@ -716,9 +731,60 @@ class SpeechGenerationService : Service() {
             return
         }
 
-        val match = nativeProgressRegex.find(line) ?: return
         val current = _state.value as? SpeechState.Generating ?: return
         if (current.modelId != modelId) return
+
+        nativeLimitRegex.find(line)?.let { match ->
+            nativeEffectiveFrames = match.groupValues[4].toIntOrNull() ?: 0
+            if (nativeEffectiveFrames > 0) {
+                _state.value = current.copy(
+                    detail = "Generating codec frames",
+                    estimatedSeconds = nativeEffectiveFrames * 0.08f,
+                )
+            }
+            return
+        }
+
+        nativeStageRegex.find(line)?.let { match ->
+            val frames = match.groupValues[1].toIntOrNull() ?: return
+            val elapsed = (
+                System.currentTimeMillis() - current.startedAtMillis
+            ).coerceAtLeast(1L) / 1000f
+            val fps = frames / elapsed
+            val generated = frames * 0.08f
+            val effective = nativeEffectiveFrames
+            val progress =
+                if (effective > 0) (frames.toFloat() / effective.toFloat()).coerceIn(0f, 1f)
+                else null
+            val eta =
+                if (effective > frames && fps > 0f) (effective - frames) / fps
+                else 0f
+            _state.value = current.copy(
+                detail = "Generating codec frames",
+                generatedSeconds = maxOf(current.generatedSeconds, generated),
+                progress = progress,
+                estimatedSeconds = if (effective > 0) effective * 0.08f else null,
+                elapsedSeconds = elapsed,
+                etaSeconds = eta,
+                fps = fps,
+                realtimeFactor = generated / elapsed,
+            )
+            return
+        }
+
+        if (line.startsWith("[BREEZE_VOCODER] reference begin")) {
+            val latest = _state.value as? SpeechState.Generating ?: return
+            _state.value = latest.copy(
+                detail = "Decoding waveform on Hexagon",
+                progress = null,
+                etaSeconds = null,
+                fps = null,
+                realtimeFactor = null,
+            )
+            return
+        }
+
+        val match = nativeProgressRegex.find(line) ?: return
 
         val percent = match.groupValues[1].toFloatOrNull()?.coerceIn(0f, 100f)
         val generated = match.groupValues[2].toFloatOrNull()
