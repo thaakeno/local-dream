@@ -4210,6 +4210,8 @@ void ggml_hexagon_session::flush_batch(size_t min_ops) {
     const uint64_t seq = ++this->batch_req_seq;
     const uint32_t submit_ops = op_batch->n_ops;
     const uint32_t submit_bufs = op_batch->n_bufs;
+    const std::string submit_first = submit_ops ? op_batch->ops[0].op_name() : "none";
+    const std::string submit_last  = submit_ops ? op_batch->ops[submit_ops - 1].op_name() : "none";
 
     op_batch->update_mdev_group(this->mdev.idx);
 
@@ -4241,11 +4243,13 @@ void ggml_hexagon_session::flush_batch(size_t min_ops) {
     HEX_VERBOSE("ggml-hex: %s queue-opbatch: %p size %u\n", this->c_name(), dbuf.ptr, dbuf.size);
     if (opt_batchlog) {
         GGML_LOG_INFO(
-            "ggml-hex: %s BREEZE_HTP_BATCH submit seq=%llu n_ops=%u n_bufs=%u\n",
+            "ggml-hex: %s BREEZE_HTP_BATCH submit seq=%llu n_ops=%u n_bufs=%u first=%s last=%s\n",
             this->c_name(),
             (unsigned long long) seq,
             submit_ops,
-            submit_bufs
+            submit_bufs,
+            submit_first.c_str(),
+            submit_last.c_str()
         );
     }
 
