@@ -15,71 +15,229 @@ import okhttp3.Request
 import org.json.JSONObject
 
 object BreezeQnnVocoderArtifact {
-    private const val RELEASE_TAG="breeze-qnn-vocoder-sm8850-v2"
-    private const val BASE_URL="https://github.com/thaakeno/local-dream/releases/download/"+RELEASE_TAG
-    private const val DIR="breeze_qnn_vocoder/v2-sm8850"
-    data class Install(val soc:String,val contextFile:File,val lutFile:File)
+    private const val RELEASE_TAG = "breeze-qnn-vocoder-sm8850-v2"
+    private const val BASE_URL =
+        "https://github.com/thaakeno/local-dream/releases/download/" + RELEASE_TAG
+    private const val DIR = "breeze_qnn_vocoder/v2-sm8850"
+
+    data class Install(
+        val soc: String,
+        val contextFile: File,
+        val lutFile: File,
+    )
+
     sealed class Status {
-        object Checking:Status()
-        data class Unsupported(val detected:String):Status()
-        data class Missing(val soc:String):Status()
-        data class Downloading(val soc:String,val received:Long,val total:Long):Status(){
-            val progress:Float? get()=if(total>0)(received.toFloat()/total).coerceIn(0f,1f) else null
+        object Checking : Status()
+        data class Unsupported(val detected: String) : Status()
+        data class Missing(val soc: String) : Status()
+        data class Downloading(
+            val soc: String,
+            val received: Long,
+            val total: Long,
+        ) : Status() {
+            val progress: Float?
+                get() = if (total > 0L) {
+                    (received.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                } else null
         }
-        data class Ready(val soc:String,val file:File):Status()
-        data class Error(val soc:String?,val message:String):Status()
+        data class Ready(val soc: String, val file: File) : Status()
+        data class Error(val soc: String?, val message: String) : Status()
     }
-    private val _status=MutableStateFlow<Status>(Status.Checking)
-    val status:StateFlow<Status> = _status
-    private fun dir(c:Context)=File(c.filesDir,DIR)
-    private fun fp():String {
-        val p=ArrayList<String>();if(Build.VERSION.SDK_INT>=31)p+=Build.SOC_MODEL.orEmpty()
-        p+=Build.HARDWARE.orEmpty();p+=Build.BOARD.orEmpty();p+=Build.DEVICE.orEmpty();p+=Build.PRODUCT.orEmpty()
-        return p.joinToString(" ").uppercase(Locale.US)
+
+    private val _status = MutableStateFlow<Status>(Status.Checking)
+    val status: StateFlow<Status> = _status
+
+    private fun dir(context: Context) = File(context.filesDir, DIR)
+
+    private fun fingerprint(): String {
+        val parts = ArrayList<String>()
+        if (Build.VERSION.SDK_INT >= 31) parts += Build.SOC_MODEL.orEmpty()
+        parts += Build.HARDWARE.orEmpty()
+        parts += Build.BOARD.orEmpty()
+        parts += Build.DEVICE.orEmpty()
+        parts += Build.PRODUCT.orEmpty()
+        return parts.joinToString(" ").uppercase(Locale.US)
     }
-    fun detectedSoc()=fp().trim().ifBlank{"unknown"}
-    fun supportedSoc():String?=if(fp().contains("SM8850"))"SM8850" else null
-    fun localInstall(c:Context):Install?{
-        val soc=supportedSoc()?:return null;val m=File(dir(c),"installed.json");if(!m.isFile)return null
-        return runCatching{
-            val j=JSONObject(m.readText());if(j.optInt("version")!=2||j.optString("soc")!=soc)return@runCatching null
-            val cf=File(dir(c),j.getString("contextFile")),lf=File(dir(c),j.getString("lutFile"))
-            if(!cf.isFile||!lf.isFile||cf.length()!=j.getLong("contextBytes")||lf.length()!=j.getLong("lutBytes"))null else Install(soc,cf,lf)
+
+    fun detectedSoc(): String = fingerprint().trim().ifBlank { "unknown" }
+
+    fun supportedSoc(): String? =
+        if (fingerprint().contains("SM8850")) "SM8850" else null
+
+    fun localInstall(context: Context): Install? {
+        val soc = supportedSoc() ?: return null
+        val marker = File(dir(context), "installed.json")
+        if (!marker.isFile) return null
+
+        return runCatching {
+            val json = JSONObject(marker.readText())
+            if (json.optInt("version") != 2 || json.optString("soc") != soc) {
+                return@runCatching null
+            }
+
+            val contextFile = File(dir(context), json.getString("contextFile"))
+            val lutFile = File(dir(context), json.getString("lutFile"))
+            val contextBytes = json.getLong("contextBytes")
+            val lutBytes = json.getLong("lutBytes")
+
+            if (
+                !contextFile.isFile ||
+                !lutFile.isFile ||
+                contextFile.length() != contextBytes ||
+                lutFile.length() != lutBytes
+            ) {
+                null
+            } else {
+                Install(soc, contextFile, lutFile)
+            }
         }.getOrNull()
     }
-    fun localFile(c:Context)=localInstall(c)?.contextFile
-    fun refresh(c:Context){val soc=supportedSoc();val i=localInstall(c);_status.value=when{soc==null->Status.Unsupported(detectedSoc());i!=null->Status.Ready(soc,i.contextFile);else->Status.Missing(soc)}}
-    private suspend fun get(name:String,bytes:Long,sha:String,target:File,soc:String,base:Long,total:Long){
-        val part=File(target.parentFile,target.name+".part");part.delete()
-        val req=Request.Builder().url(BASE_URL+"/"+name).get().build()
-        Http.client.newCall(req).execute().use{r->
-            if(!r.isSuccessful)error("Accelerator download failed (HTTP "+r.code+")")
-            val body=r.body?:error("Empty accelerator download");val md=MessageDigest.getInstance("SHA-256");var got=0L
-            body.byteStream().use{input->FileOutputStream(part).use{out->val buf=ByteArray(1024*1024);while(true){val n=input.read(buf);if(n<0)break;out.write(buf,0,n);md.update(buf,0,n);got+=n;_status.value=Status.Downloading(soc,base+got,total)}}}
-            if(got!=bytes)error("Incomplete accelerator download")
-            val actual=md.digest().joinToString(""){"%02x".format(it.toInt() and 0xff)}
-            if(actual!=sha.lowercase(Locale.US))error("Checksum mismatch for "+name)
+
+    fun localFile(context: Context): File? = localInstall(context)?.contextFile
+
+    fun refresh(context: Context) {
+        val soc = supportedSoc()
+        val install = localInstall(context)
+        _status.value = when {
+            soc == null -> Status.Unsupported(detectedSoc())
+            install != null -> Status.Ready(soc, install.contextFile)
+            else -> Status.Missing(soc)
         }
-        if(target.exists())target.delete();if(!part.renameTo(target)){part.copyTo(target,true);part.delete()}
     }
-    suspend fun download(c:Context)=withContext(Dispatchers.IO){
-        val soc=supportedSoc();if(soc==null){_status.value=Status.Unsupported(detectedSoc());return@withContext}
-        runCatching{
-            val mr=Request.Builder().url(BASE_URL+"/manifest.json").get().build()
-            val spec=Http.client.newCall(mr).execute().use{r->if(!r.isSuccessful)error("Accelerator manifest unavailable");JSONObject(r.body?.string()?:error("Empty manifest")).getJSONObject("files").getJSONObject(soc)}
-            val cs=spec.getJSONObject("context"),ls=spec.getJSONObject("lut")
-            val cn=cs.getString("file"),cb=cs.getLong("bytes"),ch=cs.getString("sha256")
-            val ln=ls.getString("file"),lb=ls.getLong("bytes"),lh=ls.getString("sha256");val total=cb+lb
-            val d=dir(c);d.mkdirs();val cf=File(d,cn),lf=File(d,ln)
-            get(cn,cb,ch,cf,soc,0,total);get(ln,lb,lh,lf,soc,cb,total)
-            listOf("LICENSE-Breeze-TTS-2.txt","NOTICE-Breeze-QNN-Vocoder.txt").forEach{name->
-                val req=Request.Builder().url(BASE_URL+"/"+name).get().build();Http.client.newCall(req).execute().use{r->if(!r.isSuccessful)error("License download failed");File(d,name).outputStream().use{o->r.body!!.byteStream().use{i->i.copyTo(o)}}}
+
+    private suspend fun downloadFile(
+        name: String,
+        expectedBytes: Long,
+        expectedSha: String,
+        target: File,
+        soc: String,
+        base: Long,
+        total: Long,
+    ) {
+        val part = File(target.parentFile, target.name + ".part")
+        part.delete()
+
+        val request = Request.Builder().url(BASE_URL + "/" + name).get().build()
+        Http.client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("Accelerator download failed (HTTP " + response.code + ")")
             }
-            File(d,"installed.json").writeText(JSONObject().put("version",2).put("soc",soc).put("contextFile",cn).put("contextBytes",cb).put("contextSha256",ch).put("lutFile",ln).put("lutBytes",lb).put("lutSha256",lh).toString())
-            // v1 was a silent-output experiment and is no longer used. Free its
-            // ~283 MB automatically only after v2 is fully verified on disk.
-            File(c.filesDir,"breeze_qnn_vocoder/v1").deleteRecursively()
-            _status.value=Status.Ready(soc,cf)
-        }.onFailure{_status.value=Status.Error(soc,it.message?:"Accelerator download failed")}
+
+            val body = response.body ?: error("Empty accelerator download")
+            val digest = MessageDigest.getInstance("SHA-256")
+            var received = 0L
+
+            body.byteStream().use { input ->
+                FileOutputStream(part).use { output ->
+                    val buffer = ByteArray(1024 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        digest.update(buffer, 0, count)
+                        received += count
+                        _status.value = Status.Downloading(soc, base + received, total)
+                    }
+                }
+            }
+
+            if (received != expectedBytes) {
+                error("Incomplete accelerator download for " + name)
+            }
+
+            val actualSha = digest.digest().joinToString("") {
+                "%02x".format(it.toInt() and 0xff)
+            }
+            if (actualSha != expectedSha.lowercase(Locale.US)) {
+                error("Checksum mismatch for " + name)
+            }
+        }
+
+        if (target.exists()) target.delete()
+        if (!part.renameTo(target)) {
+            part.copyTo(target, overwrite = true)
+            part.delete()
+        }
+    }
+
+    suspend fun download(context: Context) = withContext(Dispatchers.IO) {
+        val soc = supportedSoc()
+        if (soc == null) {
+            _status.value = Status.Unsupported(detectedSoc())
+            return@withContext
+        }
+
+        runCatching {
+            val manifestRequest =
+                Request.Builder().url(BASE_URL + "/manifest.json").get().build()
+            val spec = Http.client.newCall(manifestRequest).execute().use { response ->
+                if (!response.isSuccessful) error("Accelerator manifest unavailable")
+                val body = response.body?.string() ?: error("Empty manifest")
+                JSONObject(body).getJSONObject("files").getJSONObject(soc)
+            }
+
+            val contextSpec = spec.getJSONObject("context")
+            val lutSpec = spec.getJSONObject("lut")
+
+            val contextName = contextSpec.getString("file")
+            val contextBytes = contextSpec.getLong("bytes")
+            val contextSha = contextSpec.getString("sha256")
+
+            val lutName = lutSpec.getString("file")
+            val lutBytes = lutSpec.getLong("bytes")
+            val lutSha = lutSpec.getString("sha256")
+            val total = contextBytes + lutBytes
+
+            val destination = dir(context)
+            destination.mkdirs()
+            val contextFile = File(destination, contextName)
+            val lutFile = File(destination, lutName)
+
+            downloadFile(
+                contextName, contextBytes, contextSha,
+                contextFile, soc, 0L, total,
+            )
+            downloadFile(
+                lutName, lutBytes, lutSha,
+                lutFile, soc, contextBytes, total,
+            )
+
+            listOf(
+                "LICENSE-Breeze-TTS-2.txt",
+                "NOTICE-Breeze-QNN-Vocoder.txt",
+            ).forEach { name ->
+                val request = Request.Builder().url(BASE_URL + "/" + name).get().build()
+                Http.client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) error("License download failed")
+                    val body = response.body ?: error("Empty license response")
+                    File(destination, name).outputStream().use { output ->
+                        body.byteStream().use { input -> input.copyTo(output) }
+                    }
+                }
+            }
+
+            File(destination, "installed.json").writeText(
+                JSONObject()
+                    .put("version", 2)
+                    .put("soc", soc)
+                    .put("contextFile", contextName)
+                    .put("contextBytes", contextBytes)
+                    .put("contextSha256", contextSha)
+                    .put("lutFile", lutName)
+                    .put("lutBytes", lutBytes)
+                    .put("lutSha256", lutSha)
+                    .toString(),
+            )
+
+            // Remove the old silent-output v1 artifact only after v2 has been
+            // downloaded and verified completely.
+            File(context.filesDir, "breeze_qnn_vocoder/v1").deleteRecursively()
+            _status.value = Status.Ready(soc, contextFile)
+        }.onFailure { error ->
+            _status.value = Status.Error(
+                soc,
+                error.message ?: "Accelerator download failed",
+            )
+        }
     }
 }

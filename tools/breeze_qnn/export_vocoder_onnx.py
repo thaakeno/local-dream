@@ -85,8 +85,12 @@ def main():
             self.register_buffer("cos",cos.contiguous())
             self.register_buffer("sin",sin.contiguous())
             self.register_buffer("pos",pos.contiguous())
-        def forward(self,qfeatures):
+        def forward(self,qfeatures_nfc):
             d=self.d; p=d.pre_transformer
+            # QNN spatial ops are channel-last. Expose NFC at the graph
+            # boundary so the converter does not have to synthesize the
+            # unsupported rank-3 quantized_nfc boundary transpose.
+            qfeatures=qfeatures_nfc.transpose(1,2)
             h=d.pre_conv(qfeatures).transpose(1,2); h=p.input_proj(h)
             for layer in p.layers:
                 h=layer(h,attention_mask=self.mask,position_ids=self.pos,
@@ -102,8 +106,9 @@ def main():
     codes=torch.randint(0,bins,(1,nq,frames),generator=g,dtype=torch.int32)
     with torch.inference_mode():
         official_q=d.quantizer.decode(codes).float()
-        qfeatures=decode_lut(lut,codes)
-        qmax=float((official_q-qfeatures).abs().max()); qmean=float((official_q-qfeatures).abs().mean())
+        qfeatures_ncf=decode_lut(lut,codes)
+        qmax=float((official_q-qfeatures_ncf).abs().max()); qmean=float((official_q-qfeatures_ncf).abs().mean())
+        qfeatures=qfeatures_ncf.transpose(1,2).contiguous()
         eager=d(codes).float(); ref=v(qfeatures).float()
     amax=float((eager-ref).abs().max()); amean=float((eager-ref).abs().mean())
     if qmax>0.01: raise RuntimeError(f"LUT parity max_abs={qmax}")
@@ -114,7 +119,7 @@ def main():
     torch.onnx.export(v,(qfeatures,),str(out),input_names=["quantized"],output_names=["audio"],
         opset_version=17,do_constant_folding=True,export_params=True,dynamic_axes=None,dynamo=False)
     meta={"frames":frames,"num_quantizers":nq,"codebook_size":bins,
-      "feature_channels":int(lut.shape[-1]),"samples_per_frame":int(model.decode_upsample_rate),
+      "feature_channels":int(lut.shape[-1]),"feature_layout":"NFC","samples_per_frame":int(model.decode_upsample_rate),
       "sample_rate":int(model.output_sample_rate),"input_dtype":"float32","output_dtype":"float32",
       "lut_dtype":"float32","lut_shape":list(lut.shape),"lut_bytes":int(lut.numel()*4),
       "lut_quantizer_max_abs":qmax,"lut_quantizer_mean_abs":qmean,

@@ -86,7 +86,7 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.7.1' 'torchaudio==2.7.1'
-          python -m pip install             'numpy==1.26.4' 'onnx==1.18.0' 'onnxruntime==1.22.1' 'onnxscript>=0.3.2'             'huggingface_hub>=0.34.0' 'transformers==4.57.3' 'safetensors>=0.5.3'             'accelerate==1.12.0' 'librosa>=0.11.0' 'soundfile>=0.13.0' 'sox>=1.5.0'             'einops>=0.8.0' 'pandas>=2.2.0' 'tabulate>=0.9.0' 'plotly>=5.20.0'             'xlsxwriter>=3.2.0' 'scipy>=1.14.0' 'scikit-optimize>=0.10.0'             'optuna>=4.0.0' 'rich>=13.9.0' 'pydantic>=2.9.0'             'opencv-python-headless>=4.10.0' 'paramiko>=3.5.0' 'mock>=5.1.0'
+          python -m pip install             'numpy==1.26.4' 'onnx==1.18.0' 'onnxruntime==1.22.1' 'onnxscript>=0.3.2' 'onnxsim>=0.4.36'             'huggingface_hub>=0.34.0' 'transformers==4.57.3' 'safetensors>=0.5.3'             'accelerate==1.12.0' 'librosa>=0.11.0' 'soundfile>=0.13.0' 'sox>=1.5.0'             'einops>=0.8.0' 'pandas>=2.2.0' 'tabulate>=0.9.0' 'plotly>=5.20.0'             'xlsxwriter>=3.2.0' 'scipy>=1.14.0' 'scikit-optimize>=0.10.0'             'optuna>=4.0.0' 'rich>=13.9.0' 'pydantic>=2.9.0'             'opencv-python-headless>=4.10.0' 'paramiko>=3.5.0' 'mock>=5.1.0'
           git clone --depth 1 https://github.com/QwenLM/Qwen3-TTS.git "${RUNNER_TEMP}/Qwen3-TTS"
           python -m pip install --no-deps -e "${RUNNER_TEMP}/Qwen3-TTS"
           req="${QNN_SDK_ROOT}/bin/requirements.txt"
@@ -141,7 +141,7 @@ jobs:
           export PYTHONPATH="${QNN_SDK_ROOT}/lib/python:${PYTHONPATH:-}"
           export LD_LIBRARY_PATH="${QNN_SDK_ROOT}/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
           OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
-          qnn-onnx-converter             --input_network "$OUT/breeze_vocoder_64.onnx"             --output_path "$OUT/breeze_vocoder_64.cpp"             --float_bitwidth 16             --preserve_io
+          qnn-onnx-converter             --input_network "$OUT/breeze_vocoder_64.onnx"             --output_path "$OUT/breeze_vocoder_64.cpp"             --float_bitwidth 16             --preserve_io datatype quantized audio
           qnn-model-lib-generator             -c "$OUT/breeze_vocoder_64.cpp"             -b "$OUT/breeze_vocoder_64.bin"             -t x86_64-linux-clang             -o "$OUT/model_lib"
           test -s "$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"
 
@@ -212,7 +212,7 @@ jobs:
             "backend":"QAIRT/QNN HTP FP16 feature-input",
             "qnn_version":"2.50.0.260828",
             "frames":64,"left_context_frames":25,"samples_per_frame":1920,
-            "sample_rate":24000,"feature_channels":512,
+            "sample_rate":24000,"feature_channels":512,"feature_layout":"NFC",
             "source":"BreezeBlue/Breeze-TTS-2 audio_tokenizer",
             "license":"BreezeBlue Research and Non-Commercial License v1.1",
             "files":{"SM8850":{

@@ -97,7 +97,34 @@ public:
         if (ib.dataSize!=ibytes || ob.dataSize!=obytes) {
             std::fprintf(stderr,"[BREEZE_QNN] IO bytes in=%u/%zu out=%u/%zu\n",ib.dataSize,ibytes,ob.dataSize,obytes); return false;
         }
-        std::memcpy(ib.data,features,ibytes);
+        const uint32_t rank=QNN_TENSOR_GET_RANK(in);
+        const uint32_t *dims=QNN_TENSOR_GET_DIMENSIONS(in);
+        const float *src_features=features;
+        std::vector<float> repacked;
+        const char *layout="NFC";
+        if(rank==3 && dims){
+            if(dims[1]==64 && dims[2]==512){
+                layout="NFC";
+            } else if(dims[1]==512 && dims[2]==64){
+                layout="NCF";
+                repacked.resize(feature_count);
+                for(size_t t=0;t<64;t++){
+                    for(size_t ch=0;ch<512;ch++){
+                        repacked[ch*64+t]=features[t*512+ch];
+                    }
+                }
+                src_features=repacked.data();
+            } else {
+                std::fprintf(stderr,"[BREEZE_QNN] unexpected input shape rank=3 dims=%u,%u,%u\n",
+                    dims[0],dims[1],dims[2]);
+                return false;
+            }
+        }
+        std::memcpy(ib.data,src_features,ibytes);
+        if(rank==3 && dims){
+            std::fprintf(stderr,"[BREEZE_QNN_IO] input=%ux%ux%u layout=%s bytes=%u\n",
+                dims[0],dims[1],dims[2],layout,ib.dataSize);
+        }
         const auto t0=std::chrono::steady_clock::now();
         const auto st=m_qnnFunctionPointers.qnnInterface.graphExecute(graph.graph,inputs,graph.numInputTensors,outputs,graph.numOutputTensors,m_profileBackendHandle,nullptr);
         const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
@@ -232,7 +259,7 @@ bool BreezeQnnVocoder::init_from_environment(){
     if(!in.read(reinterpret_cast<char*>(impl_->lut.data()),(std::streamsize)bytes)){impl_->lut.clear();return false;}
     if(!load_qnn(lib,path,impl_->app)){impl_->lut.clear();return false;}
     impl_->history.clear();
-    std::fprintf(stderr,"[BREEZE_QNN] ready path=%s lut=%s graph_frames=64 left_context=25 features=512 backend=QNN-HTP-v2\n",path,lp);
+    std::fprintf(stderr,"[BREEZE_QNN] ready path=%s lut=%s graph_frames=64 left_context=25 features=512 layout=NFC backend=QNN-HTP-v2\n",path,lp);
     return true;
 }
 bool BreezeQnnVocoder::ready() const{return impl_&&impl_->app&&!impl_->lut.empty();}
@@ -246,7 +273,7 @@ std::vector<float> BreezeQnnVocoder::decode_stream(const std::vector<int>&codes,
     auto add=[&](int dt,const int*fc){
         for(int cb=0;cb<ncb;cb++){int code=fc[cb];if(code<0||code>=impl_->codebook_size)throw std::runtime_error("Breeze QNN code id out of range");
             size_t row=((size_t)cb*impl_->codebook_size+(size_t)code)*impl_->feature_channels; const float*src=impl_->lut.data()+row;
-            for(int ch=0;ch<impl_->feature_channels;ch++)features[(size_t)ch*impl_->fixed_frames+dt]+=src[ch];
+            for(int ch=0;ch<impl_->feature_channels;ch++)features[(size_t)dt*impl_->feature_channels+ch]+=src[ch];
         }
     };
     for(int t=0;t<ctx;t++){int sf=hf-ctx+t;add(t,impl_->history.data()+(size_t)sf*ncb);}
