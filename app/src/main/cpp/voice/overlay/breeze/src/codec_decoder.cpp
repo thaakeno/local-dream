@@ -20,9 +20,23 @@ static ggml_tensor * vocoder_diag_probe(
     return x;
 }
 
-static ggml_tensor * snake_beta(ggml_context * ctx, ggml_tensor * x, ggml_tensor * la, ggml_tensor * lb) {
-    ggml_tensor * alpha = ggml_reshape_2d(ctx, ggml_exp(ctx, la), 1, la->ne[0]);
-    ggml_tensor * inv_beta = ggml_reshape_2d(ctx, ggml_exp(ctx, ggml_neg(ctx, lb)), 1, lb->ne[0]);
+static ggml_tensor * snake_beta(
+    ggml_context * ctx, Graph & g, ggml_tensor * x, ggml_tensor * la, ggml_tensor * lb
+) {
+    // Match the tokenizer/reference implementation exactly:
+    // x + sin(x * exp(alpha))^2 / (exp(beta) + 1e-9).
+    // Do not rewrite this as exp(-beta): real Breeze decoder beta values can
+    // drive that form to +Inf on HTP before the final clamp.
+    const int C = (int) la->ne[0];
+    std::vector<float> ones((size_t) C, 1.0f);
+    std::vector<float> eps((size_t) C, 1.0e-9f);
+
+    ggml_tensor * alpha = ggml_reshape_2d(ctx, ggml_exp(ctx, la), 1, C);
+    ggml_tensor * beta = ggml_reshape_2d(ctx, ggml_exp(ctx, lb), 1, C);
+    ggml_tensor * one = g.input_f32(ones, 1, C);
+    ggml_tensor * tiny = g.input_f32(eps, 1, C);
+    ggml_tensor * inv_beta = ggml_div(ctx, one, ggml_add(ctx, beta, tiny));
+
     ggml_tensor * s = ggml_sin(ctx, ggml_mul(ctx, x, alpha));
     return ggml_add(ctx, x, ggml_mul(ctx, ggml_sqr(ctx, s), inv_beta));
 }
@@ -53,11 +67,11 @@ static ggml_tensor * residual_unit(
     ggml_context * ctx, BreezeModel & m, Graph & g, std::vector<VocoderDiagProbe> * probes,
     const std::string & p, ggml_tensor * x, int dilation
 ) {
-    ggml_tensor * h = snake_beta(ctx, x, m.w(p + ".a1"), m.w(p + ".b1"));
+    ggml_tensor * h = snake_beta(ctx, g, x, m.w(p + ".a1"), m.w(p + ".b1"));
     h = vocoder_diag_probe(ctx, g, probes, p + ".snake1", h);
     h = conv1d_causal(ctx, m.w(p + ".conv1.conv.weight"), m.w(p + ".conv1.conv.bias"), h, 1, dilation);
     h = vocoder_diag_probe(ctx, g, probes, p + ".conv1", h);
-    h = snake_beta(ctx, h, m.w(p + ".a2"), m.w(p + ".b2"));
+    h = snake_beta(ctx, g, h, m.w(p + ".a2"), m.w(p + ".b2"));
     h = vocoder_diag_probe(ctx, g, probes, p + ".snake2", h);
     h = conv1d_causal(ctx, m.w(p + ".conv2.conv.weight"), m.w(p + ".conv2.conv.bias"), h, 1, 1);
     h = vocoder_diag_probe(ctx, g, probes, p + ".conv2", h);
@@ -213,12 +227,12 @@ static ggml_tensor * residual_unit_stream(
     std::vector<StreamCacheUpdate> & updates, const std::string & name,
     const std::string & p, ggml_tensor * x, int dilation
 ) {
-    ggml_tensor * h = snake_beta(ctx, x, m.w(p + ".a1"), m.w(p + ".b1"));
+    ggml_tensor * h = snake_beta(ctx, g, x, m.w(p + ".a1"), m.w(p + ".b1"));
     h = stream_conv1d(
         ctx, m, g, state, updates, name,
         m.w(p + ".conv1.conv.weight"), m.w(p + ".conv1.conv.bias"), h, dilation
     );
-    h = snake_beta(ctx, h, m.w(p + ".a2"), m.w(p + ".b2"));
+    h = snake_beta(ctx, g, h, m.w(p + ".a2"), m.w(p + ".b2"));
     // The second convolution has no causal carry in the reference fast runtime.
     h = conv1d_causal(ctx, m.w(p + ".conv2.conv.weight"), m.w(p + ".conv2.conv.bias"), h, 1, 1);
     return ggml_add(ctx, x, h);
@@ -256,7 +270,7 @@ ggml_tensor * vocoder_decode(
     const int dilations[3] = { 1, 3, 9 };
     for (size_t i = 0; i < c.upsample_rates.size(); i++) {
         const std::string p = "codec.dblk." + std::to_string(i);
-        h = snake_beta(ctx, h, m.w(p + ".alpha"), m.w(p + ".beta"));
+        h = snake_beta(ctx, g, h, m.w(p + ".alpha"), m.w(p + ".beta"));
         h = vocoder_diag_probe(ctx, g, probes, p + ".snake", h);
         h = convtr1d_causal(ctx, m.w(p + ".up.conv.weight"), m.w(p + ".up.conv.bias"), h,
                             c.upsample_rates[i]);
@@ -268,7 +282,7 @@ ggml_tensor * vocoder_decode(
         }
     }
 
-    h = snake_beta(ctx, h, m.w("codec.dfin.alpha"), m.w("codec.dfin.beta"));
+    h = snake_beta(ctx, g, h, m.w("codec.dfin.alpha"), m.w("codec.dfin.beta"));
     h = vocoder_diag_probe(ctx, g, probes, "dfin.snake", h);
     h = conv1d_causal(ctx, m.w("codec.dfin.conv.weight"), m.w("codec.dfin.conv.bias"), h, 1, 1);
     h = vocoder_diag_probe(ctx, g, probes, "dfin.conv", h);
@@ -312,7 +326,7 @@ ggml_tensor * vocoder_decode_stream(
     const int dilations[3] = { 1, 3, 9 };
     for (size_t i = 0; i < c.upsample_rates.size(); i++) {
         const std::string p = "codec.dblk." + std::to_string(i);
-        h = snake_beta(ctx, h, m.w(p + ".alpha"), m.w(p + ".beta"));
+        h = snake_beta(ctx, g, h, m.w(p + ".alpha"), m.w(p + ".beta"));
         h = stream_tconv(
             ctx, g, state, updates, "decoder_block_" + std::to_string(i) + "_tconv",
             m.w(p + ".up.conv.weight"), m.w(p + ".up.conv.bias"), h, c.upsample_rates[i]
@@ -326,7 +340,7 @@ ggml_tensor * vocoder_decode_stream(
         }
     }
 
-    h = snake_beta(ctx, h, m.w("codec.dfin.alpha"), m.w("codec.dfin.beta"));
+    h = snake_beta(ctx, g, h, m.w("codec.dfin.alpha"), m.w("codec.dfin.beta"));
     h = stream_conv1d(
         ctx, m, g, state, updates, "final_conv",
         m.w("codec.dfin.conv.weight"), m.w("codec.dfin.conv.bias"), h, 1
