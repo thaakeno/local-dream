@@ -99,6 +99,8 @@ grep -q 'BREEZE_HTP_BARRIER' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'has_data_hazard' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'GGML_HEXAGON_DEPBARRIER' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'opt_depbarrier && opt_arch >= 81' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q 'GGML_HEXAGON_V81_LEGACY_BATCH' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
+grep -q '!opt_v81_legacy_batch && opt_arch >= 81 && opt_opbatch > 64' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'opt_arch >= 81 && opt_opbatch > 64' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'if (opt_arch >= 81)' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -q 'src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
@@ -202,9 +204,9 @@ backend_commit=$HEXAGON_COMMIT
 mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
-queue=depbarrier-opbatch64x32-no-batchlog
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map,v81-quant-hmx-guard,v81-opbatch64,v81-data-hazard-barrier-switch,v81-direct-residual-add,v153-host-snapshot-cache,batch-progress-log
-streaming_vocoder=v153-host-snapshot-chunk4-v81-hvx-depbarrier-fast
+queue=v153-largepacket-compat
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map,v81-quant-hmx-guard,v81-opbatch64,v81-data-hazard-barrier-switch,v81-largepacket-compat,v153-host-snapshot-cache,batch-progress-log
+streaming_vocoder=v153-host-snapshot-chunk4-v81-largepacket-fused
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
