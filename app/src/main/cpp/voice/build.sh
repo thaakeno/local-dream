@@ -55,7 +55,6 @@ for rel in \
     ggml/src/ggml-hexagon/htp/htp-ops.h \
     ggml/src/ggml-hexagon/htp/htp-ctx.h \
     ggml/src/ggml-hexagon/htp/main.c \
-    ggml/src/ggml-hexagon/htp/hex-utils.h \
     ggml/src/ggml-hexagon/ggml-hexagon.cpp; do
     test -s "$HEXAGON_OVERLAY/$rel"
     cp "$HEXAGON_OVERLAY/$rel" "$HEXAGON_DIR/$rel"
@@ -72,6 +71,7 @@ done
 test -s "$(pwd)/overlay/breeze/include/breeze/backbone.h"
 test -s "$(pwd)/overlay/breeze/src/backbone.cpp"
 test -s "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+test -s "$(pwd)/overlay/breeze/include/breeze/gguf_loader.h"
 test -s "$(pwd)/overlay/breeze/include/breeze/codec.h"
 test -s "$(pwd)/overlay/breeze/src/codec.cpp"
 test -s "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
@@ -97,23 +97,33 @@ if grep -q 'GGML_HEXAGON_DEPBARRIER\|has_data_hazard\|V81_LEGACY_BATCH' "$GGML_D
     exit 1
 fi
 
-# Preserve v153's proven GET_ROWS/scheduler path exactly. The previous
-# F32 VTCM-staging override changed the real packet/kernels and caused the
-# immediate 0x2e abort in v175. Instead apply the upstream v81 cache
-# coherency fix from llama.cpp PR #29977: dccleaninva must step by 64 bytes.
-grep -q 'HEX_DCACHE_OP_SIZE[[:space:]]*64' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
-grep -q 'j += HEX_DCACHE_OP_SIZE' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
-grep -q 'i += HEX_DCACHE_OP_SIZE' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
+# Preserve the exact v153 DSP kernels and cache-maintenance implementation.
+# PR #29977 is useful upstream evidence for stale-cache correctness, but it does
+# not explain this app's immediate DSPQueue 0x2e abort and must not be mixed
+# into the known-good v153 runtime while we isolate the real regression.
+if grep -q 'HEX_DCACHE_OP_SIZE' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"; then
+    echo "Non-v153 dcache maintenance override returned" >&2
+    exit 1
+fi
+grep -Fq 'Q6_dccleaninva_A((void *) (i + HEX_L2_LINE_SIZE * 3))' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
+
+# Preserve v153 GET_ROWS exactly. The only codebook correction in v177 is
+# model-loader placement: decoder F32 tables are copied into a small ordinary
+# HTP allocation while the primary model allocation keeps exact v153 semantics.
 if grep -q 'src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"; then
     echo "Non-v153 F32 GET_ROWS override returned" >&2
     exit 1
 fi
 grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-multi' "$(pwd)/native/breeze-htp-selftest.cpp"
-grep -q 'get-rows-f32-weight-2048-highrows' "$(pwd)/native/breeze-htp-selftest.cpp"
-grep -q 'GGML_BACKEND_BUFFER_USAGE_WEIGHTS' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
-grep -q 'HTP decoder codebook rows verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
-grep -q 'verified %zu finite decoder codebooks' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'get-rows-f32-ordinary-2048-highrows' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'ordinary HTP codebook mirrors verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'primary model map remains exact-v153' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'codebook_buffer' "$(pwd)/overlay/breeze/include/breeze/gguf_loader.h"
+if grep -q 'GGML_BACKEND_BUFFER_USAGE_WEIGHTS' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"; then
+    echo "Full-model WEIGHTS mapping regression returned" >&2
+    exit 1
+fi
 grep -Fq '"${BREEZE_OVERLAY_DIR}/src/gguf_loader.cpp"' "$(pwd)/CMakeLists.txt"
 
 # Exact v153 streaming graph invariants.
@@ -180,7 +190,7 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=v153-default-opbatch1280x32
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,model-weights-extended-map,exact-v153-hexagon-kernels,exact-v153-codec-graph,v81-dcache-cleaninva-64b
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,exact-v153-model-map,decoder-codebook-ordinary-htp-mirror,exact-v153-hexagon-kernels,exact-v153-codec-graph,exact-v153-dcache-128b
 streaming_vocoder=exact-v153-host-cache-chunk4
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
