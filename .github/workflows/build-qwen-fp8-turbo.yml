@@ -365,7 +365,7 @@ jobs:
           grep -q 'fallback=disabled' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'integration=pinned-source-overlay' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'queue=v153-default-opbatch1280x32' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'get-rows-f32-vtcm-staged' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'v81-dcache-cleaninva-64b' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'model-weights-extended-map' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'exact-v153-hexagon-kernels' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'exact-v153-codec-graph' app/src/main/assets/breezelibs/backend-version.txt
