@@ -2904,6 +2904,50 @@ struct ggml_hexagon_opbatch {
 
     bool empty() const { return n_ops == 0; }
 
+    // HTP v81 has reproduced DSP response stalls/corruption when a producer and
+    // its consumer execute inside the same DSPQueue packet. Keep independent
+    // work batched, but force a packet boundary around RAW/WAR/WAW hazards so
+    // the DSP-side end-of-batch cache flush establishes visibility.
+    bool has_data_hazard(const htp_opnode & node) const {
+        if (empty()) return false;
+
+        auto overlaps = [](const ggml_tensor * a, const ggml_tensor * b) {
+            if (!a || !b) return false;
+            if (a == b) return true;
+            if (a->buffer && b->buffer && a->buffer != b->buffer) return false;
+            return ggml_hexagon_tensors_overlap(a, b);
+        };
+
+        const auto cur_inputs  = node.get_inputs();
+        const auto cur_outputs = node.get_outputs();
+
+        for (unsigned int i = 0; i < n_ops; ++i) {
+            const auto prev_inputs  = ops[i].get_inputs();
+            const auto prev_outputs = ops[i].get_outputs();
+
+            // Read-after-write: current op consumes a value produced in packet.
+            for (const auto * cur : cur_inputs) {
+                for (const auto * prev : prev_outputs) {
+                    if (overlaps(cur, prev)) return true;
+                }
+            }
+            // Write-after-write: two ops target overlapping storage.
+            for (const auto * cur : cur_outputs) {
+                for (const auto * prev : prev_outputs) {
+                    if (overlaps(cur, prev)) return true;
+                }
+            }
+            // Write-after-read: allocator/view reuse must not clobber a value
+            // still consumed by an earlier op in this packet.
+            for (const auto * cur : cur_outputs) {
+                for (const auto * prev : prev_inputs) {
+                    if (overlaps(cur, prev)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     // add buffer and return its index
     int add_buffer(ggml_hexagon_shared_buffer * sbuf) {
         // Lookup by fd
@@ -4230,6 +4274,19 @@ void ggml_hexagon_session::enqueue_op(const htp_opnode & node) {
     }
     for (auto t : node.get_outputs()) {
         clone_tensor_buffer(t);
+    }
+
+    // On v81, do not place dependent ops in the same DSPQueue packet. The
+    // packet boundary is also a DSP-side cache/scheduler completion boundary;
+    // independent work remains batched for throughput.
+    if (opt_arch >= 81 && !op_batch->empty() && op_batch->has_data_hazard(node)) {
+        if (opt_batchlog) {
+            GGML_LOG_INFO(
+                "ggml-hex: %s BREEZE_HTP_BARRIER n_ops=%u next=%s reason=data-hazard\\n",
+                this->c_name(), op_batch->n_ops, node.op_name().c_str()
+            );
+        }
+        flush_async();
     }
 
     if (opt_opfusion && op_batch->try_fuse(node)) {
