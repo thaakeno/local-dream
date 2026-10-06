@@ -50,6 +50,11 @@ struct StreamCacheUpdate {
     ggml_tensor * tensor = nullptr;
 };
 
+struct VocoderDiagProbe {
+    std::string name;
+    ggml_tensor * scalar = nullptr;
+};
+
 ggml_tensor * conv1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
                             ggml_tensor * x, int stride, int dilation);
 ggml_tensor * convtr1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
@@ -60,11 +65,13 @@ ggml_tensor * resnet_block(ggml_context * ctx, BreezeModel & m, const std::strin
 ggml_tensor * seanet_encoder(ggml_context * ctx, BreezeModel & m, ggml_tensor * x);
 ggml_tensor * mimi_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, ggml_tensor * x,
                                const std::string & prefix, int seq_len);
-ggml_tensor * vocoder_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, ggml_tensor * x, int seq_len);
+ggml_tensor * vocoder_transformer(ggml_context * ctx, BreezeModel & m, Graph & g, ggml_tensor * x,
+                                  int seq_len, std::vector<VocoderDiagProbe> * probes = nullptr);
 ggml_tensor * vocoder_transformer_stream(ggml_context * ctx, BreezeModel & m, Graph & g,
                                         VocoderStreamState & state, ggml_tensor * x, int seq_len);
 ggml_tensor * vocoder_decode(ggml_context * ctx, BreezeModel & m, Graph & g,
-                             const std::vector<int> & codes, int n_codebooks, int seq_len);
+                             const std::vector<int> & codes, int n_codebooks, int seq_len,
+                             std::vector<VocoderDiagProbe> * probes = nullptr);
 ggml_tensor * vocoder_decode_stream(ggml_context * ctx, BreezeModel & m, Graph & g,
                                     VocoderStreamState & state,
                                     const std::vector<int> & codes, int n_codebooks, int seq_len,
