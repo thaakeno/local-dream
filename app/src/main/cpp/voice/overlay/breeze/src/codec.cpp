@@ -120,15 +120,10 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
         throw std::runtime_error("Breeze streaming vocoder returned the wrong PCM length");
     }
 
-    bool any_signal = false;
     for (float v : out) {
         if (!std::isfinite(v)) {
             throw std::runtime_error("Breeze streaming vocoder produced non-finite PCM");
         }
-        any_signal = any_signal || std::fabs(v) >= (1.0f / 32767.0f);
-    }
-    if (!any_signal) {
-        throw std::runtime_error("Breeze streaming vocoder produced effectively silent PCM");
     }
 
     // Advance state only after the whole chunk completed and PCM validated.
