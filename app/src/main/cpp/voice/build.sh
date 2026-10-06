@@ -55,8 +55,7 @@ for rel in \
     ggml/src/ggml-hexagon/htp/htp-ops.h \
     ggml/src/ggml-hexagon/htp/htp-ctx.h \
     ggml/src/ggml-hexagon/htp/main.c \
-    ggml/src/ggml-hexagon/htp/get-rows-ops.c \
-    ggml/src/ggml-hexagon/htp/get-rows-ops.h \
+    ggml/src/ggml-hexagon/htp/hex-utils.h \
     ggml/src/ggml-hexagon/ggml-hexagon.cpp; do
     test -s "$HEXAGON_OVERLAY/$rel"
     cp "$HEXAGON_OVERLAY/$rel" "$HEXAGON_DIR/$rel"
@@ -98,10 +97,17 @@ if grep -q 'GGML_HEXAGON_DEPBARRIER\|has_data_hazard\|V81_LEGACY_BATCH' "$GGML_D
     exit 1
 fi
 
-# Keep only the silent-audio backend fixes learned after v153.
-grep -q 'src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'GET_ROWS_THREAD_DT_FN(f32' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.c"
-grep -q 'case HTP_TYPE_F32:' "$GGML_DIR/src/ggml-hexagon/htp/get-rows-ops.h"
+# Preserve v153's proven GET_ROWS/scheduler path exactly. The previous
+# F32 VTCM-staging override changed the real packet/kernels and caused the
+# immediate 0x2e abort in v175. Instead apply the upstream v81 cache
+# coherency fix from llama.cpp PR #29977: dccleaninva must step by 64 bytes.
+grep -q 'HEX_DCACHE_OP_SIZE[[:space:]]*64' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
+grep -q 'j += HEX_DCACHE_OP_SIZE' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
+grep -q 'i += HEX_DCACHE_OP_SIZE' "$GGML_DIR/src/ggml-hexagon/htp/hex-utils.h"
+if grep -q 'src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"; then
+    echo "Non-v153 F32 GET_ROWS override returned" >&2
+    exit 1
+fi
 grep -q 'get-rows-f32-single' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-multi' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'get-rows-f32-weight-2048-highrows' "$(pwd)/native/breeze-htp-selftest.cpp"
@@ -128,9 +134,9 @@ if grep -q 'CodecDebugProbes\|convtr1d_raw\|kv_store_future\|block.tensor\|conv_
     exit 1
 fi
 
-# Keep later generation-side validation; it does not change the vocoder graph.
-grep -q 'step + 1 >= max_new' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q '\[BREEZE_AUDIO\]' "$(pwd)/overlay/breeze/src/generation.cpp"
+# Keep the exact v153 generation/streaming behavior too.
+grep -q '\[BREEZE_VOCODER_STREAM\]' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'codec.decode_stream' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'struct AudioEmbedRunner' "$(pwd)/overlay/breeze/include/breeze/backbone.h"
 
 rm -rf "$BUILD_DIR"
@@ -174,7 +180,7 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=v153-default-opbatch1280x32
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,get-rows-f32-vtcm-staged,model-weights-extended-map,exact-v153-hexagon-kernels,exact-v153-codec-graph
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,model-weights-extended-map,exact-v153-hexagon-kernels,exact-v153-codec-graph,v81-dcache-cleaninva-64b
 streaming_vocoder=exact-v153-host-cache-chunk4
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
