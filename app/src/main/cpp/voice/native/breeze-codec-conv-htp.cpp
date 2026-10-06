@@ -31,12 +31,12 @@ static ggml_tensor * elu_htp(ggml_context * ctx, ggml_tensor * x) {
     return ggml_sub(ctx, ggml_relu(ctx, x), negative);
 }
 
-ggml_tensor * convtr1d_raw(ggml_context * ctx, ggml_tensor * w,
-                           ggml_tensor * x, int stride) {
-    // Strict-HTP lowering of ConvTranspose1d:
+ggml_tensor * convtr1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
+                              ggml_tensor * x, int stride) {
+    // Equivalent transpose-conv lowering:
     // [K, OC, IC] x [T, IC] -> GEMM [K*OC, T] -> COL2IM_1D.
-    // Keeping this raw form lets the streaming decoder carry the exact
-    // K-stride output overlap instead of reconstructing it from input cache.
+    // This avoids GGML_OP_CONV_TRANSPOSE_1D, which the strict Hexagon backend
+    // does not implement, without changing the model math.
     const int64_t kernel = w->ne[0];
     const int64_t out_channels = w->ne[1];
     const int64_t in_channels = w->ne[2];
@@ -45,12 +45,8 @@ ggml_tensor * convtr1d_raw(ggml_context * ctx, ggml_tensor * w,
     w2 = ggml_cont(ctx, ggml_transpose(ctx, w2));
     ggml_tensor * xt = ggml_cont(ctx, ggml_transpose(ctx, x));
     ggml_tensor * projected = ggml_cont(ctx, ggml_mul_mat(ctx, w2, xt));
-    return ggml_col2im_1d(ctx, projected, stride, (int) out_channels, 0);
-}
+    ggml_tensor * y = ggml_col2im_1d(ctx, projected, stride, (int) out_channels, 0);
 
-ggml_tensor * convtr1d_causal(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b,
-                              ggml_tensor * x, int stride) {
-    ggml_tensor * y = convtr1d_raw(ctx, w, x, stride);
     const int keep = (int) x->ne[0] * stride;
     y = ggml_cont(ctx, ggml_view_2d(ctx, y, keep, y->ne[1], y->nb[1], 0));
     if (b) y = ggml_add(ctx, y, ggml_reshape_2d(ctx, b, 1, b->ne[0]));

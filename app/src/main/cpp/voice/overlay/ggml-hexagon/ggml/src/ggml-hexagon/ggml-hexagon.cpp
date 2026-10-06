@@ -5760,12 +5760,7 @@ static void ggml_hexagon_precompute_get_rows_params(
     const bool tiled = src0->type == GGML_TYPE_Q4_0 || (extra && (extra->flags & GGML_HEXAGON_TENSOR_REPACK) != 0) ||
                        sess->needs_repack.count(src0_base) || sess->needs_repack.count(src0);
 
-    // The v153 graph/scheduler is device-proven. Its remaining silent-audio
-    // failure was the F32 codebook gather: stage those rows through VTCM rather
-    // than the direct same-type DDR copy path.
-    if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
-        kparams->kernel_type = HTP_GET_ROWS_KERNEL_FLAT;
-    } else if (src0->type == dst->type) {
+    if (src0->type == dst->type) {
         kparams->kernel_type = HTP_GET_ROWS_KERNEL_SAMETYPE;
     } else if (tiled) {
         kparams->kernel_type = HTP_GET_ROWS_KERNEL_TILED;
