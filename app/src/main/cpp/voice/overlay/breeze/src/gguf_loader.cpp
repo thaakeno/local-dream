@@ -91,6 +91,68 @@ static bool verify_decoder_codebook_mirrors(
     return true;
 }
 
+
+static bool verify_decoder_first_projection(GGUFModel & model, Backend & be) {
+    ggml_tensor * book = model.find("codec.dq.first.0.embed");
+    ggml_tensor * weight = model.find("codec.dq.first.out_proj.weight");
+    if (!book || !weight) {
+        std::fprintf(stderr, "[BREEZE_MODEL] missing first decoder projection tensors\n");
+        return false;
+    }
+    if (book->type != GGML_TYPE_F32 || book->ne[0] != weight->ne[0] || weight->ne[1] <= 0) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_MODEL] bad first projection layout book=%s %lldx%lld weight=%s %lldx%lld\n",
+            ggml_type_name(book->type),
+            (long long) book->ne[0], (long long) book->ne[1],
+            ggml_type_name(weight->type),
+            (long long) weight->ne[0], (long long) weight->ne[1]
+        );
+        return false;
+    }
+
+    constexpr int32_t row_id = 31;
+    Graph g(160);
+    auto * ids = g.input_i32({ row_id }, 1);
+    auto * row = ggml_get_rows(g.ctx, book, ids);
+    auto * out = linear(g.ctx, weight, row);
+    g.compute(be, out);
+
+    const std::vector<float> got = tensor_to_f32(out);
+    if (got.size() != (size_t) weight->ne[1]) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_MODEL] first projection size mismatch got=%zu expected=%lld\n",
+            got.size(), (long long) weight->ne[1]
+        );
+        return false;
+    }
+
+    double sum = 0.0;
+    float max_abs = 0.0f;
+    for (size_t i = 0; i < got.size(); ++i) {
+        if (!std::isfinite(got[i])) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_MODEL] first decoder projection non-finite index=%zu type=%s\n",
+                i, ggml_type_name(weight->type)
+            );
+            return false;
+        }
+        sum += got[i];
+        max_abs = std::max(max_abs, std::fabs(got[i]));
+    }
+
+    std::fprintf(
+        stderr,
+        "[BREEZE_MODEL] first decoder projection verified finite type=%s shape=%lldx%lld checksum=%.9g maxabs=%.9g\n",
+        ggml_type_name(weight->type),
+        (long long) weight->ne[0], (long long) weight->ne[1],
+        sum, max_abs
+    );
+    return true;
+}
+
 #ifdef _WIN32
 #define breeze_fseek _fseeki64
 #else
@@ -102,15 +164,18 @@ bool GGUFModel::load(const std::string & path, Backend & be) {
     gguf = gguf_init_from_file(path.c_str(), gp);
     if (!gguf) return false;
 
-    // Keep the primary model allocation exactly like the device-proven v153
-    // loader. In particular, DO NOT mark the full aggregate allocation as
-    // a full-model weight usage hint: doing that changes the Hexagon mapping
-    // and repack policy for the whole model.
+    // Hexagon MUL_MAT consumes quantized weights from its tiled REPACK
+    // layout. Stage the aggregate buffer as WEIGHTS only while GGUF bytes are
+    // uploaded so Q4_K/Q2_K/Q8_0/etc. are converted into that layout. Before
+    // the first HTP graph runs we restore usage=ANY, which keeps the proven
+    // ordinary delayed FastRPC mapping instead of the v161 extended mapping.
+    // Tensor-local WEIGHT/REPACK flags survive the usage reset.
     buffer = ggml_backend_alloc_ctx_tensors(meta, be.backend);
     if (!buffer) {
         free();
         return false;
     }
+    ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
 
     const int64_t n = gguf_get_n_tensors(gguf);
     size_t codebook_count = 0;
@@ -195,7 +260,9 @@ bool GGUFModel::load(const std::string & path, Backend & be) {
             return false;
         }
 
-        // Exact v153 upload for the primary model tensor.
+        // WEIGHTS usage is intentionally active here: this is what makes the
+        // Hexagon buffer backend repack quantized GGUF matrices into the tiled
+        // format consumed by its HVX matmul kernels.
         ggml_backend_tensor_set(t, buf.data(), 0, sz);
 
         auto mit = mirrors.find(name);
@@ -239,6 +306,17 @@ bool GGUFModel::load(const std::string & path, Backend & be) {
         }
         expected.emplace(name, std::move(rows));
     }
+
+    // Do not leave the 2.5+ GB aggregate model on the delayed-extended
+    // WEIGHTS mapping used by v161-v163: those builds stalled in the first
+    // vocoder graph on SM8850. Repacking has already happened at upload time,
+    // so switch back before any HTP compute lazily maps this buffer.
+    ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_ANY);
+    std::fprintf(
+        stderr,
+        "[BREEZE_MODEL] quantized GGUF weights repacked for HTP; primary model mapping restored to ordinary delayed mode\n"
+    );
+
     fclose(f);
 
     if (mirrored_codebooks != codebook_count || expected.size() != codebook_count) {
@@ -253,11 +331,15 @@ bool GGUFModel::load(const std::string & path, Backend & be) {
 
     std::fprintf(
         stderr,
-        "[BREEZE_MODEL] mirrored %zu decoder codebooks into dedicated ordinary HTP buffer; primary model map remains exact-v153\n",
+        "[BREEZE_MODEL] mirrored %zu decoder codebooks into dedicated ordinary HTP buffer; quantized matrices use tiled REPACK on ordinary mapping\n",
         mirrored_codebooks
     );
 
     if (!verify_decoder_codebook_mirrors(*this, be, expected, verify_rows)) {
+        free();
+        return false;
+    }
+    if (!verify_decoder_first_projection(*this, be)) {
         free();
         return false;
     }
