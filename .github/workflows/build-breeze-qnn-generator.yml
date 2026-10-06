@@ -1,0 +1,200 @@
+name: Build Breeze QNN Generator
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - v141-stable-yue2-full
+    paths:
+      - 'tools/breeze_qnn/export_generator_depth_onnx.py'
+      - '.github/workflows/build-breeze-qnn-generator.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: breeze-qnn-generator-sm8850-v1
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: breeze-qnn-generator-sm8850-v1
+  QAI_DEVICE: Samsung Galaxy S26 (Family)
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Free runner disk
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /usr/local/lib/android/sdk/ndk /opt/ghc /usr/share/dotnet || true
+          df -h /
+
+      - name: Install exporter and AI Hub client
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.7.1'
+          python -m pip install             'transformers==4.57.3' 'huggingface_hub>=0.36.0' 'safetensors>=0.5.3'             'onnx==1.18.0' 'onnxscript>=0.3.2' 'numpy==1.26.4' 'accelerate>=1.12.0'             'qai-hub>=0.56.0'
+          git clone --depth 1 https://github.com/breezeblue-ai/breeze-tts.git "${RUNNER_TEMP}/breeze-src"
+
+      - name: Export native-sampling depth graphs
+        shell: bash
+        env:
+          HF_HUB_ENABLE_HF_TRANSFER: '1'
+        run: |
+          set -euxo pipefail
+          mkdir -p build/breeze-qnn-generator
+          python tools/breeze_qnn/export_generator_depth_onnx.py             --source-dir "${RUNNER_TEMP}/breeze-src"             --cache-dir "${RUNNER_TEMP}/hf-cache"             --output-dir build/breeze-qnn-generator
+          test -s build/breeze-qnn-generator/breeze_depth_prefill.onnx
+          test -s build/breeze-qnn-generator/breeze_depth_step.onnx
+          cat build/breeze-qnn-generator/generator-export.json
+          df -h /
+
+      - name: Compile and link on Qualcomm AI Hub
+        shell: bash
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${QAI_HUB_API_TOKEN:-}"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import qai_hub as hub
+
+          root = Path("build/breeze-qnn-generator")
+          client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
+          device = hub.Device(os.environ["QAI_DEVICE"])
+          models = [
+              str(root / "breeze_depth_prefill.onnx"),
+              str(root / "breeze_depth_step.onnx"),
+          ]
+          compile_options = [
+              "--qnn_options default_graph_htp_precision=FLOAT16",
+              "--qnn_options default_graph_htp_precision=FLOAT16",
+          ]
+          compile_jobs, link_job = client.submit_compile_and_link_jobs(
+              models=models,
+              device=device,
+              name="Breeze TTS 2 depth generator SM8850",
+              graph_names=["depth_prefill", "depth_step"],
+              compile_options=compile_options,
+              link_options="--qnn_options default_graph_htp_optimizations=O=3",
+          )
+          if link_job is None:
+              raise SystemExit("AI Hub did not create a link job")
+          print("compile_jobs", [j.job_id for j in compile_jobs])
+          print("link_job", link_job.job_id)
+          target = link_job.download_target_model(str(root / "breeze-generator-sm8850-v81.bin"))
+          if not target:
+              raise SystemExit("AI Hub QNN link failed")
+          p = root / "breeze-generator-sm8850-v81.bin"
+          if not p.is_file() or p.stat().st_size < 1_000_000:
+              raise SystemExit("Downloaded QNN context is missing or too small")
+          meta = {
+              "compile_jobs": [j.job_id for j in compile_jobs],
+              "link_job": link_job.job_id,
+              "device": os.environ["QAI_DEVICE"],
+              "context_bytes": p.stat().st_size,
+          }
+          (root / "qai-hub-job.json").write_text(json.dumps(meta, indent=2) + "\n")
+          print(json.dumps(meta, indent=2))
+          PY
+
+      - name: Split release asset and build manifest
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("build/breeze-qnn-generator")
+          release = root / "release"
+          release.mkdir(exist_ok=True)
+          source = root / "breeze-generator-sm8850-v81.bin"
+          export = json.loads((root / "generator-export.json").read_text())
+          hub = json.loads((root / "qai-hub-job.json").read_text())
+          chunk_size = 1900 * 1024 * 1024
+          data_sha = hashlib.sha256()
+          parts = []
+          total = 0
+          with source.open("rb") as src:
+              index = 0
+              while True:
+                  data = src.read(chunk_size)
+                  if not data:
+                      break
+                  index += 1
+                  name = f"breeze-generator-sm8850-v81.part{index:02d}.bin"
+                  (release / name).write_bytes(data)
+                  sha = hashlib.sha256(data).hexdigest()
+                  data_sha.update(data)
+                  total += len(data)
+                  parts.append({"file": name, "bytes": len(data), "sha256": sha})
+          if total != source.stat().st_size:
+              raise SystemExit("Context split size mismatch")
+          manifest = {
+              "version": 1,
+              "engine": export["engine"],
+              "backend": "Qualcomm AI Hub QAIRT/QNN HTP",
+              "source": "BreezeBlue/Breeze-TTS-2",
+              "target_device": hub["device"],
+              "soc_model": 87,
+              "htp_arch": "V81",
+              "graph_names": export["graph_names"],
+              "cache_shape": export["cache_shape"],
+              "files": {
+                  "SM8850": {
+                      "context": {
+                          "bytes": total,
+                          "sha256": data_sha.hexdigest(),
+                          "parts": parts,
+                      }
+                  }
+              },
+          }
+          (release / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print(json.dumps(manifest, indent=2))
+          PY
+          cp "${RUNNER_TEMP}/breeze-src/LICENSE" build/breeze-qnn-generator/release/LICENSE-Breeze-TTS-2.txt
+          cat > build/breeze-qnn-generator/release/NOTICE-Breeze-QNN-Generator.txt <<'EOF'
+          Breeze TTS 2 is licensed under the BreezeBlue Research and Non-Commercial
+          License Agreement. This release converts the depth-generation hot path
+          into a native Qualcomm QNN HTP context. Sampling remains in Local Dream.
+          EOF
+          (cd build/breeze-qnn-generator/release && sha256sum * > SHA256SUMS.txt)
+          ls -lh build/breeze-qnn-generator/release
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: Breeze-QNN-Generator-SM8850-v1
+          path: build/breeze-qnn-generator/release/*
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish QNN generator release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG"               --title "Breeze QNN Generator SM8850 v1"               --notes "Experimental SM8850/V81 QNN depth generator. Native sampling; GGML/Hexagon fallback remains available. Breeze license applies."
+          fi
+          gh release upload "$RELEASE_TAG" build/breeze-qnn-generator/release/* --clobber
