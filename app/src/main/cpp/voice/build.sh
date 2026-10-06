@@ -144,9 +144,16 @@ if grep -q 'CodecDebugProbes\|convtr1d_raw\|kv_store_future\|block.tensor\|conv_
     exit 1
 fi
 
-# Keep the exact v153 generation/streaming behavior too.
-grep -q '\[BREEZE_VOCODER_STREAM\]' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'codec.decode_stream' "$(pwd)/overlay/breeze/src/generation.cpp"
+# Generation keeps the fast backbone/depth runners, but audio decoding must use
+# the upstream reference vocoder graph. The custom stateful decode_stream path
+# completed on SM8850 but produced effectively silent PCM.
+grep -q '\[BREEZE_AUDIO\].*path=upstream-reference' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'decode_reference_audio' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'codec.decode(codes, n_frames)' "$(pwd)/overlay/breeze/src/generation.cpp"
+if grep -q 'codec.decode_stream' "$(pwd)/overlay/breeze/src/generation.cpp"; then
+    echo "Silent custom streaming vocoder returned to generation path" >&2
+    exit 1
+fi
 grep -q 'struct AudioEmbedRunner' "$(pwd)/overlay/breeze/include/breeze/backbone.h"
 
 rm -rf "$BUILD_DIR"
@@ -191,7 +198,7 @@ fallback=disabled
 integration=pinned-source-overlay
 queue=v153-default-opbatch1280x32
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,exact-v153-model-map,decoder-codebook-ordinary-htp-mirror,exact-v153-hexagon-kernels,exact-v153-codec-graph,exact-v153-dcache-128b
-streaming_vocoder=exact-v153-host-cache-chunk4
+vocoder=upstream-reference-window40-signal-validated
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
