@@ -1,0 +1,226 @@
+name: Build Breeze QNN Vocoder
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - v141-stable-yue2-full
+    paths:
+      - 'tools/breeze_qnn/**'
+      - '.github/workflows/build-breeze-qnn-vocoder.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: breeze-qnn-vocoder-v1
+  cancel-in-progress: true
+
+env:
+  QNN_VERSION: '2.50.0.260828'
+  QNN_URL: 'https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip'
+  VOCODER_RELEASE: 'breeze-qnn-vocoder-v1'
+  VOCODER_FRAMES: '64'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Cache QAIRT SDK
+        id: qnn-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/qnn-sdk-${{ env.QNN_VERSION }}
+          key: qairt-${{ env.QNN_VERSION }}-linux-v1
+
+      - name: Download QAIRT SDK
+        if: steps.qnn-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          install_dir="${RUNNER_TEMP}/qnn-sdk-${QNN_VERSION}"
+          zip_path="${RUNNER_TEMP}/qnn-sdk.zip"
+          mkdir -p "$install_dir"
+          curl -fL --retry 5 --retry-delay 2 "$QNN_URL" -o "$zip_path"
+          unzip -q "$zip_path" -d "$install_dir"
+          rm -f "$zip_path"
+
+      - name: Locate QAIRT SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          install_dir="${RUNNER_TEMP}/qnn-sdk-${QNN_VERSION}"
+          sdk_root=""
+          while IFS= read -r d; do
+            if [ -d "$d/include/QNN" ] && [ -x "$d/bin/x86_64-linux-clang/qnn-onnx-converter" ]; then
+              sdk_root="$d"
+              break
+            fi
+          done < <(find "$install_dir" -maxdepth 4 -type d)
+          test -n "$sdk_root"
+          echo "QNN_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          echo "$sdk_root/bin/x86_64-linux-clang" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$sdk_root/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install export dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install             'torch==2.7.1'             'onnx==1.18.0'             'onnxruntime==1.22.1'             'onnxscript>=0.3.2'             'huggingface_hub>=0.34.0'             'transformers>=4.57.0,<5'             'safetensors>=0.5.3'             'accelerate>=1.9.0'             'numpy<3'
+          git clone --depth 1 https://github.com/QwenLM/Qwen3-TTS.git "${RUNNER_TEMP}/Qwen3-TTS"
+          python -m pip install --no-deps -e "${RUNNER_TEMP}/Qwen3-TTS"
+
+          # Install the converter's own pinned Python requirements if the SDK
+          # ships them. This is safe after the model export stack is present.
+          req="${QNN_SDK_ROOT}/bin/requirements.txt"
+          if [ -f "$req" ]; then python -m pip install -r "$req"; fi
+
+      - name: Download only the shared Breeze audio tokenizer
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${RUNNER_TEMP}/breeze"
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              "BreezeBlue/Breeze-TTS-2",
+              local_dir="${RUNNER_TEMP}/breeze",
+              allow_patterns=["audio_tokenizer/*"],
+          )
+          PY
+          test -s "${RUNNER_TEMP}/breeze/audio_tokenizer/model.safetensors"
+          test -s "${RUNNER_TEMP}/breeze/audio_tokenizer/config.json"
+
+      - name: Export static causal vocoder ONNX
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p build/breeze-qnn
+          python tools/breeze_qnn/export_vocoder_onnx.py             --model-dir "${RUNNER_TEMP}/breeze/audio_tokenizer"             --frames "$VOCODER_FRAMES"             --output build/breeze-qnn/breeze_vocoder_64.onnx
+
+          python - <<'PY'
+          import onnx
+          import onnxruntime as ort
+          import torch
+          import numpy as np
+          p = "build/breeze-qnn/breeze_vocoder_64.onnx"
+          onnx.checker.check_model(onnx.load(p))
+          ref = torch.load("build/breeze-qnn/breeze_vocoder_64.reference.pt", map_location="cpu")
+          sess = ort.InferenceSession(p, providers=["CPUExecutionProvider"])
+          out = sess.run(["audio"], {"codes": ref["codes"].numpy()})[0]
+          want = ref["audio"].numpy()
+          err = np.max(np.abs(out - want))
+          print("ONNX max abs error:", float(err))
+          if not np.isfinite(out).all() or err > 2e-3:
+              raise SystemExit("ONNX parity check failed")
+          PY
+
+      - name: Convert ONNX to FP16 QNN model library
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PYTHONPATH="${QNN_SDK_ROOT}/lib/python:${PYTHONPATH:-}"
+          export LD_LIBRARY_PATH="${QNN_SDK_ROOT}/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
+          OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
+          qnn-onnx-converter             --input_network "$OUT/breeze_vocoder_64.onnx"             --output_path "$OUT/breeze_vocoder_64.cpp"             --float_bitwidth 16             --preserve_io_datatype
+          qnn-model-lib-generator             -c "$OUT/breeze_vocoder_64.cpp"             -b "$OUT/breeze_vocoder_64.bin"             -t x86_64-linux-clang             -o "$OUT/model_lib"
+          test -s "$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"
+
+      - name: Compile HTP context binaries
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export LD_LIBRARY_PATH="${QNN_SDK_ROOT}/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
+          OUT="$GITHUB_WORKSPACE/build/breeze-qnn"
+          mkdir -p "$OUT/contexts"
+          BACKEND="${QNN_SDK_ROOT}/lib/x86_64-linux-clang/libQnnHtp.so"
+          MODEL="$OUT/model_lib/x86_64-linux-clang/libbreeze_vocoder_64.so"
+          test -s "$BACKEND"
+          test -s "$MODEL"
+
+          # One graph, six flagship Snapdragon families. Same Breeze vocoder
+          # weights; only the HTP prepared context changes.
+          for soc in sm8450 sm8475 sm8550 sm8650 sm8750 sm8850; do
+            mkdir -p "$OUT/contexts/$soc"
+            qnn-context-binary-generator               --backend "$BACKEND"               --model "$MODEL"               --htp_socs "$soc"               --binary_file "breeze-vocoder-$soc-fp16"               --output_dir "$OUT/contexts/$soc"               --log_level info
+            f="$(find "$OUT/contexts/$soc" -maxdepth 1 -type f -name '*.bin' -print -quit)"
+            test -s "$f"
+            mv "$f" "$OUT/contexts/breeze-vocoder-$soc-fp16.bin"
+            rmdir "$OUT/contexts/$soc"
+          done
+
+      - name: Build manifest and checksums
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path("build/breeze-qnn/contexts")
+          mapping = {
+              "SM8450": "sm8450",
+              "SM8475": "sm8475",
+              "SM8550": "sm8550",
+              "SM8650": "sm8650",
+              "SM8750": "sm8750",
+              "SM8850": "sm8850",
+          }
+          files = {}
+          for android_soc, soc in mapping.items():
+              p = root / f"breeze-vocoder-{soc}-fp16.bin"
+              data = p.read_bytes()
+              files[android_soc] = {
+                  "file": p.name,
+                  "bytes": len(data),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+              }
+          manifest = {
+              "version": 1,
+              "backend": "QAIRT/QNN HTP FP16",
+              "qnn_version": "2.50.0.260828",
+              "frames": 64,
+              "left_context_frames": 25,
+              "samples_per_frame": 1920,
+              "sample_rate": 24000,
+              "files": files,
+          }
+          (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print(json.dumps(manifest, indent=2))
+          PY
+          sha256sum build/breeze-qnn/contexts/*.bin > build/breeze-qnn/contexts/SHA256SUMS.txt
+          ls -lh build/breeze-qnn/contexts
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: Breeze-QNN-Vocoder-v1
+          path: build/breeze-qnn/contexts/*
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish stable download release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if gh release view "$VOCODER_RELEASE" >/dev/null 2>&1; then
+            :
+          else
+            gh release create "$VOCODER_RELEASE"               --title "Breeze QNN Vocoder v1"               --notes "Auto-built QAIRT FP16 HTP vocoder contexts for Breeze TTS 2. Shared by all Local Dream Breeze GGUF variants."
+          fi
+          gh release upload "$VOCODER_RELEASE" build/breeze-qnn/contexts/* --clobber
