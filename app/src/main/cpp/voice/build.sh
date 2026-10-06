@@ -154,7 +154,7 @@ if grep -q 'codec.decode_stream' "$(pwd)/overlay/breeze/src/generation.cpp"; the
     echo "Silent custom streaming vocoder returned to generation path" >&2
     exit 1
 fi
-grep -q 'struct AudioEmbedRunner' "$(pwd)/overlay/breeze/include/breeze/backbone.h"
+grep -q 'audio_embed_forward(m, frame, 1)' "$(pwd)/overlay/breeze/src/generation.cpp"
 
 rm -rf "$BUILD_DIR"
 
