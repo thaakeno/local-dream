@@ -188,15 +188,8 @@ static CodecStreamCacheBlock & ensure_cache(
     block.channels = channels;
     state.conv_used_f32 = aligned + need;
 
-    std::vector<float> zeros(need, 0.0f);
-    for (int bank = 0; bank < 2; ++bank) {
-        ggml_backend_tensor_set(
-            state.conv_storage,
-            zeros.data(),
-            ((size_t) bank * state.conv_capacity_f32 + block.offset_f32) * sizeof(float),
-            zeros.size() * sizeof(float)
-        );
-    }
+    // The whole persistent allocation is zeroed at stream initialization/reset,
+    // so carving a new state block requires no host-side upload here.
     return block;
 }
 
