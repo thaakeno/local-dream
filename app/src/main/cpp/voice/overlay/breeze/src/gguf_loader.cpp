@@ -104,7 +104,7 @@ bool GGUFModel::load(const std::string & path, Backend & be) {
 
     // Keep the primary model allocation exactly like the device-proven v153
     // loader. In particular, DO NOT mark the full aggregate allocation as
-    // GGML_BACKEND_BUFFER_USAGE_WEIGHTS: doing that changes the Hexagon mapping
+    // a full-model weight usage hint: doing that changes the Hexagon mapping
     // and repack policy for the whole model.
     buffer = ggml_backend_alloc_ctx_tensors(meta, be.backend);
     if (!buffer) {
