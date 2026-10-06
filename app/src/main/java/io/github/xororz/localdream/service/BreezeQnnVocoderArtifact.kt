@@ -151,7 +151,7 @@ object BreezeQnnVocoderArtifact {
                             received + "/" + expectedBytes + " bytes)",
                     )
                 }
-                val actualSha = digest.digest().joinToString("") { "%02x".format(it) }
+                val actualSha = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
                 if (actualSha != expectedSha) error("Accelerator checksum mismatch")
             }
 
@@ -160,6 +160,35 @@ object BreezeQnnVocoderArtifact {
                 part.copyTo(target, overwrite = true)
                 part.delete()
             }
+
+            // The compiled context is a derivative model artifact. Keep the
+            // upstream license and the required derivative NOTICE beside it so
+            // every in-app recipient receives the distribution terms too.
+            listOf(
+                "LICENSE-Breeze-TTS-2.txt",
+                "NOTICE-Breeze-QNN-Vocoder.txt",
+            ).forEach { legalName ->
+                val legalRequest = Request.Builder()
+                    .url(BASE_URL + "/" + legalName)
+                    .get()
+                    .build()
+                Http.client.newCall(legalRequest).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        error(
+                            "Required accelerator license file failed to download (HTTP " +
+                                response.code + ")",
+                        )
+                    }
+                    val body = response.body ?: error("Empty accelerator license file")
+                    File(dir, legalName).outputStream().use { output ->
+                        body.byteStream().use { input -> input.copyTo(output) }
+                    }
+                }
+                if (!File(dir, legalName).isFile || File(dir, legalName).length() == 0L) {
+                    error("Required accelerator license file is empty")
+                }
+            }
+
             File(dir, "installed.json").writeText(
                 JSONObject()
                     .put("soc", soc)
