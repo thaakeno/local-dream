@@ -404,12 +404,12 @@ class SpeechGenerationService : Service() {
             try {
                 if (servingModelId == modelId && process?.isAlive == true) {
                     var ready = false
-                    repeat(8) {
+                    for (attempt in 0 until 8) {
                         if (healthReady()) {
                             ready = true
-                            return@repeat
+                            break
                         }
-                        delay(75)
+                        if (attempt < 7) delay(75)
                     }
                     if (!ready) {
                         startServer(modelId)
