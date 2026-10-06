@@ -4190,6 +4190,68 @@ void ggml_hexagon_session::flush_batch(size_t min_ops) {
     op_batch->reset();
 }
 
+static bool ggml_hexagon_v81_visibility_producer(uint32_t opcode) {
+    switch (opcode) {
+        // Public SM8850/v81 reports reproduce stale reads when consumers stay
+        // in the same DSP op-batch after HMX matmul or asynchronous unary/GLU
+        // producers. Ending the batch forces the existing DSP end-of-batch
+        // HMX/work-queue drain plus full L2 clean+invalidate, while keeping
+        // every op on HTP (no CPU fallback).
+        case HTP_OP_MUL_MAT:
+        case HTP_OP_MUL_MAT_ADD:
+        case HTP_OP_MUL_MAT_ID:
+        case HTP_OP_MUL_MAT_NX:
+        case HTP_OP_MUL_MAT_ID_NX:
+        case HTP_OP_UNARY_GELU:
+        case HTP_OP_UNARY_GELU_ERF:
+        case HTP_OP_GLU_SWIGLU:
+        case HTP_OP_GLU_SWIGLU_OAI:
+        case HTP_OP_GLU_SWIGLU_CLAMP:
+        case HTP_OP_GLU_GEGLU:
+        case HTP_OP_GLU_GEGLU_QUICK:
+        case HTP_OP_GLU_GEGLU_ERF:
+        case HTP_OP_SNAKE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool ggml_hexagon_v81_visibility_hazard(
+    const htp_opnode & producer,
+    const htp_opnode & consumer
+) {
+    if (opt_arch != 81 || !ggml_hexagon_v81_visibility_producer(producer.opcode)) {
+        return false;
+    }
+
+    for (const ggml_tensor * out : producer.get_outputs()) {
+        if (!out) continue;
+        for (const ggml_tensor * in : consumer.get_inputs()) {
+            if (!in) continue;
+            if (out == in || out->data == in->data || ggml_hexagon_tensors_overlap(out, in)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool ggml_hexagon_v81_needs_visibility_split(
+    const ggml_hexagon_opbatch * batch,
+    const htp_opnode & consumer
+) {
+    if (opt_arch != 81 || !batch || batch->ops.empty()) return false;
+
+    // Do not assume the producer is immediately before its consumer. GGML can
+    // interleave independent nodes, so scan every still-unflushed producer in
+    // the current op-batch.
+    for (auto it = batch->ops.rbegin(); it != batch->ops.rend(); ++it) {
+        if (ggml_hexagon_v81_visibility_hazard(*it, consumer)) return true;
+    }
+    return false;
+}
+
 void ggml_hexagon_session::enqueue_op(const htp_opnode & node) {
     auto clone_tensor_buffer = [this](const ggml_tensor * t) {
         auto sbuf = this->mmap_tensor(t);
@@ -4207,6 +4269,22 @@ void ggml_hexagon_session::enqueue_op(const htp_opnode & node) {
     }
     for (auto t : node.get_outputs()) {
         clone_tensor_buffer(t);
+    }
+
+    // SM8850 / v81 has a real same-batch visibility bug: an HMX MUL_MAT
+    // output (and some worker-queue unary outputs) can be correct when read
+    // back by the host but stale/non-finite when consumed by the next DSP op.
+    // Split only dependency edges that cross those producer classes. The DSP
+    // already performs a full HMX/work-queue drain and L2 clean+invalidate at
+    // every batch boundary, so this is the smallest strict-HTP correctness
+    // barrier and avoids the deadlock-prone per-op polling experiment.
+    if (ggml_hexagon_v81_needs_visibility_split(op_batch, node)) {
+        HEX_VERBOSE(
+            "ggml-hex: %s v81 visibility batch split before %s\n",
+            c_name(),
+            node.op_name().c_str()
+        );
+        flush_async();
     }
 
     if (opt_opfusion && op_batch->try_fuse(node)) {
