@@ -11,9 +11,10 @@ and rotary embedding once for the fixed 64-frame graph, then call the original
 decoder layers directly. A parity check against the untouched eager decoder is
 mandatory before export.
 
-The graph input is float32 for the QNN SampleApp runtime. Values are exact
-integer code ids represented as floats and are cast to int32 inside the graph
-before the codebook gathers.
+The graph input is native int32 codec ids. Keeping the ids as int32 avoids
+an HTP graph-boundary FLOAT32->FLOAT16 QNN_Convert. That conversion is not
+valid on older HTP compilers and is unnecessary because the decoder gathers
+directly from integer codebook indices.
 """
 from __future__ import annotations
 
@@ -114,8 +115,7 @@ def main() -> None:
             self.register_buffer("rope_sin", sin.contiguous())
             self.register_buffer("position_ids", pos.contiguous())
 
-        def forward(self, codes_f32: torch.Tensor) -> torch.Tensor:
-            codes = codes_f32.to(torch.int32)
+        def forward(self, codes: torch.Tensor) -> torch.Tensor:
             d = self.decoder
             p = d.pre_transformer
 
@@ -162,11 +162,9 @@ def main() -> None:
         generator=g,
         dtype=torch.int32,
     )
-    codes_f32 = codes_i32.float()
-
     with torch.inference_mode():
         eager_ref = decoder(codes_i32)
-        ref = wrapper(codes_f32)
+        ref = wrapper(codes_i32)
 
     if eager_ref.shape != ref.shape:
         raise RuntimeError(
@@ -184,7 +182,7 @@ def main() -> None:
 
     torch.onnx.export(
         wrapper,
-        (codes_f32,),
+        (codes_i32,),
         str(output),
         input_names=["codes"],
         output_names=["audio"],
@@ -201,7 +199,7 @@ def main() -> None:
         "codebook_size": int(decoder.config.codebook_size),
         "samples_per_frame": int(model.decode_upsample_rate),
         "sample_rate": int(model.output_sample_rate),
-        "input_dtype": "float32 (exact integer code ids)",
+        "input_dtype": "int32",
         "output_dtype": "float32",
         "eager_static_max_abs": parity,
         "reference_peak": float(ref.abs().max()),
@@ -209,7 +207,7 @@ def main() -> None:
         "reference_checksum": float(ref.float().sum()),
     }
     output.with_suffix(".export.json").write_text(json.dumps(meta, indent=2) + "\n")
-    torch.save({"codes": codes_f32, "audio": ref}, output.with_suffix(".reference.pt"))
+    torch.save({"codes": codes_i32, "audio": ref}, output.with_suffix(".reference.pt"))
     print(json.dumps(meta, indent=2))
 
 

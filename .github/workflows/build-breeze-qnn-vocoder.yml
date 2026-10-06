@@ -146,6 +146,11 @@ jobs:
               map_location="cpu",
           )
           session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+          if session.get_inputs()[0].type != "tensor(int32)":
+              raise SystemExit(
+                  "Vocoder ONNX input must stay int32, got " +
+                  session.get_inputs()[0].type
+              )
           got = session.run(["audio"], {"codes": ref["codes"].numpy()})[0]
           want = ref["audio"].numpy()
           error = float(np.max(np.abs(got - want)))
@@ -180,13 +185,14 @@ jobs:
           test -s "$BACKEND"
           test -s "$MODEL"
 
-          # Snapdragon 888 (v68) through 8 Elite Gen 5 (v81).
+          # FP16 HTP contexts require v69+; SM8350/v68 has no FP16 execution.
           # Context binaries are prepared for the exact SoC, not a generic HTP.
-          for soc in sm8350 sm8450 sm8475 sm8550 sm8650 sm8750 sm8850; do
+          for soc in sm8450 sm8475 sm8550 sm8650 sm8750 sm8850; do
             work="$OUT/contexts/$soc"
             mkdir -p "$work"
             qnn-context-binary-generator               --backend "$BACKEND"               --model "$MODEL"               --htp_socs "$soc"               --binary_file "breeze-vocoder-$soc-fp16"               --output_dir "$work"
-            file="$(find "$work" -maxdepth 1 -type f -name '*.bin' -print -quit)"
+            file="$(find "$work" -maxdepth 1 -type f -name "breeze-vocoder-$soc-fp16.*" -print -quit)"
+            test -n "$file"
             test -s "$file"
             mv "$file" "$OUT/contexts/breeze-vocoder-$soc-fp16.bin"
             rm -rf "$work"
@@ -217,7 +223,6 @@ jobs:
 
           root = Path("build/breeze-qnn/contexts")
           mapping = {
-              "SM8350": "sm8350",
               "SM8450": "sm8450",
               "SM8475": "sm8475",
               "SM8550": "sm8550",
