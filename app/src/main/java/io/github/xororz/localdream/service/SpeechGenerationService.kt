@@ -47,7 +47,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v166-v81-direct-add"
+            "breeze-a0e177-hexagon-ab9acc-v167-v153-host-cache-chunk4"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -209,8 +209,11 @@ class SpeechGenerationService : Service() {
                 "--host", "127.0.0.1",
                 "--port", "8082",
                 "--ws-port", "-1",
-                "--chunk-first", "1",
-                "--chunk-max", "1",
+                // Restore the last device-proven scheduling shape from v153.
+                // Four frames avoid the fragile T=1 vocoder graph while the
+                // decoder still streams subsequent chunks incrementally.
+                "--chunk-first", "4",
+                "--chunk-max", "25",
                 "--split-chars", "600",
                 "--verbose",
             )
@@ -268,7 +271,8 @@ class SpeechGenerationService : Service() {
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
                     "queue=depbarrier-opbatch64 oppoll=1 opfusion=0 hmx=disabled-v81 " +
-                    "matmul=hvx fa=hvx gdn=hvx add=direct-hvx-v81 mul=generic-hvx-v81 batchlog=1 " +
+                    "matmul=hvx fa=hvx gdn=hvx add=direct-hvx-v81 mul=generic-hvx-v81 " +
+                    "vocoder_state=host-snapshot-v153 chunk=4/25 batchlog=1 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
             runBackendSelfTest(env, modelId, started)
