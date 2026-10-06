@@ -158,11 +158,15 @@ if grep -q 'cache_append(ctx, g, state.kv' "$(pwd)/overlay/breeze/src/codec_tran
     exit 1
 fi
 
-# SnakeBeta must remain numerically safe after the v192 correctness fix.
-grep -Fq 'ggml_div(ctx, one, ggml_add(ctx, beta, tiny))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-grep -q '1.0e-9f' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-if grep -q 'ggml_exp(ctx, ggml_neg(ctx, lb))' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
-    echo "Unsafe SnakeBeta exp(-beta) regression returned" >&2
+# SnakeBeta keeps the exact v192-safe reference math, but invariant alpha
+# and inv-beta vectors are precomputed once while the GGUF is loaded. The hot
+# waveform graph must contain only the five ops recognized by HTP_OP_SNAKE.
+grep -q 'SnakeBeta reference parameters precomputed' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -Fq '1.0f / (std::exp(v) + 1.0e-9f)' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
+grep -q 'alpha_param' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+grep -q 'inv_beta_param' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+if grep -q 'ggml_exp(ctx, lb)\|std::vector<float> ones' "$(pwd)/overlay/breeze/src/codec_decoder.cpp"; then
+    echo "Per-flush SnakeBeta parameter recomputation returned" >&2
     exit 1
 fi
 
@@ -224,11 +228,11 @@ mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
 queue=v153-default-opbatch1280x32
-extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,quant-weight-repack-ordinary-map,decoder-codebook-ordinary-htp-mirror,raw-quant-matmul-guard,stateful-vocoder-htp-resident,pingpong-causal-state,exact-tconv-output-overlap,bounded-stream-kv,upstream-dcache-64b-pr29977
+extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,quant-weight-repack-ordinary-map,decoder-codebook-ordinary-htp-mirror,raw-quant-matmul-guard,stateful-vocoder-htp-resident,pingpong-causal-state,exact-tconv-output-overlap,bounded-stream-kv,precomputed-snake-params,snake-hotgraph-fused,upstream-dcache-64b-pr29977
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
-vocoder=stateful-stream-once-chunk8x32-repack-fix-v193
+vocoder=stateful-stream-once-chunk8x32-repack-snakefast-v194
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
