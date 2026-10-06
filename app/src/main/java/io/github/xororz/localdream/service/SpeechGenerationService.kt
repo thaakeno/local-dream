@@ -47,7 +47,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v168-host-cache-batched"
+            "breeze-a0e177-hexagon-ab9acc-v169-host-cache-depbarrier-fast"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -249,21 +249,20 @@ class SpeechGenerationService : Service() {
                 "GGML_HEXAGON_MM_SELECT" to "1",
                 "GGML_HEXAGON_FA_SELECT" to "1",
                 "GGML_HEXAGON_GDN_SELECT" to "1",
-                // v167 proved the host-owned v153 cache removes the in-graph
-                // writable-state alias. The dependency barrier is therefore no
-                // longer needed in production; leaving it on splits a vocoder
-                // frame into thousands of one-op DSPQueue messages.
-                "GGML_HEXAGON_DEPBARRIER" to "0",
-                "GGML_HEXAGON_OPFUSION" to "1",
-                // Keep the conservative v81 packet ceiling while allowing real
-                // producer/consumer chains to stay inside the same packet.
+                // SM8850/v81 cannot safely execute Breeze's producer/consumer
+                // chain inside one DSPQueue packet. v168 proved that by failing
+                // immediately in dspqueue_read on the first vocoder graph.
+                //
+                // Keep dependent ops separated exactly as in the stable v167
+                // run, but remove v167's huge per-packet logging overhead.
+                "GGML_HEXAGON_DEPBARRIER" to "1",
+                "GGML_HEXAGON_OPFUSION" to "0",
                 "GGML_HEXAGON_OPBATCH" to "64",
                 "GGML_HEXAGON_OPQUEUE" to "32",
-                // Batch logging itself generated tens of thousands of Android
-                // log/file writes during one vocoder frame. Keep it off for the
-                // production path; higher-level Breeze diagnostics remain.
                 "GGML_HEXAGON_BATCHLOG" to "0",
-                "GGML_HEXAGON_OPPOLL" to "0",
+                // Thousands of tiny safe packets benefit from polling completion;
+                // unlike batch logging this does not perform Android file I/O.
+                "GGML_HEXAGON_OPPOLL" to "1",
             )
 
             BackendDiagnostics.beginSession(
@@ -274,7 +273,7 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
-                    "queue=opbatch64x32 depbarrier=0 oppoll=0 opfusion=1 hmx=disabled-v81 " +
+                    "queue=depbarrier-opbatch64x32 depbarrier=1 oppoll=1 opfusion=0 hmx=disabled-v81 " +
                     "matmul=hvx fa=hvx gdn=hvx add=direct-hvx-v81 mul=generic-hvx-v81 " +
                     "vocoder_state=host-snapshot-v153 chunk=4/25 batchlog=0 " +
                     "runtime=${runtimeDir.absolutePath}",
