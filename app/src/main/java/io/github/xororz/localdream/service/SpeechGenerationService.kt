@@ -47,7 +47,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v173-v153-largepacket-float-hmx"
+            "breeze-a0e177-hexagon-ab9acc-v174-exact-v153-graph-fixed-getrows"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -227,39 +227,22 @@ class SpeechGenerationService : Service() {
             ).joinToString(";")
 
             val env = mutableMapOf(
-                // Keep /vendor/lib64 out of the loader path on SM8850. FastRPC
-                // falls back through the DSP HAL for app UIDs and the vendor-wide
-                // path can resolve an incompatible dependency before the staged
-                // copies below. This is a documented source of Hexagon session/
-                // dspqueue failures on Android 16.
+                // Match the device-proven v153 process environment exactly.
+                // The backend defaults are already opbatch=1280, opqueue=32,
+                // oppoll=0 and opfusion=1.
                 "LD_LIBRARY_PATH" to listOf(
                     nativeDir,
                     runtimeDir.absolutePath,
                     "/system/lib64",
+                    "/vendor/lib64",
                 ).joinToString(":"),
                 "ADSP_LIBRARY_PATH" to dspPath,
                 "DSP_LIBRARY_PATH" to dspPath,
                 "GGML_HEXAGON_DEVICES" to "HTP0:0",
-                // Restore the scheduling semantics of v153, the last build that
-                // completed the full vocoder on this exact SM8850 device:
-                // one large fused DSP packet instead of arbitrary 64-op cuts or
-                // one-op dependency round trips.
-                //
-                // Keep the later correctness fixes in the backend: quantized v81
-                // matmuls remain guarded onto HVX, F32 GET_ROWS is staged safely,
-                // and host-owned vocoder carry state removes the original alias.
-                "GGML_HEXAGON_V81_LEGACY_BATCH" to "1",
                 "GGML_HEXAGON_NHMX" to "1",
                 "GGML_HEXAGON_NHVX" to "0",
                 "GGML_HEXAGON_MM_SELECT" to "2",
-                "GGML_HEXAGON_FA_SELECT" to "2",
-                "GGML_HEXAGON_GDN_SELECT" to "2",
-                "GGML_HEXAGON_DEPBARRIER" to "0",
                 "GGML_HEXAGON_OPFUSION" to "1",
-                "GGML_HEXAGON_OPBATCH" to "1280",
-                "GGML_HEXAGON_OPQUEUE" to "32",
-                "GGML_HEXAGON_BATCHLOG" to "0",
-                "GGML_HEXAGON_OPPOLL" to "0",
             )
 
             BackendDiagnostics.beginSession(
@@ -270,9 +253,9 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
-                    "queue=v153-opbatch1280x32 depbarrier=0 oppoll=0 opfusion=1 " +
-                    "hmx=float-enabled quant-matmul=hvx " +
-                    "vocoder_state=host-snapshot-v153 chunk=4/25 batchlog=0 " +
+                    "queue=v153-default-1280x32 opfusion=1 hmx=1 " +
+                    "quant-matmul=hvx f32-getrows=vtcm-staged " +
+                    "vocoder_graph=exact-v153 chunk=4/25 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
             runBackendSelfTest(env, modelId, started)
