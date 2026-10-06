@@ -117,6 +117,7 @@ static int opt_oppoll      = 0; // polling for batch completions
 static int opt_opfusion    = 1; // enable/disable op fusion
 static int opt_batchlog    = 0; // lightweight DSPQueue batch submit/complete logging
 static int opt_depbarrier  = 1; // split v81 packets at tensor hazards when explicitly enabled
+static int opt_v81_legacy_batch = 0; // restore v153 large-packet scheduling on known-safe graphs
 
 enum ggml_hexagon_fusion_flags {
     GGML_HEXAGON_FUSE_ALLREDUCE_ADD = (1 << 1), // 2
@@ -6688,7 +6689,7 @@ static bool ggml_hexagon_is_breeze_channel_binary(const struct ggml_tensor * op)
     // regressed autoregressive generation and deterministically wedged the DSP
     // immediately after RMS_NORM. Channel-broadcast ADD/MUL stays on the
     // existing direct-HVX path, as before v165.
-    if (opt_arch >= 81 && same_shape && op->op == GGML_OP_ADD) {
+    if (!opt_v81_legacy_batch && opt_arch >= 81 && same_shape && op->op == GGML_OP_ADD) {
         return true;
     }
 
@@ -8960,6 +8961,7 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     const char * str_opfusion = getenv("GGML_HEXAGON_OPFUSION");
     const char * str_batchlog = getenv("GGML_HEXAGON_BATCHLOG");
     const char * str_depbarrier = getenv("GGML_HEXAGON_DEPBARRIER");
+    const char * str_v81_legacy_batch = getenv("GGML_HEXAGON_V81_LEGACY_BATCH");
     const char * str_opfilter = getenv("GGML_HEXAGON_OPFILTER");
     const char * str_profile  = getenv("GGML_HEXAGON_PROFILE");
     const char * str_etm      = getenv("GGML_HEXAGON_ETM");
@@ -9012,12 +9014,13 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     opt_verbose   = str_verbose  ? atoi(str_verbose)                      : 0;
     opt_opbatch   = str_opbatch  ? strtoul(str_opbatch, NULL, 0)          : opt_opbatch;
     opt_opqueue   = str_opqueue  ? strtoul(str_opqueue, NULL, 0)          : opt_opqueue;
+    opt_v81_legacy_batch = str_v81_legacy_batch ? atoi(str_v81_legacy_batch) : opt_v81_legacy_batch;
 
-    // SM8850 / HTP v81 DSPQueue reliability: public device sweeps show
-    // 4..64 ops/message stable with negligible throughput difference, while
-    // larger batches can stall forever in the DSP response path. Breeze's
-    // first vocoder graph is ~795 HTP ops, so never send it as one message.
-    if (opt_arch >= 81 && opt_opbatch > 64) {
+    // Default v81 safety cap. Breeze can explicitly opt into the v153
+    // large-packet schedule after restoring host-owned immutable carry state.
+    // That graph was device-proven to complete and avoids both arbitrary 64-op
+    // dependency cuts and one-op round-trip barriers.
+    if (!opt_v81_legacy_batch && opt_arch >= 81 && opt_opbatch > 64) {
         GGML_LOG_WARN(
             "ggml-hex: v81 DSPQueue opbatch %d capped to 64 for reliability\n",
             opt_opbatch
