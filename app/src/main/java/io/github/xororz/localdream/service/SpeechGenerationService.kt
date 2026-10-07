@@ -55,7 +55,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v201-qnn-sm8850-v81-full-generator-v4"
+            "breeze-a0e177-hexagon-ab9acc-v202-qnn-sm8850-v81-adaptive-power"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -302,11 +302,11 @@ class SpeechGenerationService : Service() {
                 // Busy-poll the DSPQueue completion ring in latency mode.
                 // This removes the response sleep/wake path used by the
                 // autoregressive one-frame generator.
-                "GGML_HEXAGON_OPPOLL" to "1",
+                "GGML_HEXAGON_OPPOLL" to "0",
             )
             if (usingQnnRuntime) {
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
-                env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
+                env["LOCALDREAM_QNN_POWER_MODE"] = "high_performance"
             }
             qnnGeneratorInstall?.let { generator ->
                 env["BREEZE_QNN_DEPTH_PATH"] =
@@ -338,7 +338,7 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
-                    "queue=v201-opbatch1280x32-oppoll1 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
+                    "queue=v202-opbatch1280x32-oppoll0 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
                     "generator=" + (if (qnnGeneratorInstall != null) qnnGeneratorInstall.engine else "ggml-hexagon") + " " +
