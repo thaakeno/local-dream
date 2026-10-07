@@ -61,7 +61,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v208-qnn-flex-v4-monotonic"
+            "breeze-a0e177-hexagon-ab9acc-v209-qnn-v3-hybrid-safe"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -239,12 +239,24 @@ class SpeechGenerationService : Service() {
             _state.value = SpeechState.Loading(
                 modelId, "Preparing accelerator runtime", started, 0.12f,
             )
-            val qnnInstall = BreezeQnnVocoderArtifact.localInstall(this)
             val fullQnnEnabled = BreezeQnnGeneratorArtifact.isEnabled(this)
             val qnnGeneratorInstall = if (fullQnnEnabled) {
                 BreezeQnnGeneratorArtifact.localInstall(this)
             } else {
                 null
+            }
+
+            // Do not combine the resident v4 multigraph vocoder context with
+            // the legacy ggml-Hexagon generator on SM8850. The v4 context
+            // self-test succeeds, but the first subsequent ggml-Hexagon graph
+            // can abort in dspqueue_read with 0x2e / code 134. Use the proven
+            // v3 single-graph QNN vocoder for the hybrid path. If v3 is not
+            // installed, fall back to Breeze's built-in vocoder rather than
+            // crashing the native process. Full-QNN may still opt into v4.
+            val qnnInstall = if (qnnGeneratorInstall != null) {
+                BreezeQnnVocoderArtifact.localInstall(this)
+            } else {
+                BreezeQnnVocoderArtifact.localLegacyHexagonSafeInstall(this)
             }
             val qnnVocoderFile = qnnInstall?.contextFile
             usingQnnVocoder = qnnInstall != null
@@ -348,6 +360,21 @@ class SpeechGenerationService : Service() {
                 this,
                 "Breeze strict HTP model=$modelId",
             )
+            val installedPreferredQnn = BreezeQnnVocoderArtifact.localInstall(this)
+            if (
+                qnnGeneratorInstall == null &&
+                installedPreferredQnn?.version == 4
+            ) {
+                BackendDiagnostics.append(
+                    this,
+                    "BREEZE_QNN_COMPAT",
+                    if (qnnInstall?.version == 3) {
+                        "v4 installed but legacy ggml-Hexagon generator selected proven v3 vocoder coexistence path"
+                    } else {
+                        "v4 installed but disabled for legacy ggml-Hexagon coexistence; using built-in vocoder because v3 is unavailable"
+                    },
+                )
+            }
             BackendDiagnostics.append(
                 this,
                 "BREEZE_ENV",

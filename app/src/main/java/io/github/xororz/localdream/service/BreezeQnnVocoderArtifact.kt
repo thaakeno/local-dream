@@ -114,10 +114,25 @@ object BreezeQnnVocoderArtifact {
 
     fun localInstall(context: Context): Install? {
         val soc = supportedSoc() ?: return null
-        // Prefer the multigraph v4 context when present, but keep the proven
-        // single-graph v3 install as an automatic compatibility fallback.
+        // Prefer v4 for consumers that can safely own the QNN HTP context.
         return installFrom(dir(context), 4, soc)
             ?: installFrom(v3Dir(context), 3, soc)
+    }
+
+    /**
+     * The legacy Breeze generator and the vocoder share HTP0.
+     *
+     * The v4 multigraph context (8/32/64) is valid by itself, but on SM8850 it
+     * can leave too much HTP/DSPQueue state resident for ggml-hexagon. The next
+     * generator graph can then abort with dspqueue_read 0x2e / SIGABRT 134.
+     *
+     * v3's single 64-frame context is the device-proven coexistence path. Never
+     * silently fall through to v4 here: if v3 is absent, the caller should use
+     * the built-in ggml vocoder instead of risking a native process abort.
+     */
+    fun localLegacyHexagonSafeInstall(context: Context): Install? {
+        val soc = supportedSoc() ?: return null
+        return installFrom(v3Dir(context), 3, soc)
     }
 
     fun localFile(context: Context): File? = localInstall(context)?.contextFile
