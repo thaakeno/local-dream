@@ -150,6 +150,19 @@ fun SpeechRunScreen(
     val model = repository.models.firstOrNull { it.id == modelId }
     val speechState by SpeechGenerationService.state.collectAsState()
     val acceleratorState by BreezeQnnVocoderArtifact.status.collectAsState()
+
+    // This screen owns the warm Breeze process. Leaving the generation panel
+    // must release the GGUF, QNN contexts and HTP power votes immediately.
+    DisposableEffect(modelId) {
+        onDispose {
+            runCatching {
+                context.startService(
+                    Intent(context, SpeechGenerationService::class.java)
+                        .setAction(SpeechGenerationService.ACTION_STOP),
+                )
+            }
+        }
+    }
     var acceleratorPromptDismissed by remember { mutableStateOf(false) }
     var acceleratorDownloadRequested by remember { mutableStateOf(false) }
 
