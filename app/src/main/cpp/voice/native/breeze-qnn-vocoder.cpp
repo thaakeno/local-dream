@@ -550,36 +550,129 @@ bool BreezeQnnVocoder::init_from_environment(){
         impl_->lut.clear();
         return false;
     }
+    for(int frames:impl_->graph_frames){
+        if(!impl_->app->supports_frames(frames)){
+            std::fprintf(stderr,"[BREEZE_QNN] missing required vocoder graph frames=%d\n",frames);
+            impl_->app.reset();
+            impl_->lut.clear();
+            return false;
+        }
+    }
     impl_->history.clear();
-    std::fprintf(stderr,"[BREEZE_QNN] ready path=%s lut=%s graph_frames=64 left_context=25 features=512 layout=NFC backend=QNN-HTP-v3-sm8850-v81 selftest=%s\n",path,lp,selftest_state);
+    std::fprintf(
+        stderr,
+        "[BREEZE_QNN] ready path=%s lut=%s graph_frames=8,32,64 left_context=25 "
+        "features=512 layout=NFC backend=QNN-HTP-v4-sm8850-v81-shared selftest=%s\n",
+        path,lp,selftest_state
+    );
     return true;
 }
 bool BreezeQnnVocoder::ready() const{return impl_&&impl_->app&&!impl_->lut.empty();}
 void BreezeQnnVocoder::reset(){if(impl_)impl_->history.clear();}
-std::vector<float> BreezeQnnVocoder::decode_stream(const std::vector<int>&codes,int T,int ncb,int spf){
+std::vector<float> BreezeQnnVocoder::decode_stream(
+    const std::vector<int>&codes,int T,int ncb,int spf
+){
     if(!ready()||T<=0)return {};
-    if(ncb!=impl_->n_codebooks||spf!=impl_->samples_per_frame||codes.size()!=(size_t)T*ncb)throw std::runtime_error("Breeze QNN vocoder shape mismatch");
-    const int hf=(int)impl_->history.size()/ncb, ctx=std::min(hf,impl_->left_context);
-    if(ctx+T>impl_->fixed_frames)throw std::runtime_error("Breeze QNN vocoder chunk exceeds fixed graph");
-    std::vector<float> features((size_t)impl_->feature_channels*impl_->fixed_frames,0.0f);
+    if(
+        ncb!=impl_->n_codebooks||
+        spf!=impl_->samples_per_frame||
+        codes.size()!=(size_t)T*ncb
+    )throw std::runtime_error("Breeze QNN vocoder shape mismatch");
+
+    const int hf=(int)impl_->history.size()/ncb;
+    const int ctx=std::min(hf,impl_->left_context);
+    const int required=ctx+T;
+    int graph_frames=0;
+    for(int candidate:impl_->graph_frames){
+        if(candidate>=required){
+            graph_frames=candidate;
+            break;
+        }
+    }
+    if(graph_frames<=0){
+        throw std::runtime_error("Breeze QNN vocoder chunk exceeds largest graph");
+    }
+    if(!impl_->app->supports_frames(graph_frames)){
+        throw std::runtime_error("Breeze QNN vocoder graph unavailable");
+    }
+
+    std::vector<float> features(
+        (size_t)impl_->feature_channels*(size_t)graph_frames,
+        0.0f
+    );
     auto add=[&](int dt,const int*fc){
-        for(int cb=0;cb<ncb;cb++){int code=fc[cb];if(code<0||code>=impl_->codebook_size)throw std::runtime_error("Breeze QNN code id out of range");
-            size_t row=((size_t)cb*impl_->codebook_size+(size_t)code)*impl_->feature_channels; const float*src=impl_->lut.data()+row;
-            for(int ch=0;ch<impl_->feature_channels;ch++)features[(size_t)dt*impl_->feature_channels+ch]+=src[ch];
+        for(int cb=0;cb<ncb;cb++){
+            int code=fc[cb];
+            if(code<0||code>=impl_->codebook_size){
+                throw std::runtime_error("Breeze QNN code id out of range");
+            }
+            size_t row=(
+                (size_t)cb*impl_->codebook_size+(size_t)code
+            )*impl_->feature_channels;
+            const float*src=impl_->lut.data()+row;
+            for(int ch=0;ch<impl_->feature_channels;ch++){
+                features[(size_t)dt*impl_->feature_channels+ch]+=src[ch];
+            }
         }
     };
-    for(int t=0;t<ctx;t++){int sf=hf-ctx+t;add(t,impl_->history.data()+(size_t)sf*ncb);}
-    for(int t=0;t<T;t++)add(ctx+t,codes.data()+(size_t)t*ncb);
-    double fsum=0;float fpeak=0;for(float v:features){fsum+=v;fpeak=std::max(fpeak,std::fabs(v));}
-    std::fprintf(stderr,"[BREEZE_QNN_INPUT] ctx=%d new=%d checksum=%.7g peak=%.7g\n",ctx,T,fsum,fpeak);
-    std::vector<float> full((size_t)impl_->fixed_frames*spf);
-    if(!impl_->app->execute(features.data(),features.size(),full.data(),full.size()))throw std::runtime_error("Breeze QNN vocoder execution failed");
-    const size_t begin=(size_t)ctx*spf,count=(size_t)T*spf;std::vector<float> out(full.begin()+begin,full.begin()+begin+count);
-    for(float v:out)if(!std::isfinite(v))throw std::runtime_error("Breeze QNN vocoder produced non-finite PCM");
-    std::vector<int> merged;merged.reserve((size_t)(ctx+T)*ncb);
-    if(ctx>0){auto first=impl_->history.end()-(size_t)ctx*ncb;merged.insert(merged.end(),first,impl_->history.end());}
-    merged.insert(merged.end(),codes.begin(),codes.end());int mf=(int)merged.size()/ncb,keep=std::min(mf,impl_->left_context);
-    impl_->history.assign(merged.end()-(size_t)keep*ncb,merged.end());return out;
+    for(int t=0;t<ctx;t++){
+        int sf=hf-ctx+t;
+        add(t,impl_->history.data()+(size_t)sf*ncb);
+    }
+    for(int t=0;t<T;t++){
+        add(ctx+t,codes.data()+(size_t)t*ncb);
+    }
+
+    double fsum=0;
+    float fpeak=0;
+    for(float v:features){
+        fsum+=v;
+        fpeak=std::max(fpeak,std::fabs(v));
+    }
+    std::fprintf(
+        stderr,
+        "[BREEZE_QNN_INPUT] graph=%d ctx=%d new=%d checksum=%.7g peak=%.7g\n",
+        graph_frames,ctx,T,fsum,fpeak
+    );
+
+    std::vector<float> full((size_t)graph_frames*(size_t)spf);
+    if(!impl_->app->execute(
+        features.data(),features.size(),
+        full.data(),full.size(),
+        graph_frames
+    )){
+        throw std::runtime_error("Breeze QNN vocoder execution failed");
+    }
+
+    const size_t begin=(size_t)ctx*(size_t)spf;
+    const size_t count=(size_t)T*(size_t)spf;
+    if(begin+count>full.size()){
+        throw std::runtime_error("Breeze QNN vocoder output slice overflow");
+    }
+    std::vector<float> out(
+        full.begin()+begin,
+        full.begin()+begin+count
+    );
+    for(float v:out){
+        if(!std::isfinite(v)){
+            throw std::runtime_error("Breeze QNN vocoder produced non-finite PCM");
+        }
+    }
+
+    std::vector<int> merged;
+    merged.reserve((size_t)(ctx+T)*ncb);
+    if(ctx>0){
+        auto first=impl_->history.end()-(size_t)ctx*ncb;
+        merged.insert(merged.end(),first,impl_->history.end());
+    }
+    merged.insert(merged.end(),codes.begin(),codes.end());
+    const int mf=(int)merged.size()/ncb;
+    const int keep=std::min(mf,impl_->left_context);
+    impl_->history.assign(
+        merged.end()-(size_t)keep*ncb,
+        merged.end()
+    );
+    return out;
 }
 
 } // namespace breeze
