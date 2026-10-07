@@ -1,0 +1,87 @@
+name: Inspect Breeze QNN AI Hub lineage
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - breeze-qnn-v5-fastpath
+    paths:
+      - '.github/workflows/inspect-breeze-qnn-aihub.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install AI Hub client
+        run: python -m pip install --upgrade 'qai-hub>=0.56.0'
+
+      - name: Inspect compile/link lineage and tensor specs
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import qai_hub as hub
+
+          client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
+
+          def serial(obj):
+              if obj is None:
+                  return None
+              if isinstance(obj, (str, int, float, bool)):
+                  return obj
+              if isinstance(obj, dict):
+                  return {str(k): serial(v) for k, v in obj.items()}
+              if isinstance(obj, (list, tuple)):
+                  return [serial(v) for v in obj]
+              if hasattr(obj, "__dict__"):
+                  return {k: serial(v) for k, v in obj.__dict__.items() if not k.startswith("_")}
+              return str(obj)
+
+          def describe_model(label, model):
+              producer = model.get_producer() if hasattr(model, "get_producer") else None
+              source = getattr(producer, "model", None) if producer else None
+              print("=== MODEL", label, "===")
+              print(json.dumps({
+                  "model_id": getattr(model, "model_id", None),
+                  "name": getattr(model, "name", None),
+                  "model_type": str(getattr(model, "model_type", None)),
+                  "input_spec": serial(getattr(model, "input_spec", None)),
+                  "output_spec": serial(getattr(model, "output_spec", None)),
+                  "producer_job_id": getattr(producer, "job_id", None),
+                  "producer_name": getattr(producer, "name", None),
+                  "producer_options": getattr(producer, "options", None),
+                  "producer_shapes": serial(getattr(producer, "shapes", None)),
+                  "source_model_id": getattr(source, "model_id", None),
+                  "source_name": getattr(source, "name", None),
+                  "source_type": str(getattr(source, "model_type", None)),
+                  "source_input_spec": serial(getattr(source, "input_spec", None)),
+                  "source_output_spec": serial(getattr(source, "output_spec", None)),
+              }, indent=2, default=str))
+
+          for jid, label in [
+              ("jgn1m92rp", "backbone_prefill"),
+              ("jpy8jnxrg", "backbone_step"),
+          ]:
+              job = client.get_job(jid)
+              print("=== COMPILE JOB", label, jid, job.url, job.get_status(), "===")
+              describe_model(label, job.get_target_model())
+
+          link = client.get_job("jpy8rw88g")
+          print("=== DEPTH LINK", link.job_id, link.url, link.get_status(), "===")
+          models = list(getattr(link, "models", []) or [])
+          print("depth linked model count", len(models))
+          for i, model in enumerate(models):
+              describe_model(f"depth_link_model_{i}", model)
+          PY
