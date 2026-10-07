@@ -25,6 +25,7 @@ import json
 import sys
 from pathlib import Path
 
+import onnx
 import torch
 import torch.nn.functional as F
 from huggingface_hub import hf_hub_download
@@ -669,6 +670,50 @@ def export_one(
         dynamic_axes=dynamic_axes,
         dynamo=False,
         external_data=True,
+    )
+
+    # Legacy torch.onnx may emit one external file per initializer (for example
+    # "core.cos_table"). AI Hub uploads of very large ONNX models are much more
+    # reliable when all external tensors live in one regular sibling file.
+    #
+    # Re-load the just-exported graph with its external weights and re-save it
+    # into the conventional <model>.onnx.data layout. This also eliminates
+    # stale/special files whose names are derived from tensor names.
+    model = onnx.load(str(path), load_external_data=True)
+    external_name = path.name + ".data"
+    external_path = path.with_name(external_name)
+    if external_path.exists():
+        external_path.unlink()
+    onnx.save_model(
+        model,
+        str(path),
+        save_as_external_data=True,
+        all_tensors_to_one_file=True,
+        location=external_name,
+        size_threshold=0,
+        convert_attribute=False,
+    )
+    del model
+    gc.collect()
+
+    # Fail locally instead of burning another AI Hub compile if the ONNX still
+    # references anything except the single regular external-data file.
+    check = onnx.load(str(path), load_external_data=False)
+    locations = set()
+    for tensor in check.graph.initializer:
+        if tensor.data_location == onnx.TensorProto.EXTERNAL:
+            for item in tensor.external_data:
+                if item.key == "location":
+                    locations.add(item.value)
+    if locations and locations != {external_name}:
+        raise RuntimeError(
+            f"{path.name}: unexpected external data locations: {sorted(locations)}"
+        )
+    if locations and (not external_path.is_file() or external_path.is_symlink()):
+        raise RuntimeError(f"{external_path}: external data is not a regular file")
+    print(
+        f"normalized ONNX external data: {path.name} -> "
+        f"{external_name if locations else 'embedded'}"
     )
 
 
