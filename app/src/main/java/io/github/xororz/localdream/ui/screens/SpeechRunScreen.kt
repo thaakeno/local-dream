@@ -218,7 +218,7 @@ private const val DEFAULT_TEMPERATURE = 0.9f
 private const val DEFAULT_TOP_K = 50
 private const val DEFAULT_TOP_P = 1f
 private const val DEFAULT_REPETITION = 1.1f
-private const val DEFAULT_SPLIT_CHARS = 600
+private const val DEFAULT_SPLIT_CHARS = 240
 private const val DEFAULT_MAX_NEW_TOKENS = 750
 
 private fun freshSpeechSeed(): Long =
@@ -1035,7 +1035,7 @@ fun SpeechRunScreen(
                         label = "Long-text split",
                         value = splitChars.toFloat(),
                         range = 200f..1200f,
-                        description = "Approximate characters per segment. Smaller chunks reduce latency; larger chunks preserve more continuity.",
+                        description = "Approximate characters per passage. 240 keeps the autoregressive context bounded so long speech does not progressively slow down. Larger passages trade speed for continuity.",
                         onValueChange = { splitChars = it.roundToInt() },
                     ) { it.roundToInt().toString() + " chars" }
 
