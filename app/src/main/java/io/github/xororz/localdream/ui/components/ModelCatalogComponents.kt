@@ -1414,7 +1414,7 @@ fun BreezeFamilyCard(
                                         BreezeQnnGeneratorArtifact.Status.Checking ->
                                             "Checking device"
                                         is BreezeQnnGeneratorArtifact.Status.Missing ->
-                                            "Optional · optimized backbone/depth path"
+                                            "Optional · QNN depth decoder accelerator"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Error) {
@@ -1488,7 +1488,7 @@ fun BreezeFamilyCard(
                         }
 
                         Text(
-                            "Separate from the Breeze GGUF. When installed, Local Dream can use the device-specific QNN generator while keeping the normal HTP path as fallback.",
+                            "Separate from the Breeze GGUF. Accelerates the 15-step depth decoder on QNN; normal HTP remains the automatic fallback.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

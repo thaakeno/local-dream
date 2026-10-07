@@ -1,6 +1,7 @@
 #include "breeze/generation.h"
 #include "breeze/sampling.h"
 #include "breeze/text_encoder.h"
+#include "breeze/qnn_depth_decoder.h"
 
 #include <algorithm>
 #include <chrono>
@@ -218,6 +219,19 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     DepthRunner depth;
     depth.init(m, use_cfg ? 2 : 1);
 
+    // Optional device-specific QNN depth decoder. V1 is batch-1, so CFG keeps
+    // the proven ggml path. A failed QNN load/run disables itself and falls
+    // back per frame without changing synthesis semantics.
+    QnnDepthRunner qnn_depth;
+    const bool qnn_depth_requested = !use_cfg;
+    const bool qnn_depth_ready = qnn_depth_requested && qnn_depth.init(m);
+    std::fprintf(
+        stderr,
+        "[BREEZE_DEPTH] backend=%s cfg=%.2f\n",
+        qnn_depth_ready ? "qnn-htp" : "ggml-hexagon",
+        req.cfg_scale
+    );
+
     // This one-frame graph is shape-stable. Replaying it avoids rebuilding and
     // repartitioning an HTP graph for every generated codec frame.
     AudioEmbedRunner audio_embed;
@@ -366,7 +380,14 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         std::vector<std::vector<float>> hiddens = { o_c.hidden };
         if (use_cfg) hiddens.push_back(o_u.hidden);
         auto td = clock_now();
-        std::vector<int> depth_codes = depth.run(m, hiddens, cb0, req.cfg_scale, rng);
+        std::vector<int> depth_codes;
+        bool used_qnn_depth = false;
+        if (!use_cfg && qnn_depth.ready()) {
+            used_qnn_depth = qnn_depth.run(m, o_c.hidden, cb0, rng, depth_codes);
+        }
+        if (!used_qnn_depth) {
+            depth_codes = depth.run(m, hiddens, cb0, req.cfg_scale, rng);
+        }
         tm.depth += since(td);
         std::vector<int> frame = { cb0 };
         frame.insert(frame.end(), depth_codes.begin(), depth_codes.end());

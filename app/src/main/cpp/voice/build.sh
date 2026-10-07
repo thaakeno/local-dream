@@ -191,6 +191,11 @@ grep -q 'BREEZE_QNN_VOCODER_PATH' "$(pwd)/native/breeze-qnn-vocoder.cpp"
 grep -q 'graph64_ms' "$(pwd)/native/breeze-qnn-vocoder.cpp"
 grep -q 'qnn_vocoder->decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
 
+# Optional QNN depth generator must keep native sampling and automatic ggml fallback.
+grep -q 'BREEZE_QNN_GENERATOR_PATH' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
+grep -q 'QnnDepthRunner qnn_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'depth.run(m, hiddens, cb0' "$(pwd)/overlay/breeze/src/generation.cpp"
+
 # Full-clip decode remains available for voice conversion/reference work, but
 # production decode must not attach the old full-tensor SUM diagnostic probes.
 grep -Fq 'vocoder_decode(g.ctx, *m, g, codes, n_cb, T, nullptr)' "$(pwd)/overlay/breeze/src/codec.cpp"
@@ -244,6 +249,7 @@ extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-refere
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
+generator=qnn-depth-kv-v1-or-ggml-fallback
 vocoder=qnn-htp-feature64-serialized-or-ggml-fallback-v198
 qnn_vocoder=sm8850-v3-v81,feature64,host-lut-fp32,cached-reference-selftest,left-context25,serialized64x39,eos-first
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2

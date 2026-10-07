@@ -236,10 +236,11 @@ class SpeechGenerationService : Service() {
             val qnnGeneratorInstall = BreezeQnnGeneratorArtifact.localInstall(this)
             val qnnVocoderFile = qnnInstall?.contextFile
             usingQnnVocoder = qnnInstall != null
+            val usingQnnRuntime = qnnInstall != null || qnnGeneratorInstall != null
             val qnnSelftestCached = qnnInstall?.let { qnnSelftestValidated(it) } == true
             activeQnnSelftestMarker = qnnInstall?.let { qnnSelftestMarker(it) }
             activeQnnSelftestKey = qnnInstall?.let { qnnSelftestKey(it) }
-            prepareRuntime(usingQnnVocoder)
+            prepareRuntime(usingQnnRuntime)
             val executable = File(applicationInfo.nativeLibraryDir, EXECUTABLE)
             if (!executable.isFile) {
                 throw IllegalStateException("Breeze native server is missing from this APK")
@@ -303,6 +304,10 @@ class SpeechGenerationService : Service() {
                 // autoregressive one-frame generator.
                 "GGML_HEXAGON_OPPOLL" to "1",
             )
+            if (usingQnnRuntime) {
+                env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
+                env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
+            }
             qnnGeneratorInstall?.let { generator ->
                 env["BREEZE_QNN_GENERATOR_PATH"] = generator.contextFile.absolutePath
                 env["BREEZE_QNN_GENERATOR_ENGINE"] = generator.engine
@@ -315,8 +320,6 @@ class SpeechGenerationService : Service() {
                     qnnInstall.selftestFeaturesFile.absolutePath
                 env["BREEZE_QNN_SELFTEST_AUDIO_PATH"] =
                     qnnInstall.selftestAudioFile.absolutePath
-                env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
-                env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
                 if (qnnSelftestCached) {
                     env["BREEZE_QNN_SKIP_SELFTEST"] = "1"
                 }
