@@ -823,12 +823,12 @@ fun SpeechRunScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "Breeze generation",
+                            "Generation controls",
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            "Voice sampling, consistency and long-text controls.",
+                            "Expression first. Sampling and engine controls stay out of the way until you need them.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -843,170 +843,264 @@ fun SpeechRunScreen(
                             splitChars = DEFAULT_SPLIT_CHARS
                             maxNewTokens = DEFAULT_MAX_NEW_TOKENS
                             seed = DEFAULT_SEED
+                            seedLocked = true
                             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                         },
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = null)
                         Spacer(Modifier.width(6.dp))
-                        Text("Reset defaults")
+                        Text("Reset")
                     }
                 }
 
                 Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.48f),
                 ) {
-                    Text(
-                        "The defaults are the safe baseline. Change one thing at a time when tuning a voice so you can hear what actually helped.",
-                        modifier = Modifier.padding(14.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            "Snapdragon NPU",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            if (acceleratorState is BreezeQnnVocoderArtifact.Status.Ready) {
+                                "GGUF generator on Hexagon + accelerated QNN waveform decoder"
+                            } else {
+                                "GGUF generator on Hexagon"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "The detailed HTP/QNN names are implementation details; this is the practical compute path currently used.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
+                Text(
+                    "Voice & expression",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                BreezeSettingSlider(
+                    label = "Direction strength",
+                    value = cfg,
+                    range = 1f..4f,
+                    description = if (cfg > 1.05f) {
+                        "Stronger voice-direction and event adherence. CFG above 1 runs an extra guidance branch, so it costs noticeably more compute."
+                    } else {
+                        "Natural single-branch generation. Raise it when the voice direction or inline events are being ignored."
+                    },
+                    onValueChange = { cfg = it },
+                ) { String.format(Locale.US, "%.2f", it) }
+
+                BreezeSettingSlider(
+                    label = "Expressiveness",
+                    value = temperature,
+                    range = 0.3f..1.5f,
+                    description = "Lower is steadier and more repeatable. Higher allows more variation and emotion, but can also increase odd pronunciations.",
+                    onValueChange = { temperature = it },
+                ) { String.format(Locale.US, "%.2f", it) }
+
                 Surface(
-                    shape = MaterialTheme.shapes.large,
+                    shape = MaterialTheme.shapes.extraLarge,
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(14.dp),
+                            .padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        Surface(
+                            shape = MaterialTheme.shapes.large,
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                        ) {
+                            Icon(
+                                if (seedLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                contentDescription = null,
+                                modifier = Modifier.padding(10.dp),
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "Full QNN generator",
+                                if (seedLocked) "Seed locked" else "Seed randomized",
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                if (fullQnnGeneratorEnabled) {
-                                    "QNN backbone + depth. The QNN vocoder stays enabled in both modes."
+                                if (seedLocked) {
+                                    "Seed $seed will be reused. Useful for exact A/B tests."
                                 } else {
-                                    "Legacy ggml-Hexagon backbone + depth. Use this for direct A/B speed tests."
+                                    "A fresh seed is generated every time you press Generate."
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Switch(
-                            checked = fullQnnGeneratorEnabled,
-                            enabled = generatorState is BreezeQnnGeneratorArtifact.Status.Ready,
-                            onCheckedChange = { enabled ->
-                                fullQnnGeneratorEnabled = enabled
-                                BreezeQnnGeneratorArtifact.setEnabled(context, enabled)
-                                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                                scope.launch {
-                                    context.startService(
-                                        Intent(context, SpeechGenerationService::class.java)
-                                            .setAction(SpeechGenerationService.ACTION_STOP),
-                                    )
-                                    delay(180)
-                                    SpeechGenerationService.resetForModel(modelId)
-                                    if (model?.isDownloaded == true) {
-                                        context.startForegroundService(
-                                            Intent(
-                                                context,
-                                                SpeechGenerationService::class.java,
-                                            )
-                                                .setAction(
-                                                    SpeechGenerationService.ACTION_PRELOAD,
-                                                )
-                                                .putExtra("modelId", modelId),
-                                        )
-                                    }
-                                }
+                            checked = seedLocked,
+                            onCheckedChange = {
+                                seedLocked = it
+                                if (!it) seed = freshSpeechSeed()
                             },
                         )
                     }
                 }
-
-                BreezeSettingSlider(
-                    label = "CFG scale",
-                    value = cfg,
-                    range = 1f..4f,
-                    description = "How strongly Breeze follows the voice direction. 1.0 is the natural default; higher values push the requested style harder but can make speech sound forced.",
-                    onValueChange = { cfg = it },
-                ) { String.format(Locale.US, "%.2f", it) }
-
-                BreezeSettingSlider(
-                    label = "Temperature",
-                    value = temperature,
-                    range = 0.3f..1.5f,
-                    description = "Controls randomness and expressiveness. Lower is steadier and more repeatable; higher gives more variation and emotion but can increase odd pronunciations.",
-                    onValueChange = { temperature = it },
-                ) { String.format(Locale.US, "%.2f", it) }
-
-                BreezeSettingSlider(
-                    label = "Top P",
-                    value = topP,
-                    range = 0.5f..1f,
-                    description = "Nucleus sampling. Lower values keep only the most likely choices and sound safer; 1.0 keeps the full candidate distribution.",
-                    onValueChange = { topP = it },
-                ) { String.format(Locale.US, "%.2f", it) }
-
-                BreezeSettingSlider(
-                    label = "Repetition penalty",
-                    value = repetition,
-                    range = 1f..1.5f,
-                    description = "Discourages repeated sounds, syllables and phrases. Increase it only if Breeze gets stuck repeating; too high can damage fluency.",
-                    onValueChange = { repetition = it },
-                ) { String.format(Locale.US, "%.2f", it) }
-
-                BreezeSettingSlider(
-                    label = "Top K",
-                    value = topK.toFloat(),
-                    range = 10f..100f,
-                    description = "Maximum token choices considered at each step. Lower is more predictable; higher allows more varied delivery. 50 is a good general default.",
-                    onValueChange = { topK = it.roundToInt() },
-                ) { it.roundToInt().toString() }
-
-                BreezeSettingSlider(
-                    label = "Long-text split",
-                    value = splitChars.toFloat(),
-                    range = 200f..1200f,
-                    description = "Approximate characters per speech segment. Smaller chunks start sooner and use less memory; larger chunks preserve continuity but take longer before audio arrives.",
-                    onValueChange = { splitChars = it.roundToInt() },
-                ) { it.roundToInt().toString() + " chars" }
-
-                BreezeSettingSlider(
-                    label = "Frame cap / piece",
-                    value = maxNewTokens.toFloat(),
-                    range = 250f..1500f,
-                    description = "Maximum acoustic frames Breeze may generate for each segment. Raise it for long slow passages; setting it too low can cut a segment off.",
-                    onValueChange = { maxNewTokens = it.roundToInt() },
-                ) { it.roundToInt().toString() }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            seed = freshSpeechSeed()
+                            seedLocked = true
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("New locked seed")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            seed = DEFAULT_SEED
+                            seedLocked = true
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Use 42")
+                    }
+                }
 
                 HorizontalDivider()
 
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Seed", fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Controls repeatability. Reuse the same seed with the same text/settings to get a similar result.",
+                            "Advanced",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "Sampling, long-text and experimental engine controls.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Text(
-                            seed.toString(),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
                     }
-                    TextButton(
-                        onClick = {
-                            seed = (System.nanoTime() and 0x7fffffff).coerceAtLeast(1L)
-                        },
+                    Switch(
+                        checked = showAdvancedTune,
+                        onCheckedChange = { showAdvancedTune = it },
+                    )
+                }
+
+                if (showAdvancedTune) {
+                    BreezeSettingSlider(
+                        label = "Top P",
+                        value = topP,
+                        range = 0.5f..1f,
+                        description = "Nucleus sampling. Lower values restrict token choices; 1.0 keeps the full candidate distribution.",
+                        onValueChange = { topP = it },
+                    ) { String.format(Locale.US, "%.2f", it) }
+
+                    BreezeSettingSlider(
+                        label = "Top K",
+                        value = topK.toFloat(),
+                        range = 10f..100f,
+                        description = "Maximum token candidates considered at each sampling step.",
+                        onValueChange = { topK = it.roundToInt() },
+                    ) { it.roundToInt().toString() }
+
+                    BreezeSettingSlider(
+                        label = "Repetition penalty",
+                        value = repetition,
+                        range = 1f..1.5f,
+                        description = "Discourages repeated sounds and phrases. Too high can damage fluency.",
+                        onValueChange = { repetition = it },
+                    ) { String.format(Locale.US, "%.2f", it) }
+
+                    BreezeSettingSlider(
+                        label = "Long-text split",
+                        value = splitChars.toFloat(),
+                        range = 200f..1200f,
+                        description = "Approximate characters per segment. Smaller chunks reduce latency; larger chunks preserve more continuity.",
+                        onValueChange = { splitChars = it.roundToInt() },
+                    ) { it.roundToInt().toString() + " chars" }
+
+                    BreezeSettingSlider(
+                        label = "Frame safety cap",
+                        value = maxNewTokens.toFloat(),
+                        range = 250f..1500f,
+                        description = "Maximum acoustic frames Breeze may generate for each segment. This is a safety ceiling, not a quality knob.",
+                        onValueChange = { maxNewTokens = it.roundToInt() },
+                    ) { it.roundToInt().toString() }
+
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
                     ) {
-                        Text("Randomize")
-                    }
-                    TextButton(onClick = { seed = DEFAULT_SEED }) {
-                        Text("42")
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Experimental Full QNN generator",
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    if (fullQnnGeneratorEnabled) {
+                                        "QNN backbone + depth enabled for A/B testing. The QNN waveform decoder is independent."
+                                    } else {
+                                        "Off. The proven GGUF/ggml-Hexagon generator is being used."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = fullQnnGeneratorEnabled,
+                                enabled = generatorState is BreezeQnnGeneratorArtifact.Status.Ready,
+                                onCheckedChange = { enabled ->
+                                    fullQnnGeneratorEnabled = enabled
+                                    BreezeQnnGeneratorArtifact.setEnabled(context, enabled)
+                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                    scope.launch {
+                                        context.startService(
+                                            Intent(context, SpeechGenerationService::class.java)
+                                                .setAction(SpeechGenerationService.ACTION_STOP),
+                                        )
+                                        delay(180)
+                                        SpeechGenerationService.resetForModel(modelId)
+                                        if (model?.isDownloaded == true) {
+                                            context.startForegroundService(
+                                                Intent(
+                                                    context,
+                                                    SpeechGenerationService::class.java,
+                                                )
+                                                    .setAction(
+                                                        SpeechGenerationService.ACTION_PRELOAD,
+                                                    )
+                                                    .putExtra("modelId", modelId),
+                                            )
+                                        }
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
 
