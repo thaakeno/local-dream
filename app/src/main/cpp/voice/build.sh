@@ -188,8 +188,12 @@ fi
 # QNN vocoder fast path must remain optional and fall back to the proven ggml
 # stateful decoder when its downloaded context binary is absent.
 grep -q 'BREEZE_QNN_VOCODER_PATH' "$(pwd)/native/breeze-qnn-vocoder.cpp"
-grep -q 'graph64_ms' "$(pwd)/native/breeze-qnn-vocoder.cpp"
+grep -q 'graph%d_ms' "$(pwd)/native/breeze-qnn-vocoder.cpp"
+grep -q 'graph_frames{8, 32, 64}' "$(pwd)/native/breeze-qnn-vocoder.cpp"
 grep -q 'qnn_vocoder->decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
+grep -q 'const int qnn_first_new = 8' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'const int qnn_steady_new = 39' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'anchor_chars = 96' "$(pwd)/overlay/breeze/src/generation.cpp"
 
 # Full QNN generator v5 keeps the proven batch-1 depth contract while fixing
 # the v4 backbone architecture: linked shared-weight contexts, true batch-1
