@@ -1115,7 +1115,33 @@ fun SpeechRunScreen(
     }
 
     if (showHistory) {
-        val visibleHistory = history.filter { it.modelId == modelId }
+        val sortMode = runCatching { SpeechHistorySort.valueOf(historySort) }
+            .getOrDefault(SpeechHistorySort.Newest)
+        val query = historySearch.trim()
+        val visibleHistory = history
+            .asSequence()
+            .filter { it.modelId == modelId }
+            .filter {
+                query.isBlank() ||
+                    it.text.contains(query, ignoreCase = true) ||
+                    it.instruction.contains(query, ignoreCase = true)
+            }
+            .filter { !historyFavoritesOnly || it.favorite }
+            .filter { !historyAcceleratedOnly || it.accelerated }
+            .toList()
+            .let { items ->
+                when (sortMode) {
+                    SpeechHistorySort.Newest -> items.sortedByDescending { it.createdAt }
+                    SpeechHistorySort.Oldest -> items.sortedBy { it.createdAt }
+                    SpeechHistorySort.Fastest -> items.sortedBy {
+                        if (it.generationMillis > 0L) it.generationMillis else Long.MAX_VALUE
+                    }
+                    SpeechHistorySort.Longest -> items.sortedByDescending { it.audioDurationMillis }
+                }
+            }
+        val historyListState = rememberLazyListState()
+        var sortMenuOpen by remember { mutableStateOf(false) }
+
         Dialog(
             onDismissRequest = { showHistory = false },
             properties = DialogProperties(
@@ -1141,19 +1167,95 @@ fun SpeechRunScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "Speech history",
+                                "Speech library",
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold,
                             )
                             Text(
                                 visibleHistory.size.toString() +
-                                    if (visibleHistory.size == 1) " generation" else " generations",
+                                    if (visibleHistory.size == 1) " result" else " results",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         TextButton(onClick = { showHistory = false }) {
                             Text("Close")
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = historySearch,
+                        onValueChange = { historySearch = it.take(200) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null)
+                        },
+                        label = { Text("Search script or voice direction") },
+                    )
+
+                    LazyRow(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        item {
+                            FilterChip(
+                                selected = historyFavoritesOnly,
+                                onClick = { historyFavoritesOnly = !historyFavoritesOnly },
+                                label = { Text("Favorites") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Favorite,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                },
+                            )
+                        }
+                        item {
+                            FilterChip(
+                                selected = historyAcceleratedOnly,
+                                onClick = { historyAcceleratedOnly = !historyAcceleratedOnly },
+                                label = { Text("Fast waveform") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.FilterList,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                },
+                            )
+                        }
+                        item {
+                            Box {
+                                AssistChip(
+                                    onClick = { sortMenuOpen = true },
+                                    label = { Text(sortMode.label) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.Sort,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    },
+                                )
+                                DropdownMenu(
+                                    expanded = sortMenuOpen,
+                                    onDismissRequest = { sortMenuOpen = false },
+                                ) {
+                                    SpeechHistorySort.entries.forEach { option ->
+                                        DropdownMenuItem(
+                                            text = { Text(option.label) },
+                                            onClick = {
+                                                historySort = option.name
+                                                sortMenuOpen = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -1166,131 +1268,251 @@ fun SpeechRunScreen(
                                 .weight(1f),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(
-                                "No generations for this Breeze model yet.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    if (history.isEmpty()) {
+                                        "No Breeze generations yet."
+                                    } else {
+                                        "Nothing matches these filters."
+                                    },
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (
+                                    historySearch.isNotBlank() ||
+                                    historyFavoritesOnly ||
+                                    historyAcceleratedOnly
+                                ) {
+                                    TextButton(
+                                        onClick = {
+                                            historySearch = ""
+                                            historyFavoritesOnly = false
+                                            historyAcceleratedOnly = false
+                                        },
+                                    ) {
+                                        Text("Clear filters")
+                                    }
+                                }
+                            }
                         }
                     } else {
-                        LazyColumn(
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f),
-                            contentPadding = PaddingValues(
-                                start = 16.dp,
-                                end = 16.dp,
-                                top = 16.dp,
-                                bottom = 28.dp,
-                            ),
-                            verticalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
-                            items(visibleHistory, key = { it.id }) { item ->
-                                val file = File(item.filePath)
-                                if (file.isFile) {
-                                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                                        MusicPlayerCard(
-                                            file = file,
-                                            title = item.text.take(76),
-                                            subtitle = formatHistoryDate(item.createdAt) + " · " +
-                                                formatMillisCompact(item.audioDurationMillis) + " audio · " +
-                                                formatMillisCompact(item.generationMillis) + " generated",
-                                            metadataLine = buildString {
-                                                append("Seed ")
-                                                append(item.seed)
-                                                append(" · CFG ")
-                                                append(String.format(Locale.US, "%.2f", item.cfg))
-                                                append(" · ")
-                                                append(if (item.accelerated) "QNN HTP" else "Fallback")
-                                            },
-                                            onUse = {
-                                                text = item.text
-                                                instruction = item.instruction
-                                                seed = item.seed
-                                                cfg = item.cfg
-                                                temperature = item.temperature
-                                                topK = item.topK
-                                                topP = item.topP
-                                                repetition = item.repetition
-                                                splitChars = item.splitChars
-                                                maxNewTokens = item.maxNewTokens
-                                                showHistory = false
-                                                AppHaptics.perform(
-                                                    context,
-                                                    AppHaptics.Kind.Interaction,
-                                                )
-                                            },
-                                            onReproduce = {
-                                                showHistory = false
-                                                AppHaptics.perform(
-                                                    context,
-                                                    AppHaptics.Kind.Interaction,
-                                                )
-                                                startSpeechGeneration(
-                                                    context = context,
-                                                    modelId = item.modelId,
-                                                    text = item.text,
-                                                    instruction = item.instruction,
-                                                    seed = item.seed,
-                                                    cfg = item.cfg,
-                                                    temperature = item.temperature,
-                                                    topK = item.topK,
-                                                    topP = item.topP,
-                                                    repetition = item.repetition,
-                                                    splitChars = item.splitChars,
-                                                    maxNewTokens = item.maxNewTokens,
-                                                )
-                                            },
-                                            onSave = {
-                                                scope.launch {
-                                                    val saved = runCatching {
-                                                        SpeechHistoryStore.exportToMusic(context, file)
-                                                    }.getOrNull()
-                                                    Toast.makeText(
-                                                        context,
-                                                        if (saved != null) {
-                                                            "Saved to Music/LocalDream"
+                            LazyColumn(
+                                state = historyListState,
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(
+                                    start = 16.dp,
+                                    end = 22.dp,
+                                    top = 16.dp,
+                                    bottom = 28.dp,
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(14.dp),
+                            ) {
+                                items(visibleHistory, key = { it.id }) { item ->
+                                    val file = File(item.filePath)
+                                    if (file.isFile) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                            MusicPlayerCard(
+                                                file = file,
+                                                title = item.text.take(96),
+                                                subtitle = formatHistoryDate(item.createdAt) + " · " +
+                                                    formatMillisCompact(item.audioDurationMillis) + " audio · " +
+                                                    formatMillisCompact(item.generationMillis) + " generated",
+                                                metadataLine = buildString {
+                                                    append("Seed ")
+                                                    append(item.seed)
+                                                    append(" · CFG ")
+                                                    append(String.format(Locale.US, "%.2f", item.cfg))
+                                                    append(" · ")
+                                                    append(
+                                                        if (item.accelerated) {
+                                                            "Snapdragon NPU · GGUF + fast waveform"
                                                         } else {
-                                                            "Could not save audio"
+                                                            "Snapdragon NPU · GGUF"
                                                         },
-                                                        Toast.LENGTH_SHORT,
-                                                    ).show()
-                                                }
-                                            },
-                                            onShare = { shareSpeechFile(context, file) },
-                                        )
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Text(
-                                                item.instruction.take(120),
-                                                modifier = Modifier.weight(1f),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 2,
-                                            )
-                                            TextButton(
-                                                onClick = {
+                                                    )
+                                                },
+                                                favorite = item.favorite,
+                                                onFavoriteToggle = {
                                                     scope.launch {
-                                                        SpeechHistoryStore.delete(context, item.id)
+                                                        SpeechHistoryStore.setFavorite(
+                                                            context,
+                                                            item.id,
+                                                            !item.favorite,
+                                                        )
                                                         history = withContext(Dispatchers.IO) {
                                                             SpeechHistoryStore.load(context)
                                                         }
+                                                        AppHaptics.perform(
+                                                            context,
+                                                            AppHaptics.Kind.Interaction,
+                                                        )
                                                     }
                                                 },
+                                                onUse = {
+                                                    text = item.text
+                                                    instruction = item.instruction
+                                                    seed = item.seed
+                                                    seedLocked = true
+                                                    cfg = item.cfg
+                                                    temperature = item.temperature
+                                                    topK = item.topK
+                                                    topP = item.topP
+                                                    repetition = item.repetition
+                                                    splitChars = item.splitChars
+                                                    maxNewTokens = item.maxNewTokens
+                                                    showHistory = false
+                                                    AppHaptics.perform(
+                                                        context,
+                                                        AppHaptics.Kind.Interaction,
+                                                    )
+                                                },
+                                                onReproduce = {
+                                                    text = item.text
+                                                    instruction = item.instruction
+                                                    seed = item.seed
+                                                    seedLocked = true
+                                                    cfg = item.cfg
+                                                    temperature = item.temperature
+                                                    topK = item.topK
+                                                    topP = item.topP
+                                                    repetition = item.repetition
+                                                    splitChars = item.splitChars
+                                                    maxNewTokens = item.maxNewTokens
+                                                    showHistory = false
+                                                    AppHaptics.perform(
+                                                        context,
+                                                        AppHaptics.Kind.Interaction,
+                                                    )
+                                                    startSpeechGeneration(
+                                                        context = context,
+                                                        modelId = item.modelId,
+                                                        text = item.text,
+                                                        instruction = item.instruction,
+                                                        seed = item.seed,
+                                                        cfg = item.cfg,
+                                                        temperature = item.temperature,
+                                                        topK = item.topK,
+                                                        topP = item.topP,
+                                                        repetition = item.repetition,
+                                                        splitChars = item.splitChars,
+                                                        maxNewTokens = item.maxNewTokens,
+                                                    )
+                                                },
+                                                onSave = {
+                                                    scope.launch {
+                                                        val saved = runCatching {
+                                                            SpeechHistoryStore.exportToMusic(
+                                                                context,
+                                                                file,
+                                                            )
+                                                        }.getOrNull()
+                                                        Toast.makeText(
+                                                            context,
+                                                            if (saved != null) {
+                                                                "Saved to Music/LocalDream"
+                                                            } else {
+                                                                "Could not save audio"
+                                                            },
+                                                            Toast.LENGTH_SHORT,
+                                                        ).show()
+                                                    }
+                                                },
+                                                onShare = { shareSpeechFile(context, file) },
+                                            )
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement =
+                                                    Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
                                             ) {
-                                                Text("Delete")
+                                                Text(
+                                                    item.instruction.take(180),
+                                                    modifier = Modifier.weight(1f),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color =
+                                                        MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 3,
+                                                )
+                                                TextButton(
+                                                    onClick = {
+                                                        scope.launch {
+                                                            SpeechHistoryStore.delete(
+                                                                context,
+                                                                item.id,
+                                                            )
+                                                            history =
+                                                                withContext(Dispatchers.IO) {
+                                                                    SpeechHistoryStore.load(context)
+                                                                }
+                                                        }
+                                                    },
+                                                ) {
+                                                    Text("Delete")
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
+                            SpeechHistoryScrollbar(
+                                state = historyListState,
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .fillMaxHeight()
+                                    .padding(vertical = 10.dp, horizontal = 5.dp),
+                            )
                         }
                     }
                 }
             }
         }
+    }
+
+}
+
+@Composable
+private fun SpeechHistoryScrollbar(
+    state: androidx.compose.foundation.lazy.LazyListState,
+    modifier: Modifier = Modifier,
+) {
+    val layout = state.layoutInfo
+    val total = layout.totalItemsCount
+    val visible = layout.visibleItemsInfo
+    if (total <= 1 || visible.isEmpty() || visible.size >= total) return
+
+    val first = visible.first().index
+    val last = visible.last().index
+    val visibleCount = (last - first + 1).coerceAtLeast(1)
+    val thumbFraction = (visibleCount.toFloat() / total.toFloat()).coerceIn(0.08f, 1f)
+    val maxFirst = (total - visibleCount).coerceAtLeast(1)
+    val positionFraction = (first.toFloat() / maxFirst.toFloat()).coerceIn(0f, 1f)
+
+    BoxWithConstraints(
+        modifier = modifier.width(5.dp),
+    ) {
+        val thumbHeight = (maxHeight * thumbFraction).coerceAtLeast(28.dp)
+        val travel = (maxHeight - thumbHeight).coerceAtLeast(0.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+        )
+        Box(
+            modifier = Modifier
+                .offset(y = travel * positionFraction)
+                .fillMaxWidth()
+                .height(thumbHeight)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)),
+        )
     }
 }
 
