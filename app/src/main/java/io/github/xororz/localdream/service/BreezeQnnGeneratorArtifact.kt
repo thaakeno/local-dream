@@ -18,25 +18,27 @@ import org.json.JSONObject
 /**
  * Optional SM8850/V81 full QNN generator accelerator.
  *
- * V2 installs two context binaries:
- *  - Qwen3 Breeze backbone (prefill buckets + batch-1/batch-2 decode)
- *  - residual depth decoder (batch-1/batch-2)
+ * V3 uses four independently linked single-graph QNN context binaries:
+ * backbone prefill, backbone AR1 step, depth prefill, depth AR1 step.
  */
 object BreezeQnnGeneratorArtifact {
-    private const val RELEASE_TAG = "breeze-qnn-generator-sm8850-v2"
+    private const val RELEASE_TAG = "breeze-qnn-generator-sm8850-v3"
     private const val BASE_URL =
         "https://github.com/thaakeno/local-dream/releases/download/" + RELEASE_TAG
-    private const val DIR = "breeze_qnn_generator/v2-sm8850"
-    private const val DEPTH_CONTEXT_NAME = "breeze-depth-sm8850-v81.bin"
-    private const val BACKBONE_CONTEXT_NAME = "breeze-backbone-sm8850-v81.bin"
+    private const val DIR = "breeze_qnn_generator/v3-sm8850"
+
+    private const val DEPTH_PREFILL = "breeze-depth-prefill-sm8850-v81.bin"
+    private const val DEPTH_STEP = "breeze-depth-step-sm8850-v81.bin"
+    private const val BACKBONE_PREFILL = "breeze-backbone-prefill-sm8850-v81.bin"
+    private const val BACKBONE_STEP = "breeze-backbone-step-sm8850-v81.bin"
 
     data class Install(
         val soc: String,
-        val depthContextFile: File,
-        val backboneContextFile: File,
+        val depthPrefillFile: File,
+        val depthStepFile: File,
+        val backbonePrefillFile: File,
+        val backboneStepFile: File,
         val engine: String,
-        val depthGraphNames: List<String>,
-        val backboneGraphNames: List<String>,
         val backboneMaxSeq: Int,
     )
 
@@ -56,8 +58,7 @@ object BreezeQnnGeneratorArtifact {
         }
         data class Ready(
             val soc: String,
-            val depthFile: File,
-            val backboneFile: File,
+            val directory: File,
             val engine: String,
         ) : Status()
         data class Error(val soc: String?, val message: String) : Status()
@@ -89,35 +90,36 @@ object BreezeQnnGeneratorArtifact {
     fun supportedSoc(): String? =
         if (fingerprint().contains("SM8850")) "SM8850" else null
 
-    private fun jsonStrings(array: JSONArray): List<String> =
-        List(array.length()) { array.getString(it) }
-
     fun localInstall(context: Context): Install? {
         val soc = supportedSoc() ?: return null
-        val marker = File(dir(context), "installed.json")
+        val base = dir(context)
+        val marker = File(base, "installed.json")
         if (!marker.isFile) return null
         return runCatching {
             val json = JSONObject(marker.readText())
-            if (json.optInt("version") != 2 || json.optString("soc") != soc) {
+            if (json.optInt("version") != 3 || json.optString("soc") != soc) {
                 return@runCatching null
             }
-            val depth = File(dir(context), json.getString("depthContextFile"))
-            val backbone = File(dir(context), json.getString("backboneContextFile"))
-            if (
-                !depth.isFile ||
-                !backbone.isFile ||
-                depth.length() != json.getLong("depthContextBytes") ||
-                backbone.length() != json.getLong("backboneContextBytes")
-            ) {
-                return@runCatching null
+
+            fun checked(nameKey: String, bytesKey: String): File {
+                val file = File(base, json.getString(nameKey))
+                val expected = json.getLong(bytesKey)
+                if (!file.isFile || file.length() != expected) {
+                    error("Incomplete QNN generator file: ${file.name}")
+                }
+                return file
             }
+
             Install(
                 soc = soc,
-                depthContextFile = depth,
-                backboneContextFile = backbone,
-                engine = json.optString("engine", "qnn-full-generator-kv-v2"),
-                depthGraphNames = jsonStrings(json.getJSONArray("depthGraphNames")),
-                backboneGraphNames = jsonStrings(json.getJSONArray("backboneGraphNames")),
+                depthPrefillFile = checked("depthPrefillFile", "depthPrefillBytes"),
+                depthStepFile = checked("depthStepFile", "depthStepBytes"),
+                backbonePrefillFile = checked(
+                    "backbonePrefillFile",
+                    "backbonePrefillBytes",
+                ),
+                backboneStepFile = checked("backboneStepFile", "backboneStepBytes"),
+                engine = json.optString("engine", "qnn-full-generator-separate-v3"),
                 backboneMaxSeq = json.optInt("backboneMaxSeq", 512),
             )
         }.getOrNull()
@@ -128,12 +130,7 @@ object BreezeQnnGeneratorArtifact {
         val install = localInstall(context)
         _status.value = when {
             soc == null -> Status.Unsupported(detectedSoc())
-            install != null -> Status.Ready(
-                soc,
-                install.depthContextFile,
-                install.backboneContextFile,
-                install.engine,
-            )
+            install != null -> Status.Ready(soc, dir(context), install.engine)
             else -> Status.Missing(soc)
         }
     }
@@ -236,59 +233,64 @@ object BreezeQnnGeneratorArtifact {
                 JSONObject(response.body?.string() ?: error("Empty generator manifest"))
             }
             if (
-                root.optInt("version") != 2 ||
+                root.optInt("version") != 3 ||
                 root.optInt("soc_model") != 87 ||
                 root.optString("htp_arch") != "V81"
             ) {
-                error("Generator manifest is not native SM8850/V81 v2")
+                error("Generator manifest is not native SM8850/V81 v3")
             }
 
             val spec = root.getJSONObject("files").getJSONObject(soc)
-            val depthSpec = parseContextSpec(spec.getJSONObject("depth_context"))
-            val backboneSpec = parseContextSpec(spec.getJSONObject("backbone_context"))
-            val totalAll = depthSpec.bytes + backboneSpec.bytes
+            val depthPrefillSpec = parseContextSpec(spec.getJSONObject("depth_prefill"))
+            val depthStepSpec = parseContextSpec(spec.getJSONObject("depth_step"))
+            val backbonePrefillSpec =
+                parseContextSpec(spec.getJSONObject("backbone_prefill"))
+            val backboneStepSpec = parseContextSpec(spec.getJSONObject("backbone_step"))
+            val all = listOf(
+                Triple(DEPTH_PREFILL, depthPrefillSpec, 0),
+                Triple(DEPTH_STEP, depthStepSpec, 1),
+                Triple(BACKBONE_PREFILL, backbonePrefillSpec, 2),
+                Triple(BACKBONE_STEP, backboneStepSpec, 3),
+            )
+            val totalAll = all.sumOf { it.second.bytes }
             val destination = dir(context).apply { mkdirs() }
+            var completedBefore = 0L
+            val downloaded = ArrayList<File>(4)
+            for ((name, item, _) in all) {
+                downloaded += downloadContext(
+                    soc,
+                    destination,
+                    name,
+                    item,
+                    completedBefore,
+                    totalAll,
+                )
+                completedBefore += item.bytes
+            }
 
-            val depth = downloadContext(
-                soc,
-                destination,
-                DEPTH_CONTEXT_NAME,
-                depthSpec,
-                0L,
-                totalAll,
-            )
-            val backbone = downloadContext(
-                soc,
-                destination,
-                BACKBONE_CONTEXT_NAME,
-                backboneSpec,
-                depthSpec.bytes,
-                totalAll,
-            )
-
-            val engine = root.optString("engine", "qnn-full-generator-kv-v2")
-            val depthGraphs = root.getJSONArray("depth_graph_names")
-            val backboneGraphs = root.getJSONArray("backbone_graph_names")
+            val engine = root.optString("engine", "qnn-full-generator-separate-v3")
             File(destination, "installed.json").writeText(
                 JSONObject()
-                    .put("version", 2)
+                    .put("version", 3)
                     .put("soc", soc)
                     .put("engine", engine)
-                    .put("depthContextFile", DEPTH_CONTEXT_NAME)
-                    .put("depthContextBytes", depth.length())
-                    .put("backboneContextFile", BACKBONE_CONTEXT_NAME)
-                    .put("backboneContextBytes", backbone.length())
-                    .put("depthGraphNames", depthGraphs)
-                    .put("backboneGraphNames", backboneGraphs)
+                    .put("depthPrefillFile", DEPTH_PREFILL)
+                    .put("depthPrefillBytes", downloaded[0].length())
+                    .put("depthStepFile", DEPTH_STEP)
+                    .put("depthStepBytes", downloaded[1].length())
+                    .put("backbonePrefillFile", BACKBONE_PREFILL)
+                    .put("backbonePrefillBytes", downloaded[2].length())
+                    .put("backboneStepFile", BACKBONE_STEP)
+                    .put("backboneStepBytes", downloaded[3].length())
                     .put("backboneMaxSeq", root.optInt("backbone_max_seq", 512))
                     .toString(),
             )
 
-            _status.value = Status.Ready(soc, depth, backbone, engine)
+            _status.value = Status.Ready(soc, destination, engine)
         }.onFailure { error ->
             val destination = dir(context)
-            File(destination, "$DEPTH_CONTEXT_NAME.part").delete()
-            File(destination, "$BACKBONE_CONTEXT_NAME.part").delete()
+            listOf(DEPTH_PREFILL, DEPTH_STEP, BACKBONE_PREFILL, BACKBONE_STEP)
+                .forEach { File(destination, "$it.part").delete() }
             _status.value = Status.Error(
                 soc,
                 error.message ?: "Full QNN generator download failed",

@@ -55,7 +55,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v199-qnn-sm8850-v81-full-generator"
+            "breeze-a0e177-hexagon-ab9acc-v200-qnn-sm8850-v81-full-generator-v3"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -309,12 +309,15 @@ class SpeechGenerationService : Service() {
                 env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
             }
             qnnGeneratorInstall?.let { generator ->
-                env["BREEZE_QNN_DEPTH_PATH"] = generator.depthContextFile.absolutePath
-                env["BREEZE_QNN_BACKBONE_PATH"] = generator.backboneContextFile.absolutePath
+                env["BREEZE_QNN_DEPTH_PREFILL_PATH"] =
+                    generator.depthPrefillFile.absolutePath
+                env["BREEZE_QNN_DEPTH_STEP_PATH"] =
+                    generator.depthStepFile.absolutePath
+                env["BREEZE_QNN_BACKBONE_PREFILL_PATH"] =
+                    generator.backbonePrefillFile.absolutePath
+                env["BREEZE_QNN_BACKBONE_STEP_PATH"] =
+                    generator.backboneStepFile.absolutePath
                 env["BREEZE_QNN_GENERATOR_ENGINE"] = generator.engine
-                env["BREEZE_QNN_DEPTH_GRAPHS"] = generator.depthGraphNames.joinToString(",")
-                env["BREEZE_QNN_BACKBONE_GRAPHS"] =
-                    generator.backboneGraphNames.joinToString(",")
                 env["BREEZE_QNN_BACKBONE_MAX_SEQ"] = generator.backboneMaxSeq.toString()
             }
             if (qnnVocoderFile != null) {
@@ -337,7 +340,7 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
-                    "queue=v199-opbatch1280x32-oppoll1 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
+                    "queue=v200-opbatch1280x32-oppoll1 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
                     "generator=" + (if (qnnGeneratorInstall != null) qnnGeneratorInstall.engine else "ggml-hexagon") + " " +

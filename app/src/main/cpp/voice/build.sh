@@ -191,8 +191,15 @@ grep -q 'BREEZE_QNN_VOCODER_PATH' "$(pwd)/native/breeze-qnn-vocoder.cpp"
 grep -q 'graph64_ms' "$(pwd)/native/breeze-qnn-vocoder.cpp"
 grep -q 'qnn_vocoder->decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
 
-# Optional QNN depth generator must keep native sampling and automatic ggml fallback.
-grep -q 'BREEZE_QNN_GENERATOR_PATH' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
+# Full QNN generator v3 uses independently linked single-graph contexts.
+# Backbone prompt context is released before AR1 decode; native sampling and
+# ggml-Hexagon fallback must remain intact.
+grep -q 'BREEZE_QNN_DEPTH_PREFILL_PATH' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
+grep -q 'BREEZE_QNN_DEPTH_STEP_PATH' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
+grep -q 'BREEZE_QNN_BACKBONE_PREFILL_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
+grep -q 'BREEZE_QNN_BACKBONE_STEP_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
+grep -q 'prompt_context_released=1' "$(pwd)/native/breeze-qnn-backbone.cpp"
+grep -q 'QnnBackboneRunner qnn_backbone' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'QnnDepthRunner qnn_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'depth.run(m, hiddens, cb0' "$(pwd)/overlay/breeze/src/generation.cpp"
 
@@ -244,12 +251,12 @@ backend_commit=$HEXAGON_COMMIT
 mode=strict-htp-dspqueue
 fallback=disabled
 integration=pinned-source-overlay
-queue=v199-opbatch1280x32-oppoll1
+queue=v200-opbatch1280x32-oppoll1
 extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-reference,channel-bcast-addmul-hvx,snake-hvx-fused,adaptive-binary-vtcm,exact-elu-lowering,transpose-conv-gemm-col2im,quant-weight-repack-ordinary-map,decoder-codebook-ordinary-htp-mirror,raw-quant-matmul-guard,stateful-vocoder-htp-resident,pingpong-causal-state,exact-tconv-output-overlap,bounded-stream-kv,precomputed-snake-params,snake-hotgraph-fused,upstream-dcache-64b-pr29977
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
-generator=qnn-full-backbone-depth-kv-v2-or-ggml-fallback
+generator=qnn-full-separate-contexts-v3-or-ggml-fallback
 vocoder=qnn-htp-feature64-serialized-or-ggml-fallback-v198
 qnn_vocoder=sm8850-v3-v81,feature64,host-lut-fp32,cached-reference-selftest,left-context25,serialized64x39,eos-first
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2

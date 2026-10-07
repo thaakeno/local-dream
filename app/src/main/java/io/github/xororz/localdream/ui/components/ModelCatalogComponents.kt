@@ -1488,7 +1488,7 @@ fun BreezeFamilyCard(
                         }
 
                         Text(
-                            "Separate from the Breeze GGUF. Runs the Qwen3 backbone and 15-step depth decoder on QNN HTP; unsupported or very long inputs keep the existing Hexagon fallback.",
+                            "Separate from the Breeze GGUF. Uses independently linked QNN contexts for backbone/depth prefill and AR1 decode, unloading the large prompt context before generation. Hexagon remains the fallback.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
