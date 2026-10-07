@@ -33,6 +33,11 @@ object BreezeQnnVocoderArtifact {
         object Checking : Status()
         data class Unsupported(val detected: String) : Status()
         data class Missing(val soc: String) : Status()
+        data class UpgradeAvailable(
+            val soc: String,
+            val currentVersion: Int,
+            val targetVersion: Int = 4,
+        ) : Status()
         data class Downloading(
             val soc: String,
             val received: Long,
@@ -122,8 +127,9 @@ object BreezeQnnVocoderArtifact {
         val install = localInstall(context)
         _status.value = when {
             soc == null -> Status.Unsupported(detectedSoc())
-            install != null -> Status.Ready(soc, install.contextFile)
-            else -> Status.Missing(soc)
+            install == null -> Status.Missing(soc)
+            install.version < 4 -> Status.UpgradeAvailable(soc, install.version)
+            else -> Status.Ready(soc, install.contextFile)
         }
     }
 
