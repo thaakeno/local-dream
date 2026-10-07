@@ -1,4 +1,5 @@
 name: Benchmark Breeze QNN v5 backbone
+# v5 fast-path benchmark: compile -> link -> profile before APK integration.
 
 on:
   workflow_dispatch:
