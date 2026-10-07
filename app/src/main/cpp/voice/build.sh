@@ -79,6 +79,8 @@ test -s "$(pwd)/overlay/breeze/include/breeze/codec.h"
 test -s "$(pwd)/overlay/breeze/src/codec.cpp"
 test -s "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
 test -s "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
+test -s "$(pwd)/overlay/breeze/include/breeze/depth_decoder.h"
+test -s "$(pwd)/overlay/breeze/src/depth_decoder.cpp"
 test -s "$(pwd)/overlay/breeze/src/generation.cpp"
 
 # v174 is intentionally the exact v153 codec/transformer graph that completed
@@ -213,6 +215,9 @@ grep -q 'persistent_backbone' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'persistent_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'BREEZE_QNN_CACHE' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'depth.run(m, hiddens, cb0' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'BREEZE_DEPTH_FAST' "$(pwd)/overlay/breeze/src/depth_decoder.cpp"
+grep -q 'ggml_argsort_top_k' "$(pwd)/overlay/breeze/src/depth_decoder.cpp"
+grep -q 'run_depth_frame_fast' "$(pwd)/overlay/breeze/src/depth_decoder.cpp"
 
 # Full-clip decode remains available for voice conversion/reference work, but
 # production decode must not attach the old full-tensor SUM diagnostic probes.
