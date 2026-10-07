@@ -17,16 +17,50 @@ on:
         required: true
         default: LocalDream-Breeze-Canonical
         type: string
+  push:
+    branches:
+      - v141-stable-yue2-full
+    paths:
+      - '.github/breeze-sign-request.json'
 
 permissions:
   contents: read
   actions: read
+
+concurrency:
+  group: breeze-canonical-signer
+  cancel-in-progress: false
 
 jobs:
   sign:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Resolve signing request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_RUN_ID: ${{ inputs.source_run_id }}
+          INPUT_SOURCE_NAME: ${{ inputs.source_artifact_name }}
+          INPUT_OUTPUT_NAME: ${{ inputs.output_artifact_name }}
+        run: |
+          set -euxo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            test -s .github/breeze-sign-request.json
+            SOURCE_RUN_ID="$(jq -r '.source_run_id' .github/breeze-sign-request.json)"
+            SOURCE_ARTIFACT_NAME="$(jq -r '.source_artifact_name // "LocalDream-Qwen-FP8-Turbo"' .github/breeze-sign-request.json)"
+            OUTPUT_ARTIFACT_NAME="$(jq -r '.output_artifact_name // "LocalDream-Breeze-Canonical"' .github/breeze-sign-request.json)"
+          else
+            SOURCE_RUN_ID="$INPUT_RUN_ID"
+            SOURCE_ARTIFACT_NAME="$INPUT_SOURCE_NAME"
+            OUTPUT_ARTIFACT_NAME="$INPUT_OUTPUT_NAME"
+          fi
+          test -n "$SOURCE_RUN_ID"
+          test "$SOURCE_RUN_ID" != "null"
+          echo "SOURCE_RUN_ID=$SOURCE_RUN_ID" >> "$GITHUB_ENV"
+          echo "SOURCE_ARTIFACT_NAME=$SOURCE_ARTIFACT_NAME" >> "$GITHUB_ENV"
+          echo "OUTPUT_ARTIFACT_NAME=$OUTPUT_ARTIFACT_NAME" >> "$GITHUB_ENV"
+
       - name: Restore installed-app signing key
         id: signing-key-cache
         uses: actions/cache/restore@v4
@@ -44,8 +78,6 @@ jobs:
       - name: Download source APK artifact
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          SOURCE_ARTIFACT_NAME: ${{ inputs.source_artifact_name }}
         shell: bash
         run: |
           set -euxo pipefail
@@ -76,7 +108,7 @@ jobs:
       - name: Upload installable APK
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.output_artifact_name }}
+          name: ${{ env.OUTPUT_ARTIFACT_NAME }}
           path: LocalDream-Breeze-canonical.apk
           if-no-files-found: error
           retention-days: 14
