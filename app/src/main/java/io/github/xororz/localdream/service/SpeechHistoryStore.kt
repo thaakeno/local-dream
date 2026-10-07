@@ -86,7 +86,7 @@ object SpeechHistoryStore {
         topK: Int = 50,
         topP: Float = 1f,
         repetition: Float = 1.1f,
-        splitChars: Int = 600,
+        splitChars: Int = 240,
         maxNewTokens: Int = 750,
         accelerated: Boolean = false,
     ): SpeechHistoryItem = withContext(Dispatchers.IO) {

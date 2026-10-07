@@ -271,6 +271,28 @@ private fun startSpeechGeneration(
     )
 }
 
+private fun breezeHistoryModelLabel(modelId: String): String = when (modelId) {
+    "breeze_tts2_q8" -> "Q8"
+    "breeze_tts2_q6" -> "Q6"
+    "breeze_tts2_q4" -> "Q4"
+    "breeze_tts2_f16" -> "F16"
+    "breeze_tts2_q8_dd4" -> "Q8 · DD4"
+    "breeze_tts2_q8_dd2" -> "Q8 · DD2"
+    "breeze_tts2_q4_dd2" -> "Q4 · DD2"
+    else -> modelId.removePrefix("breeze_tts2_").replace('_', ' ').uppercase(Locale.US)
+}
+
+private fun breezeHistoryModelOrder(modelId: String): Int = when (modelId) {
+    "breeze_tts2_q8" -> 0
+    "breeze_tts2_q8_dd4" -> 1
+    "breeze_tts2_q8_dd2" -> 2
+    "breeze_tts2_q6" -> 3
+    "breeze_tts2_q4" -> 4
+    "breeze_tts2_q4_dd2" -> 5
+    "breeze_tts2_f16" -> 6
+    else -> 99
+}
+
 private fun formatHistoryDate(timestamp: Long): String =
     if (timestamp <= 0L) "Earlier generation"
     else DateFormat.getDateTimeInstance(
@@ -345,6 +367,8 @@ fun SpeechRunScreen(
     var historySort by rememberSaveable { mutableStateOf(SpeechHistorySort.Newest.name) }
     var historyFavoritesOnly by rememberSaveable { mutableStateOf(false) }
     var historyAcceleratedOnly by rememberSaveable { mutableStateOf(false) }
+    var historyModelIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showHistoryFilters by remember { mutableStateOf(false) }
 
     LaunchedEffect(modelId, model?.isDownloaded) {
         BreezeQnnVocoderArtifact.refresh(context)
@@ -361,7 +385,7 @@ fun SpeechRunScreen(
                 )
             }
         }
-        history = withContext(Dispatchers.IO) { SpeechHistoryStore.loadForModel(context, modelId) }
+        history = withContext(Dispatchers.IO) { SpeechHistoryStore.load(context) }
     }
 
     LaunchedEffect(acceleratorState) {
@@ -399,7 +423,7 @@ fun SpeechRunScreen(
                 lastTerminalHaptic = null
             }
             is SpeechState.Complete -> {
-                history = withContext(Dispatchers.IO) { SpeechHistoryStore.loadForModel(context, modelId) }
+                history = withContext(Dispatchers.IO) { SpeechHistoryStore.load(context) }
                 if (lastTerminalHaptic != "complete") {
                     AppHaptics.perform(context, AppHaptics.Kind.Success)
                     lastTerminalHaptic = "complete"
@@ -462,7 +486,7 @@ fun SpeechRunScreen(
                             showHistory = true
                             scope.launch {
                                 history = withContext(Dispatchers.IO) {
-                                    SpeechHistoryStore.loadForModel(context, modelId)
+                                    SpeechHistoryStore.load(context)
                                 }
                             }
                         },
@@ -1120,13 +1144,21 @@ fun SpeechRunScreen(
         val sortMode = runCatching { SpeechHistorySort.valueOf(historySort) }
             .getOrDefault(SpeechHistorySort.Newest)
         val query = historySearch.trim()
+        val modelOptions = history
+            .map { it.modelId }
+            .distinct()
+            .sortedWith(
+                compareBy<String> { breezeHistoryModelOrder(it) }
+                    .thenBy { breezeHistoryModelLabel(it) },
+            )
         val visibleHistory = history
             .asSequence()
-            .filter { it.modelId == modelId }
+            .filter { historyModelIds.isEmpty() || it.modelId in historyModelIds }
             .filter {
                 query.isBlank() ||
                     it.text.contains(query, ignoreCase = true) ||
-                    it.instruction.contains(query, ignoreCase = true)
+                    it.instruction.contains(query, ignoreCase = true) ||
+                    breezeHistoryModelLabel(it.modelId).contains(query, ignoreCase = true)
             }
             .filter { !historyFavoritesOnly || it.favorite }
             .filter { !historyAcceleratedOnly || it.accelerated }
@@ -1143,6 +1175,10 @@ fun SpeechRunScreen(
             }
         val historyListState = rememberLazyListState()
         var sortMenuOpen by remember { mutableStateOf(false) }
+        val activeFilterCount =
+            historyModelIds.size +
+                (if (historyFavoritesOnly) 1 else 0) +
+                (if (historyAcceleratedOnly) 1 else 0)
 
         Dialog(
             onDismissRequest = { showHistory = false },
@@ -1165,7 +1201,7 @@ fun SpeechRunScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 18.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -1175,10 +1211,30 @@ fun SpeechRunScreen(
                             )
                             Text(
                                 visibleHistory.size.toString() +
-                                    if (visibleHistory.size == 1) " result" else " results",
+                                    if (visibleHistory.size == 1) " result · all Breeze models"
+                                    else " results · all Breeze models",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        }
+                        IconButton(onClick = { showHistoryFilters = true }) {
+                            BadgedBox(
+                                badge = {
+                                    if (activeFilterCount > 0) {
+                                        Badge { Text(activeFilterCount.toString()) }
+                                    }
+                                },
+                            ) {
+                                Icon(
+                                    Icons.Default.FilterList,
+                                    contentDescription = "Filter speech history",
+                                    tint = if (activeFilterCount > 0) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                            }
                         }
                         TextButton(onClick = { showHistory = false }) {
                             Text("Close")
@@ -1195,7 +1251,7 @@ fun SpeechRunScreen(
                         leadingIcon = {
                             Icon(Icons.Default.Search, contentDescription = null)
                         },
-                        label = { Text("Search script or voice direction") },
+                        label = { Text("Search script, direction or model") },
                     )
 
                     LazyRow(
@@ -1204,30 +1260,23 @@ fun SpeechRunScreen(
                     ) {
                         item {
                             FilterChip(
-                                selected = historyFavoritesOnly,
-                                onClick = { historyFavoritesOnly = !historyFavoritesOnly },
-                                label = { Text("Favorites") },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.Favorite,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                },
+                                selected = historyModelIds.isEmpty(),
+                                onClick = { historyModelIds = emptySet() },
+                                label = { Text("All models") },
                             )
                         }
-                        item {
+                        items(modelOptions, key = { it }) { option ->
                             FilterChip(
-                                selected = historyAcceleratedOnly,
-                                onClick = { historyAcceleratedOnly = !historyAcceleratedOnly },
-                                label = { Text("Fast waveform") },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.FilterList,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
+                                selected = option in historyModelIds,
+                                onClick = {
+                                    historyModelIds =
+                                        if (option in historyModelIds) {
+                                            historyModelIds - option
+                                        } else {
+                                            historyModelIds + option
+                                        }
                                 },
+                                label = { Text(breezeHistoryModelLabel(option)) },
                             )
                         }
                         item {
@@ -1285,13 +1334,15 @@ fun SpeechRunScreen(
                                 if (
                                     historySearch.isNotBlank() ||
                                     historyFavoritesOnly ||
-                                    historyAcceleratedOnly
+                                    historyAcceleratedOnly ||
+                                    historyModelIds.isNotEmpty()
                                 ) {
                                     TextButton(
                                         onClick = {
                                             historySearch = ""
                                             historyFavoritesOnly = false
                                             historyAcceleratedOnly = false
+                                            historyModelIds = emptySet()
                                         },
                                     ) {
                                         Text("Clear filters")
@@ -1331,26 +1382,24 @@ fun SpeechRunScreen(
                                                     append(item.seed)
                                                     append(" · CFG ")
                                                     append(String.format(Locale.US, "%.2f", item.cfg))
-                                                    append(" · ")
-                                                    append(
-                                                        if (item.accelerated) {
-                                                            "Snapdragon NPU · GGUF + fast waveform"
-                                                        } else {
-                                                            "Snapdragon NPU · GGUF"
-                                                        },
-                                                    )
+                                                    append(" · Snapdragon NPU")
                                                 },
+                                                badges = listOf(
+                                                    "Breeze 2",
+                                                    breezeHistoryModelLabel(item.modelId),
+                                                    if (item.accelerated) "QNN waveform" else "GGUF waveform",
+                                                ),
                                                 favorite = item.favorite,
                                                 onFavoriteToggle = {
                                                     scope.launch {
                                                         SpeechHistoryStore.setFavorite(
                                                             context,
-                                                            modelId,
+                                                            item.modelId,
                                                             item.id,
                                                             !item.favorite,
                                                         )
                                                         history = withContext(Dispatchers.IO) {
-                                                            SpeechHistoryStore.loadForModel(context, modelId)
+                                                            SpeechHistoryStore.load(context)
                                                         }
                                                         AppHaptics.perform(
                                                             context,
@@ -1448,12 +1497,12 @@ fun SpeechRunScreen(
                                                         scope.launch {
                                                             SpeechHistoryStore.delete(
                                                                 context,
-                                                                modelId,
+                                                                item.modelId,
                                                                 item.id,
                                                             )
                                                             history =
                                                                 withContext(Dispatchers.IO) {
-                                                                    SpeechHistoryStore.loadForModel(context, modelId)
+                                                                    SpeechHistoryStore.load(context)
                                                                 }
                                                         }
                                                     },
@@ -1473,6 +1522,137 @@ fun SpeechRunScreen(
                                     .padding(vertical = 10.dp, horizontal = 5.dp),
                             )
                         }
+                    }
+                }
+            }
+        }
+
+        if (showHistoryFilters) {
+            ModalBottomSheet(
+                onDismissRequest = { showHistoryFilters = false },
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp)
+                        .padding(bottom = 28.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Filter speech",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                "One library across Q4, Q8, DD variants and F16.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                historyModelIds = emptySet()
+                                historyFavoritesOnly = false
+                                historyAcceleratedOnly = false
+                                historySort = SpeechHistorySort.Newest.name
+                            },
+                        ) {
+                            Text("Reset")
+                        }
+                    }
+
+                    Text(
+                        "Models",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    modelOptions.forEach { option ->
+                        val selected = option in historyModelIds
+                        Surface(
+                            onClick = {
+                                historyModelIds =
+                                    if (selected) historyModelIds - option
+                                    else historyModelIds + option
+                            },
+                            shape = MaterialTheme.shapes.large,
+                            color = if (selected) {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHigh
+                            },
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 13.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    breezeHistoryModelLabel(option),
+                                    modifier = Modifier.weight(1f),
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                )
+                                Switch(
+                                    checked = selected,
+                                    onCheckedChange = {
+                                        historyModelIds =
+                                            if (it) historyModelIds + option
+                                            else historyModelIds - option
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Favorites only", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Show only generations you starred.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = historyFavoritesOnly,
+                            onCheckedChange = { historyFavoritesOnly = it },
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("QNN waveform only", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Only runs saved with the accelerated waveform decoder.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = historyAcceleratedOnly,
+                            onCheckedChange = { historyAcceleratedOnly = it },
+                        )
+                    }
+
+                    Button(
+                        onClick = { showHistoryFilters = false },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Done")
                     }
                 }
             }

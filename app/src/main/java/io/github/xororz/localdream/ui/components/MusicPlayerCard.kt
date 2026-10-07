@@ -2,13 +2,14 @@ package io.github.xororz.localdream.ui.components
 
 import android.content.Context
 import android.media.MediaPlayer
+import android.os.Build
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -63,6 +64,7 @@ fun MusicPlayerCard(
     onUse: (() -> Unit)? = null,
     favorite: Boolean = false,
     onFavoriteToggle: (() -> Unit)? = null,
+    badges: List<String> = emptyList(),
 ) {
     var player by remember(file.absolutePath) { mutableStateOf<MediaPlayer?>(null) }
     var preparing by remember(file.absolutePath) { mutableStateOf(false) }
@@ -70,6 +72,9 @@ fun MusicPlayerCard(
     var playing by remember(file.absolutePath) { mutableStateOf(false) }
     var position by remember(file.absolutePath) { mutableIntStateOf(0) }
     var duration by remember(file.absolutePath) { mutableIntStateOf(1) }
+    var scrubFraction by remember(file.absolutePath) { mutableStateOf<Float?>(null) }
+    var resumeAfterScrub by remember(file.absolutePath) { mutableStateOf(false) }
+    var suppressPositionPollingUntil by remember(file.absolutePath) { mutableLongStateOf(0L) }
 
     val context = LocalContext.current
     val waveformKey = remember(file.absolutePath, file.lastModified(), file.length()) {
@@ -143,10 +148,12 @@ fun MusicPlayerCard(
         onDispose { releasePlayer() }
     }
 
-    LaunchedEffect(playing, player) {
+    LaunchedEffect(playing, player, scrubFraction) {
         while (playing) {
-            position = runCatching { player?.currentPosition ?: position }.getOrDefault(position)
-            delay(60)
+            if (scrubFraction == null && SystemClock.uptimeMillis() >= suppressPositionPollingUntil) {
+                position = runCatching { player?.currentPosition ?: position }.getOrDefault(position)
+            }
+            delay(33)
         }
     }
 
@@ -197,6 +204,34 @@ fun MusicPlayerCard(
                             color = MaterialTheme.colorScheme.primary,
                             maxLines = 2,
                         )
+                    }
+                    if (badges.isNotEmpty()) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            badges.take(3).forEachIndexed { index, badge ->
+                                Surface(
+                                    shape = CircleShape,
+                                    color = when (index) {
+                                        0 -> MaterialTheme.colorScheme.surfaceContainerHighest
+                                        1 -> MaterialTheme.colorScheme.secondaryContainer
+                                        else -> MaterialTheme.colorScheme.tertiaryContainer
+                                    },
+                                ) {
+                                    Text(
+                                        badge,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = when (index) {
+                                            1 -> MaterialTheme.colorScheme.onSecondaryContainer
+                                            2 -> MaterialTheme.colorScheme.onTertiaryContainer
+                                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                    )
+                                }
+                            }
+                        }
                     }
                     if (preparing) {
                         Text(
@@ -249,13 +284,59 @@ fun MusicPlayerCard(
             if (waveform.isNotEmpty()) {
                 RealAudioWaveform(
                     peaks = waveform,
-                    progress = if (duration > 0) position.toFloat() / duration else 0f,
+                    progress = scrubFraction
+                        ?: if (duration > 0) position.toFloat() / duration else 0f,
                     playing = playing,
                     enabled = prepared,
-                    onSeek = { fraction ->
+                    onScrubStart = { fraction ->
                         if (prepared) {
+                            resumeAfterScrub = playing
+                            if (playing) {
+                                player?.pause()
+                                playing = false
+                            }
+                            scrubFraction = fraction
                             position = (duration * fraction).toInt().coerceIn(0, duration)
-                            player?.seekTo(position)
+                        }
+                    },
+                    onScrub = { fraction ->
+                        if (prepared) {
+                            scrubFraction = fraction
+                            position = (duration * fraction).toInt().coerceIn(0, duration)
+                        }
+                    },
+                    onScrubEnd = { fraction ->
+                        if (prepared) {
+                            val target = (duration * fraction).toInt().coerceIn(0, duration)
+                            position = target
+                            suppressPositionPollingUntil = SystemClock.uptimeMillis() + 250L
+                            val current = player
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                current?.seekTo(target.toLong(), MediaPlayer.SEEK_CLOSEST)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                current?.seekTo(target)
+                            }
+                            scrubFraction = null
+                            if (resumeAfterScrub && current != null) {
+                                current.start()
+                                playing = true
+                            }
+                            resumeAfterScrub = false
+                        }
+                    },
+                    onTap = { fraction ->
+                        if (prepared) {
+                            val target = (duration * fraction).toInt().coerceIn(0, duration)
+                            position = target
+                            suppressPositionPollingUntil = SystemClock.uptimeMillis() + 200L
+                            val current = player
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                current?.seekTo(target.toLong(), MediaPlayer.SEEK_CLOSEST)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                current?.seekTo(target)
+                            }
                         }
                     },
                     modifier = Modifier
@@ -346,7 +427,10 @@ private fun RealAudioWaveform(
     progress: Float,
     playing: Boolean,
     enabled: Boolean,
-    onSeek: (Float) -> Unit,
+    onScrubStart: (Float) -> Unit,
+    onScrub: (Float) -> Unit,
+    onScrubEnd: (Float) -> Unit,
+    onTap: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val playedColor = MaterialTheme.colorScheme.primary
@@ -354,20 +438,17 @@ private fun RealAudioWaveform(
     val playheadColor = MaterialTheme.colorScheme.onSurface
     val transition = rememberInfiniteTransition(label = "waveformPulse")
     val pulse by transition.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.08f,
+        initialValue = 0.94f,
+        targetValue = 1.06f,
         animationSpec = infiniteRepeatable(
-            animation = tween(520),
+            animation = tween(420),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "waveformPulseValue",
     )
-    val clampedTarget = progress.coerceIn(0f, 1f)
-    val clamped by animateFloatAsState(
-        targetValue = clampedTarget,
-        animationSpec = tween(85),
-        label = "waveformPlayhead",
-    )
+    val clamped = progress.coerceIn(0f, 1f)
+    var dragFraction by remember { mutableStateOf<Float?>(null) }
+    val displayed = dragFraction ?: clamped
 
     Canvas(
         modifier = modifier
@@ -377,11 +458,26 @@ private fun RealAudioWaveform(
                 if (enabled) {
                     detectDragGestures(
                         onDragStart = { offset ->
-                            onSeek((offset.x / size.width.toFloat()).coerceIn(0f, 1f))
+                            val fraction = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                            dragFraction = fraction
+                            onScrubStart(fraction)
                         },
                         onDrag = { change, _ ->
                             change.consume()
-                            onSeek((change.position.x / size.width.toFloat()).coerceIn(0f, 1f))
+                            val fraction =
+                                (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                            dragFraction = fraction
+                            onScrub(fraction)
+                        },
+                        onDragEnd = {
+                            val fraction = dragFraction ?: displayed
+                            dragFraction = null
+                            onScrubEnd(fraction)
+                        },
+                        onDragCancel = {
+                            val fraction = dragFraction ?: displayed
+                            dragFraction = null
+                            onScrubEnd(fraction)
                         },
                     )
                 }
@@ -389,7 +485,8 @@ private fun RealAudioWaveform(
             .pointerInput(enabled, peaks) {
                 if (enabled) {
                     detectTapGestures { offset ->
-                        onSeek((offset.x / size.width.toFloat()).coerceIn(0f, 1f))
+                        val fraction = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        onTap(fraction)
                     }
                 }
             }
@@ -400,12 +497,14 @@ private fun RealAudioWaveform(
         val stroke = max(1.4f, step * 0.48f)
         val center = size.height / 2f
         val maxHalf = size.height * 0.44f
-        val playX = size.width * clamped
+        val playX = size.width * displayed
 
         peaks.forEachIndexed { index, raw ->
             val x = step * (index + 0.5f)
             var level = raw.coerceIn(0.04f, 1f)
-            if (playing && abs(x - playX) < step * 3f) level *= pulse
+            if (playing && dragFraction == null && abs(x - playX) < step * 3f) {
+                level *= pulse
+            }
             val half = maxHalf * level.coerceAtMost(1f)
             drawLine(
                 color = if (x <= playX) playedColor else idleColor,
@@ -420,8 +519,13 @@ private fun RealAudioWaveform(
                 color = playheadColor,
                 start = androidx.compose.ui.geometry.Offset(playX, 4f),
                 end = androidx.compose.ui.geometry.Offset(playX, size.height - 4f),
-                strokeWidth = 1.4.dp.toPx(),
+                strokeWidth = 1.6.dp.toPx(),
                 cap = StrokeCap.Round,
+            )
+            drawCircle(
+                color = playheadColor,
+                radius = 3.8.dp.toPx(),
+                center = androidx.compose.ui.geometry.Offset(playX, center),
             )
         }
     }
