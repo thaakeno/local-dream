@@ -39,6 +39,7 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import numpy as np
           import qai_hub as hub
 
           client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
@@ -51,11 +52,41 @@ jobs:
               "value_cache": ((1, 24, 16, 128), "float16"),
           }
 
-          # No calibration dataset is supplied intentionally. AI Hub then uses
-          # generated representative inputs; these artifacts are NOT for release
-          # or audio-quality testing. They answer one question only: can reduced
-          # precision make this tiny AR1 graph fast enough to beat ggml-Hexagon?
+          # IMPORTANT: do not let AI Hub synthesize calibration inputs for this
+          # graph. token/position feed Gather/indexing ops and arbitrary random
+          # int32 values can be out of range, which makes the QAIRT quantizer
+          # fail before it ever reaches QNN compilation. Build deterministic,
+          # semantically valid depth-step samples instead.
+          rng = np.random.default_rng(20261007)
+          calibration = {
+              "token": [],
+              "position": [],
+              "key_cache": [],
+              "value_cache": [],
+          }
+          for i in range(28):
+              position = 2 + (i % 14)  # valid depth positions: 2..15
+              token = (37 + i * 73) % 2051
+              key = np.zeros((1, 24, 16, 128), dtype=np.float16)
+              value = np.zeros((1, 24, 16, 128), dtype=np.float16)
+              # Real decode caches contain populated rows up through the current
+              # position and zeros in future slots. Small finite values are enough
+              # for this performance-proxy calibration.
+              key[:, :, :position, :] = (
+                  rng.normal(0.0, 0.08, size=(1, 24, position, 128))
+                  .astype(np.float16)
+              )
+              value[:, :, :position, :] = (
+                  rng.normal(0.0, 0.08, size=(1, 24, position, 128))
+                  .astype(np.float16)
+              )
+              calibration["token"].append(np.asarray([token], dtype=np.int32))
+              calibration["position"].append(np.asarray([position], dtype=np.int32))
+              calibration["key_cache"].append(key)
+              calibration["value_cache"].append(value)
+
           results = {}
+          successes = 0
           for precision in ("w8a16", "w4a16"):
               opts = (
                   f"--target_runtime qnn_dlc --quantize_full_type {precision} "
@@ -66,6 +97,7 @@ jobs:
                   device=device,
                   name=f"Breeze v5 depth step {precision} PERF-PROXY",
                   input_specs=specs,
+                  calibration_data=calibration,
                   options=opts,
               )
               status = compile_job.wait()
@@ -96,8 +128,15 @@ jobs:
                   profile = profile_job.download_profile()
                   row["profile"] = profile.get("execution_summary", profile)
               results[precision] = row
+              if pstatus.success:
+                  successes += 1
               print("RESULT", precision, json.dumps(row, indent=2, default=str))
 
           print("=== BREEZE_V5_DEPTH_QUANT_PROXY ===")
           print(json.dumps(results, indent=2, default=str))
+          if successes == 0:
+              raise RuntimeError(
+                  "Both calibrated depth quantization candidates failed; "
+                  "do not treat this benchmark as green."
+              )
           PY
