@@ -171,7 +171,7 @@ jobs:
       # artifacts are reusable, so rebuild only voice/build.sh.
       - name: Check Breeze-only native delta
         id: breeze-native-delta
-        if: steps.native-cache.outputs.cache-hit != 'true' && github.ref_name == 'v141-stable-yue2-full'
+        if: steps.native-cache.outputs.cache-hit != 'true' && (github.ref_name == 'v141-stable-yue2-full' || github.ref_name == 'breeze-qnn-v5-fastpath')
         shell: bash
         run: |
           set -euxo pipefail
@@ -204,7 +204,7 @@ jobs:
       # rebuild only the music backend when the new full cache key is absent.
       - name: Bootstrap unchanged alpha.58 native artifacts
         id: native-bootstrap
-        if: steps.native-cache.outputs.cache-hit != 'true' && github.ref_name != 'v141-stable-yue2-full'
+        if: steps.native-cache.outputs.cache-hit != 'true' && github.ref_name != 'v141-stable-yue2-full' && github.ref_name != 'breeze-qnn-v5-fastpath'
         uses: actions/cache/restore@v4
         with:
           path: |
