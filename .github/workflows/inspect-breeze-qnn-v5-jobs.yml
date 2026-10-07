@@ -64,7 +64,8 @@ jobs:
 
               if item["success"] and hasattr(job, "download_profile"):
                   try:
-                      item["profile"] = job.download_profile()
+                      raw_profile = job.download_profile()
+                      item["profile"] = raw_profile.get("execution_summary", raw_profile)
                   except Exception as exc:
                       item["profile_error"] = repr(exc)
 
