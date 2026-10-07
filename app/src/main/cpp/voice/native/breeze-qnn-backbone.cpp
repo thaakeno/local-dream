@@ -929,7 +929,14 @@ bool QnnBackboneRunner::prefill(
         prompt_tokens <= 256 ? "backbone_prefill_256" : "backbone_prefill_512";
 
     if (impl_->shared_context) {
-        if (!load_backbone_app(
+        if (impl_->step) {
+            prefill_app = std::move(impl_->step);
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] reusing resident linked context graphs=%u\n",
+                (unsigned) prefill_app->graph_count()
+            );
+        } else if (!load_backbone_app(
                 impl_->lib_dir,
                 impl_->prefill_path,
                 "",
