@@ -66,9 +66,9 @@ jobs:
               device=device,
               name="Breeze v5 backbone prefill seq256 SM8850",
               input_specs={
-                  "inputs_embeds": (1, 256, 2048),
-                  "attention_mask": (1, 1, 256, 256),
-                  "positions": (1, 256),
+                  "inputs_embeds": ((1, 256, 2048), "float16"),
+                  "attention_mask": ((1, 1, 256, 256), "float16"),
+                  "positions": ((1, 256), "int32"),
               },
               options=compile_opts,
           )
@@ -79,11 +79,11 @@ jobs:
               device=device,
               name="Breeze v5 backbone AR1 batch1 SM8850",
               input_specs={
-                  "input_embed": (1, 1, 2048),
-                  "positions": (1,),
-                  "key_cache": (1, 224, 512, 128),
-                  "value_cache": (1, 224, 512, 128),
-                  "attention_mask": (1, 1, 1, 513),
+                  "input_embed": ((1, 1, 2048), "float16"),
+                  "positions": ((1,), "int32"),
+                  "key_cache": ((1, 224, 512, 128), "float16"),
+                  "value_cache": ((1, 224, 512, 128), "float16"),
+                  "attention_mask": ((1, 1, 1, 513), "float16"),
               },
               options=compile_opts,
           )
