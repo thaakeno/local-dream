@@ -417,7 +417,7 @@ class SpeechGenerationService : Service() {
         val topK = intent.getIntExtra("topK", 50).coerceIn(1, 200)
         val topP = intent.getFloatExtra("topP", 1f).coerceIn(0.1f, 1f)
         val repetition = intent.getFloatExtra("repetition", 1.1f).coerceIn(1f, 2f)
-        val splitChars = intent.getIntExtra("splitChars", 600).coerceIn(100, 2000)
+        val splitChars = intent.getIntExtra("splitChars", 240).coerceIn(100, 2000)
         val maxNewTokens = intent.getIntExtra("maxNewTokens", 750).coerceIn(64, 3000)
 
         workJob?.cancel()
