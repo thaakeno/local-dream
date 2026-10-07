@@ -206,6 +206,12 @@ jobs:
                               locations.add(kv.value)
 
               upload_path = model_path
+              bundle_dir = None
+              model_bytes = model_path.stat().st_size
+              external_bytes = sum(
+                  (model_path.parent / x).stat().st_size for x in locations
+              )
+
               if locations:
                   if len(locations) != 1:
                       raise SystemExit(
@@ -223,44 +229,55 @@ jobs:
                           f"Refusing AI Hub upload: invalid external data file: {data_path}"
                       )
 
-                  upload_path = model_path.with_name(model_path.name + ".zip")
-                  if upload_path.exists():
-                      upload_path.unlink()
-                  with zipfile.ZipFile(
-                      upload_path,
-                      mode="w",
-                      compression=zipfile.ZIP_STORED,
-                      allowZip64=True,
-                  ) as archive:
-                      archive.write(model_path, arcname=model_path.name)
-                      archive.write(data_path, arcname=loc)
+                  # Qualcomm's required shape is a DIRECTORY whose own name ends
+                  # in ".onnx", containing exactly one .onnx and one .data file.
+                  # Uploading a zip with both files at archive root is rejected
+                  # by qai_hub.util.zipped_model as "more than one base asset".
+                  # Move instead of copy so we do not temporarily consume another
+                  # ~2.8 GB on the GitHub runner.
+                  import shutil
+                  bundle_dir = model_path.with_name(model_path.stem + "_bundle.onnx")
+                  if bundle_dir.exists():
+                      shutil.rmtree(bundle_dir)
+                  bundle_dir.mkdir()
+                  bundled_model = bundle_dir / model_path.name
+                  bundled_data = bundle_dir / loc
+                  shutil.move(str(model_path), str(bundled_model))
+                  shutil.move(str(data_path), str(bundled_data))
 
-                  with zipfile.ZipFile(upload_path, "r") as archive:
-                      names = archive.namelist()
-                      data_members = [n for n in names if n.endswith(".data")]
-                      if (
-                          model_path.name not in names or
-                          data_members != [loc] or
-                          archive.getinfo(loc).file_size != data_path.stat().st_size
-                      ):
-                          raise SystemExit(
-                              f"{upload_path.name}: malformed AI Hub ONNX external-data package"
-                          )
+                  members = sorted(p.name for p in bundle_dir.iterdir())
+                  expected = sorted([model_path.name, loc])
+                  if members != expected:
+                      raise SystemExit(
+                          f"{bundle_dir.name}: malformed AI Hub ONNX directory: {members}"
+                      )
+                  if not bundled_model.is_file() or not bundled_data.is_file():
+                      raise SystemExit(
+                          f"{bundle_dir.name}: ONNX/data members are not regular files"
+                      )
+
+                  # Validate the moved model still resolves its relative .data
+                  # reference before spending time uploading it.
+                  onnx.checker.check_model(str(bundled_model), full_check=True)
+                  upload_path = bundle_dir
 
               print(
                   "uploading", upload_path.name,
-                  "onnx=", model_path.stat().st_size,
+                  "onnx=", model_bytes,
                   "external_data=", sorted(locations),
-                  "external_bytes=", sum((model_path.parent / x).stat().st_size for x in locations),
-                  "package_bytes=", upload_path.stat().st_size,
+                  "external_bytes=", external_bytes,
+                  "upload_is_dir=", upload_path.is_dir(),
               )
 
               source = client.upload_model(
                   str(upload_path),
                   name=f"{job_name} ONNX",
               )
-              if upload_path != model_path:
-                  upload_path.unlink(missing_ok=True)
+
+              # upload_model() has completed the upload synchronously. The Hub
+              # model is now remote, so reclaim local source space immediately.
+              if bundle_dir is not None:
+                  shutil.rmtree(bundle_dir)
 
               job = client.submit_compile_job(
                   model=source,
