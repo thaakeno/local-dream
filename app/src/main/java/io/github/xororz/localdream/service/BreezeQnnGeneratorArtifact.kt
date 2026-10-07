@@ -148,6 +148,13 @@ object BreezeQnnGeneratorArtifact {
         }
     }
 
+    fun discardPartials(context: Context) {
+        val destination = dir(context)
+        listOf(DEPTH, BACKBONE_PREFILL, BACKBONE_STEP)
+            .forEach { File(destination, "$it.part").delete() }
+        refresh(context)
+    }
+
     private fun sha256Hex(bytes: ByteArray): String =
         bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
