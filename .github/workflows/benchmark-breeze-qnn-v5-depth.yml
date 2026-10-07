@@ -1,0 +1,180 @@
+name: Benchmark Breeze QNN v5 depth
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - breeze-qnn-v5-fastpath
+    paths:
+      - '.github/workflows/benchmark-breeze-qnn-v5-depth.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: breeze-qnn-v5-depth-benchmark
+  cancel-in-progress: true
+
+env:
+  QAI_DEVICE: Samsung Galaxy S26 (Family)
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install AI Hub client
+        run: python -m pip install --upgrade 'qai-hub>=0.56.0'
+
+      - name: Recompile, link and profile depth fast path
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import qai_hub as hub
+
+          client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
+          device = hub.Device(os.environ["QAI_DEVICE"])
+
+          prefill_source = client.get_model("mq3d6ve3n")
+          step_source = client.get_model("mnzx131om")
+
+          opts = (
+              "--target_runtime qnn_dlc "
+              "--qnn_options default_graph_htp_precision=FLOAT16 "
+              "--qnn_options default_graph_htp_optimizations=O=3"
+          )
+
+          def wait(job, label):
+              status = job.wait()
+              print(label, job.job_id, job.url, status.code, status.message)
+              if not status.success:
+                  raise RuntimeError(f"{label} failed: {status.message or status.code}")
+              return job
+
+          prefill = wait(
+              client.submit_compile_job(
+                  model=prefill_source,
+                  device=device,
+                  name="Breeze v5 depth prefill O3 SM8850",
+                  input_specs={
+                      "backbone_hidden": ((1, 2048), "float16"),
+                      "first_codebook": ((1,), "int32"),
+                  },
+                  options=opts,
+              ),
+              "compile depth prefill O3",
+          )
+
+          step = wait(
+              client.submit_compile_job(
+                  model=step_source,
+                  device=device,
+                  name="Breeze v5 depth step O3 SM8850",
+                  input_specs={
+                      "token": ((1,), "int32"),
+                      "position": ((1,), "int32"),
+                      "key_cache": ((1, 24, 16, 128), "float16"),
+                      "value_cache": ((1, 24, 16, 128), "float16"),
+                  },
+                  options=opts,
+              ),
+              "compile depth step O3",
+          )
+
+          prefill_dlc = prefill.get_target_model()
+          step_dlc = step.get_target_model()
+          if prefill_dlc is None or step_dlc is None:
+              raise RuntimeError("depth compile returned no DLC")
+
+          linked = wait(
+              client.submit_link_job(
+                  [prefill_dlc, step_dlc],
+                  device=device,
+                  name="Breeze v5 depth shared-weight O3",
+                  options="--qnn_options default_graph_htp_optimizations=O=3",
+              ),
+              "link depth O3",
+          )
+          linked_model = linked.get_target_model()
+          if linked_model is None:
+              raise RuntimeError("depth link returned no context binary")
+
+          profiles = {}
+          candidates = [
+              ("new_depth_prefill_o3", prefill_dlc, ""),
+              ("new_depth_step_o3", step_dlc, ""),
+              ("old_depth_prefill", client.get_job("jprx8qx0p").get_target_model(), ""),
+              ("old_depth_step", client.get_job("jp2o06org").get_target_model(), ""),
+          ]
+          for label, model, options in candidates:
+              if model is None:
+                  continue
+              job = client.submit_profile_job(
+                  model=model,
+                  device=device,
+                  name=f"Breeze depth benchmark {label}",
+                  options=options,
+              )
+              status = job.wait()
+              profiles[label] = {
+                  "job_id": job.job_id,
+                  "url": job.url,
+                  "success": bool(status.success),
+                  "status": status.code,
+                  "message": status.message,
+              }
+              print("PROFILE", label, json.dumps(profiles[label]))
+
+          graph_names = list((getattr(linked_model, "input_spec", {}) or {}).keys())
+          print("linked depth graph names", graph_names)
+          for graph_name in graph_names:
+              if not graph_name:
+                  continue
+              label = "linked_" + str(graph_name)
+              job = client.submit_profile_job(
+                  model=linked_model,
+                  device=device,
+                  name=f"Breeze depth linked benchmark {graph_name}",
+                  options=f"--qnn_options context_enable_graphs={graph_name}",
+              )
+              status = job.wait()
+              profiles[label] = {
+                  "job_id": job.job_id,
+                  "url": job.url,
+                  "success": bool(status.success),
+                  "status": status.code,
+                  "message": status.message,
+              }
+              print("PROFILE", label, json.dumps(profiles[label]))
+
+          result = {
+              "device": os.environ["QAI_DEVICE"],
+              "compile_jobs": {
+                  "prefill_o3": prefill.job_id,
+                  "step_o3": step.job_id,
+              },
+              "link_job": linked.job_id,
+              "linked_model_id": getattr(linked_model, "model_id", None),
+              "linked_graph_names": [str(x) for x in graph_names],
+              "profiles": profiles,
+          }
+          print("=== BREEZE_V5_DEPTH_RESULT ===")
+          print(json.dumps(result, indent=2))
+          with open("breeze-v5-depth-aihub.json", "w") as f:
+              json.dump(result, f, indent=2)
+          PY
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: breeze-v5-depth-aihub-benchmark
+          path: breeze-v5-depth-aihub.json
+          retention-days: 30
