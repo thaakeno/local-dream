@@ -785,7 +785,7 @@ static bool load_backbone_app(
     if (candidate->initializeProfiling() != StatusCode::SUCCESS) return fail();
     if (candidate->registerOpPackages() != StatusCode::SUCCESS) return fail();
     if (candidate->createFromBinary() != StatusCode::SUCCESS) return fail();
-    if (!candidate->setup_graph()) return fail();
+    if (!graph_name.empty() && !candidate->setup_graph()) return fail();
     candidate->set_adaptive_power();
 
     app = std::move(candidate);
@@ -799,6 +799,7 @@ struct QnnBackboneRunner::Impl {
     std::string lib_dir;
     std::string prefill_path;
     std::string step_path;
+    bool shared_context = false;
     bool enabled = false;
     int branches = 1;
     int step_batch = 0;
@@ -814,15 +815,21 @@ QnnBackboneRunner::~QnnBackboneRunner() = default;
 bool QnnBackboneRunner::init(BreezeModel & m, int branches) {
     (void) m;
     if (branches != 1 && branches != 2) return false;
+    const char * linked_path = std::getenv("BREEZE_QNN_BACKBONE_LINKED_PATH");
     const char * prefill_path = std::getenv("BREEZE_QNN_BACKBONE_PREFILL_PATH");
     const char * generic_step = std::getenv("BREEZE_QNN_BACKBONE_STEP_PATH");
     const char * step_b1 = std::getenv("BREEZE_QNN_BACKBONE_STEP_B1_PATH");
     const char * step_b2 = std::getenv("BREEZE_QNN_BACKBONE_STEP_B2_PATH");
     const char * lib = std::getenv("BREEZE_QNN_LIB_DIR");
 
+    const bool linked = linked_path && *linked_path;
+    const char * chosen_prefill = linked ? linked_path : prefill_path;
     const char * chosen_step = nullptr;
     const char * chosen_kind = "none";
-    if (branches == 1 && step_b1 && *step_b1) {
+    if (linked) {
+        chosen_step = linked_path;
+        chosen_kind = branches == 1 ? "linked-batch1" : "linked-batch2";
+    } else if (branches == 1 && step_b1 && *step_b1) {
         chosen_step = step_b1;
         chosen_kind = "batch1";
     } else if (branches == 2 && step_b2 && *step_b2) {
@@ -834,7 +841,7 @@ bool QnnBackboneRunner::init(BreezeModel & m, int branches) {
     }
 
     if (
-        !prefill_path || !*prefill_path ||
+        !chosen_prefill || !*chosen_prefill ||
         !chosen_step || !*chosen_step ||
         !lib || !*lib
     ) {
@@ -842,8 +849,9 @@ bool QnnBackboneRunner::init(BreezeModel & m, int branches) {
     }
 
     impl_->lib_dir = lib;
-    impl_->prefill_path = prefill_path;
+    impl_->prefill_path = chosen_prefill;
     impl_->step_path = chosen_step;
+    impl_->shared_context = linked;
     impl_->branches = branches;
     impl_->step_batch = 0;
     impl_->positions.clear();
@@ -860,10 +868,11 @@ bool QnnBackboneRunner::init(BreezeModel & m, int branches) {
     std::fprintf(
         stderr,
         "[BREEZE_QNN_BACKBONE] configured logical_branches=%d "
-        "prefill_max_seq=%d step_variant=%s\n",
+        "prefill_max_seq=%d step_variant=%s shared_context=%d\n",
         branches,
         impl_->max_seq,
-        chosen_kind
+        chosen_kind,
+        impl_->shared_context ? 1 : 0
     );
     return true;
 }
@@ -912,7 +921,34 @@ bool QnnBackboneRunner::prefill(
     }
 
     std::unique_ptr<BreezeQnnBackboneApp> prefill_app;
-    if (!load_backbone_app(
+    const int prompt_tokens = std::max(
+        cond_tokens,
+        impl_->branches == 2 ? uncond_tokens : cond_tokens
+    );
+    const char * preferred_prefill =
+        prompt_tokens <= 256 ? "backbone_prefill_256" : "backbone_prefill_512";
+
+    if (impl_->shared_context) {
+        if (!load_backbone_app(
+                impl_->lib_dir,
+                impl_->prefill_path,
+                "",
+                prefill_app)) {
+            std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] linked context load failed\n");
+            disable();
+            return false;
+        }
+        if (!prefill_app->select_graph(preferred_prefill) &&
+            !prefill_app->select_graph("backbone_prefill")) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] no compatible prefill graph for tokens=%d\n",
+                prompt_tokens
+            );
+            disable();
+            return false;
+        }
+    } else if (!load_backbone_app(
             impl_->lib_dir,
             impl_->prefill_path,
             "backbone_prefill",
@@ -958,19 +994,35 @@ bool QnnBackboneRunner::prefill(
         uncond_tokens = cond_tokens;
     }
 
-    // V4 used two separate 2.7 GB contexts and paid their deserialization cost
-    // on every request. V5 will replace this with a linked shared-weight context.
-    // Keep this compatibility path for the old artifact until that context is installed.
-    prefill_app.reset();
+    const char * step_graph =
+        impl_->branches == 1 ? "backbone_step_b1" : "backbone_step_b2";
 
-    if (!load_backbone_app(
-            impl_->lib_dir,
-            impl_->step_path,
-            impl_->branches == 1 ? "backbone_step_b1" : "backbone_step_b2",
-            impl_->step)) {
-        std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] AR1 context load failed\n");
-        disable();
-        return false;
+    if (impl_->shared_context) {
+        if (!prefill_app->select_graph(step_graph) &&
+            !prefill_app->select_graph("backbone_step")) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] linked AR1 graph missing request=%s\n",
+                step_graph
+            );
+            disable();
+            return false;
+        }
+        impl_->step = std::move(prefill_app);
+    } else {
+        // Compatibility with the v4 artifact: two separate context binaries.
+        // This still pays the old deserialize cost, but only when the legacy
+        // artifact is explicitly selected.
+        prefill_app.reset();
+        if (!load_backbone_app(
+                impl_->lib_dir,
+                impl_->step_path,
+                step_graph,
+                impl_->step)) {
+            std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] AR1 context load failed\n");
+            disable();
+            return false;
+        }
     }
 
     impl_->step_batch = impl_->step->step_batch_size();
@@ -1016,11 +1068,13 @@ bool QnnBackboneRunner::prefill(
     std::fprintf(
         stderr,
         "[BREEZE_QNN_BACKBONE] prefill_ms=%.2f cond=%d uncond=%d "
-        "step_batch=%d prompt_context_released=1 ar1_ready=1\n",
+        "step_batch=%d shared_context=%d prompt_context_released=%d ar1_ready=1\n",
         prefill_ms,
         cond_tokens,
         impl_->branches == 2 ? uncond_tokens : 0,
-        impl_->step_batch
+        impl_->step_batch,
+        impl_->shared_context ? 1 : 0,
+        impl_->shared_context ? 0 : 1
     );
     return true;
 }
