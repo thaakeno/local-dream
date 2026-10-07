@@ -44,6 +44,9 @@ class SpeechGenerationService : Service() {
     @Volatile private var nativeVocoderMsPerFrame: Float = 0f
     @Volatile private var usingQnnVocoder: Boolean = false
     @Volatile private var nativeGenerationDone: Boolean = false
+    @Volatile private var nativeSegmentCount: Int = 1
+    @Volatile private var nativeSegmentIndex: Int = 1
+    @Volatile private var nativeCompletedFrames: Int = 0
     private var activeQnnSelftestMarker: File? = null
     private var activeQnnSelftestKey: String? = null
 
@@ -55,7 +58,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v206-qnn-v3-safe-first8-bounded"
+            "breeze-a0e177-hexagon-ab9acc-v207-qnn-flex-v4-progress"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -195,6 +198,7 @@ class SpeechGenerationService : Service() {
     private fun qnnSelftestKey(install: BreezeQnnVocoderArtifact.Install): String =
         listOf(
             RUNTIME_VERSION,
+            install.version,
             install.contextFile.name,
             install.contextFile.length(),
             install.contextFile.lastModified(),
@@ -264,12 +268,11 @@ class SpeechGenerationService : Service() {
                 "--host", "127.0.0.1",
                 "--port", "8082",
                 "--ws-port", "-1",
-                // The proven single-graph v3 QNN vocoder stays resident beside ggml-Hexagon.
-                // We still request the first 8 fresh frames immediately; the fixed 64-frame
-                // graph zero-pads unused positions without the unstable multigraph context.
+                // QNN flush size is selected from the installed artifact at runtime.
+                // v4 can emit at 8 frames; v3 waits for its fixed 64-frame graph.
                 "--chunk-first", "8",
                 "--chunk-max", "32",
-                "--split-chars", "240",
+                "--split-chars", "600",
                 "--verbose",
             )
 
@@ -331,6 +334,8 @@ class SpeechGenerationService : Service() {
                     qnnInstall.selftestFeaturesFile.absolutePath
                 env["BREEZE_QNN_SELFTEST_AUDIO_PATH"] =
                     qnnInstall.selftestAudioFile.absolutePath
+                env["BREEZE_QNN_FIRST_NEW"] = if (qnnInstall.version >= 4) "8" else "64"
+                env["BREEZE_QNN_STEADY_NEW"] = "39"
                 if (qnnSelftestCached) {
                     env["BREEZE_QNN_SKIP_SELFTEST"] = "1"
                 }
@@ -349,10 +354,18 @@ class SpeechGenerationService : Service() {
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
                     "generator_mode=" + (if (fullQnnEnabled) "full-qnn" else "legacy-hexagon") + " " +
                     "generator=" + (if (qnnGeneratorInstall != null) qnnGeneratorInstall.engine else "ggml-hexagon") + " " +
-                    "vocoder=" + (if (usingQnnVocoder) "qnn-htp-feature64-v3" else "ggml-stateful-fallback") + " " +
+                    "vocoder=" + (
+                        if (usingQnnVocoder) {
+                            if ((qnnInstall?.version ?: 0) >= 4) "qnn-htp-multigraph-v4"
+                            else "qnn-htp-feature64-v3"
+                        } else "ggml-stateful-fallback"
+                    ) + " " +
                     "qnn_target=sm8850-v81 qnn_selftest=" +
                     (if (qnnSelftestCached) "cached" else "reference-pcm") + " " +
-                    "qnn_scheduler=first8-steady39-fixed64 qnn_left_context=25 qnn_host_lut=fp32 eos=eos-first " +
+                    "qnn_scheduler=" + (
+                        if ((qnnInstall?.version ?: 0) >= 4) "first8-steady39-tail32"
+                        else "first64-steady39-fixed64"
+                    ) + " qnn_left_context=25 qnn_host_lut=fp32 eos=eos-first " +
                     "snake=precomputed+fused diag=projection-preflight-v195 signal_validation=stream+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
@@ -418,7 +431,7 @@ class SpeechGenerationService : Service() {
         val topK = intent.getIntExtra("topK", 50).coerceIn(1, 200)
         val topP = intent.getFloatExtra("topP", 1f).coerceIn(0.1f, 1f)
         val repetition = intent.getFloatExtra("repetition", 1.1f).coerceIn(1f, 2f)
-        val splitChars = intent.getIntExtra("splitChars", 240).coerceIn(100, 2000)
+        val splitChars = intent.getIntExtra("splitChars", 600).coerceIn(100, 2000)
         val maxNewTokens = intent.getIntExtra("maxNewTokens", 750).coerceIn(64, 3000)
 
         workJob?.cancel()
@@ -447,6 +460,9 @@ class SpeechGenerationService : Service() {
                 nativeDecodedFrames = 0
                 nativeGeneratedFrames = 0
                 nativeGenerationDone = false
+                nativeSegmentCount = 1
+                nativeSegmentIndex = 1
+                nativeCompletedFrames = 0
                 nativeVocoderMsPerFrame = if (usingQnnVocoder) 50f else 0f
                 _state.value = SpeechState.Generating(
                     modelId = modelId,
@@ -831,6 +847,12 @@ class SpeechGenerationService : Service() {
         """(\d{1,3})%\|.*?\|\s*([0-9.]+)/([0-9.]+)s\s*""" +
             """\[([0-9:]+)<([0-9:]+),\s*([0-9.]+)\s*fps,\s*([0-9.]+)x\]""",
     )
+    private val nativeSegmentsRegex = Regex(
+        """\[BREEZE_SEGMENTS\] count=(\d+) split_chars=(\d+) anchor_chars=(\d+)""",
+    )
+    private val nativeSegmentRegex = Regex(
+        """\[BREEZE_SEGMENT\] index=(\d+) total=(\d+) chars=(\d+)""",
+    )
     private val nativeLimitRegex = Regex(
         """\[BREEZE_LIMIT\] estimate=([0-9.]+)s estimated_frames=(\d+) configured=(\d+) soft=(\d+) hard=(\d+) eos_first=1""",
     )
@@ -852,6 +874,22 @@ class SpeechGenerationService : Service() {
             2 -> parts[0] * 60f + parts[1]
             else -> parts.takeLast(3).let { it[0] * 3600f + it[1] * 60f + it[2] }
         }
+    }
+
+    private fun globalSegmentProgress(local: Float?): Float? {
+        if (local == null) return null
+        val count = nativeSegmentCount.coerceAtLeast(1)
+        val index = nativeSegmentIndex.coerceIn(1, count)
+        return (((index - 1).toFloat() + local.coerceIn(0f, 1f)) / count.toFloat())
+            .coerceIn(0f, 1f)
+    }
+
+    private fun estimatedTotalFrames(localEffective: Int): Int {
+        if (localEffective <= 0) return 0
+        val count = nativeSegmentCount.coerceAtLeast(1)
+        val index = nativeSegmentIndex.coerceIn(1, count)
+        val remainingIncludingCurrent = count - index + 1
+        return nativeCompletedFrames + localEffective * remainingIncludingCurrent
     }
 
     private fun handleNativeOutput(modelId: String, raw: String) {
@@ -925,15 +963,59 @@ class SpeechGenerationService : Service() {
         val current = _state.value as? SpeechState.Generating ?: return
         if (current.modelId != modelId) return
 
+        nativeSegmentsRegex.find(line)?.let { match ->
+            nativeSegmentCount = (match.groupValues[1].toIntOrNull() ?: 1).coerceAtLeast(1)
+            nativeSegmentIndex = 1
+            nativeCompletedFrames = 0
+            nativeEffectiveFrames = 0
+            nativeDecodedFrames = 0
+            nativeGeneratedFrames = 0
+            nativeGenerationDone = false
+            return
+        }
+
+        nativeSegmentRegex.find(line)?.let { match ->
+            val nextIndex = (match.groupValues[1].toIntOrNull() ?: 1).coerceAtLeast(1)
+            val total = (match.groupValues[2].toIntOrNull() ?: nativeSegmentCount).coerceAtLeast(1)
+            if (nextIndex > nativeSegmentIndex) {
+                nativeCompletedFrames += nativeGeneratedFrames.coerceAtLeast(0)
+            }
+            nativeSegmentCount = total
+            nativeSegmentIndex = nextIndex.coerceAtMost(total)
+            nativeEffectiveFrames = 0
+            nativeDecodedFrames = 0
+            nativeGeneratedFrames = 0
+            nativeGenerationDone = false
+            val latest = _state.value as? SpeechState.Generating ?: return
+            val base = globalSegmentProgress(0f)
+            _state.value = latest.copy(
+                detail = if (total > 1) {
+                    "Generating speech $nativeSegmentIndex/$total"
+                } else {
+                    "Generating voice tokens"
+                },
+                progress = base,
+                codecProgress = base,
+                vocoderProgress = base,
+            )
+            return
+        }
+
         nativeLimitRegex.find(line)?.let { match ->
             nativeEffectiveFrames = match.groupValues[4].toIntOrNull() ?: 0
             if (nativeEffectiveFrames > 0) {
+                val totalFrames = estimatedTotalFrames(nativeEffectiveFrames)
+                val base = globalSegmentProgress(0f)
                 _state.value = current.copy(
-                    detail = "Generating voice tokens",
-                    estimatedSeconds = nativeEffectiveFrames * 0.08f,
-                    progress = 0f,
-                    codecProgress = 0f,
-                    vocoderProgress = 0f,
+                    detail = if (nativeSegmentCount > 1) {
+                        "Generating speech $nativeSegmentIndex/$nativeSegmentCount"
+                    } else {
+                        "Generating voice tokens"
+                    },
+                    estimatedSeconds = totalFrames.takeIf { it > 0 }?.times(0.08f),
+                    progress = base,
+                    codecProgress = base,
+                    vocoderProgress = base,
                 )
             }
             return
@@ -947,20 +1029,25 @@ class SpeechGenerationService : Service() {
                 nativeEffectiveFrames = frames
                 val latest = _state.value as? SpeechState.Generating ?: return
                 val vocoderP = (nativeDecodedFrames.toFloat() / frames.toFloat()).coerceIn(0f, 1f)
+                val localOverall = if (usingQnnVocoder) {
+                    0.72f + 0.28f * vocoderP
+                } else {
+                    0.58f + 0.42f * vocoderP
+                }
+                val totalFrames = estimatedTotalFrames(frames)
                 _state.value = latest.copy(
                     detail = if (nativeDecodedFrames < frames) {
                         "Decoding waveform on QNN HTP"
+                    } else if (nativeSegmentIndex < nativeSegmentCount) {
+                        "Preparing next speech segment"
                     } else {
                         "Finalizing audio"
                     },
-                    codecProgress = 1f,
-                    vocoderProgress = vocoderP,
-                    progress = if (usingQnnVocoder) {
-                        0.72f + 0.28f * vocoderP
-                    } else {
-                        0.58f + 0.42f * vocoderP
-                    },
-                    estimatedSeconds = frames * 0.08f,
+                    generatedSeconds = (nativeCompletedFrames + frames) * 0.08f,
+                    codecProgress = globalSegmentProgress(1f),
+                    vocoderProgress = globalSegmentProgress(vocoderP),
+                    progress = globalSegmentProgress(localOverall),
+                    estimatedSeconds = totalFrames.takeIf { it > 0 }?.times(0.08f),
                 )
             }
             return
@@ -972,8 +1059,9 @@ class SpeechGenerationService : Service() {
             val elapsed = (
                 System.currentTimeMillis() - current.startedAtMillis
             ).coerceAtLeast(1L) / 1000f
-            val fps = frames / elapsed
-            val generated = frames * 0.08f
+            val totalGeneratedFrames = nativeCompletedFrames + frames
+            val fps = totalGeneratedFrames / elapsed
+            val generated = totalGeneratedFrames * 0.08f
             val effective = nativeEffectiveFrames
             val codecP = if (effective > 0) {
                 (frames.toFloat() / effective).coerceIn(0f, 1f)
@@ -981,13 +1069,14 @@ class SpeechGenerationService : Service() {
             val vocoderP = if (effective > 0) {
                 (nativeDecodedFrames.toFloat() / effective).coerceIn(0f, 1f)
             } else null
-            val progress = if (codecP != null && vocoderP != null) {
+            val localProgress = if (codecP != null && vocoderP != null) {
                 if (usingQnnVocoder) {
                     0.72f * codecP + 0.28f * vocoderP
                 } else {
                     0.58f * codecP + 0.42f * vocoderP
                 }
             } else null
+            val progress = globalSegmentProgress(localProgress)
             val generationEta = if (effective > frames && fps > 0f) {
                 (effective - frames) / fps
             } else 0f
@@ -1009,13 +1098,17 @@ class SpeechGenerationService : Service() {
                 },
                 generatedSeconds = maxOf(current.generatedSeconds, generated),
                 progress = if (!nativeGenerationDone && effective > 0 && frames >= effective) null else progress,
-                codecProgress = if (!nativeGenerationDone && effective > 0 && frames >= effective) null else codecP,
-                vocoderProgress = vocoderP,
+                codecProgress = if (!nativeGenerationDone && effective > 0 && frames >= effective) {
+                    null
+                } else {
+                    globalSegmentProgress(codecP)
+                },
+                vocoderProgress = globalSegmentProgress(vocoderP),
                 estimatedSeconds = if (!nativeGenerationDone && effective > 0 && frames >= effective) {
                     null
-                } else if (effective > 0) {
-                    effective * 0.08f
-                } else null,
+                } else {
+                    estimatedTotalFrames(effective).takeIf { it > 0 }?.times(0.08f)
+                },
                 elapsedSeconds = elapsed,
                 etaSeconds = if (!nativeGenerationDone && effective > 0 && frames >= effective) {
                     null
@@ -1048,10 +1141,11 @@ class SpeechGenerationService : Service() {
             val vocoderP = if (effective > 0) {
                 (nativeDecodedFrames.toFloat() / effective).coerceIn(0f, 1f)
             } else null
-            val overall = if (codecP != null && vocoderP != null) {
+            val localOverall = if (codecP != null && vocoderP != null) {
                 if (usingQnnVocoder) 0.72f * codecP + 0.28f * vocoderP
                 else 0.58f * codecP + 0.42f * vocoderP
             } else null
+            val overall = globalSegmentProgress(localOverall)
             val elapsed = (
                 System.currentTimeMillis() - latest.startedAtMillis
             ).coerceAtLeast(1L) / 1000f
@@ -1070,11 +1164,11 @@ class SpeechGenerationService : Service() {
                 },
                 generatedSeconds = maxOf(
                     latest.generatedSeconds,
-                    nativeDecodedFrames * 0.08f,
+                    (nativeCompletedFrames + maxOf(nativeGeneratedFrames, nativeDecodedFrames)) * 0.08f,
                 ),
                 progress = overall,
-                codecProgress = codecP,
-                vocoderProgress = vocoderP,
+                codecProgress = globalSegmentProgress(codecP),
+                vocoderProgress = globalSegmentProgress(vocoderP),
                 elapsedSeconds = elapsed,
                 etaSeconds = vocoderEta,
             )
