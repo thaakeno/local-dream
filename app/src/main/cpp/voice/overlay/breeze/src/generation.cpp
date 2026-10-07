@@ -691,12 +691,30 @@ void generate(BreezeModel & m, MimiCodec & codec, const GenRequest & req, const 
     GenSession s;
     s.begin(m, codec, req, &tm);
 
-    // a half minute of reference makes the model skip whole sentences of whatever comes next, so
-    // when the first piece has to double as the reference it stays near the usual clip length
-    const int anchor_chars = 200;
-    const std::vector<std::string> parts =
-        split_text(req.text, req.split_chars, s.needs_anchor() ? anchor_chars : 0);
+    // Keep the autoregressive backbone from growing across a whole long paragraph.
+    // The first generated passage becomes the voice/reference anchor for the rest, so keep
+    // that anchor deliberately short (~5-7 s in typical English) and then use moderate
+    // passage chunks. This preserves the same model/sampling while bounding KV-attention
+    // work; it is a scheduling optimization, not a quality-changing approximation.
+    constexpr int anchor_chars = 96;
+    std::vector<std::string> parts = split_text(req.text, req.split_chars, 0);
+    if (s.needs_anchor() && !parts.empty()) {
+        const std::vector<std::string> first_parts =
+            split_text(parts.front(), anchor_chars, 0);
+        if (first_parts.size() > 1) {
+            std::vector<std::string> bounded;
+            bounded.reserve(first_parts.size() + parts.size() - 1);
+            bounded.insert(bounded.end(), first_parts.begin(), first_parts.end());
+            bounded.insert(bounded.end(), parts.begin() + 1, parts.end());
+            parts = std::move(bounded);
+        }
+    }
 
+    std::fprintf(
+        stderr,
+        "[BREEZE_SEGMENTS] count=%zu split_chars=%d anchor_chars=%d\n",
+        parts.size(), req.split_chars, anchor_chars
+    );
     for (const std::string & part : parts)
         if (!s.speak(part, cb, &tm)) return;
 }
