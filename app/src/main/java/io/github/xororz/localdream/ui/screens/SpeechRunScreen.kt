@@ -33,6 +33,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.NavController
 import io.github.xororz.localdream.data.ModelRepository
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
@@ -821,135 +823,174 @@ fun SpeechRunScreen(
     }
 
     if (showHistory) {
-        ModalBottomSheet(onDismissRequest = { showHistory = false }) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+        val visibleHistory = history.filter { it.modelId == modelId }
+        Dialog(
+            onDismissRequest = { showHistory = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background,
             ) {
-                Text(
-                    "Speech history",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    "Local generations with the exact prompt, seed and sampling settings needed to reproduce them.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                val visibleHistory = history.filter { it.modelId == modelId }
-                LazyColumn(
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 620.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                        .fillMaxSize()
+                        .systemBarsPadding(),
                 ) {
-                    if (visibleHistory.isEmpty()) {
-                        item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "No generations for this Breeze model yet.",
-                                modifier = Modifier.padding(vertical = 24.dp),
+                                "Speech history",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                visibleHistory.size.toString() +
+                                    if (visibleHistory.size == 1) " generation" else " generations",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        TextButton(onClick = { showHistory = false }) {
+                            Text("Close")
+                        }
                     }
-                    items(visibleHistory, key = { it.id }) { item ->
-                        val file = File(item.filePath)
-                        if (file.isFile) {
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                MusicPlayerCard(
-                                    file = file,
-                                    title = item.text.take(76),
-                                    subtitle = formatHistoryDate(item.createdAt) + " · " +
-                                        formatMillisCompact(item.audioDurationMillis) + " audio · " +
-                                        formatMillisCompact(item.generationMillis) + " generated",
-                                    metadataLine = buildString {
-                                        append("Seed ")
-                                        append(item.seed)
-                                        append(" · CFG ")
-                                        append(String.format(Locale.US, "%.2f", item.cfg))
-                                        append(" · ")
-                                        append(if (item.accelerated) "QNN HTP" else "Fallback")
-                                    },
-                                    onUse = {
-                                        text = item.text
-                                        instruction = item.instruction
-                                        seed = item.seed
-                                        cfg = item.cfg
-                                        temperature = item.temperature
-                                        topK = item.topK
-                                        topP = item.topP
-                                        repetition = item.repetition
-                                        splitChars = item.splitChars
-                                        maxNewTokens = item.maxNewTokens
-                                        showHistory = false
-                                        AppHaptics.perform(
-                                            context,
-                                            AppHaptics.Kind.Interaction,
-                                        )
-                                    },
-                                    onReproduce = {
-                                        showHistory = false
-                                        AppHaptics.perform(
-                                            context,
-                                            AppHaptics.Kind.Interaction,
-                                        )
-                                        startSpeechGeneration(
-                                            context = context,
-                                            modelId = item.modelId,
-                                            text = item.text,
-                                            instruction = item.instruction,
-                                            seed = item.seed,
-                                            cfg = item.cfg,
-                                            temperature = item.temperature,
-                                            topK = item.topK,
-                                            topP = item.topP,
-                                            repetition = item.repetition,
-                                            splitChars = item.splitChars,
-                                            maxNewTokens = item.maxNewTokens,
-                                        )
-                                    },
-                                    onSave = {
-                                        scope.launch {
-                                            val saved = runCatching {
-                                                SpeechHistoryStore.exportToMusic(context, file)
-                                            }.getOrNull()
-                                            Toast.makeText(
-                                                context,
-                                                if (saved != null) {
-                                                    "Saved to Music/LocalDream"
-                                                } else {
-                                                    "Could not save audio"
-                                                },
-                                                Toast.LENGTH_SHORT,
-                                            ).show()
-                                        }
-                                    },
-                                    onShare = { shareSpeechFile(context, file) },
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        item.instruction.take(100),
-                                        modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 2,
-                                    )
-                                    TextButton(
-                                        onClick = {
-                                            scope.launch {
-                                                SpeechHistoryStore.delete(context, item.id)
-                                                history = withContext(Dispatchers.IO) {
-                                                    SpeechHistoryStore.load(context)
+
+                    HorizontalDivider()
+
+                    if (visibleHistory.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "No generations for this Breeze model yet.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentPadding = PaddingValues(
+                                start = 16.dp,
+                                end = 16.dp,
+                                top = 16.dp,
+                                bottom = 28.dp,
+                            ),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            items(visibleHistory, key = { it.id }) { item ->
+                                val file = File(item.filePath)
+                                if (file.isFile) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                        MusicPlayerCard(
+                                            file = file,
+                                            title = item.text.take(76),
+                                            subtitle = formatHistoryDate(item.createdAt) + " · " +
+                                                formatMillisCompact(item.audioDurationMillis) + " audio · " +
+                                                formatMillisCompact(item.generationMillis) + " generated",
+                                            metadataLine = buildString {
+                                                append("Seed ")
+                                                append(item.seed)
+                                                append(" · CFG ")
+                                                append(String.format(Locale.US, "%.2f", item.cfg))
+                                                append(" · ")
+                                                append(if (item.accelerated) "QNN HTP" else "Fallback")
+                                            },
+                                            onUse = {
+                                                text = item.text
+                                                instruction = item.instruction
+                                                seed = item.seed
+                                                cfg = item.cfg
+                                                temperature = item.temperature
+                                                topK = item.topK
+                                                topP = item.topP
+                                                repetition = item.repetition
+                                                splitChars = item.splitChars
+                                                maxNewTokens = item.maxNewTokens
+                                                showHistory = false
+                                                AppHaptics.perform(
+                                                    context,
+                                                    AppHaptics.Kind.Interaction,
+                                                )
+                                            },
+                                            onReproduce = {
+                                                showHistory = false
+                                                AppHaptics.perform(
+                                                    context,
+                                                    AppHaptics.Kind.Interaction,
+                                                )
+                                                startSpeechGeneration(
+                                                    context = context,
+                                                    modelId = item.modelId,
+                                                    text = item.text,
+                                                    instruction = item.instruction,
+                                                    seed = item.seed,
+                                                    cfg = item.cfg,
+                                                    temperature = item.temperature,
+                                                    topK = item.topK,
+                                                    topP = item.topP,
+                                                    repetition = item.repetition,
+                                                    splitChars = item.splitChars,
+                                                    maxNewTokens = item.maxNewTokens,
+                                                )
+                                            },
+                                            onSave = {
+                                                scope.launch {
+                                                    val saved = runCatching {
+                                                        SpeechHistoryStore.exportToMusic(context, file)
+                                                    }.getOrNull()
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (saved != null) {
+                                                            "Saved to Music/LocalDream"
+                                                        } else {
+                                                            "Could not save audio"
+                                                        },
+                                                        Toast.LENGTH_SHORT,
+                                                    ).show()
                                                 }
+                                            },
+                                            onShare = { shareSpeechFile(context, file) },
+                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                item.instruction.take(120),
+                                                modifier = Modifier.weight(1f),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 2,
+                                            )
+                                            TextButton(
+                                                onClick = {
+                                                    scope.launch {
+                                                        SpeechHistoryStore.delete(context, item.id)
+                                                        history = withContext(Dispatchers.IO) {
+                                                            SpeechHistoryStore.load(context)
+                                                        }
+                                                    }
+                                                },
+                                            ) {
+                                                Text("Delete")
                                             }
-                                        },
-                                    ) {
-                                        Text("Delete")
+                                        }
                                     }
                                 }
                             }
@@ -959,7 +1000,6 @@ fun SpeechRunScreen(
             }
         }
     }
-}
 
 
 @Composable
