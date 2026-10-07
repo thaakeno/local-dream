@@ -87,35 +87,71 @@ jobs:
 
           results = {}
           successes = 0
-          for precision in ("w8a16", "w4a16"):
-              opts = (
-                  f"--target_runtime qnn_dlc --quantize_full_type {precision} "
-                  "--qnn_options default_graph_htp_optimizations=O=3"
-              )
-              compile_job = client.submit_compile_job(
+
+          # Use the documented AI Hub flow: quantize ONNX -> compile quantized
+          # QDQ ONNX -> profile. The earlier shortcut used --quantize_full_type
+          # directly in compile; with this recurrent Gather-heavy graph it failed
+          # inside QAIRT before QNN conversion and produced the red jobs seen in
+          # Workbench.
+          for precision, weight_dtype in (
+              ("w8a16", hub.QuantizeDtype.INT8),
+              ("w4a16", hub.QuantizeDtype.INT4),
+          ):
+              row = {"precision": precision, "strategy": "quantize_job_then_compile"}
+
+              quant_job = client.submit_quantize_job(
                   model=source,
-                  device=device,
-                  name=f"Breeze v5 depth step {precision} PERF-PROXY",
-                  input_specs=specs,
                   calibration_data=calibration,
-                  options=opts,
+                  weights_dtype=weight_dtype,
+                  activations_dtype=hub.QuantizeDtype.INT16,
+                  name=f"Breeze v5 depth step {precision} calibrated quantize",
+              )
+              qstatus = quant_job.wait()
+              row.update({
+                  "quantize_job": quant_job.job_id,
+                  "quantize_url": quant_job.url,
+                  "quantize_status": qstatus.code,
+                  "quantize_message": qstatus.message,
+              })
+              if not qstatus.success:
+                  results[precision] = row
+                  print("RESULT", precision, json.dumps(row, indent=2, default=str))
+                  continue
+
+              quantized_model = quant_job.get_target_model()
+              if quantized_model is None:
+                  row["compile_status"] = "SKIPPED"
+                  row["compile_message"] = "Quantize job returned no target model"
+                  results[precision] = row
+                  print("RESULT", precision, json.dumps(row, indent=2, default=str))
+                  continue
+
+              compile_job = client.submit_compile_job(
+                  model=quantized_model,
+                  device=device,
+                  name=f"Breeze v5 depth step {precision} QNN O3",
+                  options=(
+                      "--target_runtime qnn_dlc "
+                      "--qnn_options default_graph_htp_optimizations=O=3"
+                  ),
               )
               status = compile_job.wait()
-              row = {
+              row.update({
                   "compile_job": compile_job.job_id,
                   "compile_url": compile_job.url,
                   "compile_status": status.code,
                   "compile_message": status.message,
-              }
+              })
               if not status.success:
                   results[precision] = row
+                  print("RESULT", precision, json.dumps(row, indent=2, default=str))
                   continue
 
               model = compile_job.get_target_model()
               profile_job = client.submit_profile_job(
                   model=model,
                   device=device,
-                  name=f"Breeze v5 depth step {precision} PERF-PROXY profile",
+                  name=f"Breeze v5 depth step {precision} calibrated profile",
               )
               pstatus = profile_job.wait()
               row.update({
@@ -127,9 +163,8 @@ jobs:
               if pstatus.success:
                   profile = profile_job.download_profile()
                   row["profile"] = profile.get("execution_summary", profile)
-              results[precision] = row
-              if pstatus.success:
                   successes += 1
+              results[precision] = row
               print("RESULT", precision, json.dumps(row, indent=2, default=str))
 
           print("=== BREEZE_V5_DEPTH_QUANT_PROXY ===")
