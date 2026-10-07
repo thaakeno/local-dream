@@ -461,6 +461,15 @@ public:
             copy(source.value, graph.inputs[vi]);
     }
 
+    int step_batch_size() const {
+        if (!graph.valid || !m_graphsInfo || graph.graph_index >= m_graphsCount) return 0;
+        auto & g = (*m_graphsInfo)[graph.graph_index];
+        const int ei = tensor_index(graph.inputs, g.numInputTensors, "input_embed", 0);
+        if (ei < 0) return 0;
+        const uint32_t * dims = QNN_TENSOR_GET_DIMENSIONS(graph.inputs[ei]);
+        return dims && QNN_TENSOR_GET_RANK(graph.inputs[ei]) >= 1 ? (int) dims[0] : 0;
+    }
+
     bool copy_new_cache(const std::vector<int32_t> & positions) {
         auto & g = (*m_graphsInfo)[graph.graph_index];
         const int ki = tensor_index(graph.inputs, g.numInputTensors, "key_cache", 2);
@@ -469,11 +478,14 @@ public:
         const int vo = tensor_index(graph.outputs, g.numOutputTensors, "new_value", 3);
         if (ki < 0 || vi < 0 || ko < 0 || vo < 0) return false;
 
-        auto copy = [&](Qnn_Tensor_t & src, Qnn_Tensor_t & dst) {
+        auto copy = [&](Qnn_Tensor_t & src, Qnn_Tensor_t & dst, const char * label) {
             const uint32_t * sd = QNN_TENSOR_GET_DIMENSIONS(src);
             const uint32_t * dd = QNN_TENSOR_GET_DIMENSIONS(dst);
             if (!sd || !dd || QNN_TENSOR_GET_RANK(src) != 4 ||
-                QNN_TENSOR_GET_RANK(dst) != 4) return false;
+                QNN_TENSOR_GET_RANK(dst) != 4) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] %s cache rank mismatch\n", label);
+                return false;
+            }
 
             const int batch = (int) sd[0];
             const int lkv = (int) sd[1];
@@ -481,16 +493,26 @@ public:
             const int head_dim = (int) sd[3];
             const int dst_seq = (int) dd[2];
             if (
-                batch != 2 ||
+                batch <= 0 ||
                 src_seq != 1 ||
-                positions.size() != 2 ||
+                positions.size() != (size_t) batch ||
                 (int) dd[0] != batch ||
                 (int) dd[1] != lkv ||
                 (int) dd[3] != head_dim
             ) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_BACKBONE] %s cache shape mismatch "
+                    "src=%dx%dx%dx%d dst=%ux%ux%ux%u positions=%zu\n",
+                    label, batch, lkv, src_seq, head_dim,
+                    dd[0], dd[1], dd[2], dd[3], positions.size()
+                );
                 return false;
             }
             if (QNN_TENSOR_GET_DATA_TYPE(src) != QNN_TENSOR_GET_DATA_TYPE(dst)) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] %s cache dtype mismatch src=%d dst=%d\n",
+                             label, (int) QNN_TENSOR_GET_DATA_TYPE(src),
+                             (int) QNN_TENSOR_GET_DATA_TYPE(dst));
                 return false;
             }
 
@@ -506,15 +528,20 @@ public:
                 sb.dataSize % src_elements ||
                 db.dataSize % dst_elements
             ) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] %s cache buffer layout invalid src_bytes=%u dst_bytes=%u\n",
+                             label, sb.dataSize, db.dataSize);
                 return false;
             }
             const size_t bytes_per = sb.dataSize / src_elements;
-            if (bytes_per != db.dataSize / dst_elements) return false;
+            if (bytes_per != db.dataSize / dst_elements) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] %s cache element width mismatch\n", label);
+                return false;
+            }
 
             const size_t row = (size_t) head_dim * bytes_per;
             auto * sp = static_cast<const unsigned char *>(sb.data);
             auto * dp = static_cast<unsigned char *>(db.data);
-            for (int b = 0; b < 2; ++b) {
+            for (int b = 0; b < batch; ++b) {
                 const int p = positions[(size_t) b];
                 if (p < 0 || p >= dst_seq) return false;
                 for (int h = 0; h < lkv; ++h) {
@@ -528,8 +555,8 @@ public:
             return true;
         };
 
-        return copy(graph.outputs[ko], graph.inputs[ki]) &&
-            copy(graph.outputs[vo], graph.inputs[vi]);
+        return copy(graph.outputs[ko], graph.inputs[ki], "key") &&
+            copy(graph.outputs[vo], graph.inputs[vi], "value");
     }
 
     bool run_step(
@@ -541,7 +568,9 @@ public:
     ) {
         auto & g = (*m_graphsInfo)[graph.graph_index];
         if (g.numInputTensors != 5 || g.numOutputTensors != 4) return false;
-        if ((int) embedding.size() != hidden || positions.size() != 2) return false;
+        const int graph_batch = step_batch_size();
+        if ((int) embedding.size() != hidden || graph_batch <= 0 ||
+            positions.size() != (size_t) graph_batch) return false;
         for (int p : positions) if (p < 0 || p >= kBackboneBucket) return false;
 
         const int ei = tensor_index(graph.inputs, g.numInputTensors, "input_embed", 0);
@@ -551,12 +580,17 @@ public:
         const int lo = tensor_index(graph.outputs, g.numOutputTensors, "logits", 1);
         if (ei < 0 || pi < 0 || mi < 0 || ho < 0 || lo < 0) return false;
 
-        std::vector<float> embeds((size_t) 2 * (size_t) hidden);
-        std::copy(embedding.begin(), embedding.end(), embeds.begin());
-        std::copy(embedding.begin(), embedding.end(), embeds.begin() + hidden);
+        std::vector<float> embeds((size_t) graph_batch * (size_t) hidden);
+        for (int b = 0; b < graph_batch; ++b) {
+            std::copy(
+                embedding.begin(),
+                embedding.end(),
+                embeds.begin() + (size_t) b * (size_t) hidden
+            );
+        }
 
-        std::vector<float> mask((size_t) 2 * 513u, -10000.0f);
-        for (int b = 0; b < 2; ++b) {
+        std::vector<float> mask((size_t) graph_batch * 513u, -10000.0f);
+        for (int b = 0; b < graph_batch; ++b) {
             float * row = mask.data() + (size_t) b * 513u;
             for (int i = 0; i < positions[(size_t) b]; ++i) row[i] = 0.0f;
             row[512] = 0.0f;
@@ -591,14 +625,14 @@ public:
             return false;
         }
         if (!finite_nonzero(hidden_all) || !finite_nonzero(logits_all)) return false;
-        if (hidden_all.size() != (size_t) 2 * (size_t) hidden ||
-            logits_all.size() % 2 != 0) {
+        if (hidden_all.size() != (size_t) graph_batch * (size_t) hidden ||
+            logits_all.size() % (size_t) graph_batch != 0) {
             return false;
         }
 
-        const size_t logits_per_branch = logits_all.size() / 2;
-        outs.assign(2, StepOut{});
-        for (int b = 0; b < 2; ++b) {
+        const size_t logits_per_branch = logits_all.size() / (size_t) graph_batch;
+        outs.assign((size_t) graph_batch, StepOut{});
+        for (int b = 0; b < graph_batch; ++b) {
             outs[(size_t) b].hidden.assign(
                 hidden_all.begin() + (size_t) b * hidden,
                 hidden_all.begin() + (size_t) (b + 1) * hidden
@@ -610,8 +644,7 @@ public:
         }
 
         if (!copy_new_cache(positions)) return false;
-        ++positions[0];
-        ++positions[1];
+        for (auto & p : positions) ++p;
         return true;
     }
 };
