@@ -65,7 +65,16 @@ jobs:
               if item["success"] and hasattr(job, "download_profile"):
                   try:
                       raw_profile = job.download_profile()
-                      item["profile"] = raw_profile.get("execution_summary", raw_profile)
+                      summary = raw_profile.get("execution_summary", raw_profile)
+                      keys = (
+                          "estimated_inference_time",
+                          "estimated_inference_peak_memory",
+                          "first_load_time",
+                          "first_load_peak_memory",
+                          "warm_load_time",
+                          "warm_load_peak_memory",
+                      )
+                      item["profile"] = {k: summary.get(k) for k in keys if k in summary}
                   except Exception as exc:
                       item["profile_error"] = repr(exc)
 
