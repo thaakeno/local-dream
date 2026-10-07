@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -32,6 +33,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -1245,7 +1247,7 @@ fun SpeechRunScreen(
                                     expanded = sortMenuOpen,
                                     onDismissRequest = { sortMenuOpen = false },
                                 ) {
-                                    SpeechHistorySort.entries.forEach { option ->
+                                    SpeechHistorySort.values().forEach { option ->
                                         DropdownMenuItem(
                                             text = { Text(option.label) },
                                             onClick = {
