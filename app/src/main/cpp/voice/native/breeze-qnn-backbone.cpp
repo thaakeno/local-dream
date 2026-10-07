@@ -102,6 +102,8 @@ static bool finite_nonzero(const std::vector<float> & values) {
 class BreezeQnnBackboneApp final : public QnnSampleApp {
 public:
     void * model_handle = nullptr;
+    uint32_t power_config_id = 0;
+    bool power_config_active = false;
     GraphIo graph;
     std::string expected_graph;
 
@@ -129,6 +131,7 @@ public:
     ~BreezeQnnBackboneApp() {
         tear_down();
         if (m_graphsInfo) freeContext();
+        release_power_vote();
         freeDevice();
         terminateBackend();
         if (model_handle) {
@@ -188,50 +191,82 @@ public:
         return graph.valid;
     }
 
-    bool set_burst_power() {
+    void release_power_vote() {
+        if (!power_config_active) return;
         auto qnn = m_qnnFunctionPointers.qnnInterface;
         QnnDevice_Infrastructure_t deviceInfra = nullptr;
-        if (!qnn.deviceGetInfrastructure ||
+        if (
+            qnn.deviceGetInfrastructure &&
+            qnn.deviceGetInfrastructure(&deviceInfra) == QNN_SUCCESS &&
+            deviceInfra
+        ) {
+            auto * htp = static_cast<QnnHtpDevice_Infrastructure_t *>(deviceInfra);
+            htp->perfInfra.destroyPowerConfigId(power_config_id);
+        }
+        power_config_id = 0;
+        power_config_active = false;
+    }
+
+    // Balanced latency/power policy for sustained on-device TTS.
+    // The old "burst" vote disabled DCVS + HTP sleep, pinned bus/core at the
+    // maximum voltage corner and busy-polled FastRPC for 9.999 ms. That is a
+    // benchmark profile, not a sensible long-running mobile inference policy.
+    // Keep PERFORMANCE_MODE, but let DCVS scale clocks, allow HTP sleep between
+    // graphs, and use a 200 us RPC control-latency vote instead of polling.
+    bool set_adaptive_power() {
+        auto qnn = m_qnnFunctionPointers.qnnInterface;
+        QnnDevice_Infrastructure_t deviceInfra = nullptr;
+        if (
+            !qnn.deviceGetInfrastructure ||
             qnn.deviceGetInfrastructure(&deviceInfra) != QNN_SUCCESS ||
-            !deviceInfra) {
+            !deviceInfra
+        ) {
             return false;
         }
+
         auto * htp = static_cast<QnnHtpDevice_Infrastructure_t *>(deviceInfra);
         auto perf = htp->perfInfra;
-        uint32_t id = 0;
-        if (perf.createPowerConfigId(0, 0, &id) != QNN_SUCCESS) return false;
-
-        QnnHtpPerfInfrastructure_PowerConfig_t rpc{};
-        rpc.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_RPC_POLLING_TIME;
-        rpc.rpcPollingTimeConfig = 9999;
-        const QnnHtpPerfInfrastructure_PowerConfig_t * p1[] = {&rpc, nullptr};
-        if (perf.setPowerConfig(id, p1) != QNN_SUCCESS) return false;
+        if (power_config_active) return true;
+        if (perf.createPowerConfigId(0, 0, &power_config_id) != QNN_SUCCESS) {
+            power_config_id = 0;
+            return false;
+        }
+        power_config_active = true;
 
         QnnHtpPerfInfrastructure_PowerConfig_t dcvs{};
         dcvs.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
-        dcvs.dcvsV3Config.contextId = id;
+        dcvs.dcvsV3Config.contextId = power_config_id;
         dcvs.dcvsV3Config.powerMode =
             QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
         dcvs.dcvsV3Config.setDcvsEnable = 1;
-        dcvs.dcvsV3Config.dcvsEnable = 0;
+        dcvs.dcvsV3Config.dcvsEnable = 1;
         dcvs.dcvsV3Config.setSleepDisable = 1;
-        dcvs.dcvsV3Config.sleepDisable = 1;
-        dcvs.dcvsV3Config.setBusParams = 1;
-        dcvs.dcvsV3Config.busVoltageCornerMin =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        dcvs.dcvsV3Config.busVoltageCornerTarget =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        dcvs.dcvsV3Config.busVoltageCornerMax =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        dcvs.dcvsV3Config.setCoreParams = 1;
-        dcvs.dcvsV3Config.coreVoltageCornerMin =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        dcvs.dcvsV3Config.coreVoltageCornerTarget =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        dcvs.dcvsV3Config.coreVoltageCornerMax =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        const QnnHtpPerfInfrastructure_PowerConfig_t * p2[] = {&dcvs, nullptr};
-        return perf.setPowerConfig(id, p2) == QNN_SUCCESS;
+        dcvs.dcvsV3Config.sleepDisable = 0;
+        dcvs.dcvsV3Config.setSleepLatency = 1;
+        dcvs.dcvsV3Config.sleepLatency = 200;
+        dcvs.dcvsV3Config.setBusParams = 0;
+        dcvs.dcvsV3Config.setCoreParams = 0;
+
+        QnnHtpPerfInfrastructure_PowerConfig_t rpc{};
+        rpc.option =
+            QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_RPC_CONTROL_LATENCY;
+        rpc.rpcControlLatencyConfig = 200;
+
+        const QnnHtpPerfInfrastructure_PowerConfig_t * configs[] = {
+            &dcvs,
+            &rpc,
+            nullptr,
+        };
+        const bool ok =
+            perf.setPowerConfig(power_config_id, configs) == QNN_SUCCESS;
+        if (!ok) release_power_vote();
+        std::fprintf(
+            stderr,
+            "[BREEZE_QNN_POWER] profile=adaptive-performance dcvs=1 sleep=1 "
+            "rpc_poll=0 rpc_latency_us=200 max_corner_pin=0 ok=%d\n",
+            ok ? 1 : 0
+        );
+        return ok;
     }
 
     bool execute(double & ms) {
@@ -630,7 +665,7 @@ static bool load_backbone_app(
     if (candidate->registerOpPackages() != StatusCode::SUCCESS) return fail();
     if (candidate->createFromBinary() != StatusCode::SUCCESS) return fail();
     if (!candidate->setup_graph()) return fail();
-    candidate->set_burst_power();
+    candidate->set_adaptive_power();
 
     app = std::move(candidate);
     return true;
