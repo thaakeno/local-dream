@@ -1,0 +1,103 @@
+name: Benchmark Breeze QNN v5 depth quantization
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - breeze-qnn-v5-fastpath
+    paths:
+      - '.github/workflows/benchmark-breeze-qnn-v5-depth-quant.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: breeze-qnn-v5-depth-quant
+  cancel-in-progress: true
+
+env:
+  QAI_DEVICE: Samsung Galaxy S26 (Family)
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install AI Hub client
+        run: python -m pip install --upgrade 'qai-hub>=0.56.0'
+
+      - name: Profile performance-only depth quantization candidates
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import qai_hub as hub
+
+          client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
+          device = hub.Device(os.environ["QAI_DEVICE"])
+          source = client.get_model("mnzx131om")
+          specs = {
+              "token": ((1,), "int32"),
+              "position": ((1,), "int32"),
+              "key_cache": ((1, 24, 16, 128), "float16"),
+              "value_cache": ((1, 24, 16, 128), "float16"),
+          }
+
+          # No calibration dataset is supplied intentionally. AI Hub then uses
+          # generated representative inputs; these artifacts are NOT for release
+          # or audio-quality testing. They answer one question only: can reduced
+          # precision make this tiny AR1 graph fast enough to beat ggml-Hexagon?
+          results = {}
+          for precision in ("w8a16", "w4a16"):
+              opts = (
+                  f"--target_runtime qnn_dlc --quantize_full_type {precision} "
+                  "--qnn_options default_graph_htp_optimizations=O=3"
+              )
+              compile_job = client.submit_compile_job(
+                  model=source,
+                  device=device,
+                  name=f"Breeze v5 depth step {precision} PERF-PROXY",
+                  input_specs=specs,
+                  options=opts,
+              )
+              status = compile_job.wait()
+              row = {
+                  "compile_job": compile_job.job_id,
+                  "compile_url": compile_job.url,
+                  "compile_status": status.code,
+                  "compile_message": status.message,
+              }
+              if not status.success:
+                  results[precision] = row
+                  continue
+
+              model = compile_job.get_target_model()
+              profile_job = client.submit_profile_job(
+                  model=model,
+                  device=device,
+                  name=f"Breeze v5 depth step {precision} PERF-PROXY profile",
+              )
+              pstatus = profile_job.wait()
+              row.update({
+                  "profile_job": profile_job.job_id,
+                  "profile_url": profile_job.url,
+                  "profile_status": pstatus.code,
+                  "profile_message": pstatus.message,
+              })
+              if pstatus.success:
+                  profile = profile_job.download_profile()
+                  row["profile"] = profile.get("execution_summary", profile)
+              results[precision] = row
+              print("RESULT", precision, json.dumps(row, indent=2, default=str))
+
+          print("=== BREEZE_V5_DEPTH_QUANT_PROXY ===")
+          print(json.dumps(results, indent=2, default=str))
+          PY
