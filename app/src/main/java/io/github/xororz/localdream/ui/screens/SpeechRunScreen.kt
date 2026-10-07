@@ -150,6 +150,10 @@ fun SpeechRunScreen(
     val model = repository.models.firstOrNull { it.id == modelId }
     val speechState by SpeechGenerationService.state.collectAsState()
     val acceleratorState by BreezeQnnVocoderArtifact.status.collectAsState()
+    val generatorState by BreezeQnnGeneratorArtifact.status.collectAsState()
+    var fullQnnGeneratorEnabled by remember {
+        mutableStateOf(BreezeQnnGeneratorArtifact.isEnabled(context))
+    }
 
     // This screen owns the warm Breeze process. Leaving the generation panel
     // must release the GGUF, QNN contexts and HTP power votes immediately.
@@ -737,6 +741,64 @@ fun SpeechRunScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Full QNN generator",
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                if (fullQnnGeneratorEnabled) {
+                                    "QNN backbone + depth. The QNN vocoder stays enabled in both modes."
+                                } else {
+                                    "Legacy ggml-Hexagon backbone + depth. Use this for direct A/B speed tests."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = fullQnnGeneratorEnabled,
+                            enabled = generatorState is BreezeQnnGeneratorArtifact.Status.Ready,
+                            onCheckedChange = { enabled ->
+                                fullQnnGeneratorEnabled = enabled
+                                BreezeQnnGeneratorArtifact.setEnabled(context, enabled)
+                                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                scope.launch {
+                                    context.startService(
+                                        Intent(context, SpeechGenerationService::class.java)
+                                            .setAction(SpeechGenerationService.ACTION_STOP),
+                                    )
+                                    delay(180)
+                                    SpeechGenerationService.resetForModel(modelId)
+                                    if (model?.isDownloaded == true) {
+                                        context.startForegroundService(
+                                            Intent(
+                                                context,
+                                                SpeechGenerationService::class.java,
+                                            )
+                                                .setAction(
+                                                    SpeechGenerationService.ACTION_PRELOAD,
+                                                )
+                                                .putExtra("modelId", modelId),
+                                        )
+                                    }
+                                }
+                            },
+                        )
+                    }
                 }
 
                 BreezeSettingSlider(
