@@ -1,0 +1,119 @@
+name: Canonical-sign Breeze APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: GitHub Actions run containing the branch-built APK
+        required: true
+        type: string
+      source_artifact_name:
+        description: Artifact name to download from the source run
+        required: true
+        default: LocalDream-Qwen-FP8-Turbo
+        type: string
+      output_artifact_name:
+        description: Artifact name for the installable APK
+        required: true
+        default: LocalDream-Breeze-Canonical
+        type: string
+  push:
+    branches:
+      - v141-stable-yue2-full
+    paths:
+      - '.github/breeze-sign-request.json'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: breeze-canonical-signer
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout stable signing branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Resolve signing request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_RUN_ID: ${{ inputs.source_run_id }}
+          INPUT_SOURCE_NAME: ${{ inputs.source_artifact_name }}
+          INPUT_OUTPUT_NAME: ${{ inputs.output_artifact_name }}
+        run: |
+          set -euxo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            test -s .github/breeze-sign-request.json
+            SOURCE_RUN_ID="$(jq -r '.source_run_id' .github/breeze-sign-request.json)"
+            SOURCE_ARTIFACT_NAME="$(jq -r '.source_artifact_name // "LocalDream-Qwen-FP8-Turbo"' .github/breeze-sign-request.json)"
+            OUTPUT_ARTIFACT_NAME="$(jq -r '.output_artifact_name // "LocalDream-Breeze-Canonical"' .github/breeze-sign-request.json)"
+          else
+            SOURCE_RUN_ID="$INPUT_RUN_ID"
+            SOURCE_ARTIFACT_NAME="$INPUT_SOURCE_NAME"
+            OUTPUT_ARTIFACT_NAME="$INPUT_OUTPUT_NAME"
+          fi
+          test -n "$SOURCE_RUN_ID"
+          test "$SOURCE_RUN_ID" != "null"
+          echo "SOURCE_RUN_ID=$SOURCE_RUN_ID" >> "$GITHUB_ENV"
+          echo "SOURCE_ARTIFACT_NAME=$SOURCE_ARTIFACT_NAME" >> "$GITHUB_ENV"
+          echo "OUTPUT_ARTIFACT_NAME=$OUTPUT_ARTIFACT_NAME" >> "$GITHUB_ENV"
+
+      - name: Restore installed-app signing key
+        id: signing-key-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/localdream-ci.jks
+          key: localdream-ci-signing-v1
+
+      - name: Require canonical signer
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "${{ steps.signing-key-cache.outputs.cache-hit }}" = "true"
+          test -s "$RUNNER_TEMP/localdream-ci.jks"
+
+      - name: Download source APK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          meta="$(curl -fsSL --retry 4             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100")"
+          artifact_id="$(printf '%s' "$meta" | jq -r             --arg name "$SOURCE_ARTIFACT_NAME"             '.artifacts[] | select(.name == $name and .expired == false) | .id' | head -n1)"
+          test -n "$artifact_id"
+          curl -fL --retry 5 --retry-delay 2             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip"             -o source.zip
+          mkdir -p source
+          unzip -q source.zip -d source
+          apk="$(find source -type f -name '*.apk' -print -quit)"
+          test -s "$apk"
+          cp "$apk" source.apk
+
+      - name: Sign and verify exact installed-app certificate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          apksigner_bin="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n1)"
+          test -x "$apksigner_bin"
+          "$apksigner_bin" sign             --ks "$RUNNER_TEMP/localdream-ci.jks"             --ks-key-alias localdream             --ks-pass pass:android             --key-pass pass:android             --out LocalDream-Breeze-canonical.apk             source.apk
+          actual="$("$apksigner_bin" verify --print-certs LocalDream-Breeze-canonical.apk |             sed -n 's/^.*Signer.*certificate SHA-256 digest: //p' | head -n1 |             tr -d ':' | tr 'A-F' 'a-f')"
+          expected="bff433493c171fcd31e8159ca19e64d938b8d4afe043a07be91fec0ad23f071b"
+          echo "required signer: $expected"
+          echo "actual signer:   $actual"
+          test "$actual" = "$expected"
+          "$apksigner_bin" verify --verbose --print-certs LocalDream-Breeze-canonical.apk
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.OUTPUT_ARTIFACT_NAME }}
+          path: LocalDream-Breeze-canonical.apk
+          if-no-files-found: error
+          retention-days: 14
