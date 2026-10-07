@@ -297,7 +297,6 @@ public:
     ) {
         auto & g = (*m_graphsInfo)[graph.graph_index];
         if (g.numInputTensors != 3 || g.numOutputTensors != 4) return false;
-        if (tokens <= 0 || tokens > kBackboneBucket) return false;
         if ((int) embeddings.size() != tokens * hidden) return false;
 
         const int ei = tensor_index(graph.inputs, g.numInputTensors, "inputs_embeds", 0);
@@ -311,9 +310,22 @@ public:
             return false;
         }
 
-        const int pad = kBackboneBucket - tokens;
+        const uint32_t * embed_dims = QNN_TENSOR_GET_DIMENSIONS(graph.inputs[ei]);
+        if (!embed_dims || QNN_TENSOR_GET_RANK(graph.inputs[ei]) != 3) return false;
+        const int bucket = (int) embed_dims[1];
+        if (bucket <= 0 || tokens <= 0 || tokens > bucket) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] prefill token count %d exceeds graph bucket %d\n",
+                tokens,
+                bucket
+            );
+            return false;
+        }
+
+        const int pad = bucket - tokens;
         std::vector<float> padded(
-            (size_t) kBackboneBucket * (size_t) hidden,
+            (size_t) bucket * (size_t) hidden,
             0.0f
         );
         std::memcpy(
@@ -323,20 +335,20 @@ public:
         );
 
         std::vector<float> mask(
-            (size_t) kBackboneBucket * (size_t) kBackboneBucket,
+            (size_t) bucket * (size_t) bucket,
             -10000.0f
         );
-        for (int q = 0; q < kBackboneBucket; ++q) {
+        for (int q = 0; q < bucket; ++q) {
             if (q < pad) {
-                mask[(size_t) q * kBackboneBucket + q] = 0.0f;
+                mask[(size_t) q * bucket + q] = 0.0f;
             } else {
                 for (int k = pad; k <= q; ++k) {
-                    mask[(size_t) q * kBackboneBucket + k] = 0.0f;
+                    mask[(size_t) q * bucket + k] = 0.0f;
                 }
             }
         }
 
-        std::vector<int32_t> positions((size_t) kBackboneBucket, 0);
+        std::vector<int32_t> positions((size_t) bucket, 0);
         for (int i = 0; i < tokens; ++i) positions[(size_t) pad + i] = i;
 
         if (m_ioTensor.copyFromFloatToNative(
@@ -368,6 +380,13 @@ public:
             return false;
         }
         cache.valid_tokens = tokens;
+        std::fprintf(
+            stderr,
+            "[BREEZE_QNN_BACKBONE] prefill graph bucket=%d tokens=%d execute_ms=%.2f\n",
+            bucket,
+            tokens,
+            ms
+        );
         return finite_nonzero(out.hidden) &&
             finite_nonzero(out.logits) &&
             capture_native(graph.outputs[ko], cache.key) &&
@@ -394,11 +413,23 @@ public:
         const int vi = tensor_index(graph.inputs, g.numInputTensors, "value_cache", 3);
         if (ki < 0 || vi < 0) return false;
 
-        auto copy = [&](const NativeBlob & src, Qnn_Tensor_t & dst) {
-            if (src.type != QNN_TENSOR_GET_DATA_TYPE(dst)) return false;
+        auto copy = [&](const NativeBlob & src, Qnn_Tensor_t & dst, const char * label) {
+            if (src.type != QNN_TENSOR_GET_DATA_TYPE(dst)) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_BACKBONE] seed %s dtype mismatch src=%d dst=%d\n",
+                    label,
+                    (int) src.type,
+                    (int) QNN_TENSOR_GET_DATA_TYPE(dst)
+                );
+                return false;
+            }
             const uint32_t rank = QNN_TENSOR_GET_RANK(dst);
             const uint32_t * dd = QNN_TENSOR_GET_DIMENSIONS(dst);
-            if (!dd || rank != 4 || src.dims.size() != 4) return false;
+            if (!dd || rank != 4 || src.dims.size() != 4) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] seed %s rank mismatch\n", label);
+                return false;
+            }
 
             const int src_batch = (int) src.dims[0];
             const int lkv = (int) src.dims[1];
@@ -410,7 +441,7 @@ public:
             const int dst_dim = (int) dd[3];
             if (
                 src_batch != 1 ||
-                src_seq != kBackboneBucket ||
+                src_seq <= 0 ||
                 lkv != dst_lkv ||
                 head_dim != dst_dim ||
                 branch < 0 ||
@@ -419,11 +450,23 @@ public:
                 source.valid_tokens > src_seq ||
                 source.valid_tokens > dst_seq
             ) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_BACKBONE] seed %s shape mismatch "
+                    "src=%dx%dx%dx%d dst=%dx%dx%dx%d branch=%d valid=%d\n",
+                    label,
+                    src_batch, lkv, src_seq, head_dim,
+                    dst_batch, dst_lkv, dst_seq, dst_dim,
+                    branch, source.valid_tokens
+                );
                 return false;
             }
 
             auto db = QNN_TENSOR_GET_CLIENT_BUF(dst);
-            if (!db.data || !db.dataSize) return false;
+            if (!db.data || !db.dataSize) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] seed %s missing dst buffer\n", label);
+                return false;
+            }
             const size_t src_elements =
                 (size_t) src_batch * lkv * src_seq * head_dim;
             const size_t dst_elements =
@@ -434,10 +477,23 @@ public:
                 src.bytes.size() % src_elements ||
                 db.dataSize % dst_elements
             ) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_BACKBONE] seed %s buffer layout invalid "
+                    "src_bytes=%zu dst_bytes=%u src_elements=%zu dst_elements=%zu\n",
+                    label, src.bytes.size(), db.dataSize, src_elements, dst_elements
+                );
                 return false;
             }
             const size_t bytes_per = src.bytes.size() / src_elements;
-            if (bytes_per != db.dataSize / dst_elements) return false;
+            if (bytes_per != db.dataSize / dst_elements) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_BACKBONE] seed %s element width mismatch src=%zu dst=%zu\n",
+                    label, bytes_per, db.dataSize / dst_elements
+                );
+                return false;
+            }
 
             const int pad = src_seq - source.valid_tokens;
             const size_t row = (size_t) head_dim * bytes_per;
@@ -457,8 +513,8 @@ public:
             return true;
         };
 
-        return copy(source.key, graph.inputs[ki]) &&
-            copy(source.value, graph.inputs[vi]);
+        return copy(source.key, graph.inputs[ki], "key") &&
+            copy(source.value, graph.inputs[vi], "value");
     }
 
     int step_batch_size() const {
