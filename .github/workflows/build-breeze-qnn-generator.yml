@@ -88,24 +88,19 @@ jobs:
           device = hub.Device(os.environ["QAI_DEVICE"])
           fp16 = "--qnn_options default_graph_htp_precision=FLOAT16"
 
-          # Depth: batch-1 and CFG batch-2 variants, linked with shared weights.
+          # Use the same pattern Qualcomm uses for LLMs: one prompt graph
+          # plus one autoregressive graph per context. The previous 4/6-graph
+          # helper jobs were failing during context-binary finalization.
+          #
+          # Depth always uses physical batch-2. Non-CFG duplicates the branch;
+          # CFG uses cond/uncond. This avoids linking duplicate batch variants.
           dpre = str(root / "breeze_depth_prefill.onnx")
           dstep = str(root / "breeze_depth_step.onnx")
-          depth_models = [dpre, dpre, dstep, dstep]
+          depth_models = [dpre, dstep]
           depth_specs = [
-              {
-                  "backbone_hidden": ((1, 2048), "float16"),
-                  "first_codebook": ((1,), "int32"),
-              },
               {
                   "backbone_hidden": ((2, 2048), "float16"),
                   "first_codebook": ((2,), "int32"),
-              },
-              {
-                  "token": ((1,), "int32"),
-                  "position": ((1,), "int32"),
-                  "key_cache": ((1, 24, 16, 128), "float16"),
-                  "value_cache": ((1, 24, 16, 128), "float16"),
               },
               {
                   "token": ((2,), "int32"),
@@ -114,75 +109,82 @@ jobs:
                   "value_cache": ((2, 24, 16, 128), "float16"),
               },
           ]
-          depth_names = [
-              "depth_prefill_b1", "depth_prefill_b2",
-              "depth_step_b1", "depth_step_b2",
-          ]
+          depth_names = ["depth_prefill_b2", "depth_step_b2"]
           depth_jobs, depth_link = client.submit_compile_and_link_jobs(
               models=depth_models,
               input_specs=depth_specs,
               device=device,
-              name="Breeze TTS 2 full generator depth SM8850",
+              name="Breeze TTS 2 depth AR pair SM8850",
               graph_names=depth_names,
-              compile_options=[fp16] * len(depth_models),
+              compile_options=[fp16, fp16],
               link_options="--qnn_options default_graph_htp_optimizations=O=3",
           )
           if depth_link is None:
               raise SystemExit("AI Hub did not create the depth link job")
-          depth_link.wait()
-          depth_status = depth_link.get_status()
+          for job in depth_jobs:
+              status = job.wait()
+              if not status.success:
+                  raise SystemExit(
+                      f"AI Hub depth compile {job.job_id} failed: "
+                      f"{status.message or status.code} {job.url}"
+                  )
+          depth_status = depth_link.wait()
           if not depth_status.success:
               raise SystemExit(
                   "AI Hub depth link failed: " +
-                  (depth_status.message or depth_status.code)
+                  (depth_status.message or depth_status.code) +
+                  " " + depth_link.url
               )
           depth_target = root / "breeze-depth-sm8850-v81.bin"
           if not depth_link.download_target_model(str(depth_target)):
               raise SystemExit("AI Hub depth QNN target download failed")
 
-          # Backbone: one dynamic ONNX compiled into four prefill buckets and
-          # two single-token decode variants. The link job shares the ~1B
-          # transformer weights across all six graphs.
+          # Backbone mirrors Qualcomm's LLM prompt/token layout: one fixed
+          # 512-token prompt processor + one batch-2 AR1 token generator.
+          # Cond/uncond prefills run separately through the same prompt graph,
+          # then share the physical batch-2 token graph.
           bpre = str(root / "breeze_backbone_prefill.onnx")
           bstep = str(root / "breeze_backbone_step.onnx")
-          prefill_buckets = [64, 128, 256, 512]
-          backbone_models = [bpre] * len(prefill_buckets) + [bstep, bstep]
-          backbone_specs = []
-          backbone_names = []
-          for seq in prefill_buckets:
-              backbone_specs.append({
-                  "inputs_embeds": ((1, seq, 2048), "float16"),
-                  "attention_mask": ((1, 1, seq, seq), "float16"),
-                  "positions": ((1, seq), "int32"),
-              })
-              backbone_names.append(f"backbone_prefill_{seq}")
-          for batch in (1, 2):
-              backbone_specs.append({
-                  "input_embed": ((batch, 1, 2048), "float16"),
-                  "positions": ((batch,), "int32"),
-                  "key_cache": ((batch, 224, 512, 128), "float16"),
-                  "value_cache": ((batch, 224, 512, 128), "float16"),
-                  "attention_mask": ((batch, 1, 1, 513), "float16"),
-              })
-              backbone_names.append(f"backbone_step_b{batch}")
-
+          backbone_models = [bpre, bstep]
+          backbone_specs = [
+              {
+                  "inputs_embeds": ((1, 512, 2048), "float16"),
+                  "attention_mask": ((1, 1, 512, 512), "float16"),
+                  "positions": ((1, 512), "int32"),
+              },
+              {
+                  "input_embed": ((2, 1, 2048), "float16"),
+                  "positions": ((2,), "int32"),
+                  "key_cache": ((2, 224, 512, 128), "float16"),
+                  "value_cache": ((2, 224, 512, 128), "float16"),
+                  "attention_mask": ((2, 1, 1, 513), "float16"),
+              },
+          ]
+          backbone_names = ["backbone_prefill_512", "backbone_step_b2"]
           backbone_jobs, backbone_link = client.submit_compile_and_link_jobs(
               models=backbone_models,
               input_specs=backbone_specs,
               device=device,
-              name="Breeze TTS 2 full QNN backbone SM8850",
+              name="Breeze TTS 2 backbone prompt+AR1 SM8850",
               graph_names=backbone_names,
-              compile_options=[fp16] * len(backbone_models),
+              compile_options=[fp16, fp16],
               link_options="--qnn_options default_graph_htp_optimizations=O=3",
           )
           if backbone_link is None:
               raise SystemExit("AI Hub did not create the backbone link job")
-          backbone_link.wait()
-          backbone_status = backbone_link.get_status()
+          for job in backbone_jobs:
+              status = job.wait()
+              if not status.success:
+                  raise SystemExit(
+                      f"AI Hub backbone compile {job.job_id} failed: "
+                      f"{status.message or status.code} {job.url}"
+                  )
+          backbone_status = backbone_link.wait()
           if not backbone_status.success:
               raise SystemExit(
                   "AI Hub backbone link failed: " +
-                  (backbone_status.message or backbone_status.code)
+                  (backbone_status.message or backbone_status.code) +
+                  " " + backbone_link.url
               )
           backbone_target = root / "breeze-backbone-sm8850-v81.bin"
           if not backbone_link.download_target_model(str(backbone_target)):
@@ -197,9 +199,12 @@ jobs:
               "depth_compile_jobs": [j.job_id for j in depth_jobs],
               "depth_link_job": depth_link.job_id,
               "depth_context_bytes": depth_target.stat().st_size,
+              "depth_graph_names": depth_names,
               "backbone_compile_jobs": [j.job_id for j in backbone_jobs],
               "backbone_link_job": backbone_link.job_id,
               "backbone_context_bytes": backbone_target.stat().st_size,
+              "backbone_graph_names": backbone_names,
+              "backbone_prefill_buckets": [512],
           }
           (root / "qai-hub-job.json").write_text(json.dumps(meta, indent=2) + "\n")
           print(json.dumps(meta, indent=2))
@@ -259,9 +264,9 @@ jobs:
               "target_device": hub["device"],
               "soc_model": 87,
               "htp_arch": "V81",
-              "depth_graph_names": export["depth"]["graph_names"],
-              "backbone_graph_names": export["backbone"]["graph_names"],
-              "backbone_prefill_buckets": export["backbone"]["prefill_buckets"],
+              "depth_graph_names": hub["depth_graph_names"],
+              "backbone_graph_names": hub["backbone_graph_names"],
+              "backbone_prefill_buckets": hub["backbone_prefill_buckets"],
               "backbone_max_seq": export["backbone"]["max_seq"],
               "files": {
                   "SM8850": {
@@ -277,8 +282,9 @@ jobs:
           cat > build/breeze-qnn-generator/release/NOTICE-Breeze-QNN-Generator.txt <<'EOF'
           Breeze TTS 2 is licensed under the BreezeBlue Research and Non-Commercial
           License Agreement. This release contains SM8850/V81 QNN HTP contexts for
-          both the Qwen3 backbone and the residual depth decoder. Sampling stays
-          native in Local Dream; unsupported inputs retain the ggml-Hexagon fallback.
+          both the Qwen3 backbone and residual depth decoder. Each context uses
+          Qualcomm's prompt-plus-AR graph pattern with physical batch-2 AR decode.
+          Sampling stays native; unsupported inputs retain ggml-Hexagon fallback.
           EOF
           (cd build/breeze-qnn-generator/release && sha256sum * > SHA256SUMS.txt)
           ls -lh build/breeze-qnn-generator/release
