@@ -447,7 +447,7 @@ class BackbonePrefill(torch.nn.Module):
             values.append(v)
         x = self.core.norm(x)
         last = x[:, -1, :]
-        logits = self.core.lm_head(last.float())
+        logits = torch.matmul(last.float(), self.core.lm_head.weight.float().transpose(0, 1))
         return last, logits, torch.cat(keys, dim=1), torch.cat(values, dim=1)
 
 
@@ -482,7 +482,7 @@ class BackboneStep(torch.nn.Module):
             new_values.append(v)
         x = self.core.norm(x)
         hidden = x[:, 0, :]
-        logits = self.core.lm_head(hidden.float())
+        logits = torch.matmul(hidden.float(), self.core.lm_head.weight.float().transpose(0, 1))
         return hidden, logits, torch.cat(new_keys, dim=1), torch.cat(new_values, dim=1)
 
 
@@ -607,7 +607,7 @@ def backbone_parity(backbone, core: BackboneCore, prefill: BackbonePrefill, step
         use_cache=False,
     ).last_hidden_state
     ref_h = ref[:, -1, :]
-    ref_logits = core.lm_head(ref_h.float())
+    ref_logits = torch.matmul(ref_h.float(), core.lm_head.weight.float().transpose(0, 1))
     prefill_err = max(
         float((h - ref_h).abs().max()),
         float((logits - ref_logits).abs().max()),
@@ -637,7 +637,7 @@ def backbone_parity(backbone, core: BackboneCore, prefill: BackbonePrefill, step
         position_ids=all_pos,
         use_cache=False,
     ).last_hidden_state[:, -1, :]
-    ref2_logits = core.lm_head(ref2.float())
+    ref2_logits = torch.matmul(ref2.float(), core.lm_head.weight.float().transpose(0, 1))
     step_err = max(
         float((sh - ref2).abs().max()),
         float((slogits - ref2_logits).abs().max()),
