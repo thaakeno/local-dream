@@ -361,7 +361,7 @@ fun SpeechRunScreen(
                 )
             }
         }
-        history = withContext(Dispatchers.IO) { SpeechHistoryStore.load(context) }
+        history = withContext(Dispatchers.IO) { SpeechHistoryStore.loadForModel(context, modelId) }
     }
 
     LaunchedEffect(acceleratorState) {
@@ -399,7 +399,7 @@ fun SpeechRunScreen(
                 lastTerminalHaptic = null
             }
             is SpeechState.Complete -> {
-                history = withContext(Dispatchers.IO) { SpeechHistoryStore.load(context) }
+                history = withContext(Dispatchers.IO) { SpeechHistoryStore.loadForModel(context, modelId) }
                 if (lastTerminalHaptic != "complete") {
                     AppHaptics.perform(context, AppHaptics.Kind.Success)
                     lastTerminalHaptic = "complete"
@@ -462,7 +462,7 @@ fun SpeechRunScreen(
                             showHistory = true
                             scope.launch {
                                 history = withContext(Dispatchers.IO) {
-                                    SpeechHistoryStore.load(context)
+                                    SpeechHistoryStore.loadForModel(context, modelId)
                                 }
                             }
                         },
@@ -1345,11 +1345,12 @@ fun SpeechRunScreen(
                                                     scope.launch {
                                                         SpeechHistoryStore.setFavorite(
                                                             context,
+                                                            modelId,
                                                             item.id,
                                                             !item.favorite,
                                                         )
                                                         history = withContext(Dispatchers.IO) {
-                                                            SpeechHistoryStore.load(context)
+                                                            SpeechHistoryStore.loadForModel(context, modelId)
                                                         }
                                                         AppHaptics.perform(
                                                             context,
@@ -1447,11 +1448,12 @@ fun SpeechRunScreen(
                                                         scope.launch {
                                                             SpeechHistoryStore.delete(
                                                                 context,
+                                                                modelId,
                                                                 item.id,
                                                             )
                                                             history =
                                                                 withContext(Dispatchers.IO) {
-                                                                    SpeechHistoryStore.load(context)
+                                                                    SpeechHistoryStore.loadForModel(context, modelId)
                                                                 }
                                                         }
                                                     },
