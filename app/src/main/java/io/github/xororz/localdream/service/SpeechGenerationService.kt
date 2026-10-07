@@ -55,7 +55,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v202-qnn-sm8850-v81-adaptive-power"
+            "breeze-a0e177-hexagon-ab9acc-v204-qnn-v4-multigraph-bounded"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -268,7 +268,7 @@ class SpeechGenerationService : Service() {
                 // graph, then larger chunks amortize HTP graph submission cost.
                 "--chunk-first", "8",
                 "--chunk-max", "32",
-                "--split-chars", "600",
+                "--split-chars", "240",
                 "--verbose",
             )
 
