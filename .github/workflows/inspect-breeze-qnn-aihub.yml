@@ -85,7 +85,11 @@ jobs:
           for i, model in enumerate(models):
               describe_model(f"depth_link_model_{i}", model)
           # Download the original ONNX sources and inspect whether batch/sequence axes are fixed.
+          # AI Hub packages ONNX sources with external data as ZIP archives. Model.download()
+          # may therefore return e.g. "foo.onnx.onnx.zip" even when the requested output name
+          # ends in .onnx. Never feed that archive to onnx.load().
           import pathlib
+          import zipfile
           import onnx
 
           source_ids = {
@@ -96,10 +100,43 @@ jobs:
           }
           out = pathlib.Path("onnx-inspect")
           out.mkdir(exist_ok=True)
+
+          def load_downloaded_onnx(model, label):
+              requested = out / (label + ".onnx")
+              downloaded = pathlib.Path(model.download(str(requested)))
+              print("downloaded", label, "->", downloaded)
+
+              if downloaded.is_dir():
+                  candidates = sorted(downloaded.rglob("*.onnx"))
+                  if len(candidates) != 1:
+                      raise RuntimeError(
+                          f"{label}: expected exactly one ONNX in {downloaded}, found {candidates}"
+                      )
+                  return onnx.load(str(candidates[0]), load_external_data=False)
+
+              if zipfile.is_zipfile(downloaded):
+                  # Only read the graph protobuf. External tensor data is irrelevant for
+                  # input/output shape inspection and can be several gigabytes.
+                  with zipfile.ZipFile(downloaded) as archive:
+                      members = [
+                          name for name in archive.namelist()
+                          if not name.endswith("/") and name.lower().endswith(".onnx")
+                      ]
+                      print("archive ONNX members", members)
+                      if len(members) != 1:
+                          raise RuntimeError(
+                              f"{label}: expected exactly one ONNX member, found {members}"
+                          )
+                      payload = archive.read(members[0])
+                  return onnx.load_model_from_string(payload)
+
+              if not downloaded.is_file():
+                  raise RuntimeError(f"{label}: AI Hub download did not produce a file: {downloaded}")
+              return onnx.load(str(downloaded), load_external_data=False)
+
           for label, mid in source_ids.items():
               model = client.get_model(mid)
-              path = model.download(str(out / (label + ".onnx")))
-              proto = onnx.load(path, load_external_data=False)
+              proto = load_downloaded_onnx(model, label)
               def dims(value):
                   shape = value.type.tensor_type.shape
                   return [d.dim_value if d.dim_value else (d.dim_param or "?") for d in shape.dim]
