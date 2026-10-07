@@ -1,0 +1,88 @@
+name: Inspect Breeze QNN v5 AI Hub jobs
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - breeze-qnn-v5-fastpath
+    paths:
+      - '.github/workflows/inspect-breeze-qnn-v5-jobs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install AI Hub client
+        run: python -m pip install --upgrade 'qai-hub>=0.56.0'
+
+      - name: Print v5 jobs and completed profile dictionaries
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import qai_hub as hub
+
+          client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
+          summaries = client.get_job_summaries(limit=100)
+          found = []
+          needles = (
+              "Breeze v5",
+              "Breeze depth benchmark",
+              "Breeze v5 benchmark",
+          )
+
+          for summary in summaries:
+              name = getattr(summary, "name", "") or ""
+              if not any(n in name for n in needles):
+                  continue
+              job_id = getattr(summary, "job_id", None) or getattr(summary, "id", None)
+              if not job_id:
+                  continue
+              job = client.get_job(job_id)
+              status = job.get_status()
+              item = {
+                  "job_id": job_id,
+                  "name": name,
+                  "type": type(job).__name__,
+                  "url": getattr(job, "url", None),
+                  "status": getattr(status, "code", None),
+                  "message": getattr(status, "message", None),
+                  "success": bool(getattr(status, "success", False)),
+              }
+
+              if item["success"] and hasattr(job, "download_profile"):
+                  try:
+                      item["profile"] = job.download_profile()
+                  except Exception as exc:
+                      item["profile_error"] = repr(exc)
+
+              if item["success"] and hasattr(job, "get_target_model"):
+                  try:
+                      model = job.get_target_model()
+                      item["target_model_id"] = getattr(model, "model_id", None) if model else None
+                      item["target_model_type"] = str(getattr(model, "model_type", None)) if model else None
+                      item["target_input_spec"] = str(getattr(model, "input_spec", None)) if model else None
+                      item["target_output_spec"] = str(getattr(model, "output_spec", None)) if model else None
+                  except Exception as exc:
+                      item["target_error"] = repr(exc)
+
+              found.append(item)
+
+          found.sort(key=lambda x: x["job_id"])
+          print("=== BREEZE_V5_AI_HUB_JOBS ===")
+          print(json.dumps(found, indent=2, default=str))
+          if not found:
+              raise SystemExit("No Breeze v5 jobs found in the latest AI Hub summaries")
+          PY
