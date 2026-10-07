@@ -55,7 +55,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v204-qnn-v4-multigraph-bounded"
+            "breeze-a0e177-hexagon-ab9acc-v206-qnn-v3-safe-first8-bounded"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -264,8 +264,9 @@ class SpeechGenerationService : Service() {
                 "--host", "127.0.0.1",
                 "--port", "8082",
                 "--ws-port", "-1",
-                // The v4 QNN vocoder emits its first ~0.64 s from an 8-frame
-                // graph, then larger chunks amortize HTP graph submission cost.
+                // The proven single-graph v3 QNN vocoder stays resident beside ggml-Hexagon.
+                // We still request the first 8 fresh frames immediately; the fixed 64-frame
+                // graph zero-pads unused positions without the unstable multigraph context.
                 "--chunk-first", "8",
                 "--chunk-max", "32",
                 "--split-chars", "240",
@@ -348,10 +349,10 @@ class SpeechGenerationService : Service() {
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
                     "generator_mode=" + (if (fullQnnEnabled) "full-qnn" else "legacy-hexagon") + " " +
                     "generator=" + (if (qnnGeneratorInstall != null) qnnGeneratorInstall.engine else "ggml-hexagon") + " " +
-                    "vocoder=" + (if (usingQnnVocoder) "qnn-htp-multigraph-v4" else "ggml-stateful-fallback") + " " +
+                    "vocoder=" + (if (usingQnnVocoder) "qnn-htp-feature64-v3" else "ggml-stateful-fallback") + " " +
                     "qnn_target=sm8850-v81 qnn_selftest=" +
                     (if (qnnSelftestCached) "cached" else "reference-pcm") + " " +
-                    "qnn_scheduler=first8-steady39-tail32 qnn_left_context=25 qnn_host_lut=fp32 eos=eos-first " +
+                    "qnn_scheduler=first8-steady39-fixed64 qnn_left_context=25 qnn_host_lut=fp32 eos=eos-first " +
                     "snake=precomputed+fused diag=projection-preflight-v195 signal_validation=stream+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )

@@ -15,10 +15,10 @@ import okhttp3.Request
 import org.json.JSONObject
 
 object BreezeQnnVocoderArtifact {
-    private const val RELEASE_TAG = "breeze-qnn-vocoder-sm8850-v4"
+    private const val RELEASE_TAG = "breeze-qnn-vocoder-sm8850-v3"
     private const val BASE_URL =
         "https://github.com/thaakeno/local-dream/releases/download/" + RELEASE_TAG
-    private const val DIR = "breeze_qnn_vocoder/v4-sm8850"
+    private const val DIR = "breeze_qnn_vocoder/v3-sm8850"
 
     data class Install(
         val soc: String,
@@ -73,7 +73,7 @@ object BreezeQnnVocoderArtifact {
 
         return runCatching {
             val json = JSONObject(marker.readText())
-            if (json.optInt("version") != 4 || json.optString("soc") != soc) {
+            if (json.optInt("version") != 3 || json.optString("soc") != soc) {
                 return@runCatching null
             }
 
@@ -187,7 +187,7 @@ object BreezeQnnVocoderArtifact {
                 JSONObject(body)
             }
             if (
-                root.optInt("version") != 4 ||
+                root.optInt("version") != 3 ||
                 root.optInt("soc_model") != 87 ||
                 root.optString("htp_arch") != "V81"
             ) {
@@ -255,7 +255,7 @@ object BreezeQnnVocoderArtifact {
             val selftestAudio = items[3]
             File(destination, "installed.json").writeText(
                 JSONObject()
-                    .put("version", 4)
+                    .put("version", 3)
                     .put("soc", soc)
                     .put("contextFile", contextItem.name)
                     .put("contextBytes", contextItem.bytes)
@@ -268,11 +268,11 @@ object BreezeQnnVocoderArtifact {
                     .toString(),
             )
 
-            // Only remove older artifacts after v4 + reference tensors are
+            // Only remove older artifacts after v3 + reference tensors are
             // downloaded and checksum-verified.
             File(context.filesDir, "breeze_qnn_vocoder/v1").deleteRecursively()
             File(context.filesDir, "breeze_qnn_vocoder/v2-sm8850").deleteRecursively()
-            File(context.filesDir, "breeze_qnn_vocoder/v3-sm8850").deleteRecursively()
+            File(context.filesDir, "breeze_qnn_vocoder/v4-sm8850").deleteRecursively()
             _status.value = Status.Ready(soc, File(destination, contextItem.name))
         }.onFailure { error ->
             _status.value = Status.Error(

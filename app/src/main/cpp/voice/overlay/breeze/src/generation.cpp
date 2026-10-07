@@ -342,10 +342,9 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     const bool qnn_pipeline = codec.uses_qnn_vocoder();
     // QNN and ggml-hexagon share the same physical HTP. Running them at the
     // same time made QNN graph execution much slower on SM8850. Serialize HTP
-    // work, but use the v4 multigraph context for low first-sound latency:
-    // 8 frames for the first audio, then 39 fresh frames per 64-frame steady
-    // graph. Tail flushes automatically select the 32-frame graph when the
-    // 25-frame left context plus the remaining audio fits.
+    // work. The stable v3 context contains one 64-frame graph: request the first
+    // 8 fresh frames immediately (unused positions are zero-padded), then use
+    // 39 fresh frames once the 25-frame causal history is full.
     const bool qnn_streaming = qnn_pipeline && estimated_frames > 8;
     const int qnn_first_new = 8;
     const int qnn_steady_new = 39;

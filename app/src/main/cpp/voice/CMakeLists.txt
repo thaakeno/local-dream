@@ -88,7 +88,7 @@ set(BREEZE_SOURCES
     "${BREEZE_SOURCE_DIR}/src/tokenizer.cpp"
     "${BREEZE_SOURCE_DIR}/src/text_encoder.cpp"
     "${BREEZE_OVERLAY_DIR}/src/backbone.cpp"
-    "${BREEZE_OVERLAY_DIR}/src/depth_decoder.cpp"
+    "${BREEZE_SOURCE_DIR}/src/depth_decoder.cpp"
     "${BREEZE_OVERLAY_DIR}/src/codec.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-codec-conv-htp.cpp"
     "${BREEZE_OVERLAY_DIR}/src/codec_decoder.cpp"

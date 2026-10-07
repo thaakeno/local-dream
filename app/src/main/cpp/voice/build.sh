@@ -79,8 +79,6 @@ test -s "$(pwd)/overlay/breeze/include/breeze/codec.h"
 test -s "$(pwd)/overlay/breeze/src/codec.cpp"
 test -s "$(pwd)/overlay/breeze/src/codec_transformer.cpp"
 test -s "$(pwd)/overlay/breeze/src/codec_decoder.cpp"
-test -s "$(pwd)/overlay/breeze/include/breeze/depth_decoder.h"
-test -s "$(pwd)/overlay/breeze/src/depth_decoder.cpp"
 test -s "$(pwd)/overlay/breeze/src/generation.cpp"
 
 # v174 is intentionally the exact v153 codec/transformer graph that completed
@@ -190,8 +188,7 @@ fi
 # QNN vocoder fast path must remain optional and fall back to the proven ggml
 # stateful decoder when its downloaded context binary is absent.
 grep -q 'BREEZE_QNN_VOCODER_PATH' "$(pwd)/native/breeze-qnn-vocoder.cpp"
-grep -q 'graph%d_ms' "$(pwd)/native/breeze-qnn-vocoder.cpp"
-grep -q 'graph_frames{8, 32, 64}' "$(pwd)/native/breeze-qnn-vocoder.cpp"
+grep -q 'graph64_ms' "$(pwd)/native/breeze-qnn-vocoder.cpp"
 grep -q 'qnn_vocoder->decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
 grep -q 'const int qnn_first_new = 8' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'const int qnn_steady_new = 39' "$(pwd)/overlay/breeze/src/generation.cpp"
@@ -215,9 +212,6 @@ grep -q 'persistent_backbone' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'persistent_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'BREEZE_QNN_CACHE' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'depth.run(m, hiddens, cb0' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'BREEZE_DEPTH_FAST' "$(pwd)/overlay/breeze/src/depth_decoder.cpp"
-grep -q 'ggml_argsort_top_k' "$(pwd)/overlay/breeze/src/depth_decoder.cpp"
-grep -q 'run_depth_frame_fast' "$(pwd)/overlay/breeze/src/depth_decoder.cpp"
 
 # Full-clip decode remains available for voice conversion/reference work, but
 # production decode must not attach the old full-tensor SUM diagnostic probes.
