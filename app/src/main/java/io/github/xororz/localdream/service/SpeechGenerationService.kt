@@ -264,8 +264,8 @@ class SpeechGenerationService : Service() {
                 "--host", "127.0.0.1",
                 "--port", "8082",
                 "--ws-port", "-1",
-                // First ~0.64 s of codec audio is decoded quickly, then larger
-                // chunks amortize the fixed DSPQueue/graph submission cost.
+                // The v4 QNN vocoder emits its first ~0.64 s from an 8-frame
+                // graph, then larger chunks amortize HTP graph submission cost.
                 "--chunk-first", "8",
                 "--chunk-max", "32",
                 "--split-chars", "600",
@@ -348,10 +348,10 @@ class SpeechGenerationService : Service() {
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
                     "generator_mode=" + (if (fullQnnEnabled) "full-qnn" else "legacy-hexagon") + " " +
                     "generator=" + (if (qnnGeneratorInstall != null) qnnGeneratorInstall.engine else "ggml-hexagon") + " " +
-                    "vocoder=" + (if (usingQnnVocoder) "qnn-htp-feature64-serialized-v3" else "ggml-stateful-fallback") + " " +
+                    "vocoder=" + (if (usingQnnVocoder) "qnn-htp-multigraph-v4" else "ggml-stateful-fallback") + " " +
                     "qnn_target=sm8850-v81 qnn_selftest=" +
                     (if (qnnSelftestCached) "cached" else "reference-pcm") + " " +
-                    "qnn_scheduler=serialized64x39 qnn_left_context=25 qnn_host_lut=fp32 eos=eos-first " +
+                    "qnn_scheduler=first8-steady39-tail32 qnn_left_context=25 qnn_host_lut=fp32 eos=eos-first " +
                     "snake=precomputed+fused diag=projection-preflight-v195 signal_validation=stream+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
