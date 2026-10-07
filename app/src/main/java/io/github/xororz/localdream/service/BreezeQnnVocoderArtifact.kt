@@ -15,12 +15,13 @@ import okhttp3.Request
 import org.json.JSONObject
 
 object BreezeQnnVocoderArtifact {
-    private const val RELEASE_TAG = "breeze-qnn-vocoder-sm8850-v3"
+    private const val RELEASE_TAG = "breeze-qnn-vocoder-sm8850-v4"
     private const val BASE_URL =
         "https://github.com/thaakeno/local-dream/releases/download/" + RELEASE_TAG
-    private const val DIR = "breeze_qnn_vocoder/v3-sm8850"
+    private const val DIR = "breeze_qnn_vocoder/v4-sm8850"
 
     data class Install(
+        val version: Int,
         val soc: String,
         val contextFile: File,
         val lutFile: File,
@@ -50,6 +51,7 @@ object BreezeQnnVocoderArtifact {
     val status: StateFlow<Status> = _status
 
     private fun dir(context: Context) = File(context.filesDir, DIR)
+    private fun v3Dir(context: Context) = File(context.filesDir, "breeze_qnn_vocoder/v3-sm8850")
 
     private fun fingerprint(): String {
         val parts = ArrayList<String>()
@@ -66,42 +68,51 @@ object BreezeQnnVocoderArtifact {
     fun supportedSoc(): String? =
         if (fingerprint().contains("SM8850")) "SM8850" else null
 
-    fun localInstall(context: Context): Install? {
-        val soc = supportedSoc() ?: return null
-        val marker = File(dir(context), "installed.json")
+    private fun installFrom(
+        root: File,
+        expectedVersion: Int,
+        soc: String,
+    ): Install? {
+        val marker = File(root, "installed.json")
         if (!marker.isFile) return null
-
         return runCatching {
             val json = JSONObject(marker.readText())
-            if (json.optInt("version") != 3 || json.optString("soc") != soc) {
+            if (
+                json.optInt("version") != expectedVersion ||
+                json.optString("soc") != soc
+            ) {
                 return@runCatching null
             }
 
             fun checkedFile(nameKey: String, bytesKey: String): File? {
-                val file = File(dir(context), json.getString(nameKey))
+                val file = File(root, json.getString(nameKey))
                 val bytes = json.getLong(bytesKey)
                 return file.takeIf { it.isFile && it.length() == bytes }
             }
 
-            val contextFile = checkedFile("contextFile", "contextBytes")
-                ?: return@runCatching null
-            val lutFile = checkedFile("lutFile", "lutBytes")
-                ?: return@runCatching null
-            val selftestFeaturesFile =
-                checkedFile("selftestFeaturesFile", "selftestFeaturesBytes")
-                    ?: return@runCatching null
-            val selftestAudioFile =
-                checkedFile("selftestAudioFile", "selftestAudioBytes")
-                    ?: return@runCatching null
-
             Install(
-                soc,
-                contextFile,
-                lutFile,
-                selftestFeaturesFile,
-                selftestAudioFile,
+                version = expectedVersion,
+                soc = soc,
+                contextFile = checkedFile("contextFile", "contextBytes")
+                    ?: return@runCatching null,
+                lutFile = checkedFile("lutFile", "lutBytes")
+                    ?: return@runCatching null,
+                selftestFeaturesFile =
+                    checkedFile("selftestFeaturesFile", "selftestFeaturesBytes")
+                        ?: return@runCatching null,
+                selftestAudioFile =
+                    checkedFile("selftestAudioFile", "selftestAudioBytes")
+                        ?: return@runCatching null,
             )
         }.getOrNull()
+    }
+
+    fun localInstall(context: Context): Install? {
+        val soc = supportedSoc() ?: return null
+        // Prefer the multigraph v4 context when present, but keep the proven
+        // single-graph v3 install as an automatic compatibility fallback.
+        return installFrom(dir(context), 4, soc)
+            ?: installFrom(v3Dir(context), 3, soc)
     }
 
     fun localFile(context: Context): File? = localInstall(context)?.contextFile
@@ -187,7 +198,7 @@ object BreezeQnnVocoderArtifact {
                 JSONObject(body)
             }
             if (
-                root.optInt("version") != 3 ||
+                root.optInt("version") != 4 ||
                 root.optInt("soc_model") != 87 ||
                 root.optString("htp_arch") != "V81"
             ) {
@@ -255,7 +266,7 @@ object BreezeQnnVocoderArtifact {
             val selftestAudio = items[3]
             File(destination, "installed.json").writeText(
                 JSONObject()
-                    .put("version", 3)
+                    .put("version", 4)
                     .put("soc", soc)
                     .put("contextFile", contextItem.name)
                     .put("contextBytes", contextItem.bytes)
@@ -268,11 +279,10 @@ object BreezeQnnVocoderArtifact {
                     .toString(),
             )
 
-            // Only remove older artifacts after v3 + reference tensors are
+            // Only remove older artifacts after v4 + reference tensors are
             // downloaded and checksum-verified.
             File(context.filesDir, "breeze_qnn_vocoder/v1").deleteRecursively()
             File(context.filesDir, "breeze_qnn_vocoder/v2-sm8850").deleteRecursively()
-            File(context.filesDir, "breeze_qnn_vocoder/v4-sm8850").deleteRecursively()
             _status.value = Status.Ready(soc, File(destination, contextItem.name))
         }.onFailure { error ->
             _status.value = Status.Error(
