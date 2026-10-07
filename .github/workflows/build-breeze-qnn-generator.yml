@@ -186,9 +186,17 @@ jobs:
 
           def compile_dlc(model, spec, graph_name, job_name, output_name):
               model_path = root / model
-              # qai-hub follows ONNX external_data references. Our exporter
-              # normalizes them to one regular <model>.onnx.data sibling file.
+
+              # AI Hub's documented external-weight upload contract is NOT
+              # "upload the .onnx file and leave .data beside it". For external
+              # weights it requires either a directory whose name ends in .onnx
+              # or an .onnx.zip containing the ONNX plus exactly one .data file.
+              # Package the normalized ONNX accordingly so Workbench receives
+              # the weight file instead of creating a dangling reference.
               import onnx
+              import zipfile
+
+              onnx.checker.check_model(str(model_path), full_check=True)
               check = onnx.load(str(model_path), load_external_data=False)
               locations = set()
               for tensor in check.graph.initializer:
@@ -196,20 +204,59 @@ jobs:
                       for kv in tensor.external_data:
                           if kv.key == "location":
                               locations.add(kv.value)
-              for loc in locations:
-                  p = model_path.parent / loc
-                  if not p.is_file() or p.is_symlink():
+
+              upload_path = model_path
+              if locations:
+                  if len(locations) != 1:
                       raise SystemExit(
-                          f"Refusing AI Hub upload: external data is not regular: {p}"
+                          f"{model_path.name}: AI Hub requires exactly one external .data file; "
+                          f"found {sorted(locations)}"
                       )
+                  loc = next(iter(locations))
+                  data_path = model_path.parent / loc
+                  if (
+                      data_path.suffix != ".data" or
+                      not data_path.is_file() or
+                      data_path.is_symlink()
+                  ):
+                      raise SystemExit(
+                          f"Refusing AI Hub upload: invalid external data file: {data_path}"
+                      )
+
+                  upload_path = model_path.with_name(model_path.name + ".zip")
+                  if upload_path.exists():
+                      upload_path.unlink()
+                  with zipfile.ZipFile(
+                      upload_path,
+                      mode="w",
+                      compression=zipfile.ZIP_STORED,
+                      allowZip64=True,
+                  ) as archive:
+                      archive.write(model_path, arcname=model_path.name)
+                      archive.write(data_path, arcname=loc)
+
+                  with zipfile.ZipFile(upload_path, "r") as archive:
+                      names = archive.namelist()
+                      data_members = [n for n in names if n.endswith(".data")]
+                      if (
+                          model_path.name not in names or
+                          data_members != [loc] or
+                          archive.getinfo(loc).file_size != data_path.stat().st_size
+                      ):
+                          raise SystemExit(
+                              f"{upload_path.name}: malformed AI Hub ONNX external-data package"
+                          )
+
               print(
-                  "uploading", model_path.name,
+                  "uploading", upload_path.name,
+                  "onnx=", model_path.stat().st_size,
                   "external_data=", sorted(locations),
                   "external_bytes=", sum((model_path.parent / x).stat().st_size for x in locations),
+                  "package_bytes=", upload_path.stat().st_size,
               )
 
               source = client.upload_model(
-                  str(model_path),
+                  str(upload_path),
                   name=f"{job_name} ONNX",
               )
               job = client.submit_compile_job(
