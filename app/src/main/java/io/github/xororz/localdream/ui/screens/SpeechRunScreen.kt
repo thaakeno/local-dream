@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -18,6 +19,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
@@ -31,6 +38,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -60,8 +69,145 @@ import kotlinx.coroutines.withContext
 
 private data class SpeechTemplate(
     val name: String,
+    val category: String,
     val text: String,
     val instruction: String,
+)
+
+private data class InlineEventCue(
+    val tag: String,
+    val label: String,
+    val official: Boolean,
+    val language: String,
+)
+
+private enum class SpeechHistorySort(val label: String) {
+    Newest("Newest"),
+    Oldest("Oldest"),
+    Fastest("Fastest"),
+    Longest("Longest"),
+}
+
+private val BREEZE_INLINE_EVENTS = listOf(
+    InlineEventCue("(laugh)", "Laugh", true, "English"),
+    InlineEventCue("(sigh)", "Sigh", true, "English"),
+    InlineEventCue("(cough)", "Cough", true, "English"),
+    InlineEventCue("(clears throat)", "Clear throat", true, "English"),
+    InlineEventCue("[笑]", "笑", true, "中文"),
+    InlineEventCue("[叹气]", "叹气", true, "中文"),
+    InlineEventCue("[咳嗽]", "咳嗽", true, "中文"),
+    InlineEventCue("[清嗓子]", "清嗓子", true, "中文"),
+    // Breeze's event vocabulary is open-ended in the cpp runtime. These are
+    // useful extended cues, but deliberately kept visually separate from the
+    // official BreezeBlue examples above.
+    InlineEventCue("(laughs)", "Laughs", false, "Extended"),
+    InlineEventCue("(chuckles)", "Chuckles", false, "Extended"),
+    InlineEventCue("(giggles)", "Giggles", false, "Extended"),
+    InlineEventCue("(crying)", "Crying", false, "Extended"),
+    InlineEventCue("(sobs)", "Sobs", false, "Extended"),
+    InlineEventCue("(whimpers)", "Whimpers", false, "Extended"),
+    InlineEventCue("(groans)", "Groans", false, "Extended"),
+    InlineEventCue("(moans)", "Moans", false, "Extended"),
+    InlineEventCue("(sighs)", "Sighs", false, "Extended"),
+    InlineEventCue("(gasps)", "Gasps", false, "Extended"),
+    InlineEventCue("(inhales)", "Inhales", false, "Extended"),
+    InlineEventCue("(exhales)", "Exhales", false, "Extended"),
+    InlineEventCue("(breathing heavily)", "Heavy breath", false, "Extended"),
+    InlineEventCue("(whispers)", "Whispers", false, "Extended"),
+    InlineEventCue("(shouts)", "Shouts", false, "Extended"),
+    InlineEventCue("(screams)", "Screams", false, "Extended"),
+    InlineEventCue("(singing)", "Singing", false, "Extended"),
+    InlineEventCue("(humming)", "Humming", false, "Extended"),
+    InlineEventCue("(stutters)", "Stutters", false, "Extended"),
+    InlineEventCue("(pause)", "Pause", false, "Extended"),
+    InlineEventCue("(coughs)", "Coughs", false, "Extended"),
+    InlineEventCue("(sniffs)", "Sniffs", false, "Extended"),
+    InlineEventCue("(smacks lips)", "Lip smack", false, "Extended"),
+    InlineEventCue("(clicks tongue)", "Tongue click", false, "Extended"),
+    InlineEventCue("(yawns)", "Yawns", false, "Extended"),
+    InlineEventCue("(sneezes)", "Sneezes", false, "Extended"),
+    InlineEventCue("(hiccups)", "Hiccups", false, "Extended"),
+    InlineEventCue("(burps)", "Burps", false, "Extended"),
+    InlineEventCue("(gulps)", "Gulps", false, "Extended"),
+    InlineEventCue("(gags)", "Gags", false, "Extended"),
+    InlineEventCue("(grunts)", "Grunts", false, "Extended"),
+    InlineEventCue("(scoffs)", "Scoffs", false, "Extended"),
+    InlineEventCue("(snorts)", "Snorts", false, "Extended"),
+)
+
+private val BREEZE_TEMPLATES = listOf(
+    SpeechTemplate(
+        "Late-night voice memo",
+        "Realistic",
+        "(sigh) Okay... I probably should have called earlier. The train stalled outside the station, my phone was nearly dead, and by the time I got home I just wanted five minutes of silence.",
+        "Young adult male recorded as a casual phone voice memo. Close mic, natural room tone, imperfect pacing, small hesitations and breaths. Conversational and believable, never performed.",
+    ),
+    SpeechTemplate(
+        "Quiet confession",
+        "Realistic",
+        "I kept rewriting this in my head because every version sounded rehearsed. So... I'll just say it. I miss you, and I don't know what I'm supposed to do with that.",
+        "Adult woman speaking privately to someone she trusts. Soft natural voice, hesitant but sincere, small pauses, restrained emotion, close-mic phone recording.",
+    ),
+    SpeechTemplate(
+        "Vanguard One",
+        "Cinematic",
+        "(gasps) Control, this is Vanguard One. The star is gone. Not dimmed—gone. (shouts) TURN THE SHIP. NOW. (breathing heavily) There's something moving where it used to be.",
+        "Battle-worn spacecraft commander with a deep urgent voice. Controlled military delivery breaking under impossible pressure, clipped phrases, fast breathing, sudden commands, radio-like tension.",
+    ),
+    SpeechTemplate(
+        "Interrogation room",
+        "Cinematic",
+        "You walked in here expecting me to raise my voice. I'm not going to. I'm going to ask you once, very clearly... who opened that door?",
+        "Mature woman with cold authority. Low controlled volume, deliberate pauses, precise diction, contained anger and a dangerous calm. Intimate cinematic close mic.",
+    ),
+    SpeechTemplate(
+        "Close whisper",
+        "Whisper",
+        "(sigh) Keep your voice down. The walls are thinner than they look. Come closer... I'll tell you what actually happened.",
+        "Soft adult feminine voice, extremely close and intimate. Slow silky breathy whisper, very low volume, delicate breaths, relaxed pacing, clear articulation, natural ASMR-like proximity.",
+    ),
+    SpeechTemplate(
+        "Sleep story",
+        "Whisper",
+        "The rain had been falling for hours, soft enough that the city seemed farther away than usual. By midnight, even the traffic had disappeared.",
+        "Warm adult narrator in a calm near-whisper. Slow even breathing, gentle pacing, soft consonants, sleepy late-night tone, clean close-mic recording.",
+    ),
+    SpeechTemplate(
+        "Anime heroine",
+        "Anime",
+        "(giggles) You really came all this way just to prove me wrong? Fine. One round. If I win, you're buying dinner.",
+        "Adult anime-inspired feminine voice with bright natural energy, playful confidence and expressive timing. Light, polished and charming without becoming squeaky or exaggerated.",
+    ),
+    SpeechTemplate(
+        "Anime rival",
+        "Anime",
+        "I don't care how impossible it looks. We trained for this exact moment. So stop staring at the sky and move.",
+        "Young adult anime-inspired male voice. Focused, athletic and intense, quick confident delivery, controlled urgency, grounded performance rather than cartoon shouting.",
+    ),
+    SpeechTemplate(
+        "Documentary",
+        "Narration",
+        "At the edge of the desert, the temperature can fall more than thirty degrees after sunset. For the animals that live here, surviving the night is a second battle.",
+        "Mature documentary narrator with a resonant, measured voice. Clear diction, calm authority, natural pauses and a polished broadcast recording.",
+    ),
+    SpeechTemplate(
+        "Presidential address",
+        "Narration",
+        "My fellow citizens... we are entering difficult days. But this country has faced fear before, and we did not survive by surrendering to it.",
+        "Mature presidential voice: calm, authoritative and measured. Clear diction, deliberate pauses, controlled emotion, reassuring warmth and practiced public-speaking confidence.",
+    ),
+    SpeechTemplate(
+        "Betrayed",
+        "Intense",
+        "(shouts) Don't stand there and lie to me. I gave you every chance to tell me the truth. (sigh) Just... get out. Before I say something I can't take back.",
+        "Adult woman who feels personally betrayed. Sharp powerful voice, heavy breathing, sudden volume surges, brief voice cracks, then a cold low finish. Raw but believable.",
+    ),
+    SpeechTemplate(
+        "Natural Mandarin",
+        "Mandarin",
+        "今天路上有点堵，不过没关系。我们慢慢走，到了以后先找个安静的地方坐一会儿。",
+        "自然的普通话成年女声，像朋友之间真实聊天。语速舒适，语气温和，轻微停顿和自然呼吸，不要播音腔。",
+    ),
 )
 
 private const val DEFAULT_SEED = 42L
@@ -177,6 +323,7 @@ fun SpeechRunScreen(
         mutableStateOf("A warm, thoughtful young woman with a clear, calm delivery.")
     }
     var seed by rememberSaveable { mutableLongStateOf(DEFAULT_SEED) }
+    var seedLocked by rememberSaveable { mutableStateOf(true) }
     var cfg by rememberSaveable { mutableFloatStateOf(DEFAULT_CFG) }
     var temperature by rememberSaveable { mutableFloatStateOf(DEFAULT_TEMPERATURE) }
     var topK by rememberSaveable { mutableIntStateOf(DEFAULT_TOP_K) }
@@ -185,37 +332,14 @@ fun SpeechRunScreen(
     var splitChars by rememberSaveable { mutableIntStateOf(DEFAULT_SPLIT_CHARS) }
     var maxNewTokens by rememberSaveable { mutableIntStateOf(DEFAULT_MAX_NEW_TOKENS) }
     var showTune by remember { mutableStateOf(false) }
+    var showAdvancedTune by rememberSaveable { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf<List<SpeechHistoryItem>>(emptyList()) }
-
-    val templates = remember {
-        listOf(
-            SpeechTemplate(
-                "Warm narrator",
-                "The city was quiet before sunrise, and for a moment the whole world felt still.",
-                "A warm, thoughtful young woman with a clear, calm delivery. Natural pacing, intimate studio sound.",
-            ),
-            SpeechTemplate(
-                "Slow whisper",
-                "(sigh) I knew you would come back. I just did not think it would take this long.",
-                "A soft adult female voice, close-mic whisper, slow pacing, restrained emotion, breathy but intelligible.",
-            ),
-            SpeechTemplate(
-                "Dramatic",
-                "You had one chance to walk away. Now we finish what you started.",
-                "A confident adult woman with cinematic intensity, controlled anger, deliberate pauses and strong emphasis.",
-            ),
-            SpeechTemplate(
-                "Mandarin",
-                "今天的风很轻，我们慢慢走，不用着急。",
-                "自然的北京普通话女声，年轻成年，温柔清晰，语速稍慢，像真实对话。",
-            ),
-        )
-    }
-    val events = listOf(
-        "(laugh)", "(sigh)", "(cough)", "(clears throat)",
-        "[笑]", "[叹气]", "[咳嗽]", "[清嗓子]",
-    )
+    var templateCategory by rememberSaveable { mutableStateOf("Realistic") }
+    var historySearch by rememberSaveable { mutableStateOf("") }
+    var historySort by rememberSaveable { mutableStateOf(SpeechHistorySort.Newest.name) }
+    var historyFavoritesOnly by rememberSaveable { mutableStateOf(false) }
+    var historyAcceleratedOnly by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(modelId, model?.isDownloaded) {
         BreezeQnnVocoderArtifact.refresh(context)
