@@ -103,9 +103,7 @@ static std::vector<float> cfg_logits(
 class BreezeQnnDepthApp final : public QnnSampleApp {
 public:
     void * model_handle = nullptr;
-    GraphIo prefill_b1;
     GraphIo prefill_b2;
-    GraphIo step_b1;
     GraphIo step_b2;
 
     BreezeQnnDepthApp(
@@ -128,9 +126,7 @@ public:
         ) {}
 
     ~BreezeQnnDepthApp() {
-        tear_down(prefill_b1);
         tear_down(prefill_b2);
-        tear_down(step_b1);
         tear_down(step_b2);
         if (m_graphsInfo) freeContext();
         freeDevice();
@@ -172,15 +168,15 @@ public:
     }
 
     bool setup_graphs() {
-        if (!m_graphsInfo || m_graphsCount < 4) {
+        if (!m_graphsInfo || m_graphsCount < 2) {
             std::fprintf(
                 stderr,
-                "[BREEZE_QNN_DEPTH] expected 4 v2 graphs, got %u\n",
+                "[BREEZE_QNN_DEPTH] expected 2 batch-2 graphs, got %u\n",
                 (unsigned) m_graphsCount
             );
             return false;
         }
-        int p1 = -1, p2 = -1, s1 = -1, s2 = -1;
+        int p2 = -1, s2 = -1;
         for (uint32_t i = 0; i < m_graphsCount; ++i) {
             const char * name = (*m_graphsInfo)[i].graphName;
             std::fprintf(
@@ -189,25 +185,17 @@ public:
                 i,
                 name ? name : "<unnamed>"
             );
-            if (name_contains(name, "depth_prefill_b1")) p1 = (int) i;
             if (name_contains(name, "depth_prefill_b2")) p2 = (int) i;
-            if (name_contains(name, "depth_step_b1")) s1 = (int) i;
             if (name_contains(name, "depth_step_b2")) s2 = (int) i;
         }
-        if (p1 < 0 || p2 < 0 || s1 < 0 || s2 < 0) return false;
-        if (!setup_one(prefill_b1, (uint32_t) p1)) return false;
+        if (p2 < 0 || s2 < 0) return false;
         if (!setup_one(prefill_b2, (uint32_t) p2)) return false;
-        if (!setup_one(step_b1, (uint32_t) s1)) return false;
         if (!setup_one(step_b2, (uint32_t) s2)) return false;
 
-        for (GraphIo * io : {&prefill_b1, &prefill_b2}) {
-            auto & g = (*m_graphsInfo)[io->graph_index];
-            if (g.numInputTensors != 2 || g.numOutputTensors != 3) return false;
-        }
-        for (GraphIo * io : {&step_b1, &step_b2}) {
-            auto & g = (*m_graphsInfo)[io->graph_index];
-            if (g.numInputTensors != 4 || g.numOutputTensors != 3) return false;
-        }
+        auto & pg = (*m_graphsInfo)[prefill_b2.graph_index];
+        auto & sg = (*m_graphsInfo)[step_b2.graph_index];
+        if (pg.numInputTensors != 2 || pg.numOutputTensors != 3) return false;
+        if (sg.numInputTensors != 4 || sg.numOutputTensors != 3) return false;
         return true;
     }
 
@@ -275,13 +263,8 @@ public:
         return rc == QNN_GRAPH_NO_ERROR;
     }
 
-    GraphIo & prefill_for(int branches) {
-        return branches == 2 ? prefill_b2 : prefill_b1;
-    }
-
-    GraphIo & step_for(int branches) {
-        return branches == 2 ? step_b2 : step_b1;
-    }
+    GraphIo & prefill_for(int) { return prefill_b2; }
+    GraphIo & step_for(int) { return step_b2; }
 
     bool prefill_depth(
         int branches,
@@ -303,7 +286,7 @@ public:
         if (m_ioTensor.copyFromFloatToNative(
                 const_cast<float *>(hidden), &io.inputs[h]) !=
             qnn::tools::iotensor::StatusCode::SUCCESS) return false;
-        std::vector<int32_t> first((size_t) branches, cb0);
+        std::vector<int32_t> first(2u, cb0);
         if (!put_i32_array(io.inputs[t], first.data(), first.size())) return false;
         if (!execute_graph(io, ms)) return false;
 
@@ -341,7 +324,7 @@ public:
             return false;
         }
 
-        std::vector<int32_t> tokens((size_t) branches, token);
+        std::vector<int32_t> tokens(2u, token);
         if (!put_i32_array(io.inputs[ti], tokens.data(), tokens.size()) ||
             !put_i32_array(io.inputs[pi], &position, 1)) {
             return false;
@@ -442,12 +425,12 @@ bool QnnDepthRunner::init(BreezeModel & m, int branches) {
         return false;
     }
 
-    // Cheap batch-1 real-device smoke test catches incompatible context binaries.
-    std::vector<float> hidden((size_t) m.cfg.hidden_size, 0.0f);
+    // Cheap batch-2 real-device smoke test catches incompatible context binaries.
+    std::vector<float> hidden((size_t) 2 * (size_t) m.cfg.hidden_size, 0.0f);
     std::vector<float> logits;
     double ms = 0.0;
     if (!impl_->app->prefill_depth(
-            1,
+            2,
             hidden.data(),
             hidden.size(),
             0,
@@ -463,7 +446,7 @@ bool QnnDepthRunner::init(BreezeModel & m, int branches) {
     impl_->enabled = true;
     std::fprintf(
         stderr,
-        "[BREEZE_QNN_DEPTH] ready branches=%d graphs=b1+b2 selftest_ms=%.2f "
+        "[BREEZE_QNN_DEPTH] ready logical_branches=%d physical_batch=2 selftest_ms=%.2f "
         "sampling=host-native cache=native-persistent\n",
         branches,
         ms
@@ -495,9 +478,12 @@ bool QnnDepthRunner::run(
     }
 
     std::vector<float> flat;
-    flat.reserve((size_t) impl_->branches * m.cfg.hidden_size);
-    for (const auto & hidden : backbone_hiddens) {
-        flat.insert(flat.end(), hidden.begin(), hidden.end());
+    flat.reserve((size_t) 2 * (size_t) m.cfg.hidden_size);
+    flat.insert(flat.end(), backbone_hiddens[0].begin(), backbone_hiddens[0].end());
+    if (impl_->branches == 2) {
+        flat.insert(flat.end(), backbone_hiddens[1].begin(), backbone_hiddens[1].end());
+    } else {
+        flat.insert(flat.end(), backbone_hiddens[0].begin(), backbone_hiddens[0].end());
     }
 
     SampleParams sp;
@@ -512,7 +498,7 @@ bool QnnDepthRunner::run(
     double graph_ms = 0.0;
     double frame_ms = 0.0;
     if (!impl_->app->prefill_depth(
-            impl_->branches,
+            2,
             flat.data(),
             flat.size(),
             (int32_t) first_codebook,
@@ -524,14 +510,18 @@ bool QnnDepthRunner::run(
         return false;
     }
     frame_ms += graph_ms;
-    std::vector<float> logits = cfg_logits(logits_all, impl_->branches, cfg_scale);
+    std::vector<float> logits = cfg_logits(
+        logits_all,
+        2,
+        impl_->branches == 2 ? cfg_scale : 1.0f
+    );
     if (!finite_logits(logits)) return false;
     int token = sample_token(logits, sp, rng);
     residual_codebooks.push_back(token);
 
     for (int position = 2; position < m.cfg.num_codebooks; ++position) {
         if (!impl_->app->step_depth(
-                impl_->branches,
+                2,
                 (int32_t) token,
                 (int32_t) position,
                 logits_all,
@@ -547,7 +537,11 @@ bool QnnDepthRunner::run(
             return false;
         }
         frame_ms += graph_ms;
-        logits = cfg_logits(logits_all, impl_->branches, cfg_scale);
+        logits = cfg_logits(
+            logits_all,
+            2,
+            impl_->branches == 2 ? cfg_scale : 1.0f
+        );
         if (!finite_logits(logits)) {
             disable();
             residual_codebooks.clear();
