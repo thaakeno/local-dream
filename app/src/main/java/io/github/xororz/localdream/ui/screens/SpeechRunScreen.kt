@@ -218,7 +218,7 @@ private const val DEFAULT_TEMPERATURE = 0.9f
 private const val DEFAULT_TOP_K = 50
 private const val DEFAULT_TOP_P = 1f
 private const val DEFAULT_REPETITION = 1.1f
-private const val DEFAULT_SPLIT_CHARS = 240
+private const val DEFAULT_SPLIT_CHARS = 600
 private const val DEFAULT_MAX_NEW_TOKENS = 750
 
 private fun freshSpeechSeed(): Long =
@@ -1365,7 +1365,7 @@ fun SpeechRunScreen(
                                     top = 16.dp,
                                     bottom = 28.dp,
                                 ),
-                                verticalArrangement = Arrangement.spacedBy(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
                                 items(visibleHistory, key = { it.id }) { item ->
                                     val file = File(item.filePath)
@@ -1382,12 +1382,10 @@ fun SpeechRunScreen(
                                                     append(item.seed)
                                                     append(" · CFG ")
                                                     append(String.format(Locale.US, "%.2f", item.cfg))
-                                                    append(" · Snapdragon NPU")
                                                 },
-                                                badges = listOf(
-                                                    "Breeze 2",
+                                                badges = listOfNotNull(
                                                     breezeHistoryModelLabel(item.modelId),
-                                                    if (item.accelerated) "QNN waveform" else "GGUF waveform",
+                                                    if (item.accelerated) "QNN" else null,
                                                 ),
                                                 favorite = item.favorite,
                                                 onFavoriteToggle = {
@@ -1477,6 +1475,7 @@ fun SpeechRunScreen(
                                                     }
                                                 },
                                                 onShare = { shareSpeechFile(context, file) },
+                                                compact = true,
                                             )
                                             Row(
                                                 modifier = Modifier.fillMaxWidth(),
