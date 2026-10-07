@@ -9,8 +9,8 @@ namespace breeze {
 struct BreezeModel;
 
 // Optional SM8850 QNN fast path for Breeze's 15-step residual codebook decoder.
-// V2 supports batch-1 and CFG batch-2 graphs. Sampling stays on the host so
-// temperature/top-k/top-p and CFG semantics remain identical to DepthRunner.
+// V4 uses the proven batch-1 two-graph context. CFG cond/uncond branches run
+// serially with independent native KV snapshots, preserving DepthRunner semantics.
 class QnnDepthRunner {
 public:
     QnnDepthRunner();

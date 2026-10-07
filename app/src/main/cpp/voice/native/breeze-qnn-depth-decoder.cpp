@@ -62,11 +62,10 @@ static size_t tensor_elements(const Qnn_Tensor_t & tensor) {
     return n;
 }
 
-static bool put_i32_array(Qnn_Tensor_t & tensor, const int32_t * values, size_t count) {
+static bool put_i32(Qnn_Tensor_t & tensor, int32_t value) {
     auto buf = QNN_TENSOR_GET_CLIENT_BUF(tensor);
-    const size_t bytes = count * sizeof(int32_t);
-    if (!buf.data || buf.dataSize < bytes) return false;
-    std::memcpy(buf.data, values, bytes);
+    if (!buf.data || buf.dataSize < sizeof(value)) return false;
+    std::memcpy(buf.data, &value, sizeof(value));
     return true;
 }
 
@@ -96,11 +95,6 @@ static bool restore_native(const NativeBlob & src, Qnn_Tensor_t & dst) {
     return true;
 }
 
-static bool copy_native_tensor(const Qnn_Tensor_t & src, Qnn_Tensor_t & dst) {
-    NativeBlob blob;
-    return capture_native(src, blob) && restore_native(blob, dst);
-}
-
 static bool finite_logits(const std::vector<float> & logits) {
     if (logits.empty()) return false;
     bool nonzero = false;
@@ -111,22 +105,17 @@ static bool finite_logits(const std::vector<float> & logits) {
     return nonzero;
 }
 
-static std::vector<float> cfg_logits(
-    const std::vector<float> & logits,
-    int logical_branches,
+static std::vector<float> combine_cfg(
+    const std::vector<float> & cond,
+    const std::vector<float> & uncond,
+    int branches,
     float scale
 ) {
-    if (logits.size() % 2 != 0) return {};
-    const size_t vocab = logits.size() / 2;
-    std::vector<float> out(vocab);
-    if (logical_branches == 1) {
-        std::copy(logits.begin(), logits.begin() + vocab, out.begin());
-        return out;
-    }
-    for (size_t i = 0; i < vocab; ++i) {
-        const float cond = logits[i];
-        const float uncond = logits[vocab + i];
-        out[i] = uncond + scale * (cond - uncond);
+    if (branches == 1) return cond;
+    if (cond.size() != uncond.size() || cond.empty()) return {};
+    std::vector<float> out(cond.size());
+    for (size_t i = 0; i < out.size(); ++i) {
+        out[i] = uncond[i] + scale * (cond[i] - uncond[i]);
     }
     return out;
 }
@@ -134,14 +123,13 @@ static std::vector<float> cfg_logits(
 class BreezeQnnDepthApp final : public QnnSampleApp {
 public:
     void * model_handle = nullptr;
-    GraphIo graph;
-    std::string expected_graph;
+    GraphIo prefill;
+    GraphIo step;
 
     BreezeQnnDepthApp(
         QnnFunctionPointers qnnFunctionPointers,
         void * backendHandle,
-        const std::string & cachedBinaryPath,
-        std::string expected
+        const std::string & cachedBinaryPath
     ) : QnnSampleApp(
             qnnFunctionPointers,
             "",
@@ -155,11 +143,11 @@ public:
             false,
             cachedBinaryPath,
             ""
-        ),
-        expected_graph(std::move(expected)) {}
+        ) {}
 
     ~BreezeQnnDepthApp() {
-        tear_down();
+        tear_down(prefill);
+        tear_down(step);
         if (m_graphsInfo) freeContext();
         freeDevice();
         terminateBackend();
@@ -169,55 +157,83 @@ public:
         }
     }
 
-    void tear_down() {
-        if (!graph.valid || (!graph.inputs && !graph.outputs) ||
-            !m_graphsInfo || graph.graph_index >= m_graphsCount) {
-            graph.inputs = nullptr;
-            graph.outputs = nullptr;
-            graph.valid = false;
+    void tear_down(GraphIo & io) {
+        if (!io.valid || (!io.inputs && !io.outputs) ||
+            !m_graphsInfo || io.graph_index >= m_graphsCount) {
+            io.inputs = nullptr;
+            io.outputs = nullptr;
+            io.valid = false;
             return;
         }
-        auto & g = (*m_graphsInfo)[graph.graph_index];
+        auto & graph = (*m_graphsInfo)[io.graph_index];
         m_ioTensor.tearDownInputAndOutputTensors(
-            graph.inputs,
-            graph.outputs,
-            g.numInputTensors,
-            g.numOutputTensors
+            io.inputs,
+            io.outputs,
+            graph.numInputTensors,
+            graph.numOutputTensors
         );
-        graph.inputs = nullptr;
-        graph.outputs = nullptr;
-        graph.valid = false;
+        io.inputs = nullptr;
+        io.outputs = nullptr;
+        io.valid = false;
     }
 
-    bool setup_graph() {
-        if (!m_graphsInfo || m_graphsCount < 1) return false;
-        int found = -1;
+    bool setup_graphs() {
+        if (!m_graphsInfo || m_graphsCount != 2) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_DEPTH] expected proven 2-graph batch1 context, got %u\n",
+                (unsigned) m_graphsCount
+            );
+            return false;
+        }
+
+        int prefill_idx = -1;
+        int step_idx = -1;
         for (uint32_t i = 0; i < m_graphsCount; ++i) {
             const char * name = (*m_graphsInfo)[i].graphName;
             std::fprintf(
                 stderr,
-                "[BREEZE_QNN_DEPTH] context=%s graph[%u]=%s\n",
-                expected_graph.c_str(),
+                "[BREEZE_QNN_DEPTH] graph[%u]=%s\n",
                 i,
                 name ? name : "<unnamed>"
             );
-            if (name_contains(name, expected_graph.c_str())) found = (int) i;
+            if (name_contains(name, "prefill")) prefill_idx = (int) i;
+            if (name_contains(name, "step")) step_idx = (int) i;
         }
-        if (found < 0 && m_graphsCount == 1) {
-            // Direct AI Hub qnn_context_binary compilation may normalize the
-            // graph name. Each v3 file intentionally contains exactly one graph.
-            found = 0;
+        if (prefill_idx < 0) prefill_idx = 0;
+        if (step_idx < 0) step_idx = prefill_idx == 0 ? 1 : 0;
+        if (prefill_idx == step_idx) return false;
+
+        prefill.graph_index = (uint32_t) prefill_idx;
+        step.graph_index = (uint32_t) step_idx;
+
+        auto setup = [&](GraphIo & io) {
+            auto & graph = (*m_graphsInfo)[io.graph_index];
+            const auto rc = m_ioTensor.setupInputAndOutputTensors(
+                &io.inputs,
+                &io.outputs,
+                graph
+            );
+            io.valid = rc == qnn::tools::iotensor::StatusCode::SUCCESS;
+            return io.valid;
+        };
+        if (!setup(prefill) || !setup(step)) return false;
+
+        auto & pg = (*m_graphsInfo)[prefill.graph_index];
+        auto & sg = (*m_graphsInfo)[step.graph_index];
+        if (pg.numInputTensors != 2 || pg.numOutputTensors != 3 ||
+            sg.numInputTensors != 4 || sg.numOutputTensors != 3) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_DEPTH] bad graph IO prefill=%u/%u step=%u/%u\n",
+                pg.numInputTensors,
+                pg.numOutputTensors,
+                sg.numInputTensors,
+                sg.numOutputTensors
+            );
+            return false;
         }
-        if (found < 0) return false;
-        graph.graph_index = (uint32_t) found;
-        auto & g = (*m_graphsInfo)[graph.graph_index];
-        const auto rc = m_ioTensor.setupInputAndOutputTensors(
-            &graph.inputs,
-            &graph.outputs,
-            g
-        );
-        graph.valid = rc == qnn::tools::iotensor::StatusCode::SUCCESS;
-        return graph.valid;
+        return true;
     }
 
     bool set_burst_power() {
@@ -266,15 +282,15 @@ public:
         return perf.setPowerConfig(id, p2) == QNN_SUCCESS;
     }
 
-    bool execute(double & ms) {
-        auto & g = (*m_graphsInfo)[graph.graph_index];
+    bool execute(GraphIo & io, double & ms) {
+        auto & graph = (*m_graphsInfo)[io.graph_index];
         const auto t0 = std::chrono::steady_clock::now();
         const auto rc = m_qnnFunctionPointers.qnnInterface.graphExecute(
-            g.graph,
-            graph.inputs,
-            g.numInputTensors,
-            graph.outputs,
-            g.numOutputTensors,
+            graph.graph,
+            io.inputs,
+            graph.numInputTensors,
+            io.outputs,
+            graph.numOutputTensors,
             m_profileBackendHandle,
             nullptr
         );
@@ -284,7 +300,7 @@ public:
         return rc == QNN_GRAPH_NO_ERROR;
     }
 
-    bool prefill(
+    bool prefill_branch(
         const float * hidden,
         size_t hidden_count,
         int32_t cb0,
@@ -293,86 +309,75 @@ public:
         NativeBlob & value_cache,
         double & ms
     ) {
-        auto & g = (*m_graphsInfo)[graph.graph_index];
-        if (g.numInputTensors != 2 || g.numOutputTensors != 3) return false;
-        const int h = tensor_index(graph.inputs, g.numInputTensors, "backbone_hidden", 0);
-        const int t = tensor_index(graph.inputs, g.numInputTensors, "first_codebook", 1);
-        const int l = tensor_index(graph.outputs, g.numOutputTensors, "logits", 0);
-        const int k = tensor_index(graph.outputs, g.numOutputTensors, "key_cache", 1);
-        const int v = tensor_index(graph.outputs, g.numOutputTensors, "value_cache", 2);
+        auto & g = (*m_graphsInfo)[prefill.graph_index];
+        const int h = tensor_index(prefill.inputs, g.numInputTensors, "backbone_hidden", 0);
+        const int t = tensor_index(prefill.inputs, g.numInputTensors, "first_codebook", 1);
+        const int l = tensor_index(prefill.outputs, g.numOutputTensors, "logits", 0);
+        const int k = tensor_index(prefill.outputs, g.numOutputTensors, "key_cache", 1);
+        const int v = tensor_index(prefill.outputs, g.numOutputTensors, "value_cache", 2);
         if (h < 0 || t < 0 || l < 0 || k < 0 || v < 0) return false;
-        if (tensor_elements(graph.inputs[h]) != hidden_count) return false;
+        if (tensor_elements(prefill.inputs[h]) != hidden_count) return false;
 
         if (m_ioTensor.copyFromFloatToNative(
                 const_cast<float *>(hidden),
-                &graph.inputs[h]) != qnn::tools::iotensor::StatusCode::SUCCESS) {
+                &prefill.inputs[h]) != qnn::tools::iotensor::StatusCode::SUCCESS) {
             return false;
         }
-        int32_t first[2] = {cb0, cb0};
-        if (!put_i32_array(graph.inputs[t], first, 2)) return false;
-        if (!execute(ms)) return false;
+        if (!put_i32(prefill.inputs[t], cb0) || !execute(prefill, ms)) return false;
 
-        logits.assign(tensor_elements(graph.outputs[l]), 0.0f);
+        logits.assign(tensor_elements(prefill.outputs[l]), 0.0f);
         if (m_ioTensor.convertToFloatInto(
                 logits.data(),
-                &graph.outputs[l]) != qnn::tools::iotensor::StatusCode::SUCCESS) {
+                &prefill.outputs[l]) != qnn::tools::iotensor::StatusCode::SUCCESS) {
             return false;
         }
-        return capture_native(graph.outputs[k], key_cache) &&
-            capture_native(graph.outputs[v], value_cache);
+        return capture_native(prefill.outputs[k], key_cache) &&
+            capture_native(prefill.outputs[v], value_cache);
     }
 
-    bool seed_step(const NativeBlob & key_cache, const NativeBlob & value_cache) {
-        auto & g = (*m_graphsInfo)[graph.graph_index];
-        if (g.numInputTensors != 4 || g.numOutputTensors != 3) return false;
-        const int k = tensor_index(graph.inputs, g.numInputTensors, "key_cache", 2);
-        const int v = tensor_index(graph.inputs, g.numInputTensors, "value_cache", 3);
-        return k >= 0 && v >= 0 &&
-            restore_native(key_cache, graph.inputs[k]) &&
-            restore_native(value_cache, graph.inputs[v]);
-    }
-
-    bool step(
+    bool step_branch(
         int32_t token,
         int32_t position,
+        NativeBlob & key_cache,
+        NativeBlob & value_cache,
         std::vector<float> & logits,
         double & ms
     ) {
-        auto & g = (*m_graphsInfo)[graph.graph_index];
-        if (g.numInputTensors != 4 || g.numOutputTensors != 3) return false;
-        const int ti = tensor_index(graph.inputs, g.numInputTensors, "token", 0);
-        const int pi = tensor_index(graph.inputs, g.numInputTensors, "position", 1);
-        const int ki = tensor_index(graph.inputs, g.numInputTensors, "key_cache", 2);
-        const int vi = tensor_index(graph.inputs, g.numInputTensors, "value_cache", 3);
-        const int lo = tensor_index(graph.outputs, g.numOutputTensors, "logits", 0);
-        const int ko = tensor_index(graph.outputs, g.numOutputTensors, "key_cache", 1);
-        const int vo = tensor_index(graph.outputs, g.numOutputTensors, "value_cache", 2);
+        auto & g = (*m_graphsInfo)[step.graph_index];
+        const int ti = tensor_index(step.inputs, g.numInputTensors, "token", 0);
+        const int pi = tensor_index(step.inputs, g.numInputTensors, "position", 1);
+        const int ki = tensor_index(step.inputs, g.numInputTensors, "key_cache", 2);
+        const int vi = tensor_index(step.inputs, g.numInputTensors, "value_cache", 3);
+        const int lo = tensor_index(step.outputs, g.numOutputTensors, "logits", 0);
+        const int ko = tensor_index(step.outputs, g.numOutputTensors, "key_cache", 1);
+        const int vo = tensor_index(step.outputs, g.numOutputTensors, "value_cache", 2);
         if (ti < 0 || pi < 0 || ki < 0 || vi < 0 || lo < 0 || ko < 0 || vo < 0) {
             return false;
         }
 
-        int32_t tokens[2] = {token, token};
-        if (!put_i32_array(graph.inputs[ti], tokens, 2) ||
-            !put_i32_array(graph.inputs[pi], &position, 1)) {
+        if (!restore_native(key_cache, step.inputs[ki]) ||
+            !restore_native(value_cache, step.inputs[vi]) ||
+            !put_i32(step.inputs[ti], token) ||
+            !put_i32(step.inputs[pi], position) ||
+            !execute(step, ms)) {
             return false;
         }
-        if (!execute(ms)) return false;
 
-        logits.assign(tensor_elements(graph.outputs[lo]), 0.0f);
+        logits.assign(tensor_elements(step.outputs[lo]), 0.0f);
         if (m_ioTensor.convertToFloatInto(
                 logits.data(),
-                &graph.outputs[lo]) != qnn::tools::iotensor::StatusCode::SUCCESS) {
+                &step.outputs[lo]) != qnn::tools::iotensor::StatusCode::SUCCESS) {
             return false;
         }
-        return copy_native_tensor(graph.outputs[ko], graph.inputs[ki]) &&
-            copy_native_tensor(graph.outputs[vo], graph.inputs[vi]);
+
+        return capture_native(step.outputs[ko], key_cache) &&
+            capture_native(step.outputs[vo], value_cache);
     }
 };
 
 static bool load_depth_app(
     const std::string & lib_dir,
     const std::string & context_path,
-    const std::string & graph_name,
     std::unique_ptr<BreezeQnnDepthApp> & app
 ) {
     QnnFunctionPointers systemFuncs;
@@ -402,8 +407,7 @@ static bool load_depth_app(
     auto candidate = std::make_unique<BreezeQnnDepthApp>(
         funcs,
         backendHandle,
-        context_path,
-        graph_name
+        context_path
     );
     candidate->model_handle = modelHandle;
     auto fail = [&]() {
@@ -417,7 +421,7 @@ static bool load_depth_app(
     if (candidate->initializeProfiling() != StatusCode::SUCCESS) return fail();
     if (candidate->registerOpPackages() != StatusCode::SUCCESS) return fail();
     if (candidate->createFromBinary() != StatusCode::SUCCESS) return fail();
-    if (!candidate->setup_graph()) return fail();
+    if (!candidate->setup_graphs()) return fail();
     candidate->set_burst_power();
 
     app = std::move(candidate);
@@ -427,8 +431,7 @@ static bool load_depth_app(
 } // namespace
 
 struct QnnDepthRunner::Impl {
-    std::unique_ptr<BreezeQnnDepthApp> prefill;
-    std::unique_ptr<BreezeQnnDepthApp> step;
+    std::unique_ptr<BreezeQnnDepthApp> app;
     bool enabled = false;
     int branches = 1;
     size_t frames = 0;
@@ -440,56 +443,47 @@ QnnDepthRunner::~QnnDepthRunner() = default;
 
 bool QnnDepthRunner::init(BreezeModel & m, int branches) {
     if (branches != 1 && branches != 2) return false;
-    const char * prefill_path = std::getenv("BREEZE_QNN_DEPTH_PREFILL_PATH");
-    const char * step_path = std::getenv("BREEZE_QNN_DEPTH_STEP_PATH");
+    const char * context = std::getenv("BREEZE_QNN_DEPTH_PATH");
     const char * lib = std::getenv("BREEZE_QNN_LIB_DIR");
-    if (!prefill_path || !*prefill_path || !step_path || !*step_path || !lib || !*lib) {
-        return false;
-    }
+    if (!context || !*context || !lib || !*lib) return false;
 
-    if (!load_depth_app(
-            lib,
-            prefill_path,
-            "depth_prefill_b2",
-            impl_->prefill) ||
-        !load_depth_app(
-            lib,
-            step_path,
-            "depth_step_b2",
-            impl_->step)) {
+    if (!load_depth_app(lib, context, impl_->app)) {
         std::fprintf(
             stderr,
-            "[BREEZE_QNN_DEPTH] separate context load failed; using ggml fallback\n"
+            "[BREEZE_QNN_DEPTH] proven batch1 context load failed; using ggml fallback\n"
         );
-        impl_->prefill.reset();
-        impl_->step.reset();
+        impl_->app.reset();
         return false;
     }
 
-    std::vector<float> hidden((size_t) 2 * (size_t) m.cfg.hidden_size, 0.0f);
+    std::vector<float> hidden((size_t) m.cfg.hidden_size, 0.0f);
     std::vector<float> logits;
-    NativeBlob k;
-    NativeBlob v;
-    double ms_prefill = 0.0;
-    double ms_step = 0.0;
-    if (!impl_->prefill->prefill(
+    NativeBlob key;
+    NativeBlob value;
+    double prefill_ms = 0.0;
+    double step_ms = 0.0;
+    if (!impl_->app->prefill_branch(
             hidden.data(),
             hidden.size(),
             0,
             logits,
-            k,
-            v,
-            ms_prefill) ||
+            key,
+            value,
+            prefill_ms) ||
         !finite_logits(logits) ||
-        !impl_->step->seed_step(k, v) ||
-        !impl_->step->step(0, 2, logits, ms_step) ||
+        !impl_->app->step_branch(
+            0,
+            2,
+            key,
+            value,
+            logits,
+            step_ms) ||
         !finite_logits(logits)) {
         std::fprintf(
             stderr,
-            "[BREEZE_QNN_DEPTH] separate-context selftest failed; using ggml fallback\n"
+            "[BREEZE_QNN_DEPTH] batch1 device selftest failed; using ggml fallback\n"
         );
-        impl_->prefill.reset();
-        impl_->step.reset();
+        impl_->app.reset();
         return false;
     }
 
@@ -497,24 +491,24 @@ bool QnnDepthRunner::init(BreezeModel & m, int branches) {
     impl_->enabled = true;
     std::fprintf(
         stderr,
-        "[BREEZE_QNN_DEPTH] ready logical_branches=%d contexts=2 "
-        "prefill_ms=%.2f step_ms=%.2f sampling=host-native\n",
+        "[BREEZE_QNN_DEPTH] ready physical_batch=1 logical_branches=%d "
+        "cfg_serial=%d context=proven-v1 prefill_ms=%.2f step_ms=%.2f\n",
         branches,
-        ms_prefill,
-        ms_step
+        branches == 2 ? 1 : 0,
+        prefill_ms,
+        step_ms
     );
     return true;
 }
 
 bool QnnDepthRunner::ready() const {
-    return impl_ && impl_->enabled && impl_->prefill && impl_->step;
+    return impl_ && impl_->enabled && impl_->app;
 }
 
 void QnnDepthRunner::disable() {
     if (!impl_) return;
     impl_->enabled = false;
-    impl_->prefill.reset();
-    impl_->step.reset();
+    impl_->app.reset();
 }
 
 bool QnnDepthRunner::run(
@@ -530,15 +524,6 @@ bool QnnDepthRunner::run(
         if (hidden.size() != (size_t) m.cfg.hidden_size) return false;
     }
 
-    std::vector<float> flat;
-    flat.reserve((size_t) 2 * (size_t) m.cfg.hidden_size);
-    flat.insert(flat.end(), backbone_hiddens[0].begin(), backbone_hiddens[0].end());
-    if (impl_->branches == 2) {
-        flat.insert(flat.end(), backbone_hiddens[1].begin(), backbone_hiddens[1].end());
-    } else {
-        flat.insert(flat.end(), backbone_hiddens[0].begin(), backbone_hiddens[0].end());
-    }
-
     SampleParams sp;
     sp.temperature = m.cfg.depth_temperature;
     sp.top_k = m.cfg.depth_top_k;
@@ -547,54 +532,78 @@ bool QnnDepthRunner::run(
     residual_codebooks.clear();
     residual_codebooks.reserve((size_t) m.cfg.num_codebooks - 1u);
 
-    std::vector<float> logits_all;
-    NativeBlob k;
-    NativeBlob v;
-    double graph_ms = 0.0;
+    std::vector<NativeBlob> keys((size_t) impl_->branches);
+    std::vector<NativeBlob> values((size_t) impl_->branches);
+    std::vector<std::vector<float>> branch_logits((size_t) impl_->branches);
     double frame_ms = 0.0;
-    if (!impl_->prefill->prefill(
-            flat.data(),
-            flat.size(),
-            (int32_t) first_codebook,
-            logits_all,
-            k,
-            v,
-            graph_ms) ||
-        !finite_logits(logits_all) ||
-        !impl_->step->seed_step(k, v)) {
-        std::fprintf(stderr, "[BREEZE_QNN_DEPTH] prefill/seed failed; disabling\n");
-        disable();
-        return false;
-    }
-    frame_ms += graph_ms;
 
-    std::vector<float> logits = cfg_logits(
-        logits_all,
+    for (int b = 0; b < impl_->branches; ++b) {
+        double ms = 0.0;
+        const auto & hidden = backbone_hiddens[(size_t) b];
+        if (!impl_->app->prefill_branch(
+                hidden.data(),
+                hidden.size(),
+                (int32_t) first_codebook,
+                branch_logits[(size_t) b],
+                keys[(size_t) b],
+                values[(size_t) b],
+                ms) ||
+            !finite_logits(branch_logits[(size_t) b])) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_DEPTH] serial prefill failed branch=%d; disabling\n",
+                b
+            );
+            disable();
+            return false;
+        }
+        frame_ms += ms;
+    }
+
+    std::vector<float> logits = combine_cfg(
+        branch_logits[0],
+        impl_->branches == 2 ? branch_logits[1] : branch_logits[0],
         impl_->branches,
         cfg_scale
     );
-    if (!finite_logits(logits)) return false;
+    if (!finite_logits(logits)) {
+        disable();
+        return false;
+    }
+
     int token = sample_token(logits, sp, rng);
     residual_codebooks.push_back(token);
 
     for (int position = 2; position < m.cfg.num_codebooks; ++position) {
-        if (!impl_->step->step(
-                (int32_t) token,
-                (int32_t) position,
-                logits_all,
-                graph_ms) ||
-            !finite_logits(logits_all)) {
-            std::fprintf(
-                stderr,
-                "[BREEZE_QNN_DEPTH] AR1 step failed position=%d; disabling\n",
-                position
-            );
-            disable();
-            residual_codebooks.clear();
-            return false;
+        for (int b = 0; b < impl_->branches; ++b) {
+            double ms = 0.0;
+            if (!impl_->app->step_branch(
+                    (int32_t) token,
+                    (int32_t) position,
+                    keys[(size_t) b],
+                    values[(size_t) b],
+                    branch_logits[(size_t) b],
+                    ms) ||
+                !finite_logits(branch_logits[(size_t) b])) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_DEPTH] serial AR1 failed position=%d branch=%d; disabling\n",
+                    position,
+                    b
+                );
+                disable();
+                residual_codebooks.clear();
+                return false;
+            }
+            frame_ms += ms;
         }
-        frame_ms += graph_ms;
-        logits = cfg_logits(logits_all, impl_->branches, cfg_scale);
+
+        logits = combine_cfg(
+            branch_logits[0],
+            impl_->branches == 2 ? branch_logits[1] : branch_logits[0],
+            impl_->branches,
+            cfg_scale
+        );
         if (!finite_logits(logits)) {
             disable();
             residual_codebooks.clear();
@@ -610,10 +619,12 @@ bool QnnDepthRunner::run(
         std::fprintf(
             stderr,
             "[BREEZE_QNN_DEPTH] frames=%zu frame_ms=%.2f avg_ms=%.2f "
-            "graphs_per_frame=15 contexts=2\n",
+            "physical_batch=1 logical_branches=%d cfg_serial=%d\n",
             impl_->frames,
             frame_ms,
-            impl_->total_ms / (double) impl_->frames
+            impl_->total_ms / (double) impl_->frames,
+            impl_->branches,
+            impl_->branches == 2 ? 1 : 0
         );
     }
     return residual_codebooks.size() == (size_t) m.cfg.num_codebooks - 1u;

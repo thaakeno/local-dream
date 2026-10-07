@@ -18,24 +18,23 @@ import org.json.JSONObject
 /**
  * Optional SM8850/V81 full QNN generator accelerator.
  *
- * V3 uses four independently linked single-graph QNN context binaries:
- * backbone prefill, backbone AR1 step, depth prefill, depth AR1 step.
+ * V4 reuses the already-proven batch-1 two-graph depth context and keeps
+ * backbone prompt/AR1 as separate contexts. CFG depth branches are serialized
+ * through the same native depth context with independent KV snapshots.
  */
 object BreezeQnnGeneratorArtifact {
-    private const val RELEASE_TAG = "breeze-qnn-generator-sm8850-v3"
+    private const val RELEASE_TAG = "breeze-qnn-generator-sm8850-v4"
     private const val BASE_URL =
         "https://github.com/thaakeno/local-dream/releases/download/" + RELEASE_TAG
-    private const val DIR = "breeze_qnn_generator/v3-sm8850"
+    private const val DIR = "breeze_qnn_generator/v4-sm8850"
 
-    private const val DEPTH_PREFILL = "breeze-depth-prefill-sm8850-v81.bin"
-    private const val DEPTH_STEP = "breeze-depth-step-sm8850-v81.bin"
+    private const val DEPTH = "breeze-depth-sm8850-v81.bin"
     private const val BACKBONE_PREFILL = "breeze-backbone-prefill-sm8850-v81.bin"
     private const val BACKBONE_STEP = "breeze-backbone-step-sm8850-v81.bin"
 
     data class Install(
         val soc: String,
-        val depthPrefillFile: File,
-        val depthStepFile: File,
+        val depthContextFile: File,
         val backbonePrefillFile: File,
         val backboneStepFile: File,
         val engine: String,
@@ -54,7 +53,9 @@ object BreezeQnnGeneratorArtifact {
             val progress: Float?
                 get() = if (total > 0L) {
                     (received.toFloat() / total.toFloat()).coerceIn(0f, 1f)
-                } else null
+                } else {
+                    null
+                }
         }
         data class Ready(
             val soc: String,
@@ -95,9 +96,10 @@ object BreezeQnnGeneratorArtifact {
         val base = dir(context)
         val marker = File(base, "installed.json")
         if (!marker.isFile) return null
+
         return runCatching {
             val json = JSONObject(marker.readText())
-            if (json.optInt("version") != 3 || json.optString("soc") != soc) {
+            if (json.optInt("version") != 4 || json.optString("soc") != soc) {
                 return@runCatching null
             }
 
@@ -112,14 +114,14 @@ object BreezeQnnGeneratorArtifact {
 
             Install(
                 soc = soc,
-                depthPrefillFile = checked("depthPrefillFile", "depthPrefillBytes"),
-                depthStepFile = checked("depthStepFile", "depthStepBytes"),
-                backbonePrefillFile = checked(
-                    "backbonePrefillFile",
-                    "backbonePrefillBytes",
-                ),
+                depthContextFile = checked("depthContextFile", "depthContextBytes"),
+                backbonePrefillFile =
+                    checked("backbonePrefillFile", "backbonePrefillBytes"),
                 backboneStepFile = checked("backboneStepFile", "backboneStepBytes"),
-                engine = json.optString("engine", "qnn-full-generator-separate-v3"),
+                engine = json.optString(
+                    "engine",
+                    "qnn-full-generator-depth-b1-backbone-b2-v4",
+                ),
                 backboneMaxSeq = json.optInt("backboneMaxSeq", 512),
             )
         }.getOrNull()
@@ -198,6 +200,7 @@ object BreezeQnnGeneratorArtifact {
                         }
                     }
                 }
+
                 if (received != partBytes) error("Incomplete generator part $name")
                 if (sha256Hex(partDigest.digest()) != partSha) {
                     error("Generator checksum mismatch for $name")
@@ -210,6 +213,7 @@ object BreezeQnnGeneratorArtifact {
         if (sha256Hex(wholeDigest.digest()) != spec.sha256) {
             error("QNN generator context checksum mismatch")
         }
+
         if (target.exists()) target.delete()
         if (!temp.renameTo(target)) {
             temp.copyTo(target, overwrite = true)
@@ -232,31 +236,33 @@ object BreezeQnnGeneratorArtifact {
                 if (!response.isSuccessful) error("Full QNN generator release is not ready yet")
                 JSONObject(response.body?.string() ?: error("Empty generator manifest"))
             }
+
             if (
-                root.optInt("version") != 3 ||
+                root.optInt("version") != 4 ||
                 root.optInt("soc_model") != 87 ||
                 root.optString("htp_arch") != "V81"
             ) {
-                error("Generator manifest is not native SM8850/V81 v3")
+                error("Generator manifest is not native SM8850/V81 v4")
             }
 
             val spec = root.getJSONObject("files").getJSONObject(soc)
-            val depthPrefillSpec = parseContextSpec(spec.getJSONObject("depth_prefill"))
-            val depthStepSpec = parseContextSpec(spec.getJSONObject("depth_step"))
+            val depthSpec = parseContextSpec(spec.getJSONObject("depth"))
             val backbonePrefillSpec =
                 parseContextSpec(spec.getJSONObject("backbone_prefill"))
-            val backboneStepSpec = parseContextSpec(spec.getJSONObject("backbone_step"))
+            val backboneStepSpec =
+                parseContextSpec(spec.getJSONObject("backbone_step"))
+
             val all = listOf(
-                Triple(DEPTH_PREFILL, depthPrefillSpec, 0),
-                Triple(DEPTH_STEP, depthStepSpec, 1),
-                Triple(BACKBONE_PREFILL, backbonePrefillSpec, 2),
-                Triple(BACKBONE_STEP, backboneStepSpec, 3),
+                DEPTH to depthSpec,
+                BACKBONE_PREFILL to backbonePrefillSpec,
+                BACKBONE_STEP to backboneStepSpec,
             )
             val totalAll = all.sumOf { it.second.bytes }
             val destination = dir(context).apply { mkdirs() }
             var completedBefore = 0L
-            val downloaded = ArrayList<File>(4)
-            for ((name, item, _) in all) {
+            val downloaded = ArrayList<File>(3)
+
+            for ((name, item) in all) {
                 downloaded += downloadContext(
                     soc,
                     destination,
@@ -268,20 +274,21 @@ object BreezeQnnGeneratorArtifact {
                 completedBefore += item.bytes
             }
 
-            val engine = root.optString("engine", "qnn-full-generator-separate-v3")
+            val engine = root.optString(
+                "engine",
+                "qnn-full-generator-depth-b1-backbone-b2-v4",
+            )
             File(destination, "installed.json").writeText(
                 JSONObject()
-                    .put("version", 3)
+                    .put("version", 4)
                     .put("soc", soc)
                     .put("engine", engine)
-                    .put("depthPrefillFile", DEPTH_PREFILL)
-                    .put("depthPrefillBytes", downloaded[0].length())
-                    .put("depthStepFile", DEPTH_STEP)
-                    .put("depthStepBytes", downloaded[1].length())
+                    .put("depthContextFile", DEPTH)
+                    .put("depthContextBytes", downloaded[0].length())
                     .put("backbonePrefillFile", BACKBONE_PREFILL)
-                    .put("backbonePrefillBytes", downloaded[2].length())
+                    .put("backbonePrefillBytes", downloaded[1].length())
                     .put("backboneStepFile", BACKBONE_STEP)
-                    .put("backboneStepBytes", downloaded[3].length())
+                    .put("backboneStepBytes", downloaded[2].length())
                     .put("backboneMaxSeq", root.optInt("backbone_max_seq", 512))
                     .toString(),
             )
@@ -289,7 +296,7 @@ object BreezeQnnGeneratorArtifact {
             _status.value = Status.Ready(soc, destination, engine)
         }.onFailure { error ->
             val destination = dir(context)
-            listOf(DEPTH_PREFILL, DEPTH_STEP, BACKBONE_PREFILL, BACKBONE_STEP)
+            listOf(DEPTH, BACKBONE_PREFILL, BACKBONE_STEP)
                 .forEach { File(destination, "$it.part").delete() }
             _status.value = Status.Error(
                 soc,

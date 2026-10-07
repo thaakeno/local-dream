@@ -364,12 +364,12 @@ jobs:
           grep -q 'mode=strict-htp-dspqueue' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'fallback=disabled' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'integration=pinned-source-overlay' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'queue=v200-opbatch1280x32-oppoll1' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'queue=v201-opbatch1280x32-oppoll1' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'upstream-dcache-64b-pr29977' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81_visibility=none-v153-scheduler' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81_execution=hvx-only-no-hmx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'gelu_erf=dsp-libm-reference-v81' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'generator=qnn-full-separate-contexts-v3-or-ggml-fallback' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'generator=qnn-depth-b1-serial-cfg-backbone-b2-v4-or-ggml-fallback' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'quant-weight-repack-ordinary-map' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'raw-quant-matmul-guard' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'decoder-codebook-ordinary-htp-mirror' app/src/main/assets/breezelibs/backend-version.txt

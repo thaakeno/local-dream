@@ -1488,7 +1488,7 @@ fun BreezeFamilyCard(
                         }
 
                         Text(
-                            "Separate from the Breeze GGUF. Uses independently linked QNN contexts for backbone/depth prefill and AR1 decode, unloading the large prompt context before generation. Hexagon remains the fallback.",
+                            "Separate from the Breeze GGUF. Uses the proven SM8850 batch-1 QNN depth context with serial CFG branches plus QNN backbone prompt/AR1 contexts. Hexagon remains the fallback.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

@@ -243,9 +243,9 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     DepthRunner depth;
     depth.init(m, generator_branches);
 
-    // V2 QNN depth supports both normal batch-1 and CFG batch-2. If the
-    // downloaded context is absent or its device smoke-test fails, the proven
-    // ggml-Hexagon depth path remains available.
+    // V4 QNN depth reuses the proven physical batch-1 context. CFG stays exact
+    // by serializing cond/uncond branches with independent native KV snapshots.
+    // If its device smoke-test fails, ggml-Hexagon remains available.
     QnnDepthRunner qnn_depth;
     const bool qnn_depth_ready = qnn_depth.init(m, generator_branches);
     std::fprintf(

@@ -12,14 +12,15 @@ permissions:
   contents: write
 
 concurrency:
-  group: breeze-qnn-generator-sm8850-v3
+  group: breeze-qnn-generator-sm8850-v4
   cancel-in-progress: true
 
 env:
-  RELEASE_TAG: breeze-qnn-generator-sm8850-v3
+  RELEASE_TAG: breeze-qnn-generator-sm8850-v4
   QAI_DEVICE: Samsung Galaxy S26 (Family)
   QNN_VERSION: '2.50.0.260828'
   QNN_URL: 'https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip'
+  DEPTH_V1_URL: 'https://github.com/thaakeno/local-dream/releases/download/breeze-qnn-generator-sm8850-v1/breeze-generator-sm8850-v81.part01.bin'
 
 jobs:
   build:
@@ -89,42 +90,63 @@ jobs:
           if [ -f "$req" ]; then python -m pip install -r "$req"; fi
           df -h /
 
-      - name: Download already-compiled QNN DLCs
+      - name: Reuse proven depth context and compiled backbone DLCs
         shell: bash
         env:
           QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
         run: |
           set -euxo pipefail
           test -n "${QAI_HUB_API_TOKEN:-}"
-          mkdir -p build/breeze-qnn-generator
+          ROOT="$GITHUB_WORKSPACE/build/breeze-qnn-generator"
+          mkdir -p "$ROOT"
+
+          # Run #3 already produced and published this exact SM8850/V81 batch-1
+          # depth context. Do not rebuild the broken batch-2 variant.
+          curl -fL --retry 5 --retry-delay 2 "$DEPTH_V1_URL"             -o "$ROOT/breeze-depth-sm8850-v81.bin"
+          test "$(stat -c%s "$ROOT/breeze-depth-sm8850-v81.bin")" = "1011101696"
+
           python - <<'PY'
-          import json, os
+          import json
+          import os
           from pathlib import Path
           import qai_hub as hub
 
           root = Path("build/breeze-qnn-generator")
           client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
 
-          # These four jobs all completed successfully in run #15. Reuse them
-          # verbatim; do not re-export or recompile anything on AI Hub.
           jobs = {
-              "depth_prefill": ("jgodnv9x5", "depth_prefill_b2", "breeze-depth-prefill-sm8850-v81.dlc"),
-              "depth_step": ("jp1ow8k25", "depth_step_b2", "breeze-depth-step-sm8850-v81.dlc"),
-              "backbone_prefill": ("jgn1m92rp", "backbone_prefill_512", "breeze-backbone-prefill-sm8850-v81.dlc"),
-              "backbone_step": ("jpy8jnxrg", "backbone_step_b2", "breeze-backbone-step-sm8850-v81.dlc"),
+              "backbone_prefill": (
+                  "jgn1m92rp",
+                  "backbone_prefill_512",
+                  "breeze-backbone-prefill-sm8850-v81.dlc",
+              ),
+              "backbone_step": (
+                  "jpy8jnxrg",
+                  "backbone_step_b2",
+                  "breeze-backbone-step-sm8850-v81.dlc",
+              ),
           }
 
-          result = {}
+          result = {
+              "depth": {
+                  "source": "breeze-qnn-generator-sm8850-v1",
+                  "link_job": "jpy8rw88g",
+                  "context_bytes": 1011101696,
+                  "graph_names": ["depth_prefill", "depth_step"],
+                  "physical_batch": 1,
+              }
+          }
+
           for key, (job_id, graph, filename) in jobs.items():
               job = client.get_job(job_id)
               status = job.get_status()
               if not status.success:
-                  raise SystemExit(f"cached AI Hub job {job_id} is no longer successful: {status}")
-              target = job.get_target_model()
-              if target is None:
-                  raise SystemExit(f"cached AI Hub job {job_id} has no target model")
+                  raise SystemExit(f"cached AI Hub job {job_id} is not successful: {status}")
+              model = job.get_target_model()
+              if model is None:
+                  raise SystemExit(f"cached AI Hub job {job_id} has no DLC")
               path = root / filename
-              target.download(str(path))
+              model.download(str(path))
               if not path.is_file() or path.stat().st_size < 100_000:
                   raise SystemExit(f"bad DLC download: {path}")
               result[key] = {
@@ -135,87 +157,158 @@ jobs:
                   "runtime": "qnn_dlc",
                   "reused": True,
               }
-              print(key, path.stat().st_size, job.url)
 
-          (root / "qai-hub-job.json").write_text(json.dumps({
-              "device": os.environ.get("QAI_DEVICE", "Samsung Galaxy S26 (Family)"),
-              "contexts": result,
-          }, indent=2) + "\n")
+          (root / "qai-hub-job.json").write_text(
+              json.dumps(
+                  {
+                      "device": os.environ.get("QAI_DEVICE", "Samsung Galaxy S26 (Family)"),
+                      "contexts": result,
+                  },
+                  indent=2,
+              ) + "\n"
+          )
+          print(json.dumps(result, indent=2))
           PY
-          ls -lh build/breeze-qnn-generator/*.dlc
+
+          ls -lh "$ROOT"/*
           df -h /
 
-      - name: Convert DLCs to native SM8850 V81 contexts
+      - name: Validate proven depth context
         shell: bash
         run: |
-          set -uo pipefail
-          export QAIRT_SDK_ROOT="$QNN_SDK_ROOT"
-          export LD_LIBRARY_PATH="$QNN_SDK_ROOT/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
+          set -euxo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/breeze-qnn-generator"
+          qnn-context-binary-utility             --context_binary "$ROOT/breeze-depth-sm8850-v81.bin"             --json_file "$ROOT/breeze-depth-sm8850-v81.bin.info.json"
+
+          python - "$ROOT/breeze-depth-sm8850-v81.bin.info.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          info = data["info"]
+          soc = int(info["socModel"])
+          arch = int(info["contextMetadata"]["info"]["dspArch"])
+          graphs = info.get("graphs", [])
+          if soc != 87 or arch != 81:
+              raise SystemExit(f"wrong depth target: soc={soc} arch={arch}")
+          if len(graphs) != 2:
+              raise SystemExit(f"expected two depth graphs, found {len(graphs)}")
+          print("validated proven depth context", "soc", soc, "arch", arch, "graphs", len(graphs))
+          PY
+
+      - name: Build backbone contexts without recompiling models
+        shell: bash
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        run: |
+          set -euo pipefail
           ROOT="$GITHUB_WORKSPACE/build/breeze-qnn-generator"
           TOOL="${RUNNER_TEMP}/qai-appbuilder/tools/skills/qai-runner-skill/scripts/qai_dev_gen_contextbin_x86.py"
-          test -s "$TOOL" || exit 1
+          export QAIRT_SDK_ROOT="$QNN_SDK_ROOT"
+          export LD_LIBRARY_PATH="$QNN_SDK_ROOT/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
+          test -s "$TOOL"
 
-          # QAIRT 2.50's O=3 finalize path hits fp16_conv_activations with
-          # "bias dim 256 / scale dim 128" on Breeze depth-prefill. Qualcomm
-          # documents O as the HTP graph optimization level, so generate the
-          # exact same SM8850/V81 context while progressively disabling the
-          # aggressive finalizer. No AI Hub recompilation is needed.
-          convert_one() {
-            local dlc="$1"
-            local out="$2"
-            local ok=0
-
-            rm -f "$ROOT/$out" "$ROOT/$out.info.json"
-            for opt in 0 1 2 3; do
-              echo "=== context generation: $dlc O=$opt ==="
-              rm -rf output
-              rm -f "$ROOT/htp_config_v81.json" "$ROOT/backend_extensions.json"
-
-              set +e
-              python "$TOOL"                 --dlc "$ROOT/$dlc"                 --output "$ROOT/$out"                 --backend htp                 --soc_model 87                 --dsp_arch v81                 --vtcm_mb 8                 --opt_level "$opt"                 --pd_session unsigned                 >"$ROOT/$out.O$opt.log" 2>&1
-              rc=$?
-              set -e
-
-              cat "$ROOT/$out.O$opt.log"
-              if [ "$rc" -eq 0 ] && [ -s "$ROOT/$out" ]; then
-                echo "context generation succeeded with O=$opt"
-                echo "$opt" > "$ROOT/$out.optlevel"
-                ok=1
-                break
-              fi
-
-              rm -f "$ROOT/$out"
-            done
-
-            if [ "$ok" -ne 1 ]; then
-              echo "All HTP optimization levels failed for $dlc" >&2
-              return 1
-            fi
-
-            qnn-context-binary-utility               --context_binary "$ROOT/$out"               --json_file "$ROOT/$out.info.json"
-
-            python - "$ROOT/$out.info.json" <<'PY'
+          validate_one() {
+            local bin="$1"
+            local info="$bin.info.json"
+            qnn-context-binary-utility --context_binary "$bin" --json_file "$info"
+            python - "$info" <<'PY'
           import json, sys
-          data=json.load(open(sys.argv[1]))
-          info=data["info"]
-          soc=int(info["socModel"])
-          arch=int(info["contextMetadata"]["info"]["dspArch"])
+          data = json.load(open(sys.argv[1]))
+          info = data["info"]
+          soc = int(info["socModel"])
+          arch = int(info["contextMetadata"]["info"]["dspArch"])
+          graphs = info.get("graphs", [])
           if soc != 87 or arch != 81:
               raise SystemExit(f"wrong native target: soc={soc} arch={arch}")
-          graphs=info.get("graphs", [])
           if len(graphs) != 1:
-              raise SystemExit(f"expected one graph in context, found {len(graphs)}")
-          print("validated native SM8850/V81 context", "soc", soc, "arch", arch)
+              raise SystemExit(f"expected one backbone graph, found {len(graphs)}")
+          print("validated backbone context", "soc", soc, "arch", arch)
           PY
           }
 
-          set -e
-          convert_one breeze-depth-prefill-sm8850-v81.dlc breeze-depth-prefill-sm8850-v81.bin
-          convert_one breeze-depth-step-sm8850-v81.dlc breeze-depth-step-sm8850-v81.bin
-          convert_one breeze-backbone-prefill-sm8850-v81.dlc breeze-backbone-prefill-sm8850-v81.bin
-          convert_one breeze-backbone-step-sm8850-v81.dlc breeze-backbone-step-sm8850-v81.bin
+          local_prepare() {
+            local dlc="$1"
+            local out="$2"
+            rm -f "$out" "$out.info.json"
+            for opt in 3 2 1 0; do
+              echo "=== local QAIRT prepare: $(basename "$dlc") O=$opt ==="
+              set +e
+              python "$TOOL"                 --dlc "$dlc"                 --output "$out"                 --backend htp                 --soc_model 87                 --dsp_arch v81                 --vtcm_mb 8                 --opt_level "$opt"                 --pd_session unsigned                 >"$out.O$opt.log" 2>&1
+              rc=$?
+              set -e
+              cat "$out.O$opt.log"
+              if [ "$rc" -eq 0 ] && [ -s "$out" ]; then
+                if validate_one "$out"; then
+                  echo "local QAIRT prepare succeeded O=$opt"
+                  return 0
+                fi
+              fi
+              rm -f "$out" "$out.info.json"
+            done
+            return 1
+          }
 
-          ls -lh "$ROOT"/*.bin "$ROOT"/*.optlevel
+          hub_link() {
+            local job_id="$1"
+            local out="$2"
+            local name="$3"
+            python - "$job_id" "$out" "$name" <<'PY'
+          import os, sys
+          import qai_hub as hub
+
+          job_id, output, name = sys.argv[1:4]
+          client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
+          device = hub.Device(os.environ["QAI_DEVICE"])
+          compile_job = client.get_job(job_id)
+          status = compile_job.get_status()
+          if not status.success:
+              raise SystemExit(f"compile job is not successful: {job_id}")
+          model = compile_job.get_target_model()
+          if model is None:
+              raise SystemExit(f"compile job has no DLC: {job_id}")
+
+          errors = []
+          for opt in (3, 0):
+              link = client.submit_link_job(
+                  [model],
+                  device=device,
+                  name=f"{name} O{opt}",
+                  options=f"--qnn_options default_graph_htp_optimizations=O={opt}",
+              )
+              link_status = link.wait()
+              print("link", link.job_id, link.url, link_status.code, link_status.message)
+              if link_status.success:
+                  target = link.download_target_model(output)
+                  if target:
+                      print("AI Hub single-DLC link succeeded", link.job_id)
+                      sys.exit(0)
+              errors.append(f"{link.job_id}:{link_status.message or link_status.code}")
+          raise SystemExit("AI Hub single-DLC link failed: " + " | ".join(errors))
+          PY
+          }
+
+          build_one() {
+            local dlc="$1"
+            local out="$2"
+            local job_id="$3"
+            local name="$4"
+
+            if ! local_prepare "$dlc" "$out"; then
+              echo "Local QAIRT prepare failed; falling back to Qualcomm AI Hub single-DLC LinkJob"
+              rm -f "$out" "$out.info.json"
+              hub_link "$job_id" "$out" "$name"
+              test -s "$out"
+              validate_one "$out"
+            fi
+
+            rm -f "$dlc"
+            df -h /
+          }
+
+          build_one             "$ROOT/breeze-backbone-prefill-sm8850-v81.dlc"             "$ROOT/breeze-backbone-prefill-sm8850-v81.bin"             "jgn1m92rp"             "Breeze TTS 2 backbone prefill SM8850 context"
+
+          build_one             "$ROOT/breeze-backbone-step-sm8850-v81.dlc"             "$ROOT/breeze-backbone-step-sm8850-v81.bin"             "jpy8jnxrg"             "Breeze TTS 2 backbone AR1 SM8850 context"
+
+          ls -lh "$ROOT"/*.bin
           df -h /
 
       - name: Split release assets and build manifest
@@ -223,7 +316,8 @@ jobs:
         run: |
           set -euxo pipefail
           python - <<'PY'
-          import hashlib, json
+          import hashlib
+          import json
           from pathlib import Path
 
           root = Path("build/breeze-qnn-generator")
@@ -232,7 +326,7 @@ jobs:
           hub = json.loads((root / "qai-hub-job.json").read_text())
           chunk_size = 1900 * 1024 * 1024
 
-          def split_context(source_name: str, prefix: str):
+          def split_context(source_name, prefix):
               source = root / source_name
               whole = hashlib.sha256()
               parts = []
@@ -251,36 +345,43 @@ jobs:
                       total += len(data)
                       parts.append({"file": name, "bytes": len(data), "sha256": sha})
               if total != source.stat().st_size:
-                  raise SystemExit(f"Context split mismatch for {source_name}")
-              opt = int((root / f"{source_name}.optlevel").read_text().strip())
-              return {
-                  "bytes": total,
-                  "sha256": whole.hexdigest(),
-                  "htp_optimization_level": opt,
-                  "parts": parts,
-              }
+                  raise SystemExit(f"split mismatch: {source_name}")
+              return {"bytes": total, "sha256": whole.hexdigest(), "parts": parts}
 
           contexts = {
-              "depth_prefill": split_context("breeze-depth-prefill-sm8850-v81.bin", "breeze-depth-prefill-sm8850-v81"),
-              "depth_step": split_context("breeze-depth-step-sm8850-v81.bin", "breeze-depth-step-sm8850-v81"),
-              "backbone_prefill": split_context("breeze-backbone-prefill-sm8850-v81.bin", "breeze-backbone-prefill-sm8850-v81"),
-              "backbone_step": split_context("breeze-backbone-step-sm8850-v81.bin", "breeze-backbone-step-sm8850-v81"),
+              "depth": split_context(
+                  "breeze-depth-sm8850-v81.bin",
+                  "breeze-depth-sm8850-v81",
+              ),
+              "backbone_prefill": split_context(
+                  "breeze-backbone-prefill-sm8850-v81.bin",
+                  "breeze-backbone-prefill-sm8850-v81",
+              ),
+              "backbone_step": split_context(
+                  "breeze-backbone-step-sm8850-v81.bin",
+                  "breeze-backbone-step-sm8850-v81",
+              ),
           }
 
           manifest = {
-              "version": 3,
-              "engine": "qnn-full-generator-separate-v3",
-              "backend": "Qualcomm AI Hub QNN DLC + QAIRT HTP offline prepare",
+              "version": 4,
+              "engine": "qnn-full-generator-depth-b1-backbone-b2-v4",
+              "backend": "Qualcomm AI Hub QAIRT/QNN HTP",
               "source": "BreezeBlue/Breeze-TTS-2",
               "target_device": hub["device"],
               "soc_model": 87,
               "htp_arch": "V81",
               "backbone_max_seq": 512,
-              "graphs": {
-                  "depth_prefill": "depth_prefill_b2",
-                  "depth_step": "depth_step_b2",
-                  "backbone_prefill": "backbone_prefill_512",
-                  "backbone_step": "backbone_step_b2",
+              "depth": {
+                  "physical_batch": 1,
+                  "logical_cfg": "serial-cond-uncond",
+                  "graph_names": ["depth_prefill", "depth_step"],
+                  "proven_link_job": "jpy8rw88g",
+              },
+              "backbone": {
+                  "prefill_graph": "backbone_prefill_512",
+                  "step_graph": "backbone_step_b2",
+                  "compile_jobs": ["jgn1m92rp", "jpy8jnxrg"],
               },
               "jobs": hub["contexts"],
               "files": {"SM8850": contexts},
@@ -288,11 +389,13 @@ jobs:
           (release / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
           print(json.dumps(manifest, indent=2))
           PY
-          curl -fL --retry 3 https://raw.githubusercontent.com/breezeblue-ai/breeze-tts/main/LICENSE             -o build/breeze-qnn-generator/release/LICENSE-Breeze-TTS-2.txt
+
+          curl -fL --retry 3             https://raw.githubusercontent.com/breezeblue-ai/breeze-tts/main/LICENSE             -o build/breeze-qnn-generator/release/LICENSE-Breeze-TTS-2.txt
           cat > build/breeze-qnn-generator/release/NOTICE-Breeze-QNN-Generator.txt <<'EOF'
           Breeze TTS 2 is licensed under the BreezeBlue Research and Non-Commercial
-          License Agreement. These SM8850/V81 contexts reuse the already-successful
-          Qualcomm AI Hub QNN DLC compile jobs and are prepared locally with QAIRT.
+          License Agreement. V4 reuses the previously validated SM8850/V81 batch-1
+          depth context and serializes CFG branches through independent KV snapshots.
+          Backbone contexts reuse the successful AI Hub QNN DLC compile jobs.
           EOF
           (cd build/breeze-qnn-generator/release && sha256sum * > SHA256SUMS.txt)
           ls -lh build/breeze-qnn-generator/release
@@ -300,7 +403,7 @@ jobs:
       - name: Upload CI artifact
         uses: actions/upload-artifact@v6
         with:
-          name: Breeze-QNN-Full-Generator-SM8850-v3
+          name: Breeze-QNN-Full-Generator-SM8850-v4
           path: build/breeze-qnn-generator/release/*
           retention-days: 14
           if-no-files-found: error
@@ -312,6 +415,6 @@ jobs:
         run: |
           set -euxo pipefail
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG"               --title "Breeze Full QNN Generator SM8850 v3"               --notes "SM8850/V81 full QNN generator. Reuses successful AI Hub DLC compile jobs and performs QAIRT HTP offline preparation with the least aggressive successful graph optimization level."
+            gh release create "$RELEASE_TAG"               --title "Breeze Full QNN Generator SM8850 v4"               --notes "SM8850/V81 generator: proven batch-1 depth context with serial CFG branches plus QNN backbone prompt/AR1 contexts. Existing successful AI Hub compile artifacts are reused; no model recompilation."
           fi
           gh release upload "$RELEASE_TAG" build/breeze-qnn-generator/release/* --clobber
