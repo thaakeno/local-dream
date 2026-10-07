@@ -58,6 +58,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
@@ -1191,6 +1192,9 @@ fun BreezeFamilyCard(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val qnnGeneratorState by BreezeQnnGeneratorArtifact.status.collectAsState()
+    var fullQnnEnabled by remember {
+        mutableStateOf(BreezeQnnGeneratorArtifact.isEnabled(context))
+    }
     val sharedDownloadState by ModelDownloadService.downloadState.collectAsState()
     val qnnTransferState = sharedDownloadState.takeIf { state ->
         when (state) {
@@ -1433,7 +1437,11 @@ fun BreezeFamilyCard(
                                             transfer.message
                                         else -> when (val status = qnnGeneratorState) {
                                             is BreezeQnnGeneratorArtifact.Status.Ready ->
-                                                "Installed · full SM8850/V81 QNN"
+                                                if (fullQnnEnabled) {
+                                                    "Installed · Full QNN enabled"
+                                                } else {
+                                                    "Installed · Legacy generator enabled"
+                                                }
                                             is BreezeQnnGeneratorArtifact.Status.Unsupported ->
                                                 "Not available on this Snapdragon"
                                             is BreezeQnnGeneratorArtifact.Status.Error ->
@@ -1461,12 +1469,15 @@ fun BreezeFamilyCard(
 
                             when {
                                 qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Ready -> {
-                                    AssistChip(
-                                        onClick = {},
-                                        enabled = false,
-                                        label = { Text("Ready") },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.CheckCircle, contentDescription = null)
+                                    Switch(
+                                        checked = fullQnnEnabled,
+                                        onCheckedChange = { enabled ->
+                                            fullQnnEnabled = enabled
+                                            BreezeQnnGeneratorArtifact.setEnabled(context, enabled)
+                                            AppHaptics.perform(
+                                                context,
+                                                AppHaptics.Kind.Interaction,
+                                            )
                                         },
                                     )
                                 }
