@@ -65,6 +65,7 @@ fun MusicPlayerCard(
     favorite: Boolean = false,
     onFavoriteToggle: (() -> Unit)? = null,
     badges: List<String> = emptyList(),
+    compact: Boolean = false,
 ) {
     var player by remember(file.absolutePath) { mutableStateOf<MediaPlayer?>(null) }
     var preparing by remember(file.absolutePath) { mutableStateOf(false) }
@@ -157,30 +158,36 @@ fun MusicPlayerCard(
         }
     }
 
+    val cardPadding = if (compact) 12.dp else 18.dp
+    val cardSpacing = if (compact) 8.dp else 14.dp
+    val leadingSize = if (compact) 44.dp else 64.dp
+    val leadingPadding = if (compact) 11.dp else 18.dp
+    val waveformHeight = if (compact) 48.dp else 76.dp
+
     ElevatedCard(
         modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
+        shape = if (compact) MaterialTheme.shapes.large else MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ),
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.padding(cardPadding),
+            verticalArrangement = Arrangement.spacedBy(cardSpacing),
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Surface(
-                    modifier = Modifier.size(64.dp),
-                    shape = MaterialTheme.shapes.extraLarge,
+                    modifier = Modifier.size(leadingSize),
+                    shape = if (compact) MaterialTheme.shapes.large else MaterialTheme.shapes.extraLarge,
                     color = MaterialTheme.colorScheme.tertiaryContainer,
                 ) {
                     Icon(
                         Icons.Default.GraphicEq,
                         contentDescription = null,
-                        modifier = Modifier.padding(18.dp),
+                        modifier = Modifier.padding(leadingPadding),
                         tint = MaterialTheme.colorScheme.onTertiaryContainer,
                     )
                 }
@@ -189,20 +196,20 @@ fun MusicPlayerCard(
                         title,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
-                        maxLines = 2,
+                        maxLines = if (compact) 1 else 2,
                     )
                     Text(
                         subtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
+                        maxLines = if (compact) 1 else 2,
                     )
                     metadataLine?.takeIf { it.isNotBlank() }?.let {
                         Text(
                             it,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
-                            maxLines = 2,
+                            maxLines = if (compact) 1 else 2,
                         )
                     }
                     if (badges.isNotEmpty()) {
@@ -210,7 +217,7 @@ fun MusicPlayerCard(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            badges.take(3).forEachIndexed { index, badge ->
+                            badges.take(if (compact) 2 else 3).forEachIndexed { index, badge ->
                                 Surface(
                                     shape = CircleShape,
                                     color = when (index) {
@@ -341,7 +348,7 @@ fun MusicPlayerCard(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(76.dp),
+                        .height(waveformHeight),
                 )
             } else {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -376,43 +383,82 @@ fun MusicPlayerCard(
                 }
             }
 
-            if (onReproduce != null || onUse != null) {
+            if (compact) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (onUse != null) {
-                        OutlinedButton(onClick = onUse, modifier = Modifier.weight(1f)) {
-                            Text("Use settings")
+                        OutlinedButton(
+                            onClick = onUse,
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                        ) {
+                            Text("Use")
                         }
                     }
                     if (onReproduce != null) {
-                        Button(onClick = onReproduce, modifier = Modifier.weight(1f)) {
+                        Button(
+                            onClick = onReproduce,
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                        ) {
                             Icon(Icons.Default.Replay, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
+                            Spacer(Modifier.width(4.dp))
                             Text("Reproduce")
                         }
                     }
-                }
-            }
-
-            if (onSave != null || onShare != null) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
                     if (onSave != null) {
-                        OutlinedButton(onClick = onSave, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Default.Download, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Save")
+                        IconButton(onClick = onSave) {
+                            Icon(Icons.Default.Download, contentDescription = "Save")
                         }
                     }
                     if (onShare != null) {
-                        Button(onClick = onShare, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Default.Share, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Share")
+                        IconButton(onClick = onShare) {
+                            Icon(Icons.Default.Share, contentDescription = "Share")
+                        }
+                    }
+                }
+            } else {
+                if (onReproduce != null || onUse != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (onUse != null) {
+                            OutlinedButton(onClick = onUse, modifier = Modifier.weight(1f)) {
+                                Text("Use settings")
+                            }
+                        }
+                        if (onReproduce != null) {
+                            Button(onClick = onReproduce, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Default.Replay, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("Reproduce")
+                            }
+                        }
+                    }
+                }
+
+                if (onSave != null || onShare != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (onSave != null) {
+                            OutlinedButton(onClick = onSave, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Default.Download, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("Save")
+                            }
+                        }
+                        if (onShare != null) {
+                            Button(onClick = onShare, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Default.Share, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("Share")
+                            }
                         }
                     }
                 }
