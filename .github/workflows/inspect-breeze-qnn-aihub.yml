@@ -36,6 +36,20 @@ jobs:
 
           client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
 
+          # Print the exact installed SDK call signatures. Qualcomm recommends treating the
+          # installed qai_hub package as authoritative because the API evolves quickly.
+          import inspect
+          for api_name in (
+              "submit_compile_job",
+              "submit_link_job",
+              "submit_profile_job",
+              "submit_quantize_job",
+          ):
+              fn = getattr(client, api_name, None) or getattr(hub, api_name, None)
+              print("=== API", api_name, "===")
+              print(inspect.signature(fn) if fn else "<not available>")
+              print((inspect.getdoc(fn) or "")[:4000] if fn else "")
+
           def serial(obj):
               if obj is None:
                   return None
