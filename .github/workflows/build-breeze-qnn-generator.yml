@@ -70,7 +70,7 @@ jobs:
           cat build/breeze-qnn-generator/generator-export.json
           df -h /
 
-      - name: Compile four independent QNN contexts on AI Hub
+      - name: Compile four direct QNN context binaries on AI Hub
         shell: bash
         env:
           QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
@@ -89,57 +89,49 @@ jobs:
           fp16 = "--qnn_options default_graph_htp_precision=FLOAT16"
 
           def compile_context(model, spec, graph_name, job_name, output_name):
-              # Qualcomm documents submit_compile_and_link_jobs() as the current
-              # path from ONNX -> QNN DLC -> SoC-specific context binary. We call
-              # it once per graph, so the linker never has to merge heterogeneous
-              # Breeze graphs or deduplicate their constants.
-              jobs, link = client.submit_compile_and_link_jobs(
-                  models=[str(root / model)],
-                  input_specs=[spec],
+              # AI Hub still supports direct QNN context-binary compilation.
+              # This bypasses the LinkJob path that repeatedly failed with exit 15
+              # even when the preceding qnn_dlc compile was green.
+              source = client.upload_model(
+                  str(root / model),
+                  name=f"{job_name} ONNX",
+              )
+              options = (
+                  "--target_runtime qnn_context_binary "
+                  "--qnn_options default_graph_htp_precision=FLOAT16 "
+                  "--qnn_options default_graph_htp_optimizations=O=3"
+              )
+              job = client.submit_compile_job(
+                  model=source,
+                  input_specs=spec,
                   device=device,
                   name=job_name,
-                  graph_names=[graph_name],
-                  compile_options=fp16,
+                  options=options,
               )
-              if link is None or len(jobs) != 1:
-                  raise SystemExit(f"AI Hub did not create single-graph jobs for {graph_name}")
-              cstatus = jobs[0].wait()
-              if not cstatus.success:
+              status = job.wait()
+              if not status.success:
                   raise SystemExit(
-                      f"Compile failed {jobs[0].job_id}: "
-                      f"{cstatus.message or cstatus.code} {jobs[0].url}"
+                      f"Direct context compile failed {job.job_id}: "
+                      f"{status.message or status.code} {job.url}"
                   )
-              lstatus = link.wait()
-              if not lstatus.success:
+              target_model = job.get_target_model()
+              if target_model is None:
                   raise SystemExit(
-                      f"Single-graph link failed {link.job_id}: "
-                      f"{lstatus.message or lstatus.code} {link.url}"
+                      f"Direct context compile produced no target model: {job.url}"
                   )
               target = root / output_name
-              if not link.download_target_model(str(target)):
-                  raise SystemExit(f"Could not download {graph_name} context")
+              target_model.download(str(target))
               if not target.is_file() or target.stat().st_size < 1_000_000:
                   raise SystemExit(f"Bad QNN context artifact: {target}")
-              print(
-                  json.dumps(
-                      {
-                          "graph": graph_name,
-                          "compile_job": jobs[0].job_id,
-                          "compile_url": jobs[0].url,
-                          "link_job": link.job_id,
-                          "link_url": link.url,
-                          "bytes": target.stat().st_size,
-                      }
-                  )
-              )
-              return {
+              result = {
                   "graph": graph_name,
-                  "compile_job": jobs[0].job_id,
-                  "compile_url": jobs[0].url,
-                  "link_job": link.job_id,
-                  "link_url": link.url,
+                  "compile_job": job.job_id,
+                  "compile_url": job.url,
                   "bytes": target.stat().st_size,
+                  "runtime": "qnn_context_binary",
               }
+              print(json.dumps(result))
+              return result
 
           results = {}
           results["depth_prefill"] = compile_context(
@@ -304,6 +296,6 @@ jobs:
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" \
               --title "Breeze Full QNN Generator SM8850 v3" \
-              --notes "SM8850/V81 full QNN generator using four independently linked single-graph contexts. Backbone + depth run on QNN HTP; sampling remains native; GGML/Hexagon fallback remains available."
+              --notes "SM8850/V81 full QNN generator using four directly compiled single-graph context binaries. Backbone + depth run on QNN HTP; sampling remains native; GGML/Hexagon fallback remains available."
           fi
           gh release upload "$RELEASE_TAG" build/breeze-qnn-generator/release/* --clobber
