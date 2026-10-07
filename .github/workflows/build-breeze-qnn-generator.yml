@@ -6,7 +6,6 @@ on:
     branches:
       - v141-stable-yue2-full
     paths:
-      - 'tools/breeze_qnn/export_generator_full_onnx.py'
       - '.github/workflows/build-breeze-qnn-generator.yml'
 
 permissions:
@@ -19,14 +18,13 @@ concurrency:
 env:
   RELEASE_TAG: breeze-qnn-generator-sm8850-v3
   QAI_DEVICE: Samsung Galaxy S26 (Family)
-  HF_XET_HIGH_PERFORMANCE: '1'
   QNN_VERSION: '2.50.0.260828'
   QNN_URL: 'https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip'
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 240
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -69,373 +67,133 @@ jobs:
           done < <(find "$install_dir" -maxdepth 4 -type d)
           test -n "$sdk_root"
           test -s "$sdk_root/lib/x86_64-linux-clang/libQnnModelDlc.so"
+          test -s "$sdk_root/lib/x86_64-linux-clang/libQnnHtp.so"
+          test -s "$sdk_root/lib/x86_64-linux-clang/libHtpPrepare.so"
           test -s "$sdk_root/lib/x86_64-linux-clang/libQnnHtpNetRunExtensions.so"
           echo "QNN_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
           echo "QAIRT_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
           echo "$sdk_root/bin/x86_64-linux-clang" >> "$GITHUB_PATH"
           echo "LD_LIBRARY_PATH=$sdk_root/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
-      - name: Install QAIRT host runtime
+      - name: Install host tools
         shell: bash
         run: |
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y libc++1 libc++abi1
-
-      - name: Free runner disk
-        shell: bash
-        run: |
-          set -euxo pipefail
           sudo rm -rf /usr/local/lib/android/sdk/ndk /opt/ghc /usr/share/dotnet || true
-          df -h /
-
-      - name: Install exporter and AI Hub client
-        shell: bash
-        run: |
-          set -euxo pipefail
           python -m pip install --upgrade pip
-          python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.7.1'
-          python -m pip install \
-            'transformers==4.57.3' 'huggingface_hub>=0.36.0' 'hf_xet>=1.1.10' \
-            'safetensors>=0.5.3' 'onnx==1.18.0' 'onnxscript>=0.3.2' \
-            'numpy==1.26.4' 'accelerate>=1.12.0' 'qai-hub>=0.56.0'
-          git clone --depth 1 https://github.com/breezeblue-ai/breeze-tts.git "${RUNNER_TEMP}/breeze-src"
+          python -m pip install 'qai-hub>=0.56.0'
           git clone --depth 1 https://github.com/qualcomm/qai-appbuilder.git "${RUNNER_TEMP}/qai-appbuilder"
           req="${QNN_SDK_ROOT}/bin/requirements.txt"
           if [ -f "$req" ]; then python -m pip install -r "$req"; fi
-
-      - name: Export full native-sampling generator
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p build/breeze-qnn-generator
-          python tools/breeze_qnn/export_generator_full_onnx.py \
-            --source-dir "${RUNNER_TEMP}/breeze-src" \
-            --cache-dir "${RUNNER_TEMP}/hf-cache" \
-            --output-dir build/breeze-qnn-generator
-          for f in \
-            breeze_depth_prefill.onnx breeze_depth_step.onnx \
-            breeze_backbone_prefill.onnx breeze_backbone_step.onnx; do
-            test -s "build/breeze-qnn-generator/$f"
-          done
-          python - <<'PY'
-          from pathlib import Path
-          import onnx
-
-          root=Path("build/breeze-qnn-generator")
-          for path in sorted(root.glob("*.onnx")):
-              model=onnx.load(str(path), load_external_data=False)
-              locations=set()
-              for tensor in model.graph.initializer:
-                  if tensor.data_location == onnx.TensorProto.EXTERNAL:
-                      for kv in tensor.external_data:
-                          if kv.key == "location":
-                              locations.add(kv.value)
-              for loc in locations:
-                  p=path.parent / loc
-                  if not p.is_file() or p.is_symlink():
-                      raise SystemExit(f"{path.name}: external tensor file is not regular: {p}")
-              print(path.name, path.stat().st_size, "external=", sorted(locations),
-                    "external_bytes=", sum((path.parent/x).stat().st_size for x in locations))
-          PY
-          cat build/breeze-qnn-generator/generator-export.json
           df -h /
 
-      - name: Compile four QNN DLCs on AI Hub
+      - name: Download already-compiled QNN DLCs
         shell: bash
         env:
           QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           test -n "${QAI_HUB_API_TOKEN:-}"
+          mkdir -p build/breeze-qnn-generator
           python - <<'PY'
-          import json
-          import os
+          import json, os
           from pathlib import Path
           import qai_hub as hub
 
           root = Path("build/breeze-qnn-generator")
           client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
-          device = hub.Device(os.environ["QAI_DEVICE"])
 
-          def download_existing(job_id, graph_name, output_name):
+          # These four jobs all completed successfully in run #15. Reuse them
+          # verbatim; do not re-export or recompile anything on AI Hub.
+          jobs = {
+              "depth_prefill": ("jgodnv9x5", "depth_prefill_b2", "breeze-depth-prefill-sm8850-v81.dlc"),
+              "depth_step": ("jp1ow8k25", "depth_step_b2", "breeze-depth-step-sm8850-v81.dlc"),
+              "backbone_prefill": ("jgn1m92rp", "backbone_prefill_512", "breeze-backbone-prefill-sm8850-v81.dlc"),
+              "backbone_step": ("jpy8jnxrg", "backbone_step_b2", "breeze-backbone-step-sm8850-v81.dlc"),
+          }
+
+          result = {}
+          for key, (job_id, graph, filename) in jobs.items():
               job = client.get_job(job_id)
               status = job.get_status()
               if not status.success:
-                  raise RuntimeError(
-                      f"cached compile job {job_id} is not successful: "
-                      f"{status.message or status.code}"
-                  )
-              target_model = job.get_target_model()
-              if target_model is None:
-                  raise RuntimeError(f"cached compile job {job_id} has no target model")
-              target = root / output_name
-              target_model.download(str(target))
-              if not target.is_file() or target.stat().st_size < 100_000:
-                  raise RuntimeError(f"bad cached QNN DLC artifact: {target}")
-              result = {
-                  "graph": graph_name,
+                  raise SystemExit(f"cached AI Hub job {job_id} is no longer successful: {status}")
+              target = job.get_target_model()
+              if target is None:
+                  raise SystemExit(f"cached AI Hub job {job_id} has no target model")
+              path = root / filename
+              target.download(str(path))
+              if not path.is_file() or path.stat().st_size < 100_000:
+                  raise SystemExit(f"bad DLC download: {path}")
+              result[key] = {
+                  "graph": graph,
                   "compile_job": job_id,
                   "compile_url": job.url,
-                  "dlc_bytes": target.stat().st_size,
+                  "dlc_bytes": path.stat().st_size,
                   "runtime": "qnn_dlc",
                   "reused": True,
               }
-              print(json.dumps(result))
-              return result
+              print(key, path.stat().st_size, job.url)
 
-          def compile_dlc(model, spec, graph_name, job_name, output_name):
-              model_path = root / model
-
-              # AI Hub's documented external-weight upload contract is NOT
-              # "upload the .onnx file and leave .data beside it". For external
-              # weights it requires either a directory whose name ends in .onnx
-              # or an .onnx.zip containing the ONNX plus exactly one .data file.
-              # Package the normalized ONNX accordingly so Workbench receives
-              # the weight file instead of creating a dangling reference.
-              import onnx
-              import zipfile
-
-              onnx.checker.check_model(str(model_path), full_check=True)
-              check = onnx.load(str(model_path), load_external_data=False)
-              locations = set()
-              for tensor in check.graph.initializer:
-                  if tensor.data_location == onnx.TensorProto.EXTERNAL:
-                      for kv in tensor.external_data:
-                          if kv.key == "location":
-                              locations.add(kv.value)
-
-              upload_path = model_path
-              bundle_dir = None
-              model_bytes = model_path.stat().st_size
-              external_bytes = sum(
-                  (model_path.parent / x).stat().st_size for x in locations
-              )
-
-              if locations:
-                  if len(locations) != 1:
-                      raise SystemExit(
-                          f"{model_path.name}: AI Hub requires exactly one external .data file; "
-                          f"found {sorted(locations)}"
-                      )
-                  loc = next(iter(locations))
-                  data_path = model_path.parent / loc
-                  if (
-                      data_path.suffix != ".data" or
-                      not data_path.is_file() or
-                      data_path.is_symlink()
-                  ):
-                      raise SystemExit(
-                          f"Refusing AI Hub upload: invalid external data file: {data_path}"
-                      )
-
-                  # Qualcomm's required shape is a DIRECTORY whose own name ends
-                  # in ".onnx", containing exactly one .onnx and one .data file.
-                  # Uploading a zip with both files at archive root is rejected
-                  # by qai_hub.util.zipped_model as "more than one base asset".
-                  # Move instead of copy so we do not temporarily consume another
-                  # ~2.8 GB on the GitHub runner.
-                  import shutil
-                  bundle_dir = model_path.with_name(model_path.stem + "_bundle.onnx")
-                  if bundle_dir.exists():
-                      shutil.rmtree(bundle_dir)
-                  bundle_dir.mkdir()
-                  bundled_model = bundle_dir / model_path.name
-                  bundled_data = bundle_dir / loc
-                  shutil.move(str(model_path), str(bundled_model))
-                  shutil.move(str(data_path), str(bundled_data))
-
-                  members = sorted(p.name for p in bundle_dir.iterdir())
-                  expected = sorted([model_path.name, loc])
-                  if members != expected:
-                      raise SystemExit(
-                          f"{bundle_dir.name}: malformed AI Hub ONNX directory: {members}"
-                      )
-                  if not bundled_model.is_file() or not bundled_data.is_file():
-                      raise SystemExit(
-                          f"{bundle_dir.name}: ONNX/data members are not regular files"
-                      )
-
-                  # Validate the moved model still resolves its relative .data
-                  # reference before spending time uploading it.
-                  onnx.checker.check_model(str(bundled_model), full_check=True)
-                  upload_path = bundle_dir
-
-              print(
-                  "uploading", upload_path.name,
-                  "onnx=", model_bytes,
-                  "external_data=", sorted(locations),
-                  "external_bytes=", external_bytes,
-                  "upload_is_dir=", upload_path.is_dir(),
-              )
-
-              source = client.upload_model(
-                  str(upload_path),
-                  name=f"{job_name} ONNX",
-              )
-
-              # upload_model() has completed the upload synchronously. The Hub
-              # model is now remote, so reclaim local source space immediately.
-              if bundle_dir is not None:
-                  shutil.rmtree(bundle_dir)
-
-              job = client.submit_compile_job(
-                  model=source,
-                  input_specs=spec,
-                  device=device,
-                  name=job_name,
-                  options=(
-                      "--target_runtime qnn_dlc "
-                      "--qnn_options default_graph_htp_precision=FLOAT16"
-                  ),
-              )
-              status = job.wait()
-              if not status.success:
-                  raise SystemExit(
-                      f"QNN DLC compile failed {job.job_id}: "
-                      f"{status.message or status.code} {job.url}"
-                  )
-              target_model = job.get_target_model()
-              if target_model is None:
-                  raise SystemExit(f"QNN DLC compile produced no target model: {job.url}")
-              target = root / output_name
-              target_model.download(str(target))
-              if not target.is_file() or target.stat().st_size < 100_000:
-                  raise SystemExit(f"Bad QNN DLC artifact: {target}")
-              result = {
-                  "graph": graph_name,
-                  "compile_job": job.job_id,
-                  "compile_url": job.url,
-                  "dlc_bytes": target.stat().st_size,
-                  "runtime": "qnn_dlc",
-                  "reused": False,
-              }
-
-              # These multi-GB source files are no longer needed after AI Hub
-              # returns the DLC. Reclaim runner disk before packaging the next
-              # backbone graph and before local QAIRT context generation.
-              stale_locations = list(locations)
-              model_path.unlink(missing_ok=True)
-              for loc in stale_locations:
-                  (model_path.parent / loc).unlink(missing_ok=True)
-
-              print(json.dumps(result))
-              return result
-
-          results = {}
-          try:
-              results["depth_prefill"] = download_existing(
-                  "jgodnv9x5",
-                  "depth_prefill_b2",
-                  "breeze-depth-prefill-sm8850-v81.dlc",
-              )
-          except Exception as exc:
-              print("cached depth-prefill job unavailable, recompiling:", exc)
-              results["depth_prefill"] = compile_dlc(
-                  "breeze_depth_prefill.onnx",
-                  {
-                      "backbone_hidden": ((2, 2048), "float16"),
-                      "first_codebook": ((2,), "int32"),
-                  },
-                  "depth_prefill_b2",
-                  "Breeze TTS 2 depth prefill SM8850",
-                  "breeze-depth-prefill-sm8850-v81.dlc",
-              )
-
-          try:
-              results["depth_step"] = download_existing(
-                  "jp1ow8k25",
-                  "depth_step_b2",
-                  "breeze-depth-step-sm8850-v81.dlc",
-              )
-
-              # Cached depth DLCs mean their freshly exported ONNX copies are
-              # redundant. Remove them before the two ~2.8 GB backbone uploads.
-              for stale in (
-                  "breeze_depth_prefill.onnx",
-                  "breeze_depth_prefill.onnx.data",
-                  "breeze_depth_step.onnx",
-                  "breeze_depth_step.onnx.data",
-              ):
-                  (root / stale).unlink(missing_ok=True)
-          except Exception as exc:
-              print("cached depth-step job unavailable, recompiling:", exc)
-              results["depth_step"] = compile_dlc(
-                  "breeze_depth_step.onnx",
-                  {
-                      "token": ((2,), "int32"),
-                      "position": ((1,), "int32"),
-                      "key_cache": ((2, 24, 16, 128), "float16"),
-                      "value_cache": ((2, 24, 16, 128), "float16"),
-                  },
-                  "depth_step_b2",
-                  "Breeze TTS 2 depth AR1 SM8850",
-                  "breeze-depth-step-sm8850-v81.dlc",
-              )
-          results["backbone_prefill"] = compile_dlc(
-              "breeze_backbone_prefill.onnx",
-              {
-                  "inputs_embeds": ((1, 512, 2048), "float16"),
-                  "attention_mask": ((1, 1, 512, 512), "float16"),
-                  "positions": ((1, 512), "int32"),
-              },
-              "backbone_prefill_512",
-              "Breeze TTS 2 backbone prefill SM8850",
-              "breeze-backbone-prefill-sm8850-v81.dlc",
-          )
-          results["backbone_step"] = compile_dlc(
-              "breeze_backbone_step.onnx",
-              {
-                  "input_embed": ((2, 1, 2048), "float16"),
-                  "positions": ((2,), "int32"),
-                  "key_cache": ((2, 224, 512, 128), "float16"),
-                  "value_cache": ((2, 224, 512, 128), "float16"),
-                  "attention_mask": ((2, 1, 1, 513), "float16"),
-              },
-              "backbone_step_b2",
-              "Breeze TTS 2 backbone AR1 SM8850",
-              "breeze-backbone-step-sm8850-v81.dlc",
-          )
-
-          (root / "qai-hub-job.json").write_text(
-              json.dumps(
-                  {
-                      "device": os.environ["QAI_DEVICE"],
-                      "contexts": results,
-                  },
-                  indent=2,
-              ) + "\n"
-          )
+          (root / "qai-hub-job.json").write_text(json.dumps({
+              "device": os.environ.get("QAI_DEVICE", "Samsung Galaxy S26 (Family)"),
+              "contexts": result,
+          }, indent=2) + "\n")
           PY
+          ls -lh build/breeze-qnn-generator/*.dlc
+          df -h /
 
-      - name: Convert QNN DLCs to native SM8850 V81 contexts
+      - name: Convert DLCs to native SM8850 V81 contexts
         shell: bash
         run: |
-          set -euxo pipefail
+          set -uo pipefail
           export QAIRT_SDK_ROOT="$QNN_SDK_ROOT"
           export LD_LIBRARY_PATH="$QNN_SDK_ROOT/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
           ROOT="$GITHUB_WORKSPACE/build/breeze-qnn-generator"
           TOOL="${RUNNER_TEMP}/qai-appbuilder/tools/skills/qai-runner-skill/scripts/qai_dev_gen_contextbin_x86.py"
-          test -s "$TOOL"
+          test -s "$TOOL" || exit 1
 
+          # QAIRT 2.50's O=3 finalize path hits fp16_conv_activations with
+          # "bias dim 256 / scale dim 128" on Breeze depth-prefill. Qualcomm
+          # documents O as the HTP graph optimization level, so generate the
+          # exact same SM8850/V81 context while progressively disabling the
+          # aggressive finalizer. No AI Hub recompilation is needed.
           convert_one() {
             local dlc="$1"
             local out="$2"
-            rm -rf output
-            python "$TOOL" \
-              --dlc "$ROOT/$dlc" \
-              --output "$ROOT/$out" \
-              --backend htp \
-              --soc_model 87 \
-              --dsp_arch v81 \
-              --vtcm_mb 8 \
-              --opt_level 3 \
-              --pd_session unsigned
-            test -s "$ROOT/$out"
+            local ok=0
 
-            qnn-context-binary-utility \
-              --context_binary "$ROOT/$out" \
-              --json_file "$ROOT/$out.info.json"
+            rm -f "$ROOT/$out" "$ROOT/$out.info.json"
+            for opt in 0 1 2 3; do
+              echo "=== context generation: $dlc O=$opt ==="
+              rm -rf output
+              rm -f "$ROOT/htp_config_v81.json" "$ROOT/backend_extensions.json"
+
+              set +e
+              python "$TOOL"                 --dlc "$ROOT/$dlc"                 --output "$ROOT/$out"                 --backend htp                 --soc_model 87                 --dsp_arch v81                 --vtcm_mb 8                 --opt_level "$opt"                 --pd_session unsigned                 >"$ROOT/$out.O$opt.log" 2>&1
+              rc=$?
+              set -e
+
+              cat "$ROOT/$out.O$opt.log"
+              if [ "$rc" -eq 0 ] && [ -s "$ROOT/$out" ]; then
+                echo "context generation succeeded with O=$opt"
+                echo "$opt" > "$ROOT/$out.optlevel"
+                ok=1
+                break
+              fi
+
+              rm -f "$ROOT/$out"
+            done
+
+            if [ "$ok" -ne 1 ]; then
+              echo "All HTP optimization levels failed for $dlc" >&2
+              return 1
+            fi
+
+            qnn-context-binary-utility               --context_binary "$ROOT/$out"               --json_file "$ROOT/$out.info.json"
+
             python - "$ROOT/$out.info.json" <<'PY'
           import json, sys
           data=json.load(open(sys.argv[1]))
@@ -447,24 +205,25 @@ jobs:
           graphs=info.get("graphs", [])
           if len(graphs) != 1:
               raise SystemExit(f"expected one graph in context, found {len(graphs)}")
-          print("validated native context", sys.argv[1], "soc", soc, "arch", arch)
+          print("validated native SM8850/V81 context", "soc", soc, "arch", arch)
           PY
           }
 
+          set -e
           convert_one breeze-depth-prefill-sm8850-v81.dlc breeze-depth-prefill-sm8850-v81.bin
           convert_one breeze-depth-step-sm8850-v81.dlc breeze-depth-step-sm8850-v81.bin
           convert_one breeze-backbone-prefill-sm8850-v81.dlc breeze-backbone-prefill-sm8850-v81.bin
           convert_one breeze-backbone-step-sm8850-v81.dlc breeze-backbone-step-sm8850-v81.bin
 
-          ls -lh "$ROOT"/*.dlc "$ROOT"/*.bin
+          ls -lh "$ROOT"/*.bin "$ROOT"/*.optlevel
+          df -h /
 
       - name: Split release assets and build manifest
         shell: bash
         run: |
           set -euxo pipefail
           python - <<'PY'
-          import hashlib
-          import json
+          import hashlib, json
           from pathlib import Path
 
           root = Path("build/breeze-qnn-generator")
@@ -493,31 +252,25 @@ jobs:
                       parts.append({"file": name, "bytes": len(data), "sha256": sha})
               if total != source.stat().st_size:
                   raise SystemExit(f"Context split mismatch for {source_name}")
-              return {"bytes": total, "sha256": whole.hexdigest(), "parts": parts}
+              opt = int((root / f"{source_name}.optlevel").read_text().strip())
+              return {
+                  "bytes": total,
+                  "sha256": whole.hexdigest(),
+                  "htp_optimization_level": opt,
+                  "parts": parts,
+              }
 
           contexts = {
-              "depth_prefill": split_context(
-                  "breeze-depth-prefill-sm8850-v81.bin",
-                  "breeze-depth-prefill-sm8850-v81",
-              ),
-              "depth_step": split_context(
-                  "breeze-depth-step-sm8850-v81.bin",
-                  "breeze-depth-step-sm8850-v81",
-              ),
-              "backbone_prefill": split_context(
-                  "breeze-backbone-prefill-sm8850-v81.bin",
-                  "breeze-backbone-prefill-sm8850-v81",
-              ),
-              "backbone_step": split_context(
-                  "breeze-backbone-step-sm8850-v81.bin",
-                  "breeze-backbone-step-sm8850-v81",
-              ),
+              "depth_prefill": split_context("breeze-depth-prefill-sm8850-v81.bin", "breeze-depth-prefill-sm8850-v81"),
+              "depth_step": split_context("breeze-depth-step-sm8850-v81.bin", "breeze-depth-step-sm8850-v81"),
+              "backbone_prefill": split_context("breeze-backbone-prefill-sm8850-v81.bin", "breeze-backbone-prefill-sm8850-v81"),
+              "backbone_step": split_context("breeze-backbone-step-sm8850-v81.bin", "breeze-backbone-step-sm8850-v81"),
           }
 
           manifest = {
               "version": 3,
               "engine": "qnn-full-generator-separate-v3",
-              "backend": "Qualcomm AI Hub QAIRT/QNN HTP",
+              "backend": "Qualcomm AI Hub QNN DLC + QAIRT HTP offline prepare",
               "source": "BreezeBlue/Breeze-TTS-2",
               "target_device": hub["device"],
               "soc_model": 87,
@@ -535,12 +288,11 @@ jobs:
           (release / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
           print(json.dumps(manifest, indent=2))
           PY
-          cp "${RUNNER_TEMP}/breeze-src/LICENSE" build/breeze-qnn-generator/release/LICENSE-Breeze-TTS-2.txt
+          curl -fL --retry 3 https://raw.githubusercontent.com/breezeblue-ai/breeze-tts/main/LICENSE             -o build/breeze-qnn-generator/release/LICENSE-Breeze-TTS-2.txt
           cat > build/breeze-qnn-generator/release/NOTICE-Breeze-QNN-Generator.txt <<'EOF'
           Breeze TTS 2 is licensed under the BreezeBlue Research and Non-Commercial
-          License Agreement. These SM8850/V81 QNN HTP contexts are independently
-          AI Hub QNN DLCs converted with Qualcomm's official DLC-to-context flow for backbone/depth prefill and AR1 decode.
-          Local Dream unloads the large backbone prefill context before AR1 generation.
+          License Agreement. These SM8850/V81 contexts reuse the already-successful
+          Qualcomm AI Hub QNN DLC compile jobs and are prepared locally with QAIRT.
           EOF
           (cd build/breeze-qnn-generator/release && sha256sum * > SHA256SUMS.txt)
           ls -lh build/breeze-qnn-generator/release
@@ -560,8 +312,6 @@ jobs:
         run: |
           set -euxo pipefail
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" \
-              --title "Breeze Full QNN Generator SM8850 v3" \
-              --notes "SM8850/V81 full QNN generator using four AI Hub QNN DLCs converted locally to native SM8850/V81 context binaries. Backbone + depth run on QNN HTP; sampling remains native; GGML/Hexagon fallback remains available."
+            gh release create "$RELEASE_TAG"               --title "Breeze Full QNN Generator SM8850 v3"               --notes "SM8850/V81 full QNN generator. Reuses successful AI Hub DLC compile jobs and performs QAIRT HTP offline preparation with the least aggressive successful graph optimization level."
           fi
           gh release upload "$RELEASE_TAG" build/breeze-qnn-generator/release/* --clobber
