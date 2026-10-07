@@ -219,6 +219,9 @@ private const val DEFAULT_REPETITION = 1.1f
 private const val DEFAULT_SPLIT_CHARS = 600
 private const val DEFAULT_MAX_NEW_TOKENS = 750
 
+private fun freshSpeechSeed(): Long =
+    ((System.nanoTime() xor System.currentTimeMillis()) and 0x7fffffffL).coerceAtLeast(1L)
+
 private fun shareSpeechFile(context: android.content.Context, file: File) {
     if (!file.isFile) return
     val uri = FileProvider.getUriForFile(
@@ -520,12 +523,33 @@ fun SpeechRunScreen(
                         }
                     }
 
+                    Text(
+                        "Starting points",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(templates, key = { it.name }) { template ->
+                        items(BREEZE_TEMPLATES.map { it.category }.distinct()) { category ->
+                            FilterChip(
+                                selected = templateCategory == category,
+                                onClick = {
+                                    templateCategory = category
+                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                },
+                                label = { Text(category) },
+                            )
+                        }
+                    }
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(
+                            BREEZE_TEMPLATES.filter { it.category == templateCategory },
+                            key = { it.name },
+                        ) { template ->
                             AssistChip(
                                 onClick = {
                                     text = template.text
                                     instruction = template.instruction
+                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                                 },
                                 label = { Text(template.name) },
                                 leadingIcon = {
@@ -538,49 +562,9 @@ fun SpeechRunScreen(
                     InlineEventEditor(
                         value = text,
                         onValueChange = { text = it.take(12000) },
-                        events = events,
+                        events = BREEZE_INLINE_EVENTS,
                         modifier = Modifier.fillMaxWidth(),
                     )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Inline events",
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            "Tap to insert",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(events) { event ->
-                            val chinese = event.startsWith("[")
-                            AssistChip(
-                                onClick = {
-                                    text = if (text.isBlank()) event else text + " " + event
-                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                                },
-                                label = { Text(event) },
-                                colors = AssistChipDefaults.assistChipColors(
-                                    containerColor = if (chinese) {
-                                        MaterialTheme.colorScheme.secondaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.tertiaryContainer
-                                    },
-                                    labelColor = if (chinese) {
-                                        MaterialTheme.colorScheme.onSecondaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.onTertiaryContainer
-                                    },
-                                ),
-                            )
-                        }
-                    }
 
                     OutlinedTextField(
                         value = instruction,
@@ -660,8 +644,13 @@ fun SpeechRunScreen(
                         Button(
                             onClick = {
                                 AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                val generationSeed = if (seedLocked) {
+                                    seed
+                                } else {
+                                    freshSpeechSeed().also { seed = it }
+                                }
                                 startSpeechGeneration(
-                                    context, modelId, text, instruction, seed,
+                                    context, modelId, text, instruction, generationSeed,
                                     cfg, temperature, topK, topP, repetition,
                                     splitChars, maxNewTokens,
                                 )
@@ -684,9 +673,17 @@ fun SpeechRunScreen(
                     title = "Breeze TTS 2 · " + precision,
                     subtitle = "Seed " + complete.seed + " · " +
                         String.format(Locale.US, "%.1f s generation", complete.elapsedMillis / 1000f),
-                    metadataLine = "Just generated · QNN HTP ready",
+                    metadataLine = if (acceleratorState is BreezeQnnVocoderArtifact.Status.Ready) {
+                        "Snapdragon NPU · GGUF generator + QNN waveform decoder"
+                    } else {
+                        "Snapdragon NPU · GGUF generator"
+                    },
                     modifier = Modifier.padding(horizontal = 16.dp),
                     onReproduce = {
+                        text = complete.text
+                        instruction = complete.instruction
+                        seed = complete.seed
+                        seedLocked = true
                         startSpeechGeneration(
                             context, modelId, complete.text, complete.instruction,
                             complete.seed, cfg, temperature, topK, topP,
