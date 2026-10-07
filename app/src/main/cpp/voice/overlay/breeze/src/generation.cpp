@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <random>
 #include <stdexcept>
 
@@ -76,6 +77,65 @@ static std::vector<float> combine_logits(const std::vector<float> & cond, const 
     std::vector<float> out(cond.size());
     for (size_t i = 0; i < out.size(); i++) out[i] = unc[i] + scale * (cond[i] - unc[i]);
     return out;
+}
+
+// The server serializes generations with a mutex, so one process-wide cache is
+// enough. Keeping QAIRT contexts alive avoids paying multi-gigabyte context
+// deserialization and depth self-test costs again for every chunk/request.
+struct PersistentQnnGenerator {
+    BreezeModel * model = nullptr;
+    std::unique_ptr<QnnBackboneRunner> backbone_b1;
+    std::unique_ptr<QnnBackboneRunner> backbone_b2;
+    std::unique_ptr<QnnDepthRunner> depth_b1;
+    std::unique_ptr<QnnDepthRunner> depth_b2;
+};
+
+static PersistentQnnGenerator g_qnn_generator;
+
+static void reset_persistent_qnn(BreezeModel * model) {
+    if (g_qnn_generator.model == model) return;
+    g_qnn_generator = PersistentQnnGenerator{};
+    g_qnn_generator.model = model;
+}
+
+static QnnBackboneRunner * persistent_backbone(BreezeModel & m, int branches) {
+    reset_persistent_qnn(&m);
+    auto & slot = branches == 2
+        ? g_qnn_generator.backbone_b2
+        : g_qnn_generator.backbone_b1;
+    if (!slot) {
+        slot = std::make_unique<QnnBackboneRunner>();
+        if (!slot->init(m, branches)) {
+            slot.reset();
+            return nullptr;
+        }
+        std::fprintf(
+            stderr,
+            "[BREEZE_QNN_CACHE] backbone created branches=%d\n",
+            branches
+        );
+    }
+    return slot.get();
+}
+
+static QnnDepthRunner * persistent_depth(BreezeModel & m, int branches) {
+    reset_persistent_qnn(&m);
+    auto & slot = branches == 2
+        ? g_qnn_generator.depth_b2
+        : g_qnn_generator.depth_b1;
+    if (!slot) {
+        slot = std::make_unique<QnnDepthRunner>();
+        if (!slot->init(m, branches)) {
+            slot.reset();
+            return nullptr;
+        }
+        std::fprintf(
+            stderr,
+            "[BREEZE_QNN_CACHE] depth created branches=%d\n",
+            branches
+        );
+    }
+    return slot.get();
 }
 
 // what a finished piece leaves behind so the next one can keep the same voice
@@ -211,9 +271,9 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     const int qnn_capacity_need =
         std::max(total_c, use_cfg ? total_u : total_c) + soft_target + 16;
 
-    QnnBackboneRunner qnn_backbone;
-    bool qnn_backbone_ready =
-        qnn_capacity_need <= 512 && qnn_backbone.init(m, generator_branches);
+    QnnBackboneRunner * qnn_backbone =
+        qnn_capacity_need <= 512 ? persistent_backbone(m, generator_branches) : nullptr;
+    bool qnn_backbone_ready = qnn_backbone != nullptr;
 
     BackboneState st_c, st_u;
     bool ggml_backbone_active = false;
@@ -221,7 +281,7 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
 
     t0 = clock_now();
     if (qnn_backbone_ready) {
-        qnn_backbone_ready = qnn_backbone.prefill(
+        qnn_backbone_ready = qnn_backbone->prefill(
             m,
             emb_c,
             total_c,
@@ -243,11 +303,10 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     DepthRunner depth;
     depth.init(m, generator_branches);
 
-    // V4 QNN depth reuses the proven physical batch-1 context. CFG stays exact
-    // by serializing cond/uncond branches with independent native KV snapshots.
-    // If its device smoke-test fails, ggml-Hexagon remains available.
-    QnnDepthRunner qnn_depth;
-    const bool qnn_depth_ready = qnn_depth.init(m, generator_branches);
+    // Keep the depth context resident as well; its graph pair and device self-test
+    // are invariant for the loaded Breeze model and should run once, not per chunk.
+    QnnDepthRunner * qnn_depth = persistent_depth(m, generator_branches);
+    const bool qnn_depth_ready = qnn_depth != nullptr && qnn_depth->ready();
     std::fprintf(
         stderr,
         "[BREEZE_GENERATOR] backbone=%s depth=%s cfg=%.2f capacity_need=%d\n",
@@ -407,8 +466,8 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         auto td = clock_now();
         std::vector<int> depth_codes;
         bool used_qnn_depth = false;
-        if (qnn_depth.ready()) {
-            used_qnn_depth = qnn_depth.run(
+        if (qnn_depth && qnn_depth->ready()) {
+            used_qnn_depth = qnn_depth->run(
                 m,
                 hiddens,
                 cb0,
@@ -444,7 +503,7 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         auto tb = clock_now();
         std::vector<float> ae = audio_embed.run(m, frame);
         if (qnn_backbone_ready) {
-            if (!qnn_backbone.step(m, ae, o_c, o_u)) {
+            if (!qnn_backbone->step(m, ae, o_c, o_u)) {
                 throw std::runtime_error(
                     "Full QNN backbone failed during autoregressive decode"
                 );
