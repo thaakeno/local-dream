@@ -21,7 +21,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install AI Hub client
-        run: python -m pip install --upgrade 'qai-hub>=0.56.0'
+        run: python -m pip install --upgrade 'qai-hub>=0.56.0' onnx
 
       - name: Inspect compile/link lineage and tensor specs
         env:
@@ -84,4 +84,27 @@ jobs:
           print("depth linked model count", len(models))
           for i, model in enumerate(models):
               describe_model(f"depth_link_model_{i}", model)
+          # Download the original ONNX sources and inspect whether batch/sequence axes are fixed.
+          import pathlib
+          import onnx
+
+          source_ids = {
+              "backbone_prefill": "mnl168kjm",
+              "backbone_step": "mqe376w4n",
+              "depth_prefill": "mq3d6ve3n",
+              "depth_step": "mnzx131om",
+          }
+          out = pathlib.Path("onnx-inspect")
+          out.mkdir(exist_ok=True)
+          for label, mid in source_ids.items():
+              model = client.get_model(mid)
+              path = model.download(str(out / (label + ".onnx")))
+              proto = onnx.load(path, load_external_data=False)
+              def dims(value):
+                  shape = value.type.tensor_type.shape
+                  return [d.dim_value if d.dim_value else (d.dim_param or "?") for d in shape.dim]
+              print("=== ONNX", label, mid, "===")
+              print("inputs", [(x.name, dims(x), x.type.tensor_type.elem_type) for x in proto.graph.input])
+              print("outputs", [(x.name, dims(x), x.type.tensor_type.elem_type) for x in proto.graph.output])
+              print("nodes", len(proto.graph.node), "initializers", len(proto.graph.initializer))
           PY
