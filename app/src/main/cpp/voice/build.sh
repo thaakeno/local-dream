@@ -205,8 +205,9 @@ grep -q 'BREEZE_QNN_BACKBONE_PREFILL_PATH' "$(pwd)/native/breeze-qnn-backbone.cp
 grep -q 'BREEZE_QNN_BACKBONE_STEP_B1_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
 grep -q 'shared_context=%d' "$(pwd)/native/breeze-qnn-backbone.cpp"
 grep -q 'prompt_context_released=%d' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'QnnBackboneRunner qnn_backbone' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'QnnDepthRunner qnn_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'persistent_backbone' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'persistent_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'BREEZE_QNN_CACHE' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'depth.run(m, hiddens, cb0' "$(pwd)/overlay/breeze/src/generation.cpp"
 
 # Full-clip decode remains available for voice conversion/reference work, but
