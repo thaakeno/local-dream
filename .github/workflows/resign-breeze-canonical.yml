@@ -1,6 +1,11 @@
 name: Canonical-sign Breeze APK
 
 on:
+  workflow_run:
+    workflows:
+      - Build Qwen FP8 Turbo APK
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -33,6 +38,9 @@ concurrency:
 
 jobs:
   sign:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.head_branch == 'breeze-qnn-v5-fastpath'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -48,9 +56,14 @@ jobs:
           INPUT_RUN_ID: ${{ inputs.source_run_id }}
           INPUT_SOURCE_NAME: ${{ inputs.source_artifact_name }}
           INPUT_OUTPUT_NAME: ${{ inputs.output_artifact_name }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euxo pipefail
-          if [ "$EVENT_NAME" = "push" ]; then
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            SOURCE_RUN_ID="$WORKFLOW_RUN_ID"
+            SOURCE_ARTIFACT_NAME="LocalDream-Qwen-FP8-Turbo"
+            OUTPUT_ARTIFACT_NAME="LocalDream-Breeze-Canonical"
+          elif [ "$EVENT_NAME" = "push" ]; then
             test -s .github/breeze-sign-request.json
             SOURCE_RUN_ID="$(jq -r '.source_run_id' .github/breeze-sign-request.json)"
             SOURCE_ARTIFACT_NAME="$(jq -r '.source_artifact_name // "LocalDream-Qwen-FP8-Turbo"' .github/breeze-sign-request.json)"
