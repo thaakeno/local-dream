@@ -20,6 +20,8 @@ env:
   RELEASE_TAG: breeze-qnn-generator-sm8850-v3
   QAI_DEVICE: Samsung Galaxy S26 (Family)
   HF_XET_HIGH_PERFORMANCE: '1'
+  QNN_VERSION: '2.50.0.260828'
+  QNN_URL: 'https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip'
 
 jobs:
   build:
@@ -33,6 +35,52 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+
+      - name: Cache QAIRT SDK
+        id: qnn-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/qnn-sdk-${{ env.QNN_VERSION }}
+          key: qairt-${{ env.QNN_VERSION }}-linux-v1
+
+      - name: Download QAIRT SDK
+        if: steps.qnn-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          install_dir="${RUNNER_TEMP}/qnn-sdk-${QNN_VERSION}"
+          zip_path="${RUNNER_TEMP}/qnn-sdk.zip"
+          mkdir -p "$install_dir"
+          curl -fL --retry 5 --retry-delay 2 "$QNN_URL" -o "$zip_path"
+          unzip -q "$zip_path" -d "$install_dir"
+          rm -f "$zip_path"
+
+      - name: Locate QAIRT SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          install_dir="${RUNNER_TEMP}/qnn-sdk-${QNN_VERSION}"
+          sdk_root=""
+          while IFS= read -r d; do
+            if [ -d "$d/include/QNN" ] && [ -x "$d/bin/x86_64-linux-clang/qnn-context-binary-generator" ]; then
+              sdk_root="$d"
+              break
+            fi
+          done < <(find "$install_dir" -maxdepth 4 -type d)
+          test -n "$sdk_root"
+          test -s "$sdk_root/lib/x86_64-linux-clang/libQnnModelDlc.so"
+          test -s "$sdk_root/lib/x86_64-linux-clang/libQnnHtpNetRunExtensions.so"
+          echo "QNN_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          echo "QAIRT_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          echo "$sdk_root/bin/x86_64-linux-clang" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$sdk_root/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Install QAIRT host runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libc++1 libc++abi1
 
       - name: Free runner disk
         shell: bash
@@ -52,6 +100,9 @@ jobs:
             'safetensors>=0.5.3' 'onnx==1.18.0' 'onnxscript>=0.3.2' \
             'numpy==1.26.4' 'accelerate>=1.12.0' 'qai-hub>=0.56.0'
           git clone --depth 1 https://github.com/breezeblue-ai/breeze-tts.git "${RUNNER_TEMP}/breeze-src"
+          git clone --depth 1 https://github.com/qualcomm/qai-appbuilder.git "${RUNNER_TEMP}/qai-appbuilder"
+          req="${QNN_SDK_ROOT}/bin/requirements.txt"
+          if [ -f "$req" ]; then python -m pip install -r "$req"; fi
 
       - name: Export full native-sampling generator
         shell: bash
@@ -70,7 +121,7 @@ jobs:
           cat build/breeze-qnn-generator/generator-export.json
           df -h /
 
-      - name: Compile four direct QNN context binaries on AI Hub
+      - name: Compile four QNN DLCs on AI Hub
         shell: bash
         env:
           QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
@@ -86,55 +137,47 @@ jobs:
           root = Path("build/breeze-qnn-generator")
           client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
           device = hub.Device(os.environ["QAI_DEVICE"])
-          fp16 = "--qnn_options default_graph_htp_precision=FLOAT16"
 
-          def compile_context(model, spec, graph_name, job_name, output_name):
-              # AI Hub still supports direct QNN context-binary compilation.
-              # This bypasses the LinkJob path that repeatedly failed with exit 15
-              # even when the preceding qnn_dlc compile was green.
+          def compile_dlc(model, spec, graph_name, job_name, output_name):
               source = client.upload_model(
                   str(root / model),
                   name=f"{job_name} ONNX",
-              )
-              options = (
-                  "--target_runtime qnn_context_binary "
-                  "--qnn_options default_graph_htp_precision=FLOAT16 "
-                  "--qnn_options default_graph_htp_optimizations=O=3"
               )
               job = client.submit_compile_job(
                   model=source,
                   input_specs=spec,
                   device=device,
                   name=job_name,
-                  options=options,
+                  options=(
+                      "--target_runtime qnn_dlc "
+                      "--qnn_options default_graph_htp_precision=FLOAT16"
+                  ),
               )
               status = job.wait()
               if not status.success:
                   raise SystemExit(
-                      f"Direct context compile failed {job.job_id}: "
+                      f"QNN DLC compile failed {job.job_id}: "
                       f"{status.message or status.code} {job.url}"
                   )
               target_model = job.get_target_model()
               if target_model is None:
-                  raise SystemExit(
-                      f"Direct context compile produced no target model: {job.url}"
-                  )
+                  raise SystemExit(f"QNN DLC compile produced no target model: {job.url}")
               target = root / output_name
               target_model.download(str(target))
-              if not target.is_file() or target.stat().st_size < 1_000_000:
-                  raise SystemExit(f"Bad QNN context artifact: {target}")
+              if not target.is_file() or target.stat().st_size < 100_000:
+                  raise SystemExit(f"Bad QNN DLC artifact: {target}")
               result = {
                   "graph": graph_name,
                   "compile_job": job.job_id,
                   "compile_url": job.url,
-                  "bytes": target.stat().st_size,
-                  "runtime": "qnn_context_binary",
+                  "dlc_bytes": target.stat().st_size,
+                  "runtime": "qnn_dlc",
               }
               print(json.dumps(result))
               return result
 
           results = {}
-          results["depth_prefill"] = compile_context(
+          results["depth_prefill"] = compile_dlc(
               "breeze_depth_prefill.onnx",
               {
                   "backbone_hidden": ((2, 2048), "float16"),
@@ -142,9 +185,9 @@ jobs:
               },
               "depth_prefill_b2",
               "Breeze TTS 2 depth prefill SM8850",
-              "breeze-depth-prefill-sm8850-v81.bin",
+              "breeze-depth-prefill-sm8850-v81.dlc",
           )
-          results["depth_step"] = compile_context(
+          results["depth_step"] = compile_dlc(
               "breeze_depth_step.onnx",
               {
                   "token": ((2,), "int32"),
@@ -154,9 +197,9 @@ jobs:
               },
               "depth_step_b2",
               "Breeze TTS 2 depth AR1 SM8850",
-              "breeze-depth-step-sm8850-v81.bin",
+              "breeze-depth-step-sm8850-v81.dlc",
           )
-          results["backbone_prefill"] = compile_context(
+          results["backbone_prefill"] = compile_dlc(
               "breeze_backbone_prefill.onnx",
               {
                   "inputs_embeds": ((1, 512, 2048), "float16"),
@@ -165,9 +208,9 @@ jobs:
               },
               "backbone_prefill_512",
               "Breeze TTS 2 backbone prefill SM8850",
-              "breeze-backbone-prefill-sm8850-v81.bin",
+              "breeze-backbone-prefill-sm8850-v81.dlc",
           )
-          results["backbone_step"] = compile_context(
+          results["backbone_step"] = compile_dlc(
               "breeze_backbone_step.onnx",
               {
                   "input_embed": ((2, 1, 2048), "float16"),
@@ -178,7 +221,7 @@ jobs:
               },
               "backbone_step_b2",
               "Breeze TTS 2 backbone AR1 SM8850",
-              "breeze-backbone-step-sm8850-v81.bin",
+              "breeze-backbone-step-sm8850-v81.dlc",
           )
 
           (root / "qai-hub-job.json").write_text(
@@ -191,6 +234,56 @@ jobs:
               ) + "\n"
           )
           PY
+
+      - name: Convert QNN DLCs to native SM8850 V81 contexts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export QAIRT_SDK_ROOT="$QNN_SDK_ROOT"
+          export LD_LIBRARY_PATH="$QNN_SDK_ROOT/lib/x86_64-linux-clang:${LD_LIBRARY_PATH:-}"
+          ROOT="$GITHUB_WORKSPACE/build/breeze-qnn-generator"
+          TOOL="${RUNNER_TEMP}/qai-appbuilder/tools/skills/qai-runner-skill/scripts/qai_dev_gen_contextbin_x86.py"
+          test -s "$TOOL"
+
+          convert_one() {
+            local dlc="$1"
+            local out="$2"
+            rm -rf output
+            python "$TOOL" \
+              --dlc "$ROOT/$dlc" \
+              --output "$ROOT/$out" \
+              --backend htp \
+              --soc_model 87 \
+              --dsp_arch v81 \
+              --vtcm_mb 8 \
+              --opt_level 3 \
+              --pd_session unsigned
+            test -s "$ROOT/$out"
+
+            qnn-context-binary-utility \
+              --context_binary "$ROOT/$out" \
+              --json_file "$ROOT/$out.info.json"
+            python - "$ROOT/$out.info.json" <<'PY'
+          import json, sys
+          data=json.load(open(sys.argv[1]))
+          info=data["info"]
+          soc=int(info["socModel"])
+          arch=int(info["contextMetadata"]["info"]["dspArch"])
+          if soc != 87 or arch != 81:
+              raise SystemExit(f"wrong native target: soc={soc} arch={arch}")
+          graphs=info.get("graphs", [])
+          if len(graphs) != 1:
+              raise SystemExit(f"expected one graph in context, found {len(graphs)}")
+          print("validated native context", sys.argv[1], "soc", soc, "arch", arch)
+          PY
+          }
+
+          convert_one breeze-depth-prefill-sm8850-v81.dlc breeze-depth-prefill-sm8850-v81.bin
+          convert_one breeze-depth-step-sm8850-v81.dlc breeze-depth-step-sm8850-v81.bin
+          convert_one breeze-backbone-prefill-sm8850-v81.dlc breeze-backbone-prefill-sm8850-v81.bin
+          convert_one breeze-backbone-step-sm8850-v81.dlc breeze-backbone-step-sm8850-v81.bin
+
+          ls -lh "$ROOT"/*.dlc "$ROOT"/*.bin
 
       - name: Split release assets and build manifest
         shell: bash
@@ -273,7 +366,7 @@ jobs:
           cat > build/breeze-qnn-generator/release/NOTICE-Breeze-QNN-Generator.txt <<'EOF'
           Breeze TTS 2 is licensed under the BreezeBlue Research and Non-Commercial
           License Agreement. These SM8850/V81 QNN HTP contexts are independently
-          linked single-graph binaries for backbone/depth prefill and AR1 decode.
+          AI Hub QNN DLCs converted with Qualcomm's official DLC-to-context flow for backbone/depth prefill and AR1 decode.
           Local Dream unloads the large backbone prefill context before AR1 generation.
           EOF
           (cd build/breeze-qnn-generator/release && sha256sum * > SHA256SUMS.txt)
@@ -296,6 +389,6 @@ jobs:
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" \
               --title "Breeze Full QNN Generator SM8850 v3" \
-              --notes "SM8850/V81 full QNN generator using four directly compiled single-graph context binaries. Backbone + depth run on QNN HTP; sampling remains native; GGML/Hexagon fallback remains available."
+              --notes "SM8850/V81 full QNN generator using four AI Hub QNN DLCs converted locally to native SM8850/V81 context binaries. Backbone + depth run on QNN HTP; sampling remains native; GGML/Hexagon fallback remains available."
           fi
           gh release upload "$RELEASE_TAG" build/breeze-qnn-generator/release/* --clobber
