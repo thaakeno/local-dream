@@ -203,6 +203,11 @@ public:
             );
             if (name_contains(name, expected_graph.c_str())) found = (int) i;
         }
+        if (found < 0 && m_graphsCount == 1) {
+            // Direct AI Hub qnn_context_binary compilation may normalize the
+            // graph name. Each v3 file intentionally contains exactly one graph.
+            found = 0;
+        }
         if (found < 0) return false;
         graph.graph_index = (uint32_t) found;
         auto & g = (*m_graphsInfo)[graph.graph_index];
