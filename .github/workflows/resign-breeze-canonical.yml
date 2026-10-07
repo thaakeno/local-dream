@@ -36,6 +36,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Checkout stable signing branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
       - name: Resolve signing request
         shell: bash
         env:
