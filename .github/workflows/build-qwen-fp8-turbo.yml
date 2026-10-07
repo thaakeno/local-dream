@@ -9,6 +9,7 @@ on:
       - yue2-text-music
       - yue2-fast-instrumental-htp
       - v141-stable-yue2-full
+      - breeze-qnn-v5-fastpath
       - breeze-htp-clean-v150
     paths:
       - 'app/**'
