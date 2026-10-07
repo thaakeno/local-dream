@@ -7,7 +7,10 @@ import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.Locale
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
@@ -18,11 +21,15 @@ import org.json.JSONObject
 /**
  * Optional SM8850/V81 full QNN generator accelerator.
  *
- * V4 reuses the already-proven batch-1 two-graph depth context and keeps
- * backbone prompt/AR1 as separate contexts. CFG depth branches are serialized
- * through the same native depth context with independent KV snapshots.
+ * V4 reuses the proven batch-1 depth context and keeps backbone prompt/AR1
+ * as separate contexts. Downloads are resumable and can be driven by the
+ * shared ModelDownloadService so Breeze gets the same progress UI/notification
+ * path as the other large models.
  */
 object BreezeQnnGeneratorArtifact {
+    const val DOWNLOAD_MODEL_ID = "breeze-qnn-generator-sm8850-v4"
+    const val DOWNLOAD_MODEL_NAME = "Breeze Full QNN Generator"
+
     private const val RELEASE_TAG = "breeze-qnn-generator-sm8850-v4"
     private const val BASE_URL =
         "https://github.com/thaakeno/local-dream/releases/download/" + RELEASE_TAG
@@ -53,9 +60,7 @@ object BreezeQnnGeneratorArtifact {
             val progress: Float?
                 get() = if (total > 0L) {
                     (received.toFloat() / total.toFloat()).coerceIn(0f, 1f)
-                } else {
-                    null
-                }
+                } else null
         }
         data class Ready(
             val soc: String,
@@ -64,6 +69,12 @@ object BreezeQnnGeneratorArtifact {
         ) : Status()
         data class Error(val soc: String?, val message: String) : Status()
     }
+
+    data class TransferProgress(
+        val received: Long,
+        val total: Long,
+        val currentFileName: String,
+    )
 
     private data class ContextSpec(
         val bytes: Long,
@@ -147,6 +158,18 @@ object BreezeQnnGeneratorArtifact {
             parts = json.getJSONArray("parts"),
         )
 
+    private fun hashExisting(file: File, digest: MessageDigest) {
+        if (!file.isFile || file.length() == 0L) return
+        file.inputStream().buffered(1024 * 1024).use { input ->
+            val buffer = ByteArray(1024 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+    }
+
     private suspend fun downloadContext(
         soc: String,
         destination: File,
@@ -154,6 +177,7 @@ object BreezeQnnGeneratorArtifact {
         spec: ContextSpec,
         completedBefore: Long,
         totalAll: Long,
+        onProgress: ((TransferProgress) -> Unit)?,
     ): File {
         var listedBytes = 0L
         for (i in 0 until spec.parts.length()) {
@@ -162,55 +186,92 @@ object BreezeQnnGeneratorArtifact {
         if (listedBytes != spec.bytes) error("QNN context part sizes do not match")
 
         val target = File(destination, fileName)
+        if (target.isFile && target.length() == spec.bytes) {
+            val received = completedBefore + spec.bytes
+            _status.value = Status.Downloading(soc, received, totalAll)
+            onProgress?.invoke(TransferProgress(received, totalAll, fileName))
+            return target
+        }
+
         val temp = File(destination, "$fileName.part")
-        temp.delete()
+        if (temp.exists() && temp.length() > spec.bytes) temp.delete()
+
+        var existing = if (temp.isFile) temp.length() else 0L
         val wholeDigest = MessageDigest.getInstance("SHA-256")
-        var completed = 0L
+        hashExisting(temp, wholeDigest)
 
-        FileOutputStream(temp).use { output ->
-            for (i in 0 until spec.parts.length()) {
-                val part = spec.parts.getJSONObject(i)
-                val name = part.getString("file")
-                val partBytes = part.getLong("bytes")
-                val partSha = part.getString("sha256").lowercase(Locale.US)
-                val partDigest = MessageDigest.getInstance("SHA-256")
-                var received = 0L
+        var partStart = 0L
+        for (i in 0 until spec.parts.length()) {
+            currentCoroutineContext().ensureActive()
+            val part = spec.parts.getJSONObject(i)
+            val remoteName = part.getString("file")
+            val partBytes = part.getLong("bytes")
+            val partEnd = partStart + partBytes
 
-                Http.client.newCall(
-                    Request.Builder().url("$BASE_URL/$name").get().build(),
-                ).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        error("Generator part download failed (HTTP ${response.code})")
-                    }
-                    val body = response.body ?: error("Empty generator part")
+            if (existing >= partEnd) {
+                partStart = partEnd
+                continue
+            }
+
+            val resumeOffset = (existing - partStart).coerceAtLeast(0L)
+            val request = Request.Builder()
+                .url("$BASE_URL/$remoteName")
+                .apply {
+                    if (resumeOffset > 0L) header("Range", "bytes=$resumeOffset-")
+                }
+                .get()
+                .build()
+
+            Http.client.newCall(request).execute().use { response ->
+                if (resumeOffset > 0L && response.code == 200) {
+                    temp.delete()
+                    return downloadContext(
+                        soc,
+                        destination,
+                        fileName,
+                        spec,
+                        completedBefore,
+                        totalAll,
+                        onProgress,
+                    )
+                }
+                if (!response.isSuccessful || (resumeOffset > 0L && response.code != 206)) {
+                    error("Generator part download failed (HTTP ${response.code})")
+                }
+
+                val body = response.body ?: error("Empty generator part")
+                FileOutputStream(temp, true).use { output ->
                     body.byteStream().use { input ->
                         val buffer = ByteArray(1024 * 1024)
                         while (true) {
+                            currentCoroutineContext().ensureActive()
                             val count = input.read(buffer)
                             if (count < 0) break
                             output.write(buffer, 0, count)
-                            partDigest.update(buffer, 0, count)
                             wholeDigest.update(buffer, 0, count)
-                            received += count
-                            _status.value = Status.Downloading(
-                                soc,
-                                completedBefore + completed + received,
-                                totalAll,
+                            existing += count
+                            if (existing > spec.bytes) {
+                                error("Generator context exceeded expected size")
+                            }
+                            val received = completedBefore + existing
+                            _status.value = Status.Downloading(soc, received, totalAll)
+                            onProgress?.invoke(
+                                TransferProgress(received, totalAll, remoteName),
                             )
                         }
                     }
                 }
-
-                if (received != partBytes) error("Incomplete generator part $name")
-                if (sha256Hex(partDigest.digest()) != partSha) {
-                    error("Generator checksum mismatch for $name")
-                }
-                completed += received
             }
+
+            if (existing != partEnd) {
+                error("Incomplete generator part $remoteName")
+            }
+            partStart = partEnd
         }
 
-        if (completed != spec.bytes) error("Incomplete QNN generator context")
+        if (existing != spec.bytes) error("Incomplete QNN generator context")
         if (sha256Hex(wholeDigest.digest()) != spec.sha256) {
+            temp.delete()
             error("QNN generator context checksum mismatch")
         }
 
@@ -222,14 +283,17 @@ object BreezeQnnGeneratorArtifact {
         return target
     }
 
-    suspend fun download(context: Context) = withContext(Dispatchers.IO) {
+    suspend fun download(
+        context: Context,
+        onProgress: ((TransferProgress) -> Unit)? = null,
+    ): Boolean = withContext(Dispatchers.IO) {
         val soc = supportedSoc()
         if (soc == null) {
             _status.value = Status.Unsupported(detectedSoc())
-            return@withContext
+            return@withContext false
         }
 
-        runCatching {
+        try {
             val root = Http.client.newCall(
                 Request.Builder().url("$BASE_URL/manifest.json").get().build(),
             ).execute().use { response ->
@@ -270,6 +334,7 @@ object BreezeQnnGeneratorArtifact {
                     item,
                     completedBefore,
                     totalAll,
+                    onProgress,
                 )
                 completedBefore += item.bytes
             }
@@ -294,14 +359,15 @@ object BreezeQnnGeneratorArtifact {
             )
 
             _status.value = Status.Ready(soc, destination, engine)
-        }.onFailure { error ->
-            val destination = dir(context)
-            listOf(DEPTH, BACKBONE_PREFILL, BACKBONE_STEP)
-                .forEach { File(destination, "$it.part").delete() }
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
             _status.value = Status.Error(
                 soc,
                 error.message ?: "Full QNN generator download failed",
             )
+            false
         }
     }
 }
