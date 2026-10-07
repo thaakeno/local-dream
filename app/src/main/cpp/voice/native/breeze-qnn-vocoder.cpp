@@ -27,8 +27,12 @@ namespace {
 
 class BreezeQnnApp final : public QnnSampleApp {
 public:
-    Qnn_Tensor_t * inputs = nullptr;
-    Qnn_Tensor_t * outputs = nullptr;
+    struct GraphIo {
+        Qnn_Tensor_t * inputs = nullptr;
+        Qnn_Tensor_t * outputs = nullptr;
+    };
+
+    std::vector<GraphIo> graph_io;
     void * model_handle = nullptr;
     uint32_t power_config_id = 0;
     bool power_config_active = false;
@@ -53,16 +57,22 @@ public:
         ) {}
 
     ~BreezeQnnApp() {
-        if ((inputs || outputs) && m_graphsInfo && m_graphsCount > 0) {
-            m_ioTensor.tearDownInputAndOutputTensors(
-                inputs, outputs,
-                (*m_graphsInfo)[0].numInputTensors,
-                (*m_graphsInfo)[0].numOutputTensors
-            );
+        if (m_graphsInfo) {
+            const size_t count = std::min<size_t>(graph_io.size(), m_graphsCount);
+            for (size_t i = 0; i < count; ++i) {
+                auto & slot = graph_io[i];
+                if (!slot.inputs && !slot.outputs) continue;
+                m_ioTensor.tearDownInputAndOutputTensors(
+                    slot.inputs,
+                    slot.outputs,
+                    (*m_graphsInfo)[i].numInputTensors,
+                    (*m_graphsInfo)[i].numOutputTensors
+                );
+                slot.inputs = nullptr;
+                slot.outputs = nullptr;
+            }
+            freeContext();
         }
-        inputs = nullptr;
-        outputs = nullptr;
-        if (m_graphsInfo) freeContext();
         release_power_vote();
         freeDevice();
         terminateBackend();
@@ -72,26 +82,67 @@ public:
         }
     }
 
-    bool setup_io() {
-        if (inputs && outputs) return true;
-        if (!m_graphsInfo || m_graphsCount != 1) {
-            std::fprintf(stderr, "[BREEZE_QNN] expected exactly one vocoder graph, got %u\n",
-                         (unsigned) m_graphsCount);
-            return false;
-        }
+    bool setup_io(size_t index) {
+        if (!m_graphsInfo || index >= m_graphsCount) return false;
+        if (graph_io.size() < m_graphsCount) graph_io.resize(m_graphsCount);
+        auto & slot = graph_io[index];
+        if (slot.inputs && slot.outputs) return true;
         return qnn::tools::iotensor::StatusCode::SUCCESS ==
-            m_ioTensor.setupInputAndOutputTensors(inputs ? nullptr : &inputs,
-                                                  outputs ? nullptr : &outputs,
-                                                  (*m_graphsInfo)[0]);
+            m_ioTensor.setupInputAndOutputTensors(
+                slot.inputs ? nullptr : &slot.inputs,
+                slot.outputs ? nullptr : &slot.outputs,
+                (*m_graphsInfo)[index]
+            );
     }
 
-    bool execute(float * features, size_t feature_count, float * audio, size_t sample_count) {
-        if (!setup_io()) return false;
-        auto & graph = (*m_graphsInfo)[0];
+    int graph_frames(size_t index) {
+        if (!setup_io(index)) return 0;
+        auto & graph = (*m_graphsInfo)[index];
+        auto & in = graph_io[index].inputs[0];
+        if (graph.numInputTensors != 1 || graph.numOutputTensors != 1) return 0;
+        const uint32_t rank = QNN_TENSOR_GET_RANK(in);
+        const uint32_t * dims = QNN_TENSOR_GET_DIMENSIONS(in);
+        if (rank != 3 || !dims) return 0;
+        if (dims[1] == 512 && dims[2] > 0) return (int) dims[2];
+        if (dims[2] == 512 && dims[1] > 0) return (int) dims[1];
+        return 0;
+    }
+
+    int find_graph(int frames) {
+        if (!m_graphsInfo || m_graphsCount == 0) return -1;
+        for (size_t i = 0; i < m_graphsCount; ++i) {
+            if (graph_frames(i) == frames) return (int) i;
+        }
+        return -1;
+    }
+
+    bool supports_frames(int frames) {
+        return find_graph(frames) >= 0;
+    }
+
+    bool execute(
+        float * features,
+        size_t feature_count,
+        float * audio,
+        size_t sample_count,
+        int frames
+    ) {
+        const int graph_index = find_graph(frames);
+        if (graph_index < 0) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN] no vocoder graph for %d frames (graphs=%u)\n",
+                frames,
+                (unsigned) m_graphsCount
+            );
+            return false;
+        }
+        auto & graph = (*m_graphsInfo)[(size_t) graph_index];
+        auto & slot = graph_io[(size_t) graph_index];
         if (graph.numInputTensors != 1 || graph.numOutputTensors != 1) return false;
 
-        auto & in = inputs[0];
-        auto & out = outputs[0];
+        auto & in = slot.inputs[0];
+        auto & out = slot.outputs[0];
 
         const uint32_t rank = QNN_TENSOR_GET_RANK(in);
         const uint32_t * dims = QNN_TENSOR_GET_DIMENSIONS(in);
@@ -100,7 +151,8 @@ public:
         if (input_elems != feature_count) {
             std::fprintf(
                 stderr,
-                "[BREEZE_QNN] input element mismatch graph=%zu host=%zu\n",
+                "[BREEZE_QNN] input element mismatch frames=%d graph=%zu host=%zu\n",
+                frames,
                 input_elems,
                 feature_count
             );
@@ -111,30 +163,28 @@ public:
         std::vector<float> repacked;
         const char * layout = "NFC";
         if (rank == 3 && dims) {
-            if (dims[1] == 64 && dims[2] == 512) {
+            if (dims[1] == (uint32_t) frames && dims[2] == 512) {
                 layout = "NFC";
-            } else if (dims[1] == 512 && dims[2] == 64) {
+            } else if (dims[1] == 512 && dims[2] == (uint32_t) frames) {
                 layout = "NCF";
                 repacked.resize(feature_count);
-                for (size_t t = 0; t < 64; ++t) {
+                for (size_t t = 0; t < (size_t) frames; ++t) {
                     for (size_t ch = 0; ch < 512; ++ch) {
-                        repacked[ch * 64 + t] = features[t * 512 + ch];
+                        repacked[ch * (size_t) frames + t] =
+                            features[t * 512u + ch];
                     }
                 }
                 src_features = repacked.data();
             } else {
                 std::fprintf(
                     stderr,
-                    "[BREEZE_QNN] unexpected input shape rank=3 dims=%u,%u,%u\n",
-                    dims[0], dims[1], dims[2]
+                    "[BREEZE_QNN] unexpected input shape rank=3 dims=%u,%u,%u frames=%d\n",
+                    dims[0], dims[1], dims[2], frames
                 );
                 return false;
             }
         }
 
-        // The compiled SM8850 context now exposes native FP16 graph IO.
-        // Use QAIRT's conversion helpers instead of memcpy so FP32 host LUT
-        // features are converted exactly to the graph's native tensor type.
         if (
             m_ioTensor.copyFromFloatToNative(src_features, &in) !=
             qnn::tools::iotensor::StatusCode::SUCCESS
@@ -150,7 +200,8 @@ public:
         if (rank == 3 && dims) {
             std::fprintf(
                 stderr,
-                "[BREEZE_QNN_IO] input=%ux%ux%u layout=%s native_type=%d bytes=%u\n",
+                "[BREEZE_QNN_IO] graph=%d input=%ux%ux%u layout=%s native_type=%d bytes=%u\n",
+                frames,
                 dims[0], dims[1], dims[2], layout,
                 (int) QNN_TENSOR_GET_DATA_TYPE(in),
                 QNN_TENSOR_GET_CLIENT_BUF(in).dataSize
@@ -160,9 +211,9 @@ public:
         const auto t0 = std::chrono::steady_clock::now();
         const auto st = m_qnnFunctionPointers.qnnInterface.graphExecute(
             graph.graph,
-            inputs,
+            slot.inputs,
             graph.numInputTensors,
-            outputs,
+            slot.outputs,
             graph.numOutputTensors,
             m_profileBackendHandle,
             nullptr
@@ -171,7 +222,12 @@ public:
             std::chrono::steady_clock::now() - t0
         ).count();
         if (st != QNN_GRAPH_NO_ERROR) {
-            std::fprintf(stderr, "[BREEZE_QNN] graphExecute failed err=%d\n", (int) st);
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN] graphExecute failed frames=%d err=%d\n",
+                frames,
+                (int) st
+            );
             return false;
         }
 
@@ -204,7 +260,8 @@ public:
         const double rms = sample_count ? std::sqrt(sq / sample_count) : 0.0;
         std::fprintf(
             stderr,
-            "[BREEZE_QNN] graph64_ms=%.2f input_type=%d output_type=%d checksum=%.7g peak=%.7g rms=%.7g nonfinite=%zu\n",
+            "[BREEZE_QNN] graph%d_ms=%.2f input_type=%d output_type=%d checksum=%.7g peak=%.7g rms=%.7g nonfinite=%zu\n",
+            frames,
             ms,
             (int) QNN_TENSOR_GET_DATA_TYPE(in),
             (int) QNN_TENSOR_GET_DATA_TYPE(out),
@@ -391,7 +448,7 @@ static bool run_qnn_reference_selftest(
     }
 
     std::vector<float> got(kSamples, 0.0f);
-    if (!app.execute(features.data(), features.size(), got.data(), got.size())) {
+    if (!app.execute(features.data(), features.size(), got.data(), got.size(), 64)) {
         std::fprintf(stderr, "[BREEZE_QNN_SELFTEST] graph execution failed\n");
         return false;
     }
@@ -454,7 +511,8 @@ struct BreezeQnnVocoder::Impl {
     std::unique_ptr<BreezeQnnApp> app;
     std::vector<int> history;
     std::vector<float> lut;
-    int fixed_frames=64,left_context=25,n_codebooks=16,codebook_size=2048,feature_channels=512,samples_per_frame=1920;
+    std::vector<int> graph_frames{8, 32, 64};
+    int left_context=25,n_codebooks=16,codebook_size=2048,feature_channels=512,samples_per_frame=1920;
 };
 BreezeQnnVocoder::BreezeQnnVocoder():impl_(std::make_unique<Impl>()){}
 BreezeQnnVocoder::~BreezeQnnVocoder()=default;
