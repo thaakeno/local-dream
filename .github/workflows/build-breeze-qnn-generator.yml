@@ -259,6 +259,9 @@ jobs:
                   str(upload_path),
                   name=f"{job_name} ONNX",
               )
+              if upload_path != model_path:
+                  upload_path.unlink(missing_ok=True)
+
               job = client.submit_compile_job(
                   model=source,
                   input_specs=spec,
@@ -290,6 +293,15 @@ jobs:
                   "runtime": "qnn_dlc",
                   "reused": False,
               }
+
+              # These multi-GB source files are no longer needed after AI Hub
+              # returns the DLC. Reclaim runner disk before packaging the next
+              # backbone graph and before local QAIRT context generation.
+              stale_locations = list(locations)
+              model_path.unlink(missing_ok=True)
+              for loc in stale_locations:
+                  (model_path.parent / loc).unlink(missing_ok=True)
+
               print(json.dumps(result))
               return result
 
@@ -319,6 +331,16 @@ jobs:
                   "depth_step_b2",
                   "breeze-depth-step-sm8850-v81.dlc",
               )
+
+              # Cached depth DLCs mean their freshly exported ONNX copies are
+              # redundant. Remove them before the two ~2.8 GB backbone uploads.
+              for stale in (
+                  "breeze_depth_prefill.onnx",
+                  "breeze_depth_prefill.onnx.data",
+                  "breeze_depth_step.onnx",
+                  "breeze_depth_step.onnx.data",
+              ):
+                  (root / stale).unlink(missing_ok=True)
           except Exception as exc:
               print("cached depth-step job unavailable, recompiling:", exc)
               results["depth_step"] = compile_dlc(
