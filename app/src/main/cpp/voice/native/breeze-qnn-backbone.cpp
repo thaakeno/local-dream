@@ -9,7 +9,6 @@
 #include "DynamicLoadUtil.hpp"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -77,8 +76,7 @@ static bool finite_nonzero(const std::vector<float> & values) {
 class BreezeQnnBackboneApp final : public QnnSampleApp {
 public:
     void * model_handle = nullptr;
-    std::array<GraphIo, 4> prefill{};
-    GraphIo step_b1;
+    GraphIo prefill_512;
     GraphIo step_b2;
 
     BreezeQnnBackboneApp(
@@ -101,8 +99,7 @@ public:
         ) {}
 
     ~BreezeQnnBackboneApp() {
-        for (auto & io : prefill) tear_down(io);
-        tear_down(step_b1);
+        tear_down(prefill_512);
         tear_down(step_b2);
         if (m_graphsInfo) freeContext();
         freeDevice();
@@ -144,18 +141,16 @@ public:
     }
 
     bool setup_graphs() {
-        if (!m_graphsInfo || m_graphsCount < 6) {
+        if (!m_graphsInfo || m_graphsCount < 2) {
             std::fprintf(
                 stderr,
-                "[BREEZE_QNN_BACKBONE] expected >=6 graphs, got %u\n",
+                "[BREEZE_QNN_BACKBONE] expected 2 prompt/token graphs, got %u\n",
                 (unsigned) m_graphsCount
             );
             return false;
         }
 
-        const int buckets[4] = {64, 128, 256, 512};
-        std::array<int, 4> pidx = {-1, -1, -1, -1};
-        int s1 = -1;
+        int p512 = -1;
         int s2 = -1;
         for (uint32_t i = 0; i < m_graphsCount; ++i) {
             const char * name = (*m_graphsInfo)[i].graphName;
@@ -165,47 +160,17 @@ public:
                 i,
                 name ? name : "<unnamed>"
             );
-            for (int b = 0; b < 4; ++b) {
-                const std::string needle =
-                    "backbone_prefill_" + std::to_string(buckets[b]);
-                if (name_contains(name, needle.c_str())) pidx[b] = (int) i;
-            }
-            if (name_contains(name, "backbone_step_b1")) s1 = (int) i;
+            if (name_contains(name, "backbone_prefill_512")) p512 = (int) i;
             if (name_contains(name, "backbone_step_b2")) s2 = (int) i;
         }
-        for (int i : pidx) if (i < 0) return false;
-        if (s1 < 0 || s2 < 0) return false;
-
-        for (int b = 0; b < 4; ++b) {
-            if (!setup_one(prefill[b], (uint32_t) pidx[b])) return false;
-        }
-        if (!setup_one(step_b1, (uint32_t) s1)) return false;
+        if (p512 < 0 || s2 < 0) return false;
+        if (!setup_one(prefill_512, (uint32_t) p512)) return false;
         if (!setup_one(step_b2, (uint32_t) s2)) return false;
 
-        for (auto & io : prefill) {
-            auto & g = (*m_graphsInfo)[io.graph_index];
-            if (g.numInputTensors != 3 || g.numOutputTensors != 4) {
-                std::fprintf(
-                    stderr,
-                    "[BREEZE_QNN_BACKBONE] bad prefill IO %u/%u\n",
-                    g.numInputTensors,
-                    g.numOutputTensors
-                );
-                return false;
-            }
-        }
-        for (GraphIo * io : {&step_b1, &step_b2}) {
-            auto & g = (*m_graphsInfo)[io->graph_index];
-            if (g.numInputTensors != 5 || g.numOutputTensors != 4) {
-                std::fprintf(
-                    stderr,
-                    "[BREEZE_QNN_BACKBONE] bad step IO %u/%u\n",
-                    g.numInputTensors,
-                    g.numOutputTensors
-                );
-                return false;
-            }
-        }
+        auto & pg = (*m_graphsInfo)[prefill_512.graph_index];
+        auto & sg = (*m_graphsInfo)[step_b2.graph_index];
+        if (pg.numInputTensors != 3 || pg.numOutputTensors != 4) return false;
+        if (sg.numInputTensors != 5 || sg.numOutputTensors != 4) return false;
         return true;
     }
 
@@ -274,20 +239,15 @@ public:
     }
 
     GraphIo * prefill_for(int tokens, int & bucket) {
-        const int buckets[4] = {64, 128, 256, 512};
-        for (int i = 0; i < 4; ++i) {
-            if (tokens <= buckets[i]) {
-                bucket = buckets[i];
-                return &prefill[i];
-            }
+        if (tokens <= 0 || tokens > 512) {
+            bucket = 0;
+            return nullptr;
         }
-        bucket = 0;
-        return nullptr;
+        bucket = 512;
+        return &prefill_512;
     }
 
-    GraphIo & step_for(int branches) {
-        return branches == 2 ? step_b2 : step_b1;
-    }
+    GraphIo & step_for(int) { return step_b2; }
 
     bool zero_step_cache(int branches) {
         GraphIo & io = step_for(branches);
@@ -671,11 +631,11 @@ bool QnnBackboneRunner::init(BreezeModel & m, int branches) {
     }
     impl_->branches = branches;
     impl_->enabled = true;
-    impl_->positions.assign((size_t) branches, 0);
+    impl_->positions.assign(2u, 0);
     std::fprintf(
         stderr,
-        "[BREEZE_QNN_BACKBONE] ready branches=%d prefill=64/128/256/512 "
-        "step_cache=512 kv_update=new-row-only\n",
+        "[BREEZE_QNN_BACKBONE] ready logical_branches=%d prefill=512 "
+        "physical_step_batch=2 cache=512 kv_update=new-row-only\n",
         branches
     );
     return true;
@@ -720,8 +680,8 @@ bool QnnBackboneRunner::prefill(
          (int) uncond_embeddings->size() != uncond_tokens * hidden)
     ) return false;
 
-    auto & step = impl_->app->step_for(impl_->branches);
-    if (!impl_->app->zero_step_cache(impl_->branches)) return false;
+    auto & step = impl_->app->step_for(2);
+    if (!impl_->app->zero_step_cache(2)) return false;
 
     double ms = 0.0;
     double total = 0.0;
@@ -755,6 +715,10 @@ bool QnnBackboneRunner::prefill(
         }
         total += ms;
         impl_->positions[1] = uncond_tokens;
+    } else {
+        // The physical AR1 graph is batch-2. Branch 1 is ignored in non-CFG
+        // mode, but keep its position valid so the graph can execute.
+        impl_->positions[1] = cond_tokens;
     }
 
     std::fprintf(
@@ -789,7 +753,7 @@ bool QnnBackboneRunner::step(
     std::vector<StepOut> outs;
     double ms = 0.0;
     if (!impl_->app->step_once(
-            impl_->branches,
+            2,
             m.cfg.hidden_size,
             impl_->max_seq,
             audio_embedding,
