@@ -481,7 +481,7 @@ class SpeechGenerationService : Service() {
 
                 val call = client.newCall(request)
                 activeCall = call
-                val historyDir = SpeechHistoryStore.directory(this@SpeechGenerationService)
+                val historyDir = SpeechHistoryStore.directory(this@SpeechGenerationService, modelId)
                 val output = File(
                     historyDir,
                     "breeze_${System.currentTimeMillis()}_${seed}.wav",
