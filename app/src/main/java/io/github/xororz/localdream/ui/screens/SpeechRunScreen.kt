@@ -699,7 +699,10 @@ fun SpeechRunScreen(
                     title = "Breeze TTS 2 · " + precision,
                     subtitle = "Seed " + complete.seed + " · " +
                         String.format(Locale.US, "%.1f s generation", complete.elapsedMillis / 1000f),
-                    metadataLine = if (acceleratorState is BreezeQnnVocoderArtifact.Status.Ready) {
+                    metadataLine = if (
+                        acceleratorState is BreezeQnnVocoderArtifact.Status.Ready ||
+                        acceleratorState is BreezeQnnVocoderArtifact.Status.UpgradeAvailable
+                    ) {
                         "Snapdragon NPU · GGUF generator + QNN waveform decoder"
                     } else {
                         "Snapdragon NPU · GGUF generator"
@@ -755,15 +758,28 @@ fun SpeechRunScreen(
                     acceleratorPromptDismissed = true
                 }
             },
-            title = { Text("Fast Snapdragon vocoder") },
+            title = {
+                Text(
+                    if (accelerator is BreezeQnnVocoderArtifact.Status.UpgradeAvailable) {
+                        "Faster Snapdragon vocoder"
+                    } else {
+                        "Fast Snapdragon vocoder"
+                    },
+                )
+            },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     val soc = BreezeQnnVocoderArtifact.supportedSoc().orEmpty()
                     Text(
-                        "Download the fast Snapdragon waveform decoder. It is shared by every " +
-                            "Breeze Q4/Q6/Q8/F16/DD model on this phone and keeps waveform " +
-                            "synthesis on the NPU. Technical QNN/HTP details stay hidden unless " +
-                            "you are debugging the backend.",
+                        if (accelerator is BreezeQnnVocoderArtifact.Status.UpgradeAvailable) {
+                            "Your current v3 accelerator still works. Update to v4 to add native " +
+                                "8/32/64-frame QNN graphs, so short first/tail chunks no longer " +
+                                "pay for a full 64-frame graph."
+                        } else {
+                            "Download the fast Snapdragon waveform decoder. It is shared by every " +
+                                "Breeze Q4/Q6/Q8/F16/DD model on this phone and keeps waveform " +
+                                "synthesis on the NPU."
+                        },
                     )
                     when (accelerator) {
                         is BreezeQnnVocoderArtifact.Status.Downloading -> {
@@ -803,10 +819,10 @@ fun SpeechRunScreen(
                         },
                     ) {
                         Text(
-                            if (accelerator is BreezeQnnVocoderArtifact.Status.Error) {
-                                "Retry"
-                            } else {
-                                "Download"
+                            when (accelerator) {
+                                is BreezeQnnVocoderArtifact.Status.Error -> "Retry"
+                                is BreezeQnnVocoderArtifact.Status.UpgradeAvailable -> "Update"
+                                else -> "Download"
                             },
                         )
                     }
@@ -825,7 +841,13 @@ fun SpeechRunScreen(
                             )
                         },
                     ) {
-                        Text("Use slow fallback")
+                        Text(
+                            if (accelerator is BreezeQnnVocoderArtifact.Status.UpgradeAvailable) {
+                                "Keep v3"
+                            } else {
+                                "Use slow fallback"
+                            },
+                        )
                     }
                 }
             },
@@ -893,7 +915,10 @@ fun SpeechRunScreen(
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            if (acceleratorState is BreezeQnnVocoderArtifact.Status.Ready) {
+                            if (
+                                acceleratorState is BreezeQnnVocoderArtifact.Status.Ready ||
+                                acceleratorState is BreezeQnnVocoderArtifact.Status.UpgradeAvailable
+                            ) {
                                 "GGUF generator on Hexagon + accelerated QNN waveform decoder"
                             } else {
                                 "GGUF generator on Hexagon"
