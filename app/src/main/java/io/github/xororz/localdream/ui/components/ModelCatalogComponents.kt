@@ -1,5 +1,6 @@
 package io.github.xororz.localdream.ui.components
 
+import android.content.Intent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SdStorage
@@ -77,6 +79,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.xororz.localdream.data.Model
 import io.github.xororz.localdream.service.BreezeQnnGeneratorArtifact
+import io.github.xororz.localdream.service.ModelDownloadService
 import java.io.File
 import io.github.xororz.localdream.utils.AppHaptics
 import java.util.Locale
@@ -1188,8 +1191,27 @@ fun BreezeFamilyCard(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val qnnGeneratorState by BreezeQnnGeneratorArtifact.status.collectAsState()
+    val sharedDownloadState by ModelDownloadService.downloadState.collectAsState()
+    val qnnTransferState = sharedDownloadState.takeIf { state ->
+        when (state) {
+            is ModelDownloadService.DownloadState.Downloading ->
+                state.modelId == BreezeQnnGeneratorArtifact.DOWNLOAD_MODEL_ID
+            is ModelDownloadService.DownloadState.Paused ->
+                state.modelId == BreezeQnnGeneratorArtifact.DOWNLOAD_MODEL_ID
+            is ModelDownloadService.DownloadState.Success ->
+                state.modelId == BreezeQnnGeneratorArtifact.DOWNLOAD_MODEL_ID
+            is ModelDownloadService.DownloadState.Error ->
+                state.modelId == BreezeQnnGeneratorArtifact.DOWNLOAD_MODEL_ID
+            else -> false
+        }
+    }
     LaunchedEffect(Unit) {
         BreezeQnnGeneratorArtifact.refresh(context)
+    }
+    LaunchedEffect(qnnTransferState) {
+        if (qnnTransferState is ModelDownloadService.DownloadState.Success) {
+            BreezeQnnGeneratorArtifact.refresh(context)
+        }
     }
     val order = listOf(
         "Q8_0",
@@ -1376,7 +1398,7 @@ fun BreezeFamilyCard(
                 ) {
                     Column(
                         modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1402,22 +1424,33 @@ fun BreezeFamilyCard(
                                     fontWeight = FontWeight.SemiBold,
                                 )
                                 Text(
-                                    when (val status = qnnGeneratorState) {
-                                        is BreezeQnnGeneratorArtifact.Status.Ready ->
-                                            "Installed · full SM8850/V81 QNN"
-                                        is BreezeQnnGeneratorArtifact.Status.Downloading ->
+                                    when (val transfer = qnnTransferState) {
+                                        is ModelDownloadService.DownloadState.Downloading ->
                                             "Downloading accelerator"
-                                        is BreezeQnnGeneratorArtifact.Status.Unsupported ->
-                                            "Not available on this Snapdragon"
-                                        is BreezeQnnGeneratorArtifact.Status.Error ->
-                                            status.message
-                                        BreezeQnnGeneratorArtifact.Status.Checking ->
-                                            "Checking device"
-                                        is BreezeQnnGeneratorArtifact.Status.Missing ->
-                                            "Optional · QNN backbone + depth accelerator"
+                                        is ModelDownloadService.DownloadState.Paused ->
+                                            "Download paused"
+                                        is ModelDownloadService.DownloadState.Error ->
+                                            transfer.message
+                                        else -> when (val status = qnnGeneratorState) {
+                                            is BreezeQnnGeneratorArtifact.Status.Ready ->
+                                                "Installed · full SM8850/V81 QNN"
+                                            is BreezeQnnGeneratorArtifact.Status.Unsupported ->
+                                                "Not available on this Snapdragon"
+                                            is BreezeQnnGeneratorArtifact.Status.Error ->
+                                                status.message
+                                            BreezeQnnGeneratorArtifact.Status.Checking ->
+                                                "Checking device"
+                                            is BreezeQnnGeneratorArtifact.Status.Missing ->
+                                                "Optional · QNN backbone + depth accelerator"
+                                            is BreezeQnnGeneratorArtifact.Status.Downloading ->
+                                                "Preparing shared download service"
+                                        }
                                     },
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = if (qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Error) {
+                                    color = if (
+                                        qnnTransferState is ModelDownloadService.DownloadState.Error ||
+                                        qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Error
+                                    ) {
                                         MaterialTheme.colorScheme.error
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -1426,8 +1459,8 @@ fun BreezeFamilyCard(
                                 )
                             }
 
-                            when (qnnGeneratorState) {
-                                is BreezeQnnGeneratorArtifact.Status.Ready -> {
+                            when {
+                                qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Ready -> {
                                     AssistChip(
                                         onClick = {},
                                         enabled = false,
@@ -1437,21 +1470,31 @@ fun BreezeFamilyCard(
                                         },
                                     )
                                 }
-                                is BreezeQnnGeneratorArtifact.Status.Downloading -> Unit
-                                is BreezeQnnGeneratorArtifact.Status.Unsupported -> Unit
-                                BreezeQnnGeneratorArtifact.Status.Checking -> Unit
+                                qnnTransferState is ModelDownloadService.DownloadState.Downloading ||
+                                    qnnTransferState is ModelDownloadService.DownloadState.Paused -> Unit
+                                qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Unsupported ||
+                                    qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Checking -> Unit
                                 else -> {
                                     Button(
                                         onClick = {
-                                            scope.launch {
-                                                BreezeQnnGeneratorArtifact.download(context)
-                                            }
+                                            context.startForegroundService(
+                                                Intent(
+                                                    context,
+                                                    ModelDownloadService::class.java,
+                                                ).setAction(
+                                                    ModelDownloadService
+                                                        .ACTION_START_BREEZE_QNN_GENERATOR,
+                                                ),
+                                            )
                                         },
                                     ) {
                                         Icon(Icons.Default.CloudDownload, contentDescription = null)
                                         Spacer(Modifier.width(6.dp))
                                         Text(
-                                            if (qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Error) {
+                                            if (
+                                                qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Error ||
+                                                qnnTransferState is ModelDownloadService.DownloadState.Error
+                                            ) {
                                                 "Retry"
                                             } else {
                                                 "Download"
@@ -1462,29 +1505,144 @@ fun BreezeFamilyCard(
                             }
                         }
 
-                        val downloading =
-                            qnnGeneratorState as? BreezeQnnGeneratorArtifact.Status.Downloading
-                        if (downloading != null) {
-                            downloading.progress?.let {
-                                LinearProgressIndicator(
-                                    progress = { it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            } ?: LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Text(
-                                if (downloading.total > 0L) {
+                        val transfer = qnnTransferState
+                        if (
+                            transfer is ModelDownloadService.DownloadState.Downloading ||
+                            transfer is ModelDownloadService.DownloadState.Paused
+                        ) {
+                            val progress = when (transfer) {
+                                is ModelDownloadService.DownloadState.Downloading -> transfer.progress
+                                is ModelDownloadService.DownloadState.Paused -> transfer.progress
+                                else -> 0f
+                            }
+                            val downloaded = when (transfer) {
+                                is ModelDownloadService.DownloadState.Downloading ->
+                                    transfer.downloadedBytes
+                                is ModelDownloadService.DownloadState.Paused ->
+                                    transfer.downloadedBytes
+                                else -> 0L
+                            }
+                            val total = when (transfer) {
+                                is ModelDownloadService.DownloadState.Downloading ->
+                                    transfer.totalBytes
+                                is ModelDownloadService.DownloadState.Paused ->
+                                    transfer.totalBytes
+                                else -> 0L
+                            }
+                            val speed = (
+                                transfer as? ModelDownloadService.DownloadState.Downloading
+                                )?.bytesPerSecond ?: 0L
+                            val eta = (
+                                transfer as? ModelDownloadService.DownloadState.Downloading
+                                )?.etaSeconds
+                            val currentFile = when (transfer) {
+                                is ModelDownloadService.DownloadState.Downloading ->
+                                    transfer.currentFileName
+                                is ModelDownloadService.DownloadState.Paused ->
+                                    transfer.currentFileName
+                                else -> null
+                            }
+                            val paused = transfer is ModelDownloadService.DownloadState.Paused
+
+                            SmoothLinearWavyProgressIndicator(
+                                progress = progress,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
                                     String.format(
                                         Locale.US,
-                                        "%.0f / %.0f MB",
-                                        downloading.received / 1048576.0,
-                                        downloading.total / 1048576.0,
+                                        "%d%% · %.0f / %.0f MB",
+                                        (progress * 100f).toInt(),
+                                        downloaded / 1048576.0,
+                                        total / 1048576.0,
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (!paused && speed > 0L) {
+                                    Text(
+                                        buildString {
+                                            append(
+                                                String.format(
+                                                    Locale.US,
+                                                    "%.1f MB/s",
+                                                    speed / 1048576.0,
+                                                ),
+                                            )
+                                            eta?.takeIf { it > 0L }?.let {
+                                                append(" · ")
+                                                if (it >= 60L) {
+                                                    append("${it / 60L}m")
+                                                } else {
+                                                    append("${it}s")
+                                                }
+                                                append(" left")
+                                            }
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
-                                } else {
-                                    "Preparing download"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                                }
+                            }
+
+                            currentFile?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        context.startService(
+                                            Intent(
+                                                context,
+                                                ModelDownloadService::class.java,
+                                            ).setAction(
+                                                if (paused) {
+                                                    ModelDownloadService.ACTION_RESUME_DOWNLOAD
+                                                } else {
+                                                    ModelDownloadService.ACTION_PAUSE_DOWNLOAD
+                                                },
+                                            ),
+                                        )
+                                    },
+                                ) {
+                                    Icon(
+                                        if (paused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                        contentDescription = null,
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (paused) "Resume" else "Pause")
+                                }
+                                TextButton(
+                                    onClick = {
+                                        context.startService(
+                                            Intent(
+                                                context,
+                                                ModelDownloadService::class.java,
+                                            ).setAction(
+                                                ModelDownloadService.ACTION_CANCEL_DOWNLOAD,
+                                            ),
+                                        )
+                                    },
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = null)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Cancel")
+                                }
+                            }
                         }
 
                         Text(
