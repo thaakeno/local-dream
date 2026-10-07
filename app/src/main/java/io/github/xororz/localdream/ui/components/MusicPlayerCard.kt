@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -361,7 +362,12 @@ private fun RealAudioWaveform(
         ),
         label = "waveformPulseValue",
     )
-    val clamped = progress.coerceIn(0f, 1f)
+    val clampedTarget = progress.coerceIn(0f, 1f)
+    val clamped by animateFloatAsState(
+        targetValue = clampedTarget,
+        animationSpec = tween(85),
+        label = "waveformPlayhead",
+    )
 
     Canvas(
         modifier = modifier
