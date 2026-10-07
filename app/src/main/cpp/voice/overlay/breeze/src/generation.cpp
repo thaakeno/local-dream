@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <random>
 #include <stdexcept>
@@ -345,9 +346,11 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     // work. The stable v3 context contains one 64-frame graph: request the first
     // 8 fresh frames immediately (unused positions are zero-padded), then use
     // 39 fresh frames once the 25-frame causal history is full.
-    const bool qnn_streaming = qnn_pipeline && estimated_frames > 8;
-    const int qnn_first_new = 8;
-    const int qnn_steady_new = 39;
+    const char * first_env = std::getenv("BREEZE_QNN_FIRST_NEW");
+    const char * steady_env = std::getenv("BREEZE_QNN_STEADY_NEW");
+    const int qnn_first_new = std::max(1, first_env ? std::atoi(first_env) : 64);
+    const int qnn_steady_new = std::max(1, steady_env ? std::atoi(steady_env) : 39);
+    const bool qnn_streaming = qnn_pipeline && estimated_frames > qnn_first_new;
 
     const int chunk_max = std::max(1, req.chunk_max);
     int fallback_chunk = std::min(std::max(1, req.chunk_first), chunk_max);
@@ -690,32 +693,27 @@ void generate(BreezeModel & m, MimiCodec & codec, const GenRequest & req, const 
     GenSession s;
     s.begin(m, codec, req, &tm);
 
-    // Keep the autoregressive backbone from growing across a whole long paragraph.
-    // The first generated passage becomes the voice/reference anchor for the rest, so keep
-    // that anchor deliberately short (~5-7 s in typical English) and then use moderate
-    // passage chunks. This preserves the same model/sampling while bounding KV-attention
-    // work; it is a scheduling optimization, not a quality-changing approximation.
-    constexpr int anchor_chars = 96;
-    std::vector<std::string> parts = split_text(req.text, req.split_chars, 0);
-    if (s.needs_anchor() && !parts.empty()) {
-        const std::vector<std::string> first_parts =
-            split_text(parts.front(), anchor_chars, 0);
-        if (first_parts.size() > 1) {
-            std::vector<std::string> bounded;
-            bounded.reserve(first_parts.size() + parts.size() - 1);
-            bounded.insert(bounded.end(), first_parts.begin(), first_parts.end());
-            bounded.insert(bounded.end(), parts.begin() + 1, parts.end());
-            parts = std::move(bounded);
-        }
-    }
+    // Preserve the proven splitter behavior. A normal <= split_chars request stays
+    // one generation, so we do not repeatedly pay QNN graph startup/flush cost.
+    // Only genuinely long text is segmented; when no reference exists, the first
+    // long-text piece is kept near a normal voice-reference length.
+    constexpr int anchor_chars = 200;
+    const std::vector<std::string> parts =
+        split_text(req.text, req.split_chars, s.needs_anchor() ? anchor_chars : 0);
 
     std::fprintf(
         stderr,
         "[BREEZE_SEGMENTS] count=%zu split_chars=%d anchor_chars=%d\n",
         parts.size(), req.split_chars, anchor_chars
     );
-    for (const std::string & part : parts)
-        if (!s.speak(part, cb, &tm)) return;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_SEGMENT] index=%zu total=%zu chars=%zu\n",
+            i + 1, parts.size(), parts[i].size()
+        );
+        if (!s.speak(parts[i], cb, &tm)) return;
+    }
 }
 
 // keeps the source's semantic codes and rebuilds the acoustic ones in the reference voice. the words
