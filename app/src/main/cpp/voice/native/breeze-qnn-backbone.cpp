@@ -160,26 +160,41 @@ public:
         graph.valid = false;
     }
 
-    bool setup_graph() {
+    bool select_graph(const std::string & requested) {
         if (!m_graphsInfo || m_graphsCount < 1) return false;
+        tear_down();
+        expected_graph = requested;
+
         int found = -1;
         for (uint32_t i = 0; i < m_graphsCount; ++i) {
             const char * name = (*m_graphsInfo)[i].graphName;
             std::fprintf(
                 stderr,
-                "[BREEZE_QNN_BACKBONE] context=%s graph[%u]=%s\n",
-                expected_graph.c_str(),
+                "[BREEZE_QNN_BACKBONE] request=%s graph[%u]=%s\n",
+                requested.c_str(),
                 i,
                 name ? name : "<unnamed>"
             );
-            if (name_contains(name, expected_graph.c_str())) found = (int) i;
+            if (name_contains(name, requested.c_str())) {
+                found = (int) i;
+                break;
+            }
         }
         if (found < 0 && m_graphsCount == 1) {
-            // Direct AI Hub qnn_context_binary compilation may normalize the
-            // graph name. Each v3 file intentionally contains exactly one graph.
+            // Legacy v4 stores each graph in its own context, so a normalized
+            // graph name is still safe when there is exactly one candidate.
             found = 0;
         }
-        if (found < 0) return false;
+        if (found < 0) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] graph not found request=%s count=%u\n",
+                requested.c_str(),
+                (unsigned) m_graphsCount
+            );
+            return false;
+        }
+
         graph.graph_index = (uint32_t) found;
         auto & g = (*m_graphsInfo)[graph.graph_index];
         const auto rc = m_ioTensor.setupInputAndOutputTensors(
@@ -188,7 +203,20 @@ public:
             g
         );
         graph.valid = rc == qnn::tools::iotensor::StatusCode::SUCCESS;
+        if (graph.valid) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] selected graph=%s index=%u shared_context_graphs=%u\n",
+                g.graphName ? g.graphName : "<unnamed>",
+                graph.graph_index,
+                (unsigned) m_graphsCount
+            );
+        }
         return graph.valid;
+    }
+
+    bool setup_graph() {
+        return select_graph(expected_graph);
     }
 
     void release_power_vote() {
@@ -524,6 +552,10 @@ public:
         if (ei < 0) return 0;
         const uint32_t * dims = QNN_TENSOR_GET_DIMENSIONS(graph.inputs[ei]);
         return dims && QNN_TENSOR_GET_RANK(graph.inputs[ei]) >= 1 ? (int) dims[0] : 0;
+    }
+
+    uint32_t graph_count() const {
+        return m_graphsInfo ? m_graphsCount : 0u;
     }
 
     bool copy_new_cache(const std::vector<int32_t> & positions) {
