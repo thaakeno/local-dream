@@ -736,10 +736,10 @@ fun SpeechRunScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     val soc = BreezeQnnVocoderArtifact.supportedSoc().orEmpty()
                     Text(
-                        "Download the native SM8850 / V81 QNN HTP vocoder v3. It includes " +
-                            "a built-in numerical self-test, is shared by every Breeze " +
-                            "Q4/Q6/Q8/F16/DD model on this phone, and replaces the slow " +
-                            "ggml waveform decoder.",
+                        "Download the fast Snapdragon waveform decoder. It is shared by every " +
+                            "Breeze Q4/Q6/Q8/F16/DD model on this phone and keeps waveform " +
+                            "synthesis on the NPU. Technical QNN/HTP details stay hidden unless " +
+                            "you are debugging the backend.",
                     )
                     when (accelerator) {
                         is BreezeQnnVocoderArtifact.Status.Downloading -> {
@@ -1894,21 +1894,10 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
                             color = MaterialTheme.colorScheme.primaryContainer,
                         ) {
                             Text(
-                                "HTP",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                "Snapdragon NPU",
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                        ) {
-                            Text(
-                                "QNN",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
                             )
                         }
                     }
@@ -1945,12 +1934,12 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             SpeechStageProgress(
                 label = "Voice tokens",
                 progress = state.codecProgress,
-                activeText = "Generating on Hexagon",
+                activeText = "Generating voice tokens",
             )
             SpeechStageProgress(
                 label = "Waveform",
                 progress = state.vocoderProgress,
-                activeText = "QNN HTP decoder",
+                activeText = "Decoding waveform",
             )
 
             Row(
@@ -2002,7 +1991,7 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             }
 
             Text(
-                "HTP-aware streaming alternates voice-token generation with QNN waveform decoding. The two engines never fight for the same Snapdragon HTP.",
+                "Hybrid NPU pipeline: the voice model and waveform decoder take turns on the same Snapdragon accelerator.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
             )
