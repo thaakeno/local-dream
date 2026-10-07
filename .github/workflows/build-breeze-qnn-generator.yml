@@ -118,6 +118,26 @@ jobs:
             breeze_backbone_prefill.onnx breeze_backbone_step.onnx; do
             test -s "build/breeze-qnn-generator/$f"
           done
+          python - <<'PY'
+          from pathlib import Path
+          import onnx
+
+          root=Path("build/breeze-qnn-generator")
+          for path in sorted(root.glob("*.onnx")):
+              model=onnx.load(str(path), load_external_data=False)
+              locations=set()
+              for tensor in model.graph.initializer:
+                  if tensor.data_location == onnx.TensorProto.EXTERNAL:
+                      for kv in tensor.external_data:
+                          if kv.key == "location":
+                              locations.add(kv.value)
+              for loc in locations:
+                  p=path.parent / loc
+                  if not p.is_file() or p.is_symlink():
+                      raise SystemExit(f"{path.name}: external tensor file is not regular: {p}")
+              print(path.name, path.stat().st_size, "external=", sorted(locations),
+                    "external_bytes=", sum((path.parent/x).stat().st_size for x in locations))
+          PY
           cat build/breeze-qnn-generator/generator-export.json
           df -h /
 
@@ -138,9 +158,58 @@ jobs:
           client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
           device = hub.Device(os.environ["QAI_DEVICE"])
 
+          def download_existing(job_id, graph_name, output_name):
+              job = client.get_job(job_id)
+              status = job.get_status()
+              if not status.success:
+                  raise RuntimeError(
+                      f"cached compile job {job_id} is not successful: "
+                      f"{status.message or status.code}"
+                  )
+              target_model = job.get_target_model()
+              if target_model is None:
+                  raise RuntimeError(f"cached compile job {job_id} has no target model")
+              target = root / output_name
+              target_model.download(str(target))
+              if not target.is_file() or target.stat().st_size < 100_000:
+                  raise RuntimeError(f"bad cached QNN DLC artifact: {target}")
+              result = {
+                  "graph": graph_name,
+                  "compile_job": job_id,
+                  "compile_url": job.url,
+                  "dlc_bytes": target.stat().st_size,
+                  "runtime": "qnn_dlc",
+                  "reused": True,
+              }
+              print(json.dumps(result))
+              return result
+
           def compile_dlc(model, spec, graph_name, job_name, output_name):
+              model_path = root / model
+              # qai-hub follows ONNX external_data references. Our exporter
+              # normalizes them to one regular <model>.onnx.data sibling file.
+              import onnx
+              check = onnx.load(str(model_path), load_external_data=False)
+              locations = set()
+              for tensor in check.graph.initializer:
+                  if tensor.data_location == onnx.TensorProto.EXTERNAL:
+                      for kv in tensor.external_data:
+                          if kv.key == "location":
+                              locations.add(kv.value)
+              for loc in locations:
+                  p = model_path.parent / loc
+                  if not p.is_file() or p.is_symlink():
+                      raise SystemExit(
+                          f"Refusing AI Hub upload: external data is not regular: {p}"
+                      )
+              print(
+                  "uploading", model_path.name,
+                  "external_data=", sorted(locations),
+                  "external_bytes=", sum((model_path.parent / x).stat().st_size for x in locations),
+              )
+
               source = client.upload_model(
-                  str(root / model),
+                  str(model_path),
                   name=f"{job_name} ONNX",
               )
               job = client.submit_compile_job(
@@ -172,33 +241,51 @@ jobs:
                   "compile_url": job.url,
                   "dlc_bytes": target.stat().st_size,
                   "runtime": "qnn_dlc",
+                  "reused": False,
               }
               print(json.dumps(result))
               return result
 
           results = {}
-          results["depth_prefill"] = compile_dlc(
-              "breeze_depth_prefill.onnx",
-              {
-                  "backbone_hidden": ((2, 2048), "float16"),
-                  "first_codebook": ((2,), "int32"),
-              },
-              "depth_prefill_b2",
-              "Breeze TTS 2 depth prefill SM8850",
-              "breeze-depth-prefill-sm8850-v81.dlc",
-          )
-          results["depth_step"] = compile_dlc(
-              "breeze_depth_step.onnx",
-              {
-                  "token": ((2,), "int32"),
-                  "position": ((1,), "int32"),
-                  "key_cache": ((2, 24, 16, 128), "float16"),
-                  "value_cache": ((2, 24, 16, 128), "float16"),
-              },
-              "depth_step_b2",
-              "Breeze TTS 2 depth AR1 SM8850",
-              "breeze-depth-step-sm8850-v81.dlc",
-          )
+          try:
+              results["depth_prefill"] = download_existing(
+                  "jgodnv9x5",
+                  "depth_prefill_b2",
+                  "breeze-depth-prefill-sm8850-v81.dlc",
+              )
+          except Exception as exc:
+              print("cached depth-prefill job unavailable, recompiling:", exc)
+              results["depth_prefill"] = compile_dlc(
+                  "breeze_depth_prefill.onnx",
+                  {
+                      "backbone_hidden": ((2, 2048), "float16"),
+                      "first_codebook": ((2,), "int32"),
+                  },
+                  "depth_prefill_b2",
+                  "Breeze TTS 2 depth prefill SM8850",
+                  "breeze-depth-prefill-sm8850-v81.dlc",
+              )
+
+          try:
+              results["depth_step"] = download_existing(
+                  "jp1ow8k25",
+                  "depth_step_b2",
+                  "breeze-depth-step-sm8850-v81.dlc",
+              )
+          except Exception as exc:
+              print("cached depth-step job unavailable, recompiling:", exc)
+              results["depth_step"] = compile_dlc(
+                  "breeze_depth_step.onnx",
+                  {
+                      "token": ((2,), "int32"),
+                      "position": ((1,), "int32"),
+                      "key_cache": ((2, 24, 16, 128), "float16"),
+                      "value_cache": ((2, 24, 16, 128), "float16"),
+                  },
+                  "depth_step_b2",
+                  "Breeze TTS 2 depth AR1 SM8850",
+                  "breeze-depth-step-sm8850-v81.dlc",
+              )
           results["backbone_prefill"] = compile_dlc(
               "breeze_backbone_prefill.onnx",
               {
