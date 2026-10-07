@@ -769,6 +769,7 @@ struct QnnBackboneRunner::Impl {
     std::string step_path;
     bool enabled = false;
     int branches = 1;
+    int step_batch = 0;
     int max_seq = kBackboneBucket;
     std::vector<int32_t> positions;
     size_t frames = 0;
@@ -782,11 +783,27 @@ bool QnnBackboneRunner::init(BreezeModel & m, int branches) {
     (void) m;
     if (branches != 1 && branches != 2) return false;
     const char * prefill_path = std::getenv("BREEZE_QNN_BACKBONE_PREFILL_PATH");
-    const char * step_path = std::getenv("BREEZE_QNN_BACKBONE_STEP_PATH");
+    const char * generic_step = std::getenv("BREEZE_QNN_BACKBONE_STEP_PATH");
+    const char * step_b1 = std::getenv("BREEZE_QNN_BACKBONE_STEP_B1_PATH");
+    const char * step_b2 = std::getenv("BREEZE_QNN_BACKBONE_STEP_B2_PATH");
     const char * lib = std::getenv("BREEZE_QNN_LIB_DIR");
+
+    const char * chosen_step = nullptr;
+    const char * chosen_kind = "none";
+    if (branches == 1 && step_b1 && *step_b1) {
+        chosen_step = step_b1;
+        chosen_kind = "batch1";
+    } else if (branches == 2 && step_b2 && *step_b2) {
+        chosen_step = step_b2;
+        chosen_kind = "batch2";
+    } else if (generic_step && *generic_step) {
+        chosen_step = generic_step;
+        chosen_kind = "legacy";
+    }
+
     if (
         !prefill_path || !*prefill_path ||
-        !step_path || !*step_path ||
+        !chosen_step || !*chosen_step ||
         !lib || !*lib
     ) {
         return false;
@@ -794,15 +811,27 @@ bool QnnBackboneRunner::init(BreezeModel & m, int branches) {
 
     impl_->lib_dir = lib;
     impl_->prefill_path = prefill_path;
-    impl_->step_path = step_path;
+    impl_->step_path = chosen_step;
     impl_->branches = branches;
-    impl_->positions.assign(2, 0);
+    impl_->step_batch = 0;
+    impl_->positions.clear();
+
+    const char * max_seq_env = std::getenv("BREEZE_QNN_BACKBONE_PREFILL_MAX_SEQ");
+    if (max_seq_env && *max_seq_env) {
+        const int requested = std::atoi(max_seq_env);
+        if (requested >= 32 && requested <= kBackboneBucket) {
+            impl_->max_seq = requested;
+        }
+    }
+
     impl_->enabled = true;
     std::fprintf(
         stderr,
         "[BREEZE_QNN_BACKBONE] configured logical_branches=%d "
-        "prefill_context=separate step_context=separate\n",
-        branches
+        "prefill_max_seq=%d step_variant=%s\n",
+        branches,
+        impl_->max_seq,
+        chosen_kind
     );
     return true;
 }
@@ -854,7 +883,7 @@ bool QnnBackboneRunner::prefill(
     if (!load_backbone_app(
             impl_->lib_dir,
             impl_->prefill_path,
-            "backbone_prefill_512",
+            "backbone_prefill",
             prefill_app)) {
         std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] prefill context load failed\n");
         disable();
@@ -897,33 +926,69 @@ bool QnnBackboneRunner::prefill(
         uncond_tokens = cond_tokens;
     }
 
-    // Release the large prompt context before creating the AR1 context so the
-    // backbone weights are never duplicated in resident memory.
+    // V4 used two separate 2.7 GB contexts and paid their deserialization cost
+    // on every request. V5 will replace this with a linked shared-weight context.
+    // Keep this compatibility path for the old artifact until that context is installed.
     prefill_app.reset();
 
     if (!load_backbone_app(
             impl_->lib_dir,
             impl_->step_path,
-            "backbone_step_b2",
-            impl_->step) ||
-        !impl_->step->zero_step_cache() ||
-        !impl_->step->seed_branch(cond_cache, 0) ||
-        !impl_->step->seed_branch(uncond_cache, 1)) {
-        std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] AR1 context load/seed failed\n");
+            impl_->branches == 1 ? "backbone_step_b1" : "backbone_step_b2",
+            impl_->step)) {
+        std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] AR1 context load failed\n");
         disable();
         return false;
     }
 
-    impl_->positions[0] = cond_tokens;
-    impl_->positions[1] = uncond_tokens;
+    impl_->step_batch = impl_->step->step_batch_size();
+    if (
+        impl_->step_batch < impl_->branches ||
+        impl_->step_batch < 1 ||
+        impl_->step_batch > 2
+    ) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_QNN_BACKBONE] AR1 batch incompatible physical=%d logical=%d\n",
+            impl_->step_batch,
+            impl_->branches
+        );
+        disable();
+        return false;
+    }
+
+    if (!impl_->step->zero_step_cache()) {
+        std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] AR1 cache zero failed\n");
+        disable();
+        return false;
+    }
+
+    impl_->positions.assign((size_t) impl_->step_batch, 0);
+    for (int b = 0; b < impl_->step_batch; ++b) {
+        const bool uncond = impl_->branches == 2 && b == 1;
+        const PrefillCache & source = uncond ? uncond_cache : cond_cache;
+        if (!impl_->step->seed_branch(source, b)) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] AR1 cache seed failed branch=%d physical=%d logical=%d\n",
+                b,
+                impl_->step_batch,
+                impl_->branches
+            );
+            disable();
+            return false;
+        }
+        impl_->positions[(size_t) b] = uncond ? uncond_tokens : cond_tokens;
+    }
 
     std::fprintf(
         stderr,
         "[BREEZE_QNN_BACKBONE] prefill_ms=%.2f cond=%d uncond=%d "
-        "prompt_context_released=1 ar1_ready=1\n",
+        "step_batch=%d prompt_context_released=1 ar1_ready=1\n",
         prefill_ms,
         cond_tokens,
-        impl_->branches == 2 ? uncond_tokens : 0
+        impl_->branches == 2 ? uncond_tokens : 0,
+        impl_->step_batch
     );
     return true;
 }
@@ -948,7 +1013,8 @@ bool QnnBackboneRunner::step(
             impl_->positions,
             outs,
             ms) ||
-        outs.size() != 2) {
+        outs.size() != impl_->positions.size() ||
+        outs.size() < (size_t) impl_->branches) {
         std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] AR1 step failed\n");
         disable();
         return false;
