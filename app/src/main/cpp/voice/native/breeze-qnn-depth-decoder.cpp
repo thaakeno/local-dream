@@ -1,6 +1,7 @@
 #include "breeze/qnn_depth_decoder.h"
 
 #include "breeze/breeze.h"
+#include "breeze/model.h"
 #include "breeze/sampling.h"
 
 #include <HTP/QnnHtpDevice.h>
