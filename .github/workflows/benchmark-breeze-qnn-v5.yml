@@ -1,0 +1,157 @@
+name: Benchmark Breeze QNN v5 backbone
+# v5 fast-path benchmark: compile -> link -> profile before APK integration.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - breeze-qnn-v5-fastpath
+    paths:
+      - '.github/workflows/benchmark-breeze-qnn-v5.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: breeze-qnn-v5-backbone-benchmark
+  cancel-in-progress: true
+
+env:
+  QAI_DEVICE: Samsung Galaxy S26 (Family)
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install exact AI Hub client
+        run: python -m pip install --upgrade 'qai-hub>=0.56.0'
+
+      - name: Compile, link and profile v5 candidates
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import qai_hub as hub
+
+          client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
+          device = hub.Device(os.environ["QAI_DEVICE"])
+
+          prefill_source = client.get_model("mnl168kjm")
+          step_source = client.get_model("mqe376w4n")
+
+          compile_opts = (
+              "--target_runtime qnn_dlc "
+              "--qnn_options default_graph_htp_precision=FLOAT16 "
+              "--qnn_options default_graph_htp_optimizations=O=3"
+          )
+
+          def wait_job(job, label):
+              status = job.wait()
+              print(label, job.job_id, job.url, status.code, status.message)
+              if not status.success:
+                  raise RuntimeError(f"{label} failed: {status.message or status.code}")
+              return job
+
+          prefill256 = client.submit_compile_job(
+              model=prefill_source,
+              device=device,
+              name="Breeze v5 backbone prefill seq256 SM8850",
+              input_specs={
+                  "inputs_embeds": ((1, 256, 2048), "float16"),
+                  "attention_mask": ((1, 1, 256, 256), "float16"),
+                  "positions": ((1, 256), "int32"),
+              },
+              options=compile_opts,
+          )
+          wait_job(prefill256, "compile prefill256")
+
+          step_b1 = client.submit_compile_job(
+              model=step_source,
+              device=device,
+              name="Breeze v5 backbone AR1 batch1 SM8850",
+              input_specs={
+                  "input_embed": ((1, 1, 2048), "float16"),
+                  "positions": ((1,), "int32"),
+                  "key_cache": ((1, 224, 512, 128), "float16"),
+                  "value_cache": ((1, 224, 512, 128), "float16"),
+                  "attention_mask": ((1, 1, 1, 513), "float16"),
+              },
+              options=compile_opts,
+          )
+          wait_job(step_b1, "compile step_b1")
+
+          prefill_dlc = prefill256.get_target_model()
+          step_dlc = step_b1.get_target_model()
+          if prefill_dlc is None or step_dlc is None:
+              raise RuntimeError("successful compile returned no QNN DLC")
+
+          linked = client.submit_link_job(
+              [prefill_dlc, step_dlc],
+              device=device,
+              name="Breeze v5 shared-weight backbone seq256+AR1b1",
+              options="--qnn_options default_graph_htp_optimizations=O=3",
+          )
+          wait_job(linked, "link shared backbone")
+
+          linked_model = linked.get_target_model()
+          if linked_model is None:
+              raise RuntimeError("link job returned no context binary")
+
+          profiles = {}
+          for label, model in [
+              ("prefill256", prefill_dlc),
+              ("step_b1", step_dlc),
+              ("old_prefill512", client.get_job("jgn1m92rp").get_target_model()),
+              ("old_step_b2", client.get_job("jpy8jnxrg").get_target_model()),
+          ]:
+              if model is None:
+                  continue
+              job = client.submit_profile_job(
+                  model=model,
+                  device=device,
+                  name=f"Breeze v5 benchmark {label}",
+              )
+              status = job.wait()
+              profiles[label] = {
+                  "job_id": job.job_id,
+                  "url": job.url,
+                  "success": bool(status.success),
+                  "status": status.code,
+                  "message": status.message,
+              }
+              print("PROFILE", label, json.dumps(profiles[label]))
+
+          result = {
+              "device": os.environ["QAI_DEVICE"],
+              "source_models": {
+                  "prefill": "mnl168kjm",
+                  "step": "mqe376w4n",
+              },
+              "compile_jobs": {
+                  "prefill256": prefill256.job_id,
+                  "step_b1": step_b1.job_id,
+              },
+              "link_job": linked.job_id,
+              "linked_model_id": getattr(linked_model, "model_id", None),
+              "profiles": profiles,
+          }
+          print("=== BREEZE_V5_RESULT ===")
+          print(json.dumps(result, indent=2))
+          with open("breeze-v5-aihub.json", "w") as f:
+              json.dump(result, f, indent=2)
+          PY
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: breeze-v5-aihub-benchmark
+          path: breeze-v5-aihub.json
+          retention-days: 30

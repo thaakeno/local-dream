@@ -9,6 +9,7 @@ on:
       - yue2-text-music
       - yue2-fast-instrumental-htp
       - v141-stable-yue2-full
+      - breeze-qnn-v5-fastpath
       - breeze-htp-clean-v150
     paths:
       - 'app/**'
@@ -170,7 +171,7 @@ jobs:
       # artifacts are reusable, so rebuild only voice/build.sh.
       - name: Check Breeze-only native delta
         id: breeze-native-delta
-        if: steps.native-cache.outputs.cache-hit != 'true' && github.ref_name == 'v141-stable-yue2-full'
+        if: steps.native-cache.outputs.cache-hit != 'true' && (github.ref_name == 'v141-stable-yue2-full' || github.ref_name == 'breeze-qnn-v5-fastpath')
         shell: bash
         run: |
           set -euxo pipefail
@@ -203,7 +204,7 @@ jobs:
       # rebuild only the music backend when the new full cache key is absent.
       - name: Bootstrap unchanged alpha.58 native artifacts
         id: native-bootstrap
-        if: steps.native-cache.outputs.cache-hit != 'true' && github.ref_name != 'v141-stable-yue2-full'
+        if: steps.native-cache.outputs.cache-hit != 'true' && github.ref_name != 'v141-stable-yue2-full' && github.ref_name != 'breeze-qnn-v5-fastpath'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -369,7 +370,7 @@ jobs:
           grep -q 'v81_visibility=none-v153-scheduler' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'v81_execution=hvx-only-no-hmx' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'gelu_erf=dsp-libm-reference-v81' app/src/main/assets/breezelibs/backend-version.txt
-          grep -q 'generator=qnn-v4-adaptive-power-screen-owned-or-ggml-fallback' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'generator=qnn-v5-linked-fastpath-toggle-or-ggml-fallback' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'quant-weight-repack-ordinary-map' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'raw-quant-matmul-guard' app/src/main/assets/breezelibs/backend-version.txt
           grep -q 'decoder-codebook-ordinary-htp-mirror' app/src/main/assets/breezelibs/backend-version.txt

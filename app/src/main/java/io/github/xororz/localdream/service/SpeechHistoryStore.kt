@@ -33,6 +33,7 @@ data class SpeechHistoryItem(
     val splitChars: Int = 600,
     val maxNewTokens: Int = 750,
     val accelerated: Boolean = false,
+    val favorite: Boolean = false,
 )
 
 object SpeechHistoryStore {
@@ -134,6 +135,27 @@ object SpeechHistoryStore {
             }
         }
 
+    suspend fun setFavorite(
+        context: Context,
+        id: String,
+        favorite: Boolean,
+    ): Boolean = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val items = loadUnlocked(context)
+            var changed = false
+            val next = items.map { item ->
+                if (item.id == id) {
+                    changed = true
+                    item.copy(favorite = favorite)
+                } else {
+                    item
+                }
+            }
+            if (changed) saveUnlocked(context, next)
+            changed
+        }
+    }
+
     suspend fun delete(context: Context, id: String): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
             val items = loadUnlocked(context)
@@ -173,6 +195,7 @@ object SpeechHistoryStore {
                             splitChars = obj.optInt("splitChars", 600),
                             maxNewTokens = obj.optInt("maxNewTokens", 750),
                             accelerated = obj.optBoolean("accelerated", false),
+                            favorite = obj.optBoolean("favorite", false),
                         ),
                     )
                 }
@@ -202,6 +225,7 @@ object SpeechHistoryStore {
                     put("splitChars", item.splitChars)
                     put("maxNewTokens", item.maxNewTokens)
                     put("accelerated", item.accelerated)
+                    put("favorite", item.favorite)
                 },
             )
         }

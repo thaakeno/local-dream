@@ -8,16 +8,20 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -57,6 +61,8 @@ fun MusicPlayerCard(
     onShare: (() -> Unit)? = null,
     onReproduce: (() -> Unit)? = null,
     onUse: (() -> Unit)? = null,
+    favorite: Boolean = false,
+    onFavoriteToggle: (() -> Unit)? = null,
 ) {
     var player by remember(file.absolutePath) { mutableStateOf<MediaPlayer?>(null) }
     var preparing by remember(file.absolutePath) { mutableStateOf(false) }
@@ -197,6 +203,16 @@ fun MusicPlayerCard(
                             "Preparing playback…",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+                if (onFavoriteToggle != null) {
+                    IconButton(onClick = onFavoriteToggle) {
+                        Icon(
+                            if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = if (favorite) "Remove favorite" else "Add favorite",
+                            tint = if (favorite) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -346,12 +362,30 @@ private fun RealAudioWaveform(
         ),
         label = "waveformPulseValue",
     )
-    val clamped = progress.coerceIn(0f, 1f)
+    val clampedTarget = progress.coerceIn(0f, 1f)
+    val clamped by animateFloatAsState(
+        targetValue = clampedTarget,
+        animationSpec = tween(85),
+        label = "waveformPlayhead",
+    )
 
     Canvas(
         modifier = modifier
             .clip(MaterialTheme.shapes.large)
             .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .pointerInput(enabled, peaks) {
+                if (enabled) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            onSeek((offset.x / size.width.toFloat()).coerceIn(0f, 1f))
+                        },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            onSeek((change.position.x / size.width.toFloat()).coerceIn(0f, 1f))
+                        },
+                    )
+                }
+            }
             .pointerInput(enabled, peaks) {
                 if (enabled) {
                     detectTapGestures { offset ->

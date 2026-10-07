@@ -191,20 +191,23 @@ grep -q 'BREEZE_QNN_VOCODER_PATH' "$(pwd)/native/breeze-qnn-vocoder.cpp"
 grep -q 'graph64_ms' "$(pwd)/native/breeze-qnn-vocoder.cpp"
 grep -q 'qnn_vocoder->decode_stream' "$(pwd)/overlay/breeze/src/codec.cpp"
 
-# Full QNN generator v4 reuses the proven batch-1 two-graph depth context.
-# CFG branches are serialized with independent native KV snapshots; backbone
-# prompt/AR1 stay QNN contexts and ggml-Hexagon remains the fallback.
+# Full QNN generator v5 keeps the proven batch-1 depth contract while fixing
+# the v4 backbone architecture: linked shared-weight contexts, true batch-1
+# AR1 for CFG=1, smaller prompt buckets, and an explicit legacy toggle.
 grep -q 'BREEZE_QNN_DEPTH_PATH' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
 grep -q 'physical_batch=1' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
 grep -q 'cfg_serial=' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
 grep -q 'profile=adaptive-performance' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
 grep -q 'rpc_poll=0' "$(pwd)/native/breeze-qnn-vocoder.cpp"
 grep -q 'dcvsEnable = 1' "$(pwd)/native/breeze-qnn-backbone.cpp"
+grep -q 'BREEZE_QNN_BACKBONE_LINKED_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
 grep -q 'BREEZE_QNN_BACKBONE_PREFILL_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'BREEZE_QNN_BACKBONE_STEP_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'prompt_context_released=1' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'QnnBackboneRunner qnn_backbone' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'QnnDepthRunner qnn_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'BREEZE_QNN_BACKBONE_STEP_B1_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
+grep -q 'shared_context=%d' "$(pwd)/native/breeze-qnn-backbone.cpp"
+grep -q 'prompt_context_released=%d' "$(pwd)/native/breeze-qnn-backbone.cpp"
+grep -q 'persistent_backbone' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'persistent_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'BREEZE_QNN_CACHE' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'depth.run(m, hiddens, cb0' "$(pwd)/overlay/breeze/src/generation.cpp"
 
 # Full-clip decode remains available for voice conversion/reference work, but
@@ -260,7 +263,7 @@ extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-refere
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
-generator=qnn-v4-adaptive-power-screen-owned-or-ggml-fallback
+generator=qnn-v5-linked-fastpath-toggle-or-ggml-fallback
 vocoder=qnn-htp-feature64-serialized-or-ggml-fallback-v198
 qnn_vocoder=sm8850-v3-v81,feature64,host-lut-fp32,cached-reference-selftest,left-context25,serialized64x39,eos-first
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2

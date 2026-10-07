@@ -9,7 +9,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -18,6 +20,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
@@ -25,12 +33,15 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -60,8 +71,145 @@ import kotlinx.coroutines.withContext
 
 private data class SpeechTemplate(
     val name: String,
+    val category: String,
     val text: String,
     val instruction: String,
+)
+
+private data class InlineEventCue(
+    val tag: String,
+    val label: String,
+    val official: Boolean,
+    val language: String,
+)
+
+private enum class SpeechHistorySort(val label: String) {
+    Newest("Newest"),
+    Oldest("Oldest"),
+    Fastest("Fastest"),
+    Longest("Longest"),
+}
+
+private val BREEZE_INLINE_EVENTS = listOf(
+    InlineEventCue("(laugh)", "Laugh", true, "English"),
+    InlineEventCue("(sigh)", "Sigh", true, "English"),
+    InlineEventCue("(cough)", "Cough", true, "English"),
+    InlineEventCue("(clears throat)", "Clear throat", true, "English"),
+    InlineEventCue("[笑]", "笑", true, "中文"),
+    InlineEventCue("[叹气]", "叹气", true, "中文"),
+    InlineEventCue("[咳嗽]", "咳嗽", true, "中文"),
+    InlineEventCue("[清嗓子]", "清嗓子", true, "中文"),
+    // Breeze's event vocabulary is open-ended in the cpp runtime. These are
+    // useful extended cues, but deliberately kept visually separate from the
+    // official BreezeBlue examples above.
+    InlineEventCue("(laughs)", "Laughs", false, "Extended"),
+    InlineEventCue("(chuckles)", "Chuckles", false, "Extended"),
+    InlineEventCue("(giggles)", "Giggles", false, "Extended"),
+    InlineEventCue("(crying)", "Crying", false, "Extended"),
+    InlineEventCue("(sobs)", "Sobs", false, "Extended"),
+    InlineEventCue("(whimpers)", "Whimpers", false, "Extended"),
+    InlineEventCue("(groans)", "Groans", false, "Extended"),
+    InlineEventCue("(moans)", "Moans", false, "Extended"),
+    InlineEventCue("(sighs)", "Sighs", false, "Extended"),
+    InlineEventCue("(gasps)", "Gasps", false, "Extended"),
+    InlineEventCue("(inhales)", "Inhales", false, "Extended"),
+    InlineEventCue("(exhales)", "Exhales", false, "Extended"),
+    InlineEventCue("(breathing heavily)", "Heavy breath", false, "Extended"),
+    InlineEventCue("(whispers)", "Whispers", false, "Extended"),
+    InlineEventCue("(shouts)", "Shouts", false, "Extended"),
+    InlineEventCue("(screams)", "Screams", false, "Extended"),
+    InlineEventCue("(singing)", "Singing", false, "Extended"),
+    InlineEventCue("(humming)", "Humming", false, "Extended"),
+    InlineEventCue("(stutters)", "Stutters", false, "Extended"),
+    InlineEventCue("(pause)", "Pause", false, "Extended"),
+    InlineEventCue("(coughs)", "Coughs", false, "Extended"),
+    InlineEventCue("(sniffs)", "Sniffs", false, "Extended"),
+    InlineEventCue("(smacks lips)", "Lip smack", false, "Extended"),
+    InlineEventCue("(clicks tongue)", "Tongue click", false, "Extended"),
+    InlineEventCue("(yawns)", "Yawns", false, "Extended"),
+    InlineEventCue("(sneezes)", "Sneezes", false, "Extended"),
+    InlineEventCue("(hiccups)", "Hiccups", false, "Extended"),
+    InlineEventCue("(burps)", "Burps", false, "Extended"),
+    InlineEventCue("(gulps)", "Gulps", false, "Extended"),
+    InlineEventCue("(gags)", "Gags", false, "Extended"),
+    InlineEventCue("(grunts)", "Grunts", false, "Extended"),
+    InlineEventCue("(scoffs)", "Scoffs", false, "Extended"),
+    InlineEventCue("(snorts)", "Snorts", false, "Extended"),
+)
+
+private val BREEZE_TEMPLATES = listOf(
+    SpeechTemplate(
+        "Late-night voice memo",
+        "Realistic",
+        "(sigh) Okay... I probably should have called earlier. The train stalled outside the station, my phone was nearly dead, and by the time I got home I just wanted five minutes of silence.",
+        "Young adult male recorded as a casual phone voice memo. Close mic, natural room tone, imperfect pacing, small hesitations and breaths. Conversational and believable, never performed.",
+    ),
+    SpeechTemplate(
+        "Quiet confession",
+        "Realistic",
+        "I kept rewriting this in my head because every version sounded rehearsed. So... I'll just say it. I miss you, and I don't know what I'm supposed to do with that.",
+        "Adult woman speaking privately to someone she trusts. Soft natural voice, hesitant but sincere, small pauses, restrained emotion, close-mic phone recording.",
+    ),
+    SpeechTemplate(
+        "Vanguard One",
+        "Cinematic",
+        "(gasps) Control, this is Vanguard One. The star is gone. Not dimmed—gone. (shouts) TURN THE SHIP. NOW. (breathing heavily) There's something moving where it used to be.",
+        "Battle-worn spacecraft commander with a deep urgent voice. Controlled military delivery breaking under impossible pressure, clipped phrases, fast breathing, sudden commands, radio-like tension.",
+    ),
+    SpeechTemplate(
+        "Interrogation room",
+        "Cinematic",
+        "You walked in here expecting me to raise my voice. I'm not going to. I'm going to ask you once, very clearly... who opened that door?",
+        "Mature woman with cold authority. Low controlled volume, deliberate pauses, precise diction, contained anger and a dangerous calm. Intimate cinematic close mic.",
+    ),
+    SpeechTemplate(
+        "Close whisper",
+        "Whisper",
+        "(sigh) Keep your voice down. The walls are thinner than they look. Come closer... I'll tell you what actually happened.",
+        "Soft adult feminine voice, extremely close and intimate. Slow silky breathy whisper, very low volume, delicate breaths, relaxed pacing, clear articulation, natural ASMR-like proximity.",
+    ),
+    SpeechTemplate(
+        "Sleep story",
+        "Whisper",
+        "The rain had been falling for hours, soft enough that the city seemed farther away than usual. By midnight, even the traffic had disappeared.",
+        "Warm adult narrator in a calm near-whisper. Slow even breathing, gentle pacing, soft consonants, sleepy late-night tone, clean close-mic recording.",
+    ),
+    SpeechTemplate(
+        "Anime heroine",
+        "Anime",
+        "(giggles) You really came all this way just to prove me wrong? Fine. One round. If I win, you're buying dinner.",
+        "Adult anime-inspired feminine voice with bright natural energy, playful confidence and expressive timing. Light, polished and charming without becoming squeaky or exaggerated.",
+    ),
+    SpeechTemplate(
+        "Anime rival",
+        "Anime",
+        "I don't care how impossible it looks. We trained for this exact moment. So stop staring at the sky and move.",
+        "Young adult anime-inspired male voice. Focused, athletic and intense, quick confident delivery, controlled urgency, grounded performance rather than cartoon shouting.",
+    ),
+    SpeechTemplate(
+        "Documentary",
+        "Narration",
+        "At the edge of the desert, the temperature can fall more than thirty degrees after sunset. For the animals that live here, surviving the night is a second battle.",
+        "Mature documentary narrator with a resonant, measured voice. Clear diction, calm authority, natural pauses and a polished broadcast recording.",
+    ),
+    SpeechTemplate(
+        "Presidential address",
+        "Narration",
+        "My fellow citizens... we are entering difficult days. But this country has faced fear before, and we did not survive by surrendering to it.",
+        "Mature presidential voice: calm, authoritative and measured. Clear diction, deliberate pauses, controlled emotion, reassuring warmth and practiced public-speaking confidence.",
+    ),
+    SpeechTemplate(
+        "Betrayed",
+        "Intense",
+        "(shouts) Don't stand there and lie to me. I gave you every chance to tell me the truth. (sigh) Just... get out. Before I say something I can't take back.",
+        "Adult woman who feels personally betrayed. Sharp powerful voice, heavy breathing, sudden volume surges, brief voice cracks, then a cold low finish. Raw but believable.",
+    ),
+    SpeechTemplate(
+        "Natural Mandarin",
+        "Mandarin",
+        "今天路上有点堵，不过没关系。我们慢慢走，到了以后先找个安静的地方坐一会儿。",
+        "自然的普通话成年女声，像朋友之间真实聊天。语速舒适，语气温和，轻微停顿和自然呼吸，不要播音腔。",
+    ),
 )
 
 private const val DEFAULT_SEED = 42L
@@ -72,6 +220,9 @@ private const val DEFAULT_TOP_P = 1f
 private const val DEFAULT_REPETITION = 1.1f
 private const val DEFAULT_SPLIT_CHARS = 600
 private const val DEFAULT_MAX_NEW_TOKENS = 750
+
+private fun freshSpeechSeed(): Long =
+    ((System.nanoTime() xor System.currentTimeMillis()) and 0x7fffffffL).coerceAtLeast(1L)
 
 private fun shareSpeechFile(context: android.content.Context, file: File) {
     if (!file.isFile) return
@@ -150,6 +301,10 @@ fun SpeechRunScreen(
     val model = repository.models.firstOrNull { it.id == modelId }
     val speechState by SpeechGenerationService.state.collectAsState()
     val acceleratorState by BreezeQnnVocoderArtifact.status.collectAsState()
+    val generatorState by BreezeQnnGeneratorArtifact.status.collectAsState()
+    var fullQnnGeneratorEnabled by remember {
+        mutableStateOf(BreezeQnnGeneratorArtifact.isEnabled(context))
+    }
 
     // This screen owns the warm Breeze process. Leaving the generation panel
     // must release the GGUF, QNN contexts and HTP power votes immediately.
@@ -173,6 +328,7 @@ fun SpeechRunScreen(
         mutableStateOf("A warm, thoughtful young woman with a clear, calm delivery.")
     }
     var seed by rememberSaveable { mutableLongStateOf(DEFAULT_SEED) }
+    var seedLocked by rememberSaveable { mutableStateOf(true) }
     var cfg by rememberSaveable { mutableFloatStateOf(DEFAULT_CFG) }
     var temperature by rememberSaveable { mutableFloatStateOf(DEFAULT_TEMPERATURE) }
     var topK by rememberSaveable { mutableIntStateOf(DEFAULT_TOP_K) }
@@ -181,37 +337,14 @@ fun SpeechRunScreen(
     var splitChars by rememberSaveable { mutableIntStateOf(DEFAULT_SPLIT_CHARS) }
     var maxNewTokens by rememberSaveable { mutableIntStateOf(DEFAULT_MAX_NEW_TOKENS) }
     var showTune by remember { mutableStateOf(false) }
+    var showAdvancedTune by rememberSaveable { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf<List<SpeechHistoryItem>>(emptyList()) }
-
-    val templates = remember {
-        listOf(
-            SpeechTemplate(
-                "Warm narrator",
-                "The city was quiet before sunrise, and for a moment the whole world felt still.",
-                "A warm, thoughtful young woman with a clear, calm delivery. Natural pacing, intimate studio sound.",
-            ),
-            SpeechTemplate(
-                "Slow whisper",
-                "(sigh) I knew you would come back. I just did not think it would take this long.",
-                "A soft adult female voice, close-mic whisper, slow pacing, restrained emotion, breathy but intelligible.",
-            ),
-            SpeechTemplate(
-                "Dramatic",
-                "You had one chance to walk away. Now we finish what you started.",
-                "A confident adult woman with cinematic intensity, controlled anger, deliberate pauses and strong emphasis.",
-            ),
-            SpeechTemplate(
-                "Mandarin",
-                "今天的风很轻，我们慢慢走，不用着急。",
-                "自然的北京普通话女声，年轻成年，温柔清晰，语速稍慢，像真实对话。",
-            ),
-        )
-    }
-    val events = listOf(
-        "(laugh)", "(sigh)", "(cough)", "(clears throat)",
-        "[笑]", "[叹气]", "[咳嗽]", "[清嗓子]",
-    )
+    var templateCategory by rememberSaveable { mutableStateOf("Realistic") }
+    var historySearch by rememberSaveable { mutableStateOf("") }
+    var historySort by rememberSaveable { mutableStateOf(SpeechHistorySort.Newest.name) }
+    var historyFavoritesOnly by rememberSaveable { mutableStateOf(false) }
+    var historyAcceleratedOnly by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(modelId, model?.isDownloaded) {
         BreezeQnnVocoderArtifact.refresh(context)
@@ -392,12 +525,33 @@ fun SpeechRunScreen(
                         }
                     }
 
+                    Text(
+                        "Starting points",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(templates, key = { it.name }) { template ->
+                        items(BREEZE_TEMPLATES.map { it.category }.distinct()) { category ->
+                            FilterChip(
+                                selected = templateCategory == category,
+                                onClick = {
+                                    templateCategory = category
+                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                },
+                                label = { Text(category) },
+                            )
+                        }
+                    }
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(
+                            BREEZE_TEMPLATES.filter { it.category == templateCategory },
+                            key = { it.name },
+                        ) { template ->
                             AssistChip(
                                 onClick = {
                                     text = template.text
                                     instruction = template.instruction
+                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                                 },
                                 label = { Text(template.name) },
                                 leadingIcon = {
@@ -410,49 +564,9 @@ fun SpeechRunScreen(
                     InlineEventEditor(
                         value = text,
                         onValueChange = { text = it.take(12000) },
-                        events = events,
+                        events = BREEZE_INLINE_EVENTS,
                         modifier = Modifier.fillMaxWidth(),
                     )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Inline events",
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            "Tap to insert",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(events) { event ->
-                            val chinese = event.startsWith("[")
-                            AssistChip(
-                                onClick = {
-                                    text = if (text.isBlank()) event else text + " " + event
-                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                                },
-                                label = { Text(event) },
-                                colors = AssistChipDefaults.assistChipColors(
-                                    containerColor = if (chinese) {
-                                        MaterialTheme.colorScheme.secondaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.tertiaryContainer
-                                    },
-                                    labelColor = if (chinese) {
-                                        MaterialTheme.colorScheme.onSecondaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.onTertiaryContainer
-                                    },
-                                ),
-                            )
-                        }
-                    }
 
                     OutlinedTextField(
                         value = instruction,
@@ -532,8 +646,13 @@ fun SpeechRunScreen(
                         Button(
                             onClick = {
                                 AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                val generationSeed = if (seedLocked) {
+                                    seed
+                                } else {
+                                    freshSpeechSeed().also { seed = it }
+                                }
                                 startSpeechGeneration(
-                                    context, modelId, text, instruction, seed,
+                                    context, modelId, text, instruction, generationSeed,
                                     cfg, temperature, topK, topP, repetition,
                                     splitChars, maxNewTokens,
                                 )
@@ -556,9 +675,17 @@ fun SpeechRunScreen(
                     title = "Breeze TTS 2 · " + precision,
                     subtitle = "Seed " + complete.seed + " · " +
                         String.format(Locale.US, "%.1f s generation", complete.elapsedMillis / 1000f),
-                    metadataLine = "Just generated · QNN HTP ready",
+                    metadataLine = if (acceleratorState is BreezeQnnVocoderArtifact.Status.Ready) {
+                        "Snapdragon NPU · GGUF generator + QNN waveform decoder"
+                    } else {
+                        "Snapdragon NPU · GGUF generator"
+                    },
                     modifier = Modifier.padding(horizontal = 16.dp),
                     onReproduce = {
+                        text = complete.text
+                        instruction = complete.instruction
+                        seed = complete.seed
+                        seedLocked = true
                         startSpeechGeneration(
                             context, modelId, complete.text, complete.instruction,
                             complete.seed, cfg, temperature, topK, topP,
@@ -609,10 +736,10 @@ fun SpeechRunScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     val soc = BreezeQnnVocoderArtifact.supportedSoc().orEmpty()
                     Text(
-                        "Download the native SM8850 / V81 QNN HTP vocoder v3. It includes " +
-                            "a built-in numerical self-test, is shared by every Breeze " +
-                            "Q4/Q6/Q8/F16/DD model on this phone, and replaces the slow " +
-                            "ggml waveform decoder.",
+                        "Download the fast Snapdragon waveform decoder. It is shared by every " +
+                            "Breeze Q4/Q6/Q8/F16/DD model on this phone and keeps waveform " +
+                            "synthesis on the NPU. Technical QNN/HTP details stay hidden unless " +
+                            "you are debugging the backend.",
                     )
                     when (accelerator) {
                         is BreezeQnnVocoderArtifact.Status.Downloading -> {
@@ -698,12 +825,12 @@ fun SpeechRunScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "Breeze generation",
+                            "Generation controls",
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            "Voice sampling, consistency and long-text controls.",
+                            "Expression first. Sampling and engine controls stay out of the way until you need them.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -718,112 +845,264 @@ fun SpeechRunScreen(
                             splitChars = DEFAULT_SPLIT_CHARS
                             maxNewTokens = DEFAULT_MAX_NEW_TOKENS
                             seed = DEFAULT_SEED
+                            seedLocked = true
                             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                         },
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = null)
                         Spacer(Modifier.width(6.dp))
-                        Text("Reset defaults")
+                        Text("Reset")
                     }
                 }
 
                 Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.48f),
                 ) {
-                    Text(
-                        "The defaults are the safe baseline. Change one thing at a time when tuning a voice so you can hear what actually helped.",
-                        modifier = Modifier.padding(14.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                BreezeSettingSlider(
-                    label = "CFG scale",
-                    value = cfg,
-                    range = 1f..4f,
-                    description = "How strongly Breeze follows the voice direction. 1.0 is the natural default; higher values push the requested style harder but can make speech sound forced.",
-                    onValueChange = { cfg = it },
-                ) { String.format(Locale.US, "%.2f", it) }
-
-                BreezeSettingSlider(
-                    label = "Temperature",
-                    value = temperature,
-                    range = 0.3f..1.5f,
-                    description = "Controls randomness and expressiveness. Lower is steadier and more repeatable; higher gives more variation and emotion but can increase odd pronunciations.",
-                    onValueChange = { temperature = it },
-                ) { String.format(Locale.US, "%.2f", it) }
-
-                BreezeSettingSlider(
-                    label = "Top P",
-                    value = topP,
-                    range = 0.5f..1f,
-                    description = "Nucleus sampling. Lower values keep only the most likely choices and sound safer; 1.0 keeps the full candidate distribution.",
-                    onValueChange = { topP = it },
-                ) { String.format(Locale.US, "%.2f", it) }
-
-                BreezeSettingSlider(
-                    label = "Repetition penalty",
-                    value = repetition,
-                    range = 1f..1.5f,
-                    description = "Discourages repeated sounds, syllables and phrases. Increase it only if Breeze gets stuck repeating; too high can damage fluency.",
-                    onValueChange = { repetition = it },
-                ) { String.format(Locale.US, "%.2f", it) }
-
-                BreezeSettingSlider(
-                    label = "Top K",
-                    value = topK.toFloat(),
-                    range = 10f..100f,
-                    description = "Maximum token choices considered at each step. Lower is more predictable; higher allows more varied delivery. 50 is a good general default.",
-                    onValueChange = { topK = it.roundToInt() },
-                ) { it.roundToInt().toString() }
-
-                BreezeSettingSlider(
-                    label = "Long-text split",
-                    value = splitChars.toFloat(),
-                    range = 200f..1200f,
-                    description = "Approximate characters per speech segment. Smaller chunks start sooner and use less memory; larger chunks preserve continuity but take longer before audio arrives.",
-                    onValueChange = { splitChars = it.roundToInt() },
-                ) { it.roundToInt().toString() + " chars" }
-
-                BreezeSettingSlider(
-                    label = "Frame cap / piece",
-                    value = maxNewTokens.toFloat(),
-                    range = 250f..1500f,
-                    description = "Maximum acoustic frames Breeze may generate for each segment. Raise it for long slow passages; setting it too low can cut a segment off.",
-                    onValueChange = { maxNewTokens = it.roundToInt() },
-                ) { it.roundToInt().toString() }
-
-                HorizontalDivider()
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Seed", fontWeight = FontWeight.SemiBold)
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         Text(
-                            "Controls repeatability. Reuse the same seed with the same text/settings to get a similar result.",
+                            "Snapdragon NPU",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            if (acceleratorState is BreezeQnnVocoderArtifact.Status.Ready) {
+                                "GGUF generator on Hexagon + accelerated QNN waveform decoder"
+                            } else {
+                                "GGUF generator on Hexagon"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
-                            seed.toString(),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
+                            "The detailed HTP/QNN names are implementation details; this is the practical compute path currently used.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    TextButton(
-                        onClick = {
-                            seed = (System.nanoTime() and 0x7fffffff).coerceAtLeast(1L)
-                        },
+                }
+
+                Text(
+                    "Voice & expression",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                BreezeSettingSlider(
+                    label = "Direction strength",
+                    value = cfg,
+                    range = 1f..4f,
+                    description = if (cfg > 1.05f) {
+                        "Stronger voice-direction and event adherence. CFG above 1 runs an extra guidance branch, so it costs noticeably more compute."
+                    } else {
+                        "Natural single-branch generation. Raise it when the voice direction or inline events are being ignored."
+                    },
+                    onValueChange = { cfg = it },
+                ) { String.format(Locale.US, "%.2f", it) }
+
+                BreezeSettingSlider(
+                    label = "Expressiveness",
+                    value = temperature,
+                    range = 0.3f..1.5f,
+                    description = "Lower is steadier and more repeatable. Higher allows more variation and emotion, but can also increase odd pronunciations.",
+                    onValueChange = { temperature = it },
+                ) { String.format(Locale.US, "%.2f", it) }
+
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Text("Randomize")
+                        Surface(
+                            shape = MaterialTheme.shapes.large,
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                        ) {
+                            Icon(
+                                if (seedLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                contentDescription = null,
+                                modifier = Modifier.padding(10.dp),
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                if (seedLocked) "Seed locked" else "Seed randomized",
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                if (seedLocked) {
+                                    "Seed $seed will be reused. Useful for exact A/B tests."
+                                } else {
+                                    "A fresh seed is generated every time you press Generate."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = seedLocked,
+                            onCheckedChange = {
+                                seedLocked = it
+                                if (!it) seed = freshSpeechSeed()
+                            },
+                        )
                     }
-                    TextButton(onClick = { seed = DEFAULT_SEED }) {
-                        Text("42")
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            seed = freshSpeechSeed()
+                            seedLocked = true
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("New locked seed")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            seed = DEFAULT_SEED
+                            seedLocked = true
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Use 42")
+                    }
+                }
+
+                HorizontalDivider()
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Advanced",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "Sampling, long-text and experimental engine controls.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = showAdvancedTune,
+                        onCheckedChange = { showAdvancedTune = it },
+                    )
+                }
+
+                if (showAdvancedTune) {
+                    BreezeSettingSlider(
+                        label = "Top P",
+                        value = topP,
+                        range = 0.5f..1f,
+                        description = "Nucleus sampling. Lower values restrict token choices; 1.0 keeps the full candidate distribution.",
+                        onValueChange = { topP = it },
+                    ) { String.format(Locale.US, "%.2f", it) }
+
+                    BreezeSettingSlider(
+                        label = "Top K",
+                        value = topK.toFloat(),
+                        range = 10f..100f,
+                        description = "Maximum token candidates considered at each sampling step.",
+                        onValueChange = { topK = it.roundToInt() },
+                    ) { it.roundToInt().toString() }
+
+                    BreezeSettingSlider(
+                        label = "Repetition penalty",
+                        value = repetition,
+                        range = 1f..1.5f,
+                        description = "Discourages repeated sounds and phrases. Too high can damage fluency.",
+                        onValueChange = { repetition = it },
+                    ) { String.format(Locale.US, "%.2f", it) }
+
+                    BreezeSettingSlider(
+                        label = "Long-text split",
+                        value = splitChars.toFloat(),
+                        range = 200f..1200f,
+                        description = "Approximate characters per segment. Smaller chunks reduce latency; larger chunks preserve more continuity.",
+                        onValueChange = { splitChars = it.roundToInt() },
+                    ) { it.roundToInt().toString() + " chars" }
+
+                    BreezeSettingSlider(
+                        label = "Frame safety cap",
+                        value = maxNewTokens.toFloat(),
+                        range = 250f..1500f,
+                        description = "Maximum acoustic frames Breeze may generate for each segment. This is a safety ceiling, not a quality knob.",
+                        onValueChange = { maxNewTokens = it.roundToInt() },
+                    ) { it.roundToInt().toString() }
+
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Experimental Full QNN generator",
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    if (fullQnnGeneratorEnabled) {
+                                        "QNN backbone + depth enabled for A/B testing. The QNN waveform decoder is independent."
+                                    } else {
+                                        "Off. The proven GGUF/ggml-Hexagon generator is being used."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = fullQnnGeneratorEnabled,
+                                enabled = generatorState is BreezeQnnGeneratorArtifact.Status.Ready,
+                                onCheckedChange = { enabled ->
+                                    fullQnnGeneratorEnabled = enabled
+                                    BreezeQnnGeneratorArtifact.setEnabled(context, enabled)
+                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                    scope.launch {
+                                        context.startService(
+                                            Intent(context, SpeechGenerationService::class.java)
+                                                .setAction(SpeechGenerationService.ACTION_STOP),
+                                        )
+                                        delay(180)
+                                        SpeechGenerationService.resetForModel(modelId)
+                                        if (model?.isDownloaded == true) {
+                                            context.startForegroundService(
+                                                Intent(
+                                                    context,
+                                                    SpeechGenerationService::class.java,
+                                                )
+                                                    .setAction(
+                                                        SpeechGenerationService.ACTION_PRELOAD,
+                                                    )
+                                                    .putExtra("modelId", modelId),
+                                            )
+                                        }
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
 
@@ -838,7 +1117,33 @@ fun SpeechRunScreen(
     }
 
     if (showHistory) {
-        val visibleHistory = history.filter { it.modelId == modelId }
+        val sortMode = runCatching { SpeechHistorySort.valueOf(historySort) }
+            .getOrDefault(SpeechHistorySort.Newest)
+        val query = historySearch.trim()
+        val visibleHistory = history
+            .asSequence()
+            .filter { it.modelId == modelId }
+            .filter {
+                query.isBlank() ||
+                    it.text.contains(query, ignoreCase = true) ||
+                    it.instruction.contains(query, ignoreCase = true)
+            }
+            .filter { !historyFavoritesOnly || it.favorite }
+            .filter { !historyAcceleratedOnly || it.accelerated }
+            .toList()
+            .let { items ->
+                when (sortMode) {
+                    SpeechHistorySort.Newest -> items.sortedByDescending { it.createdAt }
+                    SpeechHistorySort.Oldest -> items.sortedBy { it.createdAt }
+                    SpeechHistorySort.Fastest -> items.sortedBy {
+                        if (it.generationMillis > 0L) it.generationMillis else Long.MAX_VALUE
+                    }
+                    SpeechHistorySort.Longest -> items.sortedByDescending { it.audioDurationMillis }
+                }
+            }
+        val historyListState = rememberLazyListState()
+        var sortMenuOpen by remember { mutableStateOf(false) }
+
         Dialog(
             onDismissRequest = { showHistory = false },
             properties = DialogProperties(
@@ -864,19 +1169,95 @@ fun SpeechRunScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "Speech history",
+                                "Speech library",
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold,
                             )
                             Text(
                                 visibleHistory.size.toString() +
-                                    if (visibleHistory.size == 1) " generation" else " generations",
+                                    if (visibleHistory.size == 1) " result" else " results",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         TextButton(onClick = { showHistory = false }) {
                             Text("Close")
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = historySearch,
+                        onValueChange = { historySearch = it.take(200) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null)
+                        },
+                        label = { Text("Search script or voice direction") },
+                    )
+
+                    LazyRow(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        item {
+                            FilterChip(
+                                selected = historyFavoritesOnly,
+                                onClick = { historyFavoritesOnly = !historyFavoritesOnly },
+                                label = { Text("Favorites") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Favorite,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                },
+                            )
+                        }
+                        item {
+                            FilterChip(
+                                selected = historyAcceleratedOnly,
+                                onClick = { historyAcceleratedOnly = !historyAcceleratedOnly },
+                                label = { Text("Fast waveform") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.FilterList,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                },
+                            )
+                        }
+                        item {
+                            Box {
+                                AssistChip(
+                                    onClick = { sortMenuOpen = true },
+                                    label = { Text(sortMode.label) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.Sort,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    },
+                                )
+                                DropdownMenu(
+                                    expanded = sortMenuOpen,
+                                    onDismissRequest = { sortMenuOpen = false },
+                                ) {
+                                    SpeechHistorySort.values().forEach { option ->
+                                        DropdownMenuItem(
+                                            text = { Text(option.label) },
+                                            onClick = {
+                                                historySort = option.name
+                                                sortMenuOpen = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -889,131 +1270,251 @@ fun SpeechRunScreen(
                                 .weight(1f),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(
-                                "No generations for this Breeze model yet.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    if (history.isEmpty()) {
+                                        "No Breeze generations yet."
+                                    } else {
+                                        "Nothing matches these filters."
+                                    },
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (
+                                    historySearch.isNotBlank() ||
+                                    historyFavoritesOnly ||
+                                    historyAcceleratedOnly
+                                ) {
+                                    TextButton(
+                                        onClick = {
+                                            historySearch = ""
+                                            historyFavoritesOnly = false
+                                            historyAcceleratedOnly = false
+                                        },
+                                    ) {
+                                        Text("Clear filters")
+                                    }
+                                }
+                            }
                         }
                     } else {
-                        LazyColumn(
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f),
-                            contentPadding = PaddingValues(
-                                start = 16.dp,
-                                end = 16.dp,
-                                top = 16.dp,
-                                bottom = 28.dp,
-                            ),
-                            verticalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
-                            items(visibleHistory, key = { it.id }) { item ->
-                                val file = File(item.filePath)
-                                if (file.isFile) {
-                                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                                        MusicPlayerCard(
-                                            file = file,
-                                            title = item.text.take(76),
-                                            subtitle = formatHistoryDate(item.createdAt) + " · " +
-                                                formatMillisCompact(item.audioDurationMillis) + " audio · " +
-                                                formatMillisCompact(item.generationMillis) + " generated",
-                                            metadataLine = buildString {
-                                                append("Seed ")
-                                                append(item.seed)
-                                                append(" · CFG ")
-                                                append(String.format(Locale.US, "%.2f", item.cfg))
-                                                append(" · ")
-                                                append(if (item.accelerated) "QNN HTP" else "Fallback")
-                                            },
-                                            onUse = {
-                                                text = item.text
-                                                instruction = item.instruction
-                                                seed = item.seed
-                                                cfg = item.cfg
-                                                temperature = item.temperature
-                                                topK = item.topK
-                                                topP = item.topP
-                                                repetition = item.repetition
-                                                splitChars = item.splitChars
-                                                maxNewTokens = item.maxNewTokens
-                                                showHistory = false
-                                                AppHaptics.perform(
-                                                    context,
-                                                    AppHaptics.Kind.Interaction,
-                                                )
-                                            },
-                                            onReproduce = {
-                                                showHistory = false
-                                                AppHaptics.perform(
-                                                    context,
-                                                    AppHaptics.Kind.Interaction,
-                                                )
-                                                startSpeechGeneration(
-                                                    context = context,
-                                                    modelId = item.modelId,
-                                                    text = item.text,
-                                                    instruction = item.instruction,
-                                                    seed = item.seed,
-                                                    cfg = item.cfg,
-                                                    temperature = item.temperature,
-                                                    topK = item.topK,
-                                                    topP = item.topP,
-                                                    repetition = item.repetition,
-                                                    splitChars = item.splitChars,
-                                                    maxNewTokens = item.maxNewTokens,
-                                                )
-                                            },
-                                            onSave = {
-                                                scope.launch {
-                                                    val saved = runCatching {
-                                                        SpeechHistoryStore.exportToMusic(context, file)
-                                                    }.getOrNull()
-                                                    Toast.makeText(
-                                                        context,
-                                                        if (saved != null) {
-                                                            "Saved to Music/LocalDream"
+                            LazyColumn(
+                                state = historyListState,
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(
+                                    start = 16.dp,
+                                    end = 22.dp,
+                                    top = 16.dp,
+                                    bottom = 28.dp,
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(14.dp),
+                            ) {
+                                items(visibleHistory, key = { it.id }) { item ->
+                                    val file = File(item.filePath)
+                                    if (file.isFile) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                            MusicPlayerCard(
+                                                file = file,
+                                                title = item.text.take(96),
+                                                subtitle = formatHistoryDate(item.createdAt) + " · " +
+                                                    formatMillisCompact(item.audioDurationMillis) + " audio · " +
+                                                    formatMillisCompact(item.generationMillis) + " generated",
+                                                metadataLine = buildString {
+                                                    append("Seed ")
+                                                    append(item.seed)
+                                                    append(" · CFG ")
+                                                    append(String.format(Locale.US, "%.2f", item.cfg))
+                                                    append(" · ")
+                                                    append(
+                                                        if (item.accelerated) {
+                                                            "Snapdragon NPU · GGUF + fast waveform"
                                                         } else {
-                                                            "Could not save audio"
+                                                            "Snapdragon NPU · GGUF"
                                                         },
-                                                        Toast.LENGTH_SHORT,
-                                                    ).show()
-                                                }
-                                            },
-                                            onShare = { shareSpeechFile(context, file) },
-                                        )
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Text(
-                                                item.instruction.take(120),
-                                                modifier = Modifier.weight(1f),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 2,
-                                            )
-                                            TextButton(
-                                                onClick = {
+                                                    )
+                                                },
+                                                favorite = item.favorite,
+                                                onFavoriteToggle = {
                                                     scope.launch {
-                                                        SpeechHistoryStore.delete(context, item.id)
+                                                        SpeechHistoryStore.setFavorite(
+                                                            context,
+                                                            item.id,
+                                                            !item.favorite,
+                                                        )
                                                         history = withContext(Dispatchers.IO) {
                                                             SpeechHistoryStore.load(context)
                                                         }
+                                                        AppHaptics.perform(
+                                                            context,
+                                                            AppHaptics.Kind.Interaction,
+                                                        )
                                                     }
                                                 },
+                                                onUse = {
+                                                    text = item.text
+                                                    instruction = item.instruction
+                                                    seed = item.seed
+                                                    seedLocked = true
+                                                    cfg = item.cfg
+                                                    temperature = item.temperature
+                                                    topK = item.topK
+                                                    topP = item.topP
+                                                    repetition = item.repetition
+                                                    splitChars = item.splitChars
+                                                    maxNewTokens = item.maxNewTokens
+                                                    showHistory = false
+                                                    AppHaptics.perform(
+                                                        context,
+                                                        AppHaptics.Kind.Interaction,
+                                                    )
+                                                },
+                                                onReproduce = {
+                                                    text = item.text
+                                                    instruction = item.instruction
+                                                    seed = item.seed
+                                                    seedLocked = true
+                                                    cfg = item.cfg
+                                                    temperature = item.temperature
+                                                    topK = item.topK
+                                                    topP = item.topP
+                                                    repetition = item.repetition
+                                                    splitChars = item.splitChars
+                                                    maxNewTokens = item.maxNewTokens
+                                                    showHistory = false
+                                                    AppHaptics.perform(
+                                                        context,
+                                                        AppHaptics.Kind.Interaction,
+                                                    )
+                                                    startSpeechGeneration(
+                                                        context = context,
+                                                        modelId = item.modelId,
+                                                        text = item.text,
+                                                        instruction = item.instruction,
+                                                        seed = item.seed,
+                                                        cfg = item.cfg,
+                                                        temperature = item.temperature,
+                                                        topK = item.topK,
+                                                        topP = item.topP,
+                                                        repetition = item.repetition,
+                                                        splitChars = item.splitChars,
+                                                        maxNewTokens = item.maxNewTokens,
+                                                    )
+                                                },
+                                                onSave = {
+                                                    scope.launch {
+                                                        val saved = runCatching {
+                                                            SpeechHistoryStore.exportToMusic(
+                                                                context,
+                                                                file,
+                                                            )
+                                                        }.getOrNull()
+                                                        Toast.makeText(
+                                                            context,
+                                                            if (saved != null) {
+                                                                "Saved to Music/LocalDream"
+                                                            } else {
+                                                                "Could not save audio"
+                                                            },
+                                                            Toast.LENGTH_SHORT,
+                                                        ).show()
+                                                    }
+                                                },
+                                                onShare = { shareSpeechFile(context, file) },
+                                            )
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement =
+                                                    Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
                                             ) {
-                                                Text("Delete")
+                                                Text(
+                                                    item.instruction.take(180),
+                                                    modifier = Modifier.weight(1f),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color =
+                                                        MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 3,
+                                                )
+                                                TextButton(
+                                                    onClick = {
+                                                        scope.launch {
+                                                            SpeechHistoryStore.delete(
+                                                                context,
+                                                                item.id,
+                                                            )
+                                                            history =
+                                                                withContext(Dispatchers.IO) {
+                                                                    SpeechHistoryStore.load(context)
+                                                                }
+                                                        }
+                                                    },
+                                                ) {
+                                                    Text("Delete")
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
+                            SpeechHistoryScrollbar(
+                                state = historyListState,
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .fillMaxHeight()
+                                    .padding(vertical = 10.dp, horizontal = 5.dp),
+                            )
                         }
                     }
                 }
             }
         }
+    }
+
+}
+
+@Composable
+private fun SpeechHistoryScrollbar(
+    state: androidx.compose.foundation.lazy.LazyListState,
+    modifier: Modifier = Modifier,
+) {
+    val layout = state.layoutInfo
+    val total = layout.totalItemsCount
+    val visible = layout.visibleItemsInfo
+    if (total <= 1 || visible.isEmpty() || visible.size >= total) return
+
+    val first = visible.first().index
+    val last = visible.last().index
+    val visibleCount = (last - first + 1).coerceAtLeast(1)
+    val thumbFraction = (visibleCount.toFloat() / total.toFloat()).coerceIn(0.08f, 1f)
+    val maxFirst = (total - visibleCount).coerceAtLeast(1)
+    val positionFraction = (first.toFloat() / maxFirst.toFloat()).coerceIn(0f, 1f)
+
+    BoxWithConstraints(
+        modifier = modifier.width(5.dp),
+    ) {
+        val thumbHeight = (maxHeight * thumbFraction).coerceAtLeast(28.dp)
+        val travel = (maxHeight - thumbHeight).coerceAtLeast(0.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+        )
+        Box(
+            modifier = Modifier
+                .offset(y = travel * positionFraction)
+                .fillMaxWidth()
+                .height(thumbHeight)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)),
+        )
     }
 }
 
@@ -1021,40 +1522,78 @@ fun SpeechRunScreen(
 private fun InlineEventEditor(
     value: String,
     onValueChange: (String) -> Unit,
-    events: List<String>,
+    events: List<InlineEventCue>,
     modifier: Modifier = Modifier,
 ) {
     var textLayout by remember(value) { mutableStateOf<TextLayoutResult?>(null) }
+    var showExtended by rememberSaveable { mutableStateOf(false) }
+    var fieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(value, selection = TextRange(value.length)))
+    }
+    LaunchedEffect(value) {
+        if (value != fieldValue.text) {
+            fieldValue = TextFieldValue(value, selection = TextRange(value.length))
+        }
+    }
+
     val textColor = MaterialTheme.colorScheme.onSurface
     val placeholderColor = MaterialTheme.colorScheme.onSurfaceVariant
     val borderColor = MaterialTheme.colorScheme.outline
-    val latinEventColor = MaterialTheme.colorScheme.tertiaryContainer
-    val chineseEventColor = MaterialTheme.colorScheme.secondaryContainer
+    val officialEnglishColor = MaterialTheme.colorScheme.tertiaryContainer
+    val officialChineseColor = MaterialTheme.colorScheme.secondaryContainer
+    val extendedColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
     val radius = 7.dp
     val horizontalPad = 4.dp
     val verticalPad = 2.dp
 
+    fun insertCue(cue: InlineEventCue) {
+        val selectionStart = minOf(fieldValue.selection.start, fieldValue.selection.end)
+            .coerceIn(0, fieldValue.text.length)
+        val selectionEnd = maxOf(fieldValue.selection.start, fieldValue.selection.end)
+            .coerceIn(selectionStart, fieldValue.text.length)
+        val before = fieldValue.text.substring(0, selectionStart)
+        val after = fieldValue.text.substring(selectionEnd)
+        val prefix = if (before.isNotEmpty() && !before.last().isWhitespace()) " " else ""
+        val suffix = if (after.isNotEmpty() && !after.first().isWhitespace()) " " else ""
+        val insertion = prefix + cue.tag + suffix
+        val updated = before + insertion + after
+        val cursor = (before.length + insertion.length).coerceIn(0, updated.length)
+        fieldValue = TextFieldValue(updated, selection = TextRange(cursor))
+        onValueChange(updated)
+    }
+
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(7.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
     ) {
-        Text(
-            "Text",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Script",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                value.length.toString() + " / 12000",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Surface(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surfaceContainerLow,
             border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 170.dp)
+                    .heightIn(min = 180.dp)
                     .padding(16.dp),
             ) {
-                if (value.isEmpty()) {
+                if (fieldValue.text.isEmpty()) {
                     Text(
                         "What should Breeze say?",
                         color = placeholderColor,
@@ -1062,19 +1601,38 @@ private fun InlineEventEditor(
                     )
                 }
                 BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
+                    value = fieldValue,
+                    onValueChange = { next ->
+                        val clippedText = next.text.take(12000)
+                        val clippedSelection = TextRange(
+                            next.selection.start.coerceAtMost(clippedText.length),
+                            next.selection.end.coerceAtMost(clippedText.length),
+                        )
+                        fieldValue = TextFieldValue(
+                            text = clippedText,
+                            selection = clippedSelection,
+                            composition = next.composition?.let {
+                                TextRange(
+                                    it.start.coerceAtMost(clippedText.length),
+                                    it.end.coerceAtMost(clippedText.length),
+                                )
+                            },
+                        )
+                        onValueChange(clippedText)
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 138.dp)
+                        .heightIn(min = 148.dp)
                         .drawBehind {
                             val layout = textLayout ?: return@drawBehind
-                            events.forEach { event ->
+                            events.forEach { cue ->
+                                val event = cue.tag
                                 var searchFrom = 0
-                                while (searchFrom < value.length) {
-                                    val start = value.indexOf(event, searchFrom)
-                                    if (start < 0) break
-                                    val end = (start + event.length).coerceAtMost(value.length)
+                                while (searchFrom < fieldValue.text.length) {
+                                    val eventStart = fieldValue.text.indexOf(event, searchFrom)
+                                    if (eventStart < 0) break
+                                    val eventEnd =
+                                        (eventStart + event.length).coerceAtMost(fieldValue.text.length)
                                     var activeLine = -1
                                     var left = Float.POSITIVE_INFINITY
                                     var top = Float.POSITIVE_INFINITY
@@ -1086,10 +1644,10 @@ private fun InlineEventEditor(
                                         val hp = horizontalPad.toPx()
                                         val vp = verticalPad.toPx()
                                         drawRoundRect(
-                                            color = if (event.startsWith("[")) {
-                                                chineseEventColor
-                                            } else {
-                                                latinEventColor
+                                            color = when {
+                                                !cue.official -> extendedColor
+                                                cue.language == "中文" -> officialChineseColor
+                                                else -> officialEnglishColor
                                             },
                                             topLeft = Offset(left - hp, top - vp),
                                             size = Size(
@@ -1103,7 +1661,7 @@ private fun InlineEventEditor(
                                         )
                                     }
 
-                                    for (offset in start until end) {
+                                    for (offset in eventStart until eventEnd) {
                                         val line = layout.getLineForOffset(offset)
                                         val box = layout.getBoundingBox(offset)
                                         if (activeLine != -1 && line != activeLine) {
@@ -1120,7 +1678,7 @@ private fun InlineEventEditor(
                                         bottom = maxOf(bottom, box.bottom)
                                     }
                                     drawSegment()
-                                    searchFrom = end.coerceAtLeast(start + 1)
+                                    searchFrom = eventEnd.coerceAtLeast(eventStart + 1)
                                 }
                             }
                         },
@@ -1130,11 +1688,62 @@ private fun InlineEventEditor(
                 )
             }
         }
-        Text(
-            value.length.toString() + " characters · English + Mandarin",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Inline vocal events",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(
+                    "Inserted at the cursor. Official tags are highlighted separately.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            FilterChip(
+                selected = showExtended,
+                onClick = { showExtended = !showExtended },
+                label = { Text(if (showExtended) "Extended" else "Official") },
+            )
+        }
+
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(events.filter { it.official }, key = { it.tag }) { cue ->
+                AssistChip(
+                    onClick = { insertCue(cue) },
+                    label = { Text(cue.tag) },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = if (cue.language == "中文") {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.tertiaryContainer
+                        },
+                    ),
+                )
+            }
+        }
+        if (showExtended) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(events.filterNot { it.official }, key = { it.tag }) { cue ->
+                    AssistChip(
+                        onClick = { insertCue(cue) },
+                        label = { Text(cue.tag) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f),
+                        ),
+                    )
+                }
+            }
+            Text(
+                "Extended cues use Breeze's open-ended descriptive event behavior and may be less consistent than the official examples.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -1285,21 +1894,10 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
                             color = MaterialTheme.colorScheme.primaryContainer,
                         ) {
                             Text(
-                                "HTP",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                "Snapdragon NPU",
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                        ) {
-                            Text(
-                                "QNN",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
                             )
                         }
                     }
@@ -1336,12 +1934,12 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             SpeechStageProgress(
                 label = "Voice tokens",
                 progress = state.codecProgress,
-                activeText = "Generating on Hexagon",
+                activeText = "Generating voice tokens",
             )
             SpeechStageProgress(
                 label = "Waveform",
                 progress = state.vocoderProgress,
-                activeText = "QNN HTP decoder",
+                activeText = "Decoding waveform",
             )
 
             Row(
@@ -1393,7 +1991,7 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
             }
 
             Text(
-                "HTP-aware streaming alternates voice-token generation with QNN waveform decoding. The two engines never fight for the same Snapdragon HTP.",
+                "Hybrid NPU pipeline: the voice model and waveform decoder take turns on the same Snapdragon accelerator.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
             )

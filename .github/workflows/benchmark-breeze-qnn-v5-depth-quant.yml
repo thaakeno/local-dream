@@ -1,0 +1,177 @@
+name: Benchmark Breeze QNN v5 depth quantization
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - breeze-qnn-v5-fastpath
+    paths:
+      - '.github/workflows/benchmark-breeze-qnn-v5-depth-quant.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: breeze-qnn-v5-depth-quant
+  cancel-in-progress: true
+
+env:
+  QAI_DEVICE: Samsung Galaxy S26 (Family)
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install AI Hub client
+        run: python -m pip install --upgrade 'qai-hub>=0.56.0'
+
+      - name: Profile performance-only depth quantization candidates
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import numpy as np
+          import qai_hub as hub
+
+          client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
+          device = hub.Device(os.environ["QAI_DEVICE"])
+          source = client.get_model("mnzx131om")
+          specs = {
+              "token": ((1,), "int32"),
+              "position": ((1,), "int32"),
+              "key_cache": ((1, 24, 16, 128), "float16"),
+              "value_cache": ((1, 24, 16, 128), "float16"),
+          }
+
+          # IMPORTANT: do not let AI Hub synthesize calibration inputs for this
+          # graph. token/position feed Gather/indexing ops and arbitrary random
+          # int32 values can be out of range, which makes the QAIRT quantizer
+          # fail before it ever reaches QNN compilation. Build deterministic,
+          # semantically valid depth-step samples instead.
+          rng = np.random.default_rng(20261007)
+          calibration = {
+              "token": [],
+              "position": [],
+              "key_cache": [],
+              "value_cache": [],
+          }
+          for i in range(28):
+              position = 2 + (i % 14)  # valid depth positions: 2..15
+              token = (37 + i * 73) % 2051
+              key = np.zeros((1, 24, 16, 128), dtype=np.float16)
+              value = np.zeros((1, 24, 16, 128), dtype=np.float16)
+              # Real decode caches contain populated rows up through the current
+              # position and zeros in future slots. Small finite values are enough
+              # for this performance-proxy calibration.
+              key[:, :, :position, :] = (
+                  rng.normal(0.0, 0.08, size=(1, 24, position, 128))
+                  .astype(np.float16)
+              )
+              value[:, :, :position, :] = (
+                  rng.normal(0.0, 0.08, size=(1, 24, position, 128))
+                  .astype(np.float16)
+              )
+              calibration["token"].append(np.asarray([token], dtype=np.int32))
+              calibration["position"].append(np.asarray([position], dtype=np.int32))
+              calibration["key_cache"].append(key)
+              calibration["value_cache"].append(value)
+
+          results = {}
+          successes = 0
+
+          # Use the documented AI Hub flow: quantize ONNX -> compile quantized
+          # QDQ ONNX -> profile. The earlier shortcut used --quantize_full_type
+          # directly in compile; with this recurrent Gather-heavy graph it failed
+          # inside QAIRT before QNN conversion and produced the red jobs seen in
+          # Workbench.
+          for precision, weight_dtype in (
+              ("w8a16", hub.QuantizeDtype.INT8),
+              ("w4a16", hub.QuantizeDtype.INT4),
+          ):
+              row = {"precision": precision, "strategy": "quantize_job_then_compile"}
+
+              quant_job = client.submit_quantize_job(
+                  model=source,
+                  calibration_data=calibration,
+                  weights_dtype=weight_dtype,
+                  activations_dtype=hub.QuantizeDtype.INT16,
+                  name=f"Breeze v5 depth step {precision} calibrated quantize",
+              )
+              qstatus = quant_job.wait()
+              row.update({
+                  "quantize_job": quant_job.job_id,
+                  "quantize_url": quant_job.url,
+                  "quantize_status": qstatus.code,
+                  "quantize_message": qstatus.message,
+              })
+              if not qstatus.success:
+                  results[precision] = row
+                  print("RESULT", precision, json.dumps(row, indent=2, default=str))
+                  continue
+
+              quantized_model = quant_job.get_target_model()
+              if quantized_model is None:
+                  row["compile_status"] = "SKIPPED"
+                  row["compile_message"] = "Quantize job returned no target model"
+                  results[precision] = row
+                  print("RESULT", precision, json.dumps(row, indent=2, default=str))
+                  continue
+
+              compile_job = client.submit_compile_job(
+                  model=quantized_model,
+                  device=device,
+                  name=f"Breeze v5 depth step {precision} QNN O3",
+                  options=(
+                      "--target_runtime qnn_dlc "
+                      "--qnn_options default_graph_htp_optimizations=O=3"
+                  ),
+              )
+              status = compile_job.wait()
+              row.update({
+                  "compile_job": compile_job.job_id,
+                  "compile_url": compile_job.url,
+                  "compile_status": status.code,
+                  "compile_message": status.message,
+              })
+              if not status.success:
+                  results[precision] = row
+                  print("RESULT", precision, json.dumps(row, indent=2, default=str))
+                  continue
+
+              model = compile_job.get_target_model()
+              profile_job = client.submit_profile_job(
+                  model=model,
+                  device=device,
+                  name=f"Breeze v5 depth step {precision} calibrated profile",
+              )
+              pstatus = profile_job.wait()
+              row.update({
+                  "profile_job": profile_job.job_id,
+                  "profile_url": profile_job.url,
+                  "profile_status": pstatus.code,
+                  "profile_message": pstatus.message,
+              })
+              if pstatus.success:
+                  profile = profile_job.download_profile()
+                  row["profile"] = profile.get("execution_summary", profile)
+                  successes += 1
+              results[precision] = row
+              print("RESULT", precision, json.dumps(row, indent=2, default=str))
+
+          print("=== BREEZE_V5_DEPTH_QUANT_PROXY ===")
+          print(json.dumps(results, indent=2, default=str))
+          if successes == 0:
+              raise RuntimeError(
+                  "Both calibrated depth quantization candidates failed; "
+                  "do not treat this benchmark as green."
+              )
+          PY

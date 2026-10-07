@@ -38,6 +38,8 @@ object BreezeQnnGeneratorArtifact {
     private const val DEPTH = "breeze-depth-sm8850-v81.bin"
     private const val BACKBONE_PREFILL = "breeze-backbone-prefill-sm8850-v81.bin"
     private const val BACKBONE_STEP = "breeze-backbone-step-sm8850-v81.bin"
+    private const val PREFS = "breeze_qnn_generator_prefs"
+    private const val PREF_ENABLED = "full_qnn_enabled"
 
     data class Install(
         val soc: String,
@@ -101,6 +103,22 @@ object BreezeQnnGeneratorArtifact {
 
     fun supportedSoc(): String? =
         if (fingerprint().contains("SM8850")) "SM8850" else null
+
+    /**
+     * Full generator acceleration is deliberately user-selectable. The QNN
+     * vocoder remains independent, so disabling this restores the proven
+     * ggml-Hexagon backbone/depth path while keeping fast QNN audio decode.
+     */
+    fun isEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(PREF_ENABLED, false)
+
+    fun setEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(PREF_ENABLED, enabled)
+            .apply()
+    }
 
     fun localInstall(context: Context): Install? {
         val soc = supportedSoc() ?: return null

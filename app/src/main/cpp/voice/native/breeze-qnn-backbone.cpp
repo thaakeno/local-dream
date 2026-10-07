@@ -160,26 +160,41 @@ public:
         graph.valid = false;
     }
 
-    bool setup_graph() {
+    bool select_graph(const std::string & requested) {
         if (!m_graphsInfo || m_graphsCount < 1) return false;
+        tear_down();
+        expected_graph = requested;
+
         int found = -1;
         for (uint32_t i = 0; i < m_graphsCount; ++i) {
             const char * name = (*m_graphsInfo)[i].graphName;
             std::fprintf(
                 stderr,
-                "[BREEZE_QNN_BACKBONE] context=%s graph[%u]=%s\n",
-                expected_graph.c_str(),
+                "[BREEZE_QNN_BACKBONE] request=%s graph[%u]=%s\n",
+                requested.c_str(),
                 i,
                 name ? name : "<unnamed>"
             );
-            if (name_contains(name, expected_graph.c_str())) found = (int) i;
+            if (name_contains(name, requested.c_str())) {
+                found = (int) i;
+                break;
+            }
         }
         if (found < 0 && m_graphsCount == 1) {
-            // Direct AI Hub qnn_context_binary compilation may normalize the
-            // graph name. Each v3 file intentionally contains exactly one graph.
+            // Legacy v4 stores each graph in its own context, so a normalized
+            // graph name is still safe when there is exactly one candidate.
             found = 0;
         }
-        if (found < 0) return false;
+        if (found < 0) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] graph not found request=%s count=%u\n",
+                requested.c_str(),
+                (unsigned) m_graphsCount
+            );
+            return false;
+        }
+
         graph.graph_index = (uint32_t) found;
         auto & g = (*m_graphsInfo)[graph.graph_index];
         const auto rc = m_ioTensor.setupInputAndOutputTensors(
@@ -188,7 +203,20 @@ public:
             g
         );
         graph.valid = rc == qnn::tools::iotensor::StatusCode::SUCCESS;
+        if (graph.valid) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] selected graph=%s index=%u shared_context_graphs=%u\n",
+                g.graphName ? g.graphName : "<unnamed>",
+                graph.graph_index,
+                (unsigned) m_graphsCount
+            );
+        }
         return graph.valid;
+    }
+
+    bool setup_graph() {
+        return select_graph(expected_graph);
     }
 
     void release_power_vote() {
@@ -297,7 +325,6 @@ public:
     ) {
         auto & g = (*m_graphsInfo)[graph.graph_index];
         if (g.numInputTensors != 3 || g.numOutputTensors != 4) return false;
-        if (tokens <= 0 || tokens > kBackboneBucket) return false;
         if ((int) embeddings.size() != tokens * hidden) return false;
 
         const int ei = tensor_index(graph.inputs, g.numInputTensors, "inputs_embeds", 0);
@@ -311,9 +338,22 @@ public:
             return false;
         }
 
-        const int pad = kBackboneBucket - tokens;
+        const uint32_t * embed_dims = QNN_TENSOR_GET_DIMENSIONS(graph.inputs[ei]);
+        if (!embed_dims || QNN_TENSOR_GET_RANK(graph.inputs[ei]) != 3) return false;
+        const int bucket = (int) embed_dims[1];
+        if (bucket <= 0 || tokens <= 0 || tokens > bucket) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] prefill token count %d exceeds graph bucket %d\n",
+                tokens,
+                bucket
+            );
+            return false;
+        }
+
+        const int pad = bucket - tokens;
         std::vector<float> padded(
-            (size_t) kBackboneBucket * (size_t) hidden,
+            (size_t) bucket * (size_t) hidden,
             0.0f
         );
         std::memcpy(
@@ -323,20 +363,20 @@ public:
         );
 
         std::vector<float> mask(
-            (size_t) kBackboneBucket * (size_t) kBackboneBucket,
+            (size_t) bucket * (size_t) bucket,
             -10000.0f
         );
-        for (int q = 0; q < kBackboneBucket; ++q) {
+        for (int q = 0; q < bucket; ++q) {
             if (q < pad) {
-                mask[(size_t) q * kBackboneBucket + q] = 0.0f;
+                mask[(size_t) q * bucket + q] = 0.0f;
             } else {
                 for (int k = pad; k <= q; ++k) {
-                    mask[(size_t) q * kBackboneBucket + k] = 0.0f;
+                    mask[(size_t) q * bucket + k] = 0.0f;
                 }
             }
         }
 
-        std::vector<int32_t> positions((size_t) kBackboneBucket, 0);
+        std::vector<int32_t> positions((size_t) bucket, 0);
         for (int i = 0; i < tokens; ++i) positions[(size_t) pad + i] = i;
 
         if (m_ioTensor.copyFromFloatToNative(
@@ -368,6 +408,13 @@ public:
             return false;
         }
         cache.valid_tokens = tokens;
+        std::fprintf(
+            stderr,
+            "[BREEZE_QNN_BACKBONE] prefill graph bucket=%d tokens=%d execute_ms=%.2f\n",
+            bucket,
+            tokens,
+            ms
+        );
         return finite_nonzero(out.hidden) &&
             finite_nonzero(out.logits) &&
             capture_native(graph.outputs[ko], cache.key) &&
@@ -394,11 +441,23 @@ public:
         const int vi = tensor_index(graph.inputs, g.numInputTensors, "value_cache", 3);
         if (ki < 0 || vi < 0) return false;
 
-        auto copy = [&](const NativeBlob & src, Qnn_Tensor_t & dst) {
-            if (src.type != QNN_TENSOR_GET_DATA_TYPE(dst)) return false;
+        auto copy = [&](const NativeBlob & src, Qnn_Tensor_t & dst, const char * label) {
+            if (src.type != QNN_TENSOR_GET_DATA_TYPE(dst)) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_BACKBONE] seed %s dtype mismatch src=%d dst=%d\n",
+                    label,
+                    (int) src.type,
+                    (int) QNN_TENSOR_GET_DATA_TYPE(dst)
+                );
+                return false;
+            }
             const uint32_t rank = QNN_TENSOR_GET_RANK(dst);
             const uint32_t * dd = QNN_TENSOR_GET_DIMENSIONS(dst);
-            if (!dd || rank != 4 || src.dims.size() != 4) return false;
+            if (!dd || rank != 4 || src.dims.size() != 4) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] seed %s rank mismatch\n", label);
+                return false;
+            }
 
             const int src_batch = (int) src.dims[0];
             const int lkv = (int) src.dims[1];
@@ -410,7 +469,7 @@ public:
             const int dst_dim = (int) dd[3];
             if (
                 src_batch != 1 ||
-                src_seq != kBackboneBucket ||
+                src_seq <= 0 ||
                 lkv != dst_lkv ||
                 head_dim != dst_dim ||
                 branch < 0 ||
@@ -419,11 +478,23 @@ public:
                 source.valid_tokens > src_seq ||
                 source.valid_tokens > dst_seq
             ) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_BACKBONE] seed %s shape mismatch "
+                    "src=%dx%dx%dx%d dst=%dx%dx%dx%d branch=%d valid=%d\n",
+                    label,
+                    src_batch, lkv, src_seq, head_dim,
+                    dst_batch, dst_lkv, dst_seq, dst_dim,
+                    branch, source.valid_tokens
+                );
                 return false;
             }
 
             auto db = QNN_TENSOR_GET_CLIENT_BUF(dst);
-            if (!db.data || !db.dataSize) return false;
+            if (!db.data || !db.dataSize) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] seed %s missing dst buffer\n", label);
+                return false;
+            }
             const size_t src_elements =
                 (size_t) src_batch * lkv * src_seq * head_dim;
             const size_t dst_elements =
@@ -434,10 +505,23 @@ public:
                 src.bytes.size() % src_elements ||
                 db.dataSize % dst_elements
             ) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_BACKBONE] seed %s buffer layout invalid "
+                    "src_bytes=%zu dst_bytes=%u src_elements=%zu dst_elements=%zu\n",
+                    label, src.bytes.size(), db.dataSize, src_elements, dst_elements
+                );
                 return false;
             }
             const size_t bytes_per = src.bytes.size() / src_elements;
-            if (bytes_per != db.dataSize / dst_elements) return false;
+            if (bytes_per != db.dataSize / dst_elements) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_BACKBONE] seed %s element width mismatch src=%zu dst=%zu\n",
+                    label, bytes_per, db.dataSize / dst_elements
+                );
+                return false;
+            }
 
             const int pad = src_seq - source.valid_tokens;
             const size_t row = (size_t) head_dim * bytes_per;
@@ -457,8 +541,21 @@ public:
             return true;
         };
 
-        return copy(source.key, graph.inputs[ki]) &&
-            copy(source.value, graph.inputs[vi]);
+        return copy(source.key, graph.inputs[ki], "key") &&
+            copy(source.value, graph.inputs[vi], "value");
+    }
+
+    int step_batch_size() const {
+        if (!graph.valid || !m_graphsInfo || graph.graph_index >= m_graphsCount) return 0;
+        auto & g = (*m_graphsInfo)[graph.graph_index];
+        const int ei = tensor_index(graph.inputs, g.numInputTensors, "input_embed", 0);
+        if (ei < 0) return 0;
+        const uint32_t * dims = QNN_TENSOR_GET_DIMENSIONS(graph.inputs[ei]);
+        return dims && QNN_TENSOR_GET_RANK(graph.inputs[ei]) >= 1 ? (int) dims[0] : 0;
+    }
+
+    uint32_t graph_count() const {
+        return m_graphsInfo ? m_graphsCount : 0u;
     }
 
     bool copy_new_cache(const std::vector<int32_t> & positions) {
@@ -469,11 +566,14 @@ public:
         const int vo = tensor_index(graph.outputs, g.numOutputTensors, "new_value", 3);
         if (ki < 0 || vi < 0 || ko < 0 || vo < 0) return false;
 
-        auto copy = [&](Qnn_Tensor_t & src, Qnn_Tensor_t & dst) {
+        auto copy = [&](Qnn_Tensor_t & src, Qnn_Tensor_t & dst, const char * label) {
             const uint32_t * sd = QNN_TENSOR_GET_DIMENSIONS(src);
             const uint32_t * dd = QNN_TENSOR_GET_DIMENSIONS(dst);
             if (!sd || !dd || QNN_TENSOR_GET_RANK(src) != 4 ||
-                QNN_TENSOR_GET_RANK(dst) != 4) return false;
+                QNN_TENSOR_GET_RANK(dst) != 4) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] %s cache rank mismatch\n", label);
+                return false;
+            }
 
             const int batch = (int) sd[0];
             const int lkv = (int) sd[1];
@@ -481,16 +581,26 @@ public:
             const int head_dim = (int) sd[3];
             const int dst_seq = (int) dd[2];
             if (
-                batch != 2 ||
+                batch <= 0 ||
                 src_seq != 1 ||
-                positions.size() != 2 ||
+                positions.size() != (size_t) batch ||
                 (int) dd[0] != batch ||
                 (int) dd[1] != lkv ||
                 (int) dd[3] != head_dim
             ) {
+                std::fprintf(
+                    stderr,
+                    "[BREEZE_QNN_BACKBONE] %s cache shape mismatch "
+                    "src=%dx%dx%dx%d dst=%ux%ux%ux%u positions=%zu\n",
+                    label, batch, lkv, src_seq, head_dim,
+                    dd[0], dd[1], dd[2], dd[3], positions.size()
+                );
                 return false;
             }
             if (QNN_TENSOR_GET_DATA_TYPE(src) != QNN_TENSOR_GET_DATA_TYPE(dst)) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] %s cache dtype mismatch src=%d dst=%d\n",
+                             label, (int) QNN_TENSOR_GET_DATA_TYPE(src),
+                             (int) QNN_TENSOR_GET_DATA_TYPE(dst));
                 return false;
             }
 
@@ -506,15 +616,20 @@ public:
                 sb.dataSize % src_elements ||
                 db.dataSize % dst_elements
             ) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] %s cache buffer layout invalid src_bytes=%u dst_bytes=%u\n",
+                             label, sb.dataSize, db.dataSize);
                 return false;
             }
             const size_t bytes_per = sb.dataSize / src_elements;
-            if (bytes_per != db.dataSize / dst_elements) return false;
+            if (bytes_per != db.dataSize / dst_elements) {
+                std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] %s cache element width mismatch\n", label);
+                return false;
+            }
 
             const size_t row = (size_t) head_dim * bytes_per;
             auto * sp = static_cast<const unsigned char *>(sb.data);
             auto * dp = static_cast<unsigned char *>(db.data);
-            for (int b = 0; b < 2; ++b) {
+            for (int b = 0; b < batch; ++b) {
                 const int p = positions[(size_t) b];
                 if (p < 0 || p >= dst_seq) return false;
                 for (int h = 0; h < lkv; ++h) {
@@ -528,8 +643,8 @@ public:
             return true;
         };
 
-        return copy(graph.outputs[ko], graph.inputs[ki]) &&
-            copy(graph.outputs[vo], graph.inputs[vi]);
+        return copy(graph.outputs[ko], graph.inputs[ki], "key") &&
+            copy(graph.outputs[vo], graph.inputs[vi], "value");
     }
 
     bool run_step(
@@ -541,7 +656,9 @@ public:
     ) {
         auto & g = (*m_graphsInfo)[graph.graph_index];
         if (g.numInputTensors != 5 || g.numOutputTensors != 4) return false;
-        if ((int) embedding.size() != hidden || positions.size() != 2) return false;
+        const int graph_batch = step_batch_size();
+        if ((int) embedding.size() != hidden || graph_batch <= 0 ||
+            positions.size() != (size_t) graph_batch) return false;
         for (int p : positions) if (p < 0 || p >= kBackboneBucket) return false;
 
         const int ei = tensor_index(graph.inputs, g.numInputTensors, "input_embed", 0);
@@ -551,12 +668,17 @@ public:
         const int lo = tensor_index(graph.outputs, g.numOutputTensors, "logits", 1);
         if (ei < 0 || pi < 0 || mi < 0 || ho < 0 || lo < 0) return false;
 
-        std::vector<float> embeds((size_t) 2 * (size_t) hidden);
-        std::copy(embedding.begin(), embedding.end(), embeds.begin());
-        std::copy(embedding.begin(), embedding.end(), embeds.begin() + hidden);
+        std::vector<float> embeds((size_t) graph_batch * (size_t) hidden);
+        for (int b = 0; b < graph_batch; ++b) {
+            std::copy(
+                embedding.begin(),
+                embedding.end(),
+                embeds.begin() + (size_t) b * (size_t) hidden
+            );
+        }
 
-        std::vector<float> mask((size_t) 2 * 513u, -10000.0f);
-        for (int b = 0; b < 2; ++b) {
+        std::vector<float> mask((size_t) graph_batch * 513u, -10000.0f);
+        for (int b = 0; b < graph_batch; ++b) {
             float * row = mask.data() + (size_t) b * 513u;
             for (int i = 0; i < positions[(size_t) b]; ++i) row[i] = 0.0f;
             row[512] = 0.0f;
@@ -591,14 +713,14 @@ public:
             return false;
         }
         if (!finite_nonzero(hidden_all) || !finite_nonzero(logits_all)) return false;
-        if (hidden_all.size() != (size_t) 2 * (size_t) hidden ||
-            logits_all.size() % 2 != 0) {
+        if (hidden_all.size() != (size_t) graph_batch * (size_t) hidden ||
+            logits_all.size() % (size_t) graph_batch != 0) {
             return false;
         }
 
-        const size_t logits_per_branch = logits_all.size() / 2;
-        outs.assign(2, StepOut{});
-        for (int b = 0; b < 2; ++b) {
+        const size_t logits_per_branch = logits_all.size() / (size_t) graph_batch;
+        outs.assign((size_t) graph_batch, StepOut{});
+        for (int b = 0; b < graph_batch; ++b) {
             outs[(size_t) b].hidden.assign(
                 hidden_all.begin() + (size_t) b * hidden,
                 hidden_all.begin() + (size_t) (b + 1) * hidden
@@ -610,8 +732,7 @@ public:
         }
 
         if (!copy_new_cache(positions)) return false;
-        ++positions[0];
-        ++positions[1];
+        for (auto & p : positions) ++p;
         return true;
     }
 };
@@ -664,7 +785,7 @@ static bool load_backbone_app(
     if (candidate->initializeProfiling() != StatusCode::SUCCESS) return fail();
     if (candidate->registerOpPackages() != StatusCode::SUCCESS) return fail();
     if (candidate->createFromBinary() != StatusCode::SUCCESS) return fail();
-    if (!candidate->setup_graph()) return fail();
+    if (!graph_name.empty() && !candidate->setup_graph()) return fail();
     candidate->set_adaptive_power();
 
     app = std::move(candidate);
@@ -678,8 +799,10 @@ struct QnnBackboneRunner::Impl {
     std::string lib_dir;
     std::string prefill_path;
     std::string step_path;
+    bool shared_context = false;
     bool enabled = false;
     int branches = 1;
+    int step_batch = 0;
     int max_seq = kBackboneBucket;
     std::vector<int32_t> positions;
     size_t frames = 0;
@@ -692,28 +815,64 @@ QnnBackboneRunner::~QnnBackboneRunner() = default;
 bool QnnBackboneRunner::init(BreezeModel & m, int branches) {
     (void) m;
     if (branches != 1 && branches != 2) return false;
+    const char * linked_path = std::getenv("BREEZE_QNN_BACKBONE_LINKED_PATH");
     const char * prefill_path = std::getenv("BREEZE_QNN_BACKBONE_PREFILL_PATH");
-    const char * step_path = std::getenv("BREEZE_QNN_BACKBONE_STEP_PATH");
+    const char * generic_step = std::getenv("BREEZE_QNN_BACKBONE_STEP_PATH");
+    const char * step_b1 = std::getenv("BREEZE_QNN_BACKBONE_STEP_B1_PATH");
+    const char * step_b2 = std::getenv("BREEZE_QNN_BACKBONE_STEP_B2_PATH");
     const char * lib = std::getenv("BREEZE_QNN_LIB_DIR");
+
+    const bool linked = linked_path && *linked_path;
+    const char * chosen_prefill = linked ? linked_path : prefill_path;
+    const char * chosen_step = nullptr;
+    const char * chosen_kind = "none";
+    if (linked) {
+        chosen_step = linked_path;
+        chosen_kind = branches == 1 ? "linked-batch1" : "linked-batch2";
+    } else if (branches == 1 && step_b1 && *step_b1) {
+        chosen_step = step_b1;
+        chosen_kind = "batch1";
+    } else if (branches == 2 && step_b2 && *step_b2) {
+        chosen_step = step_b2;
+        chosen_kind = "batch2";
+    } else if (generic_step && *generic_step) {
+        chosen_step = generic_step;
+        chosen_kind = "legacy";
+    }
+
     if (
-        !prefill_path || !*prefill_path ||
-        !step_path || !*step_path ||
+        !chosen_prefill || !*chosen_prefill ||
+        !chosen_step || !*chosen_step ||
         !lib || !*lib
     ) {
         return false;
     }
 
     impl_->lib_dir = lib;
-    impl_->prefill_path = prefill_path;
-    impl_->step_path = step_path;
+    impl_->prefill_path = chosen_prefill;
+    impl_->step_path = chosen_step;
+    impl_->shared_context = linked;
     impl_->branches = branches;
-    impl_->positions.assign(2, 0);
+    impl_->step_batch = 0;
+    impl_->positions.clear();
+
+    const char * max_seq_env = std::getenv("BREEZE_QNN_BACKBONE_PREFILL_MAX_SEQ");
+    if (max_seq_env && *max_seq_env) {
+        const int requested = std::atoi(max_seq_env);
+        if (requested >= 32 && requested <= kBackboneBucket) {
+            impl_->max_seq = requested;
+        }
+    }
+
     impl_->enabled = true;
     std::fprintf(
         stderr,
         "[BREEZE_QNN_BACKBONE] configured logical_branches=%d "
-        "prefill_context=separate step_context=separate\n",
-        branches
+        "prefill_max_seq=%d step_variant=%s shared_context=%d\n",
+        branches,
+        impl_->max_seq,
+        chosen_kind,
+        impl_->shared_context ? 1 : 0
     );
     return true;
 }
@@ -762,10 +921,44 @@ bool QnnBackboneRunner::prefill(
     }
 
     std::unique_ptr<BreezeQnnBackboneApp> prefill_app;
-    if (!load_backbone_app(
+    const int prompt_tokens = std::max(
+        cond_tokens,
+        impl_->branches == 2 ? uncond_tokens : cond_tokens
+    );
+    const char * preferred_prefill =
+        prompt_tokens <= 256 ? "backbone_prefill_256" : "backbone_prefill_512";
+
+    if (impl_->shared_context) {
+        if (impl_->step) {
+            prefill_app = std::move(impl_->step);
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] reusing resident linked context graphs=%u\n",
+                (unsigned) prefill_app->graph_count()
+            );
+        } else if (!load_backbone_app(
+                impl_->lib_dir,
+                impl_->prefill_path,
+                "",
+                prefill_app)) {
+            std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] linked context load failed\n");
+            disable();
+            return false;
+        }
+        if (!prefill_app->select_graph(preferred_prefill) &&
+            !prefill_app->select_graph("backbone_prefill")) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] no compatible prefill graph for tokens=%d\n",
+                prompt_tokens
+            );
+            disable();
+            return false;
+        }
+    } else if (!load_backbone_app(
             impl_->lib_dir,
             impl_->prefill_path,
-            "backbone_prefill_512",
+            "backbone_prefill",
             prefill_app)) {
         std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] prefill context load failed\n");
         disable();
@@ -808,33 +1001,87 @@ bool QnnBackboneRunner::prefill(
         uncond_tokens = cond_tokens;
     }
 
-    // Release the large prompt context before creating the AR1 context so the
-    // backbone weights are never duplicated in resident memory.
-    prefill_app.reset();
+    const char * step_graph =
+        impl_->branches == 1 ? "backbone_step_b1" : "backbone_step_b2";
 
-    if (!load_backbone_app(
-            impl_->lib_dir,
-            impl_->step_path,
-            "backbone_step_b2",
-            impl_->step) ||
-        !impl_->step->zero_step_cache() ||
-        !impl_->step->seed_branch(cond_cache, 0) ||
-        !impl_->step->seed_branch(uncond_cache, 1)) {
-        std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] AR1 context load/seed failed\n");
+    if (impl_->shared_context) {
+        if (!prefill_app->select_graph(step_graph) &&
+            !prefill_app->select_graph("backbone_step")) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] linked AR1 graph missing request=%s\n",
+                step_graph
+            );
+            disable();
+            return false;
+        }
+        impl_->step = std::move(prefill_app);
+    } else {
+        // Compatibility with the v4 artifact: two separate context binaries.
+        // This still pays the old deserialize cost, but only when the legacy
+        // artifact is explicitly selected.
+        prefill_app.reset();
+        if (!load_backbone_app(
+                impl_->lib_dir,
+                impl_->step_path,
+                step_graph,
+                impl_->step)) {
+            std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] AR1 context load failed\n");
+            disable();
+            return false;
+        }
+    }
+
+    impl_->step_batch = impl_->step->step_batch_size();
+    if (
+        impl_->step_batch < impl_->branches ||
+        impl_->step_batch < 1 ||
+        impl_->step_batch > 2
+    ) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_QNN_BACKBONE] AR1 batch incompatible physical=%d logical=%d\n",
+            impl_->step_batch,
+            impl_->branches
+        );
         disable();
         return false;
     }
 
-    impl_->positions[0] = cond_tokens;
-    impl_->positions[1] = uncond_tokens;
+    if (!impl_->step->zero_step_cache()) {
+        std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] AR1 cache zero failed\n");
+        disable();
+        return false;
+    }
+
+    impl_->positions.assign((size_t) impl_->step_batch, 0);
+    for (int b = 0; b < impl_->step_batch; ++b) {
+        const bool uncond = impl_->branches == 2 && b == 1;
+        const PrefillCache & source = uncond ? uncond_cache : cond_cache;
+        if (!impl_->step->seed_branch(source, b)) {
+            std::fprintf(
+                stderr,
+                "[BREEZE_QNN_BACKBONE] AR1 cache seed failed branch=%d physical=%d logical=%d\n",
+                b,
+                impl_->step_batch,
+                impl_->branches
+            );
+            disable();
+            return false;
+        }
+        impl_->positions[(size_t) b] = uncond ? uncond_tokens : cond_tokens;
+    }
 
     std::fprintf(
         stderr,
         "[BREEZE_QNN_BACKBONE] prefill_ms=%.2f cond=%d uncond=%d "
-        "prompt_context_released=1 ar1_ready=1\n",
+        "step_batch=%d shared_context=%d prompt_context_released=%d ar1_ready=1\n",
         prefill_ms,
         cond_tokens,
-        impl_->branches == 2 ? uncond_tokens : 0
+        impl_->branches == 2 ? uncond_tokens : 0,
+        impl_->step_batch,
+        impl_->shared_context ? 1 : 0,
+        impl_->shared_context ? 0 : 1
     );
     return true;
 }
@@ -859,7 +1106,8 @@ bool QnnBackboneRunner::step(
             impl_->positions,
             outs,
             ms) ||
-        outs.size() != 2) {
+        outs.size() != impl_->positions.size() ||
+        outs.size() < (size_t) impl_->branches) {
         std::fprintf(stderr, "[BREEZE_QNN_BACKBONE] AR1 step failed\n");
         disable();
         return false;

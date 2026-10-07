@@ -233,7 +233,12 @@ class SpeechGenerationService : Service() {
                 modelId, "Preparing accelerator runtime", started, 0.12f,
             )
             val qnnInstall = BreezeQnnVocoderArtifact.localInstall(this)
-            val qnnGeneratorInstall = BreezeQnnGeneratorArtifact.localInstall(this)
+            val fullQnnEnabled = BreezeQnnGeneratorArtifact.isEnabled(this)
+            val qnnGeneratorInstall = if (fullQnnEnabled) {
+                BreezeQnnGeneratorArtifact.localInstall(this)
+            } else {
+                null
+            }
             val qnnVocoderFile = qnnInstall?.contextFile
             usingQnnVocoder = qnnInstall != null
             val usingQnnRuntime = qnnInstall != null || qnnGeneratorInstall != null
@@ -341,6 +346,7 @@ class SpeechGenerationService : Service() {
                     "queue=v202-opbatch1280x32-oppoll0 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
+                    "generator_mode=" + (if (fullQnnEnabled) "full-qnn" else "legacy-hexagon") + " " +
                     "generator=" + (if (qnnGeneratorInstall != null) qnnGeneratorInstall.engine else "ggml-hexagon") + " " +
                     "vocoder=" + (if (usingQnnVocoder) "qnn-htp-feature64-serialized-v3" else "ggml-stateful-fallback") + " " +
                     "qnn_target=sm8850-v81 qnn_selftest=" +
