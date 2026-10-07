@@ -1204,40 +1204,78 @@ fun SpeechRunScreen(
 private fun InlineEventEditor(
     value: String,
     onValueChange: (String) -> Unit,
-    events: List<String>,
+    events: List<InlineEventCue>,
     modifier: Modifier = Modifier,
 ) {
     var textLayout by remember(value) { mutableStateOf<TextLayoutResult?>(null) }
+    var showExtended by rememberSaveable { mutableStateOf(false) }
+    var fieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(value, selection = TextRange(value.length)))
+    }
+    LaunchedEffect(value) {
+        if (value != fieldValue.text) {
+            fieldValue = TextFieldValue(value, selection = TextRange(value.length))
+        }
+    }
+
     val textColor = MaterialTheme.colorScheme.onSurface
     val placeholderColor = MaterialTheme.colorScheme.onSurfaceVariant
     val borderColor = MaterialTheme.colorScheme.outline
-    val latinEventColor = MaterialTheme.colorScheme.tertiaryContainer
-    val chineseEventColor = MaterialTheme.colorScheme.secondaryContainer
+    val officialEnglishColor = MaterialTheme.colorScheme.tertiaryContainer
+    val officialChineseColor = MaterialTheme.colorScheme.secondaryContainer
+    val extendedColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
     val radius = 7.dp
     val horizontalPad = 4.dp
     val verticalPad = 2.dp
 
+    fun insertCue(cue: InlineEventCue) {
+        val selectionStart = minOf(fieldValue.selection.start, fieldValue.selection.end)
+            .coerceIn(0, fieldValue.text.length)
+        val selectionEnd = maxOf(fieldValue.selection.start, fieldValue.selection.end)
+            .coerceIn(selectionStart, fieldValue.text.length)
+        val before = fieldValue.text.substring(0, selectionStart)
+        val after = fieldValue.text.substring(selectionEnd)
+        val prefix = if (before.isNotEmpty() && !before.last().isWhitespace()) " " else ""
+        val suffix = if (after.isNotEmpty() && !after.first().isWhitespace()) " " else ""
+        val insertion = prefix + cue.tag + suffix
+        val updated = before + insertion + after
+        val cursor = (before.length + insertion.length).coerceIn(0, updated.length)
+        fieldValue = TextFieldValue(updated, selection = TextRange(cursor))
+        onValueChange(updated)
+    }
+
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(7.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
     ) {
-        Text(
-            "Text",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Script",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                value.length.toString() + " / 12000",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Surface(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surfaceContainerLow,
             border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 170.dp)
+                    .heightIn(min = 180.dp)
                     .padding(16.dp),
             ) {
-                if (value.isEmpty()) {
+                if (fieldValue.text.isEmpty()) {
                     Text(
                         "What should Breeze say?",
                         color = placeholderColor,
@@ -1245,19 +1283,38 @@ private fun InlineEventEditor(
                     )
                 }
                 BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
+                    value = fieldValue,
+                    onValueChange = { next ->
+                        val clippedText = next.text.take(12000)
+                        val clippedSelection = TextRange(
+                            next.selection.start.coerceAtMost(clippedText.length),
+                            next.selection.end.coerceAtMost(clippedText.length),
+                        )
+                        fieldValue = TextFieldValue(
+                            text = clippedText,
+                            selection = clippedSelection,
+                            composition = next.composition?.let {
+                                TextRange(
+                                    it.start.coerceAtMost(clippedText.length),
+                                    it.end.coerceAtMost(clippedText.length),
+                                )
+                            },
+                        )
+                        onValueChange(clippedText)
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 138.dp)
+                        .heightIn(min = 148.dp)
                         .drawBehind {
                             val layout = textLayout ?: return@drawBehind
-                            events.forEach { event ->
+                            events.forEach { cue ->
+                                val event = cue.tag
                                 var searchFrom = 0
-                                while (searchFrom < value.length) {
-                                    val start = value.indexOf(event, searchFrom)
-                                    if (start < 0) break
-                                    val end = (start + event.length).coerceAtMost(value.length)
+                                while (searchFrom < fieldValue.text.length) {
+                                    val eventStart = fieldValue.text.indexOf(event, searchFrom)
+                                    if (eventStart < 0) break
+                                    val eventEnd =
+                                        (eventStart + event.length).coerceAtMost(fieldValue.text.length)
                                     var activeLine = -1
                                     var left = Float.POSITIVE_INFINITY
                                     var top = Float.POSITIVE_INFINITY
@@ -1269,10 +1326,10 @@ private fun InlineEventEditor(
                                         val hp = horizontalPad.toPx()
                                         val vp = verticalPad.toPx()
                                         drawRoundRect(
-                                            color = if (event.startsWith("[")) {
-                                                chineseEventColor
-                                            } else {
-                                                latinEventColor
+                                            color = when {
+                                                !cue.official -> extendedColor
+                                                cue.language == "中文" -> officialChineseColor
+                                                else -> officialEnglishColor
                                             },
                                             topLeft = Offset(left - hp, top - vp),
                                             size = Size(
@@ -1286,7 +1343,7 @@ private fun InlineEventEditor(
                                         )
                                     }
 
-                                    for (offset in start until end) {
+                                    for (offset in eventStart until eventEnd) {
                                         val line = layout.getLineForOffset(offset)
                                         val box = layout.getBoundingBox(offset)
                                         if (activeLine != -1 && line != activeLine) {
@@ -1303,7 +1360,7 @@ private fun InlineEventEditor(
                                         bottom = maxOf(bottom, box.bottom)
                                     }
                                     drawSegment()
-                                    searchFrom = end.coerceAtLeast(start + 1)
+                                    searchFrom = eventEnd.coerceAtLeast(eventStart + 1)
                                 }
                             }
                         },
@@ -1313,11 +1370,62 @@ private fun InlineEventEditor(
                 )
             }
         }
-        Text(
-            value.length.toString() + " characters · English + Mandarin",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Inline vocal events",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(
+                    "Inserted at the cursor. Official tags are highlighted separately.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            FilterChip(
+                selected = showExtended,
+                onClick = { showExtended = !showExtended },
+                label = { Text(if (showExtended) "Extended" else "Official") },
+            )
+        }
+
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(events.filter { it.official }, key = { it.tag }) { cue ->
+                AssistChip(
+                    onClick = { insertCue(cue) },
+                    label = { Text(cue.tag) },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = if (cue.language == "中文") {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.tertiaryContainer
+                        },
+                    ),
+                )
+            }
+        }
+        if (showExtended) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(events.filterNot { it.official }, key = { it.tag }) { cue ->
+                    AssistChip(
+                        onClick = { insertCue(cue) },
+                        label = { Text(cue.tag) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f),
+                        ),
+                    )
+                }
+            }
+            Text(
+                "Extended cues use Breeze's open-ended descriptive event behavior and may be less consistent than the official examples.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
