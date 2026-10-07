@@ -1416,6 +1416,10 @@ class ModelDownloadService : Service() {
         modelId: String,
         installDir: String? = null,
     ) {
+        if (modelType == TYPE_BREEZE_QNN_GENERATOR) {
+            BreezeQnnGeneratorArtifact.discardPartials(this)
+            return
+        }
         if (modelType != TYPE_MULTI_FILE) return
         val modelDir = File(
             getModelsDir(),
