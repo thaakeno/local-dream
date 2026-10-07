@@ -129,9 +129,16 @@ jobs:
           )
           if depth_link is None:
               raise SystemExit("AI Hub did not create the depth link job")
+          depth_link.wait()
+          depth_status = depth_link.get_status()
+          if not depth_status.success:
+              raise SystemExit(
+                  "AI Hub depth link failed: " +
+                  (depth_status.message or depth_status.code)
+              )
           depth_target = root / "breeze-depth-sm8850-v81.bin"
           if not depth_link.download_target_model(str(depth_target)):
-              raise SystemExit("AI Hub depth QNN link failed")
+              raise SystemExit("AI Hub depth QNN target download failed")
 
           # Backbone: one dynamic ONNX compiled into four prefill buckets and
           # two single-token decode variants. The link job shares the ~1B
@@ -170,9 +177,16 @@ jobs:
           )
           if backbone_link is None:
               raise SystemExit("AI Hub did not create the backbone link job")
+          backbone_link.wait()
+          backbone_status = backbone_link.get_status()
+          if not backbone_status.success:
+              raise SystemExit(
+                  "AI Hub backbone link failed: " +
+                  (backbone_status.message or backbone_status.code)
+              )
           backbone_target = root / "breeze-backbone-sm8850-v81.bin"
           if not backbone_link.download_target_model(str(backbone_target)):
-              raise SystemExit("AI Hub backbone QNN link failed")
+              raise SystemExit("AI Hub backbone QNN target download failed")
 
           for p in (depth_target, backbone_target):
               if not p.is_file() or p.stat().st_size < 1_000_000:
