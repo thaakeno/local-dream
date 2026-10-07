@@ -44,8 +44,32 @@ object SpeechHistoryStore {
     fun directory(context: Context): File =
         File(context.filesDir, "speech_history").apply { mkdirs() }
 
+    fun directory(context: Context, modelId: String): File =
+        File(directory(context), safeModelId(modelId)).apply { mkdirs() }
+
+    private fun safeModelId(modelId: String): String =
+        modelId.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "unknown-model" }
+
     suspend fun load(context: Context): List<SpeechHistoryItem> = withContext(Dispatchers.IO) {
-        mutex.withLock { loadUnlocked(context) }
+        mutex.withLock {
+            val root = directory(context)
+            val legacy = loadFile(File(root, HISTORY_FILE))
+            val partitioned = root.listFiles()
+                ?.filter { it.isDirectory }
+                ?.flatMap { loadFile(File(it, HISTORY_FILE)) }
+                .orEmpty()
+            (legacy + partitioned)
+                .distinctBy { it.id }
+                .filter { File(it.filePath).isFile }
+                .sortedByDescending { it.createdAt }
+        }
+    }
+
+    suspend fun loadForModel(
+        context: Context,
+        modelId: String,
+    ): List<SpeechHistoryItem> = withContext(Dispatchers.IO) {
+        mutex.withLock { loadForModelUnlocked(context, modelId) }
     }
 
     suspend fun add(
@@ -86,10 +110,11 @@ object SpeechHistoryStore {
                 maxNewTokens = maxNewTokens,
                 accelerated = accelerated,
             )
-            val next = (listOf(item) + loadUnlocked(context))
-                .filter { File(it.filePath).isFile }
+            val next = (listOf(item) + loadForModelUnlocked(context, modelId))
+                .filter { it.modelId == modelId && File(it.filePath).isFile }
+                .distinctBy { it.id }
                 .take(MAX_ITEMS)
-            saveUnlocked(context, next)
+            saveForModelUnlocked(context, modelId, next)
             item
         }
     }
@@ -137,37 +162,59 @@ object SpeechHistoryStore {
 
     suspend fun setFavorite(
         context: Context,
+        modelId: String,
         id: String,
         favorite: Boolean,
     ): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val items = loadUnlocked(context)
+            val items = loadForModelUnlocked(context, modelId)
             var changed = false
             val next = items.map { item ->
                 if (item.id == id) {
                     changed = true
                     item.copy(favorite = favorite)
-                } else {
-                    item
-                }
+                } else item
             }
-            if (changed) saveUnlocked(context, next)
+            if (changed) saveForModelUnlocked(context, modelId, next)
             changed
         }
     }
 
-    suspend fun delete(context: Context, id: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun delete(
+        context: Context,
+        modelId: String,
+        id: String,
+    ): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val items = loadUnlocked(context)
+            val items = loadForModelUnlocked(context, modelId)
             val target = items.firstOrNull { it.id == id } ?: return@withLock false
             runCatching { File(target.filePath).delete() }
-            saveUnlocked(context, items.filterNot { it.id == id })
+            saveForModelUnlocked(context, modelId, items.filterNot { it.id == id })
             true
         }
     }
 
-    private fun loadUnlocked(context: Context): List<SpeechHistoryItem> {
-        val file = File(directory(context), HISTORY_FILE)
+    private fun loadForModelUnlocked(
+        context: Context,
+        modelId: String,
+    ): List<SpeechHistoryItem> {
+        val modelFile = File(directory(context, modelId), HISTORY_FILE)
+        val partitioned = loadFile(modelFile)
+            .filter { it.modelId == modelId && File(it.filePath).isFile }
+        if (partitioned.isNotEmpty() || modelFile.isFile) return partitioned
+
+        // One-time lazy migration from the pre-v60 global history. This keeps
+        // existing generations, but from now on every Breeze variant owns an
+        // independent index and directory.
+        val legacyFile = File(directory(context), HISTORY_FILE)
+        val legacy = loadFile(legacyFile)
+            .filter { it.modelId == modelId && File(it.filePath).isFile }
+            .take(MAX_ITEMS)
+        if (legacy.isNotEmpty()) saveForModelUnlocked(context, modelId, legacy)
+        return legacy
+    }
+
+    private fun loadFile(file: File): List<SpeechHistoryItem> {
         if (!file.isFile) return emptyList()
         return runCatching {
             val array = JSONArray(file.readText())
@@ -203,7 +250,16 @@ object SpeechHistoryStore {
         }.getOrElse { emptyList() }
     }
 
-    private fun saveUnlocked(context: Context, items: List<SpeechHistoryItem>) {
+    private fun saveForModelUnlocked(
+        context: Context,
+        modelId: String,
+        items: List<SpeechHistoryItem>,
+    ) {
+        val file = File(directory(context, modelId), HISTORY_FILE)
+        saveFile(file, items.filter { it.modelId == modelId }.take(MAX_ITEMS))
+    }
+
+    private fun saveFile(file: File, items: List<SpeechHistoryItem>) {
         val array = JSONArray()
         items.forEach { item ->
             array.put(
@@ -229,8 +285,8 @@ object SpeechHistoryStore {
                 },
             )
         }
-        val file = File(directory(context), HISTORY_FILE)
-        val temp = File(file.parentFile, "$HISTORY_FILE.tmp")
+        file.parentFile?.mkdirs()
+        val temp = File(file.parentFile, file.name + ".tmp")
         temp.writeText(array.toString())
         if (file.exists()) file.delete()
         if (!temp.renameTo(file)) {
