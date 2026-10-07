@@ -1500,40 +1500,20 @@ fun SpeechRunScreen(
                                                     }
                                                 },
                                                 onShare = { shareSpeechFile(context, file) },
+                                                onDelete = {
+                                                    scope.launch {
+                                                        SpeechHistoryStore.delete(
+                                                            context,
+                                                            item.modelId,
+                                                            item.id,
+                                                        )
+                                                        history = withContext(Dispatchers.IO) {
+                                                            SpeechHistoryStore.load(context)
+                                                        }
+                                                    }
+                                                },
                                                 compact = true,
                                             )
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement =
-                                                    Arrangement.spacedBy(8.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                            ) {
-                                                Text(
-                                                    item.instruction.take(180),
-                                                    modifier = Modifier.weight(1f),
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color =
-                                                        MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    maxLines = 3,
-                                                )
-                                                TextButton(
-                                                    onClick = {
-                                                        scope.launch {
-                                                            SpeechHistoryStore.delete(
-                                                                context,
-                                                                item.modelId,
-                                                                item.id,
-                                                            )
-                                                            history =
-                                                                withContext(Dispatchers.IO) {
-                                                                    SpeechHistoryStore.load(context)
-                                                                }
-                                                        }
-                                                    },
-                                                ) {
-                                                    Text("Delete")
-                                                }
-                                            }
                                         }
                                     }
                                 }

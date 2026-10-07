@@ -47,6 +47,9 @@ class SpeechGenerationService : Service() {
     @Volatile private var nativeSegmentCount: Int = 1
     @Volatile private var nativeSegmentIndex: Int = 1
     @Volatile private var nativeCompletedFrames: Int = 0
+    @Volatile private var nativeOverallProgress: Float = 0f
+    @Volatile private var nativeCodecOverallProgress: Float = 0f
+    @Volatile private var nativeVocoderOverallProgress: Float = 0f
     private var activeQnnSelftestMarker: File? = null
     private var activeQnnSelftestKey: String? = null
 
@@ -58,7 +61,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v207-qnn-flex-v4-progress"
+            "breeze-a0e177-hexagon-ab9acc-v208-qnn-flex-v4-monotonic"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -463,6 +466,9 @@ class SpeechGenerationService : Service() {
                 nativeSegmentCount = 1
                 nativeSegmentIndex = 1
                 nativeCompletedFrames = 0
+                nativeOverallProgress = 0f
+                nativeCodecOverallProgress = 0f
+                nativeVocoderOverallProgress = 0f
                 nativeVocoderMsPerFrame = if (usingQnnVocoder) 50f else 0f
                 _state.value = SpeechState.Generating(
                     modelId = modelId,
@@ -860,7 +866,7 @@ class SpeechGenerationService : Service() {
         """\[BREEZE_GENERATION_DONE\] frames=(\d+) eos=(\d+) hard_limit=(\d+)""",
     )
     private val nativeStageRegex = Regex(
-        """\[BREEZE_STAGE\] frames=(\d+) depth_ms_per_frame=([0-9.]+) backbone_ms_per_frame=([0-9.]+)""",
+        """\[BREEZE_STAGE\] frames=(\d+) total_frames=(\d+) depth_ms_per_frame=([0-9.]+) backbone_ms_per_frame=([0-9.]+)""",
     )
     private val nativeVocoderStreamRegex = Regex(
         """\[BREEZE_VOCODER_STREAM\] flush=(\d+) new_frames=(\d+) samples=(\d+) ms=([0-9.]+)""",
@@ -890,6 +896,33 @@ class SpeechGenerationService : Service() {
         val index = nativeSegmentIndex.coerceIn(1, count)
         val remainingIncludingCurrent = count - index + 1
         return nativeCompletedFrames + localEffective * remainingIncludingCurrent
+    }
+
+    private fun monotonicOverall(value: Float?): Float? {
+        if (value == null) return nativeOverallProgress.takeIf { it > 0f }
+        nativeOverallProgress = maxOf(
+            nativeOverallProgress,
+            value.coerceIn(0f, 1f),
+        )
+        return nativeOverallProgress
+    }
+
+    private fun monotonicCodec(value: Float?): Float? {
+        if (value == null) return nativeCodecOverallProgress.takeIf { it > 0f }
+        nativeCodecOverallProgress = maxOf(
+            nativeCodecOverallProgress,
+            value.coerceIn(0f, 1f),
+        )
+        return nativeCodecOverallProgress
+    }
+
+    private fun monotonicVocoder(value: Float?): Float? {
+        if (value == null) return nativeVocoderOverallProgress.takeIf { it > 0f }
+        nativeVocoderOverallProgress = maxOf(
+            nativeVocoderOverallProgress,
+            value.coerceIn(0f, 1f),
+        )
+        return nativeVocoderOverallProgress
     }
 
     private fun handleNativeOutput(modelId: String, raw: String) {
@@ -994,9 +1027,9 @@ class SpeechGenerationService : Service() {
                 } else {
                     "Generating voice tokens"
                 },
-                progress = base,
-                codecProgress = base,
-                vocoderProgress = base,
+                progress = monotonicOverall(base),
+                codecProgress = monotonicCodec(base),
+                vocoderProgress = monotonicVocoder(base),
             )
             return
         }
@@ -1013,9 +1046,9 @@ class SpeechGenerationService : Service() {
                         "Generating voice tokens"
                     },
                     estimatedSeconds = totalFrames.takeIf { it > 0 }?.times(0.08f),
-                    progress = base,
-                    codecProgress = base,
-                    vocoderProgress = base,
+                    progress = monotonicOverall(base),
+                    codecProgress = monotonicCodec(base),
+                    vocoderProgress = monotonicVocoder(base),
                 )
             }
             return
@@ -1044,9 +1077,9 @@ class SpeechGenerationService : Service() {
                         "Finalizing audio"
                     },
                     generatedSeconds = (nativeCompletedFrames + frames) * 0.08f,
-                    codecProgress = globalSegmentProgress(1f),
-                    vocoderProgress = globalSegmentProgress(vocoderP),
-                    progress = globalSegmentProgress(localOverall),
+                    codecProgress = monotonicCodec(globalSegmentProgress(1f)),
+                    vocoderProgress = monotonicVocoder(globalSegmentProgress(vocoderP)),
+                    progress = monotonicOverall(globalSegmentProgress(localOverall)),
                     estimatedSeconds = totalFrames.takeIf { it > 0 }?.times(0.08f),
                 )
             }
@@ -1055,11 +1088,13 @@ class SpeechGenerationService : Service() {
 
         nativeStageRegex.find(line)?.let { match ->
             val frames = match.groupValues[1].toIntOrNull() ?: return
+            val nativeTotalFrames = match.groupValues[2].toIntOrNull()
+                ?: (nativeCompletedFrames + frames)
             nativeGeneratedFrames = frames
             val elapsed = (
                 System.currentTimeMillis() - current.startedAtMillis
             ).coerceAtLeast(1L) / 1000f
-            val totalGeneratedFrames = nativeCompletedFrames + frames
+            val totalGeneratedFrames = maxOf(nativeCompletedFrames + frames, nativeTotalFrames)
             val fps = totalGeneratedFrames / elapsed
             val generated = totalGeneratedFrames * 0.08f
             val effective = nativeEffectiveFrames
@@ -1097,13 +1132,9 @@ class SpeechGenerationService : Service() {
                     else -> "Generating voice tokens"
                 },
                 generatedSeconds = maxOf(current.generatedSeconds, generated),
-                progress = if (!nativeGenerationDone && effective > 0 && frames >= effective) null else progress,
-                codecProgress = if (!nativeGenerationDone && effective > 0 && frames >= effective) {
-                    null
-                } else {
-                    globalSegmentProgress(codecP)
-                },
-                vocoderProgress = globalSegmentProgress(vocoderP),
+                progress = monotonicOverall(progress),
+                codecProgress = monotonicCodec(globalSegmentProgress(codecP)),
+                vocoderProgress = monotonicVocoder(globalSegmentProgress(vocoderP)),
                 estimatedSeconds = if (!nativeGenerationDone && effective > 0 && frames >= effective) {
                     null
                 } else {
@@ -1166,9 +1197,9 @@ class SpeechGenerationService : Service() {
                     latest.generatedSeconds,
                     (nativeCompletedFrames + maxOf(nativeGeneratedFrames, nativeDecodedFrames)) * 0.08f,
                 ),
-                progress = overall,
-                codecProgress = globalSegmentProgress(codecP),
-                vocoderProgress = globalSegmentProgress(vocoderP),
+                progress = monotonicOverall(overall),
+                codecProgress = monotonicCodec(globalSegmentProgress(codecP)),
+                vocoderProgress = monotonicVocoder(globalSegmentProgress(vocoderP)),
                 elapsedSeconds = elapsed,
                 etaSeconds = vocoderEta,
             )
@@ -1211,7 +1242,7 @@ class SpeechGenerationService : Service() {
             generatedSeconds = maxOf(current.generatedSeconds, generated ?: 0f),
             // Breeze reports progress against an estimated spoken duration.
             // 100% does not mean EOS has fired, so never show a fake completed bar.
-            progress = if (estimateReached) null else percent?.div(100f),
+            progress = monotonicOverall(if (estimateReached) null else percent?.div(100f)),
             estimatedSeconds = if (estimateReached) null else estimated,
             elapsedSeconds = elapsed,
             etaSeconds = if (estimateReached) null else eta,

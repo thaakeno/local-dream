@@ -530,10 +530,12 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
 
         if (tm.frames == 1 || (tm.frames > 0 && tm.frames % 4 == 0)) {
             const double denom = std::max(1, tm.frames);
+            const int local_frames = (int) frames.size() / nc;
             std::fprintf(
                 stderr,
-                "[BREEZE_STAGE] frames=%d depth_ms_per_frame=%.2f backbone_ms_per_frame=%.2f "
-                "vocoder_total_ms=%.2f first_audio_ms=%.2f\n",
+                "[BREEZE_STAGE] frames=%d total_frames=%d depth_ms_per_frame=%.2f "
+                "backbone_ms_per_frame=%.2f vocoder_total_ms=%.2f first_audio_ms=%.2f\n",
+                local_frames,
                 tm.frames,
                 tm.depth / denom,
                 tm.backbone / denom,

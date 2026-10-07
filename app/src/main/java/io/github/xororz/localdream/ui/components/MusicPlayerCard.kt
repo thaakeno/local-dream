@@ -20,6 +20,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -60,6 +61,7 @@ fun MusicPlayerCard(
     metadataLine: String? = null,
     onSave: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
     onReproduce: (() -> Unit)? = null,
     onUse: (() -> Unit)? = null,
     favorite: Boolean = false,
@@ -158,11 +160,11 @@ fun MusicPlayerCard(
         }
     }
 
-    val cardPadding = if (compact) 12.dp else 18.dp
-    val cardSpacing = if (compact) 8.dp else 14.dp
-    val leadingSize = if (compact) 44.dp else 64.dp
-    val leadingPadding = if (compact) 11.dp else 18.dp
-    val waveformHeight = if (compact) 48.dp else 76.dp
+    val cardPadding = if (compact) 10.dp else 18.dp
+    val cardSpacing = if (compact) 6.dp else 14.dp
+    val leadingSize = if (compact) 38.dp else 64.dp
+    val leadingPadding = if (compact) 9.dp else 18.dp
+    val waveformHeight = if (compact) 40.dp else 76.dp
 
     ElevatedCard(
         modifier = modifier.fillMaxWidth(),
@@ -177,7 +179,7 @@ fun MusicPlayerCard(
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 9.dp else 14.dp),
             ) {
                 Surface(
                     modifier = Modifier.size(leadingSize),
@@ -194,9 +196,13 @@ fun MusicPlayerCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         title,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = if (compact) {
+                            MaterialTheme.typography.titleSmall
+                        } else {
+                            MaterialTheme.typography.titleMedium
+                        },
                         fontWeight = FontWeight.SemiBold,
-                        maxLines = if (compact) 1 else 2,
+                        maxLines = if (compact) 2 else 2,
                     )
                     Text(
                         subtitle,
@@ -367,6 +373,7 @@ fun MusicPlayerCard(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
                         enabled = prepared,
+                        modifier = if (compact) Modifier.size(36.dp) else Modifier,
                         onClick = {
                             player?.seekTo(0)
                             position = 0
@@ -393,7 +400,7 @@ fun MusicPlayerCard(
                         OutlinedButton(
                             onClick = onUse,
                             modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 6.dp),
                         ) {
                             Text("Use")
                         }
@@ -402,7 +409,7 @@ fun MusicPlayerCard(
                         Button(
                             onClick = onReproduce,
                             modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 6.dp),
                         ) {
                             Icon(Icons.Default.Replay, contentDescription = null)
                             Spacer(Modifier.width(4.dp))
@@ -410,13 +417,22 @@ fun MusicPlayerCard(
                         }
                     }
                     if (onSave != null) {
-                        IconButton(onClick = onSave) {
+                        IconButton(onClick = onSave, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Default.Download, contentDescription = "Save")
                         }
                     }
                     if (onShare != null) {
-                        IconButton(onClick = onShare) {
+                        IconButton(onClick = onShare, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Default.Share, contentDescription = "Share")
+                        }
+                    }
+                    if (onDelete != null) {
+                        IconButton(onClick = onDelete, modifier = Modifier.size(40.dp)) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "Delete",
+                                tint = MaterialTheme.colorScheme.error,
+                            )
                         }
                     }
                 }
