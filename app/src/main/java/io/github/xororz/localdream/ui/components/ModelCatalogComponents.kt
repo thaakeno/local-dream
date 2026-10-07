@@ -1397,14 +1397,14 @@ fun BreezeFamilyCard(
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    "QNN Generator",
+                                    "Full QNN Generator",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold,
                                 )
                                 Text(
                                     when (val status = qnnGeneratorState) {
                                         is BreezeQnnGeneratorArtifact.Status.Ready ->
-                                            "Installed · native SM8850/V81"
+                                            "Installed · full SM8850/V81 QNN"
                                         is BreezeQnnGeneratorArtifact.Status.Downloading ->
                                             "Downloading accelerator"
                                         is BreezeQnnGeneratorArtifact.Status.Unsupported ->
@@ -1414,7 +1414,7 @@ fun BreezeFamilyCard(
                                         BreezeQnnGeneratorArtifact.Status.Checking ->
                                             "Checking device"
                                         is BreezeQnnGeneratorArtifact.Status.Missing ->
-                                            "Optional · QNN depth decoder accelerator"
+                                            "Optional · QNN backbone + depth accelerator"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Error) {
@@ -1488,7 +1488,7 @@ fun BreezeFamilyCard(
                         }
 
                         Text(
-                            "Separate from the Breeze GGUF. Accelerates the 15-step depth decoder on QNN; normal HTP remains the automatic fallback.",
+                            "Separate from the Breeze GGUF. Runs the Qwen3 backbone and 15-step depth decoder on QNN HTP; unsupported or very long inputs keep the existing Hexagon fallback.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

@@ -12,26 +12,32 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Optional SM8850/V81 QNN generator accelerator.
+ * Optional SM8850/V81 full QNN generator accelerator.
  *
- * The release asset may be split into sub-2GiB pieces. The installer streams
- * and verifies each part, then reconstructs one native QNN context binary.
+ * V2 installs two context binaries:
+ *  - Qwen3 Breeze backbone (prefill buckets + batch-1/batch-2 decode)
+ *  - residual depth decoder (batch-1/batch-2)
  */
 object BreezeQnnGeneratorArtifact {
-    private const val RELEASE_TAG = "breeze-qnn-generator-sm8850-v1"
+    private const val RELEASE_TAG = "breeze-qnn-generator-sm8850-v2"
     private const val BASE_URL =
         "https://github.com/thaakeno/local-dream/releases/download/" + RELEASE_TAG
-    private const val DIR = "breeze_qnn_generator/v1-sm8850"
-    private const val CONTEXT_NAME = "breeze-generator-sm8850-v81.bin"
+    private const val DIR = "breeze_qnn_generator/v2-sm8850"
+    private const val DEPTH_CONTEXT_NAME = "breeze-depth-sm8850-v81.bin"
+    private const val BACKBONE_CONTEXT_NAME = "breeze-backbone-sm8850-v81.bin"
 
     data class Install(
         val soc: String,
-        val contextFile: File,
+        val depthContextFile: File,
+        val backboneContextFile: File,
         val engine: String,
-        val graphNames: List<String>,
+        val depthGraphNames: List<String>,
+        val backboneGraphNames: List<String>,
+        val backboneMaxSeq: Int,
     )
 
     sealed class Status {
@@ -48,9 +54,20 @@ object BreezeQnnGeneratorArtifact {
                     (received.toFloat() / total.toFloat()).coerceIn(0f, 1f)
                 } else null
         }
-        data class Ready(val soc: String, val file: File, val engine: String) : Status()
+        data class Ready(
+            val soc: String,
+            val depthFile: File,
+            val backboneFile: File,
+            val engine: String,
+        ) : Status()
         data class Error(val soc: String?, val message: String) : Status()
     }
+
+    private data class ContextSpec(
+        val bytes: Long,
+        val sha256: String,
+        val parts: JSONArray,
+    )
 
     private val _status = MutableStateFlow<Status>(Status.Checking)
     val status: StateFlow<Status> = _status
@@ -72,45 +89,137 @@ object BreezeQnnGeneratorArtifact {
     fun supportedSoc(): String? =
         if (fingerprint().contains("SM8850")) "SM8850" else null
 
+    private fun jsonStrings(array: JSONArray): List<String> =
+        List(array.length()) { array.getString(it) }
+
     fun localInstall(context: Context): Install? {
         val soc = supportedSoc() ?: return null
         val marker = File(dir(context), "installed.json")
         if (!marker.isFile) return null
         return runCatching {
             val json = JSONObject(marker.readText())
-            if (json.optInt("version") != 1 || json.optString("soc") != soc) {
+            if (json.optInt("version") != 2 || json.optString("soc") != soc) {
                 return@runCatching null
             }
-            val contextFile = File(dir(context), json.getString("contextFile"))
-            val contextBytes = json.getLong("contextBytes")
-            if (!contextFile.isFile || contextFile.length() != contextBytes) {
+            val depth = File(dir(context), json.getString("depthContextFile"))
+            val backbone = File(dir(context), json.getString("backboneContextFile"))
+            if (
+                !depth.isFile ||
+                !backbone.isFile ||
+                depth.length() != json.getLong("depthContextBytes") ||
+                backbone.length() != json.getLong("backboneContextBytes")
+            ) {
                 return@runCatching null
             }
-            val namesJson = json.getJSONArray("graphNames")
-            val graphNames = List(namesJson.length()) { namesJson.getString(it) }
             Install(
                 soc = soc,
-                contextFile = contextFile,
-                engine = json.optString("engine", "qnn-generator-v1"),
-                graphNames = graphNames,
+                depthContextFile = depth,
+                backboneContextFile = backbone,
+                engine = json.optString("engine", "qnn-full-generator-kv-v2"),
+                depthGraphNames = jsonStrings(json.getJSONArray("depthGraphNames")),
+                backboneGraphNames = jsonStrings(json.getJSONArray("backboneGraphNames")),
+                backboneMaxSeq = json.optInt("backboneMaxSeq", 512),
             )
         }.getOrNull()
     }
-
-    fun localFile(context: Context): File? = localInstall(context)?.contextFile
 
     fun refresh(context: Context) {
         val soc = supportedSoc()
         val install = localInstall(context)
         _status.value = when {
             soc == null -> Status.Unsupported(detectedSoc())
-            install != null -> Status.Ready(soc, install.contextFile, install.engine)
+            install != null -> Status.Ready(
+                soc,
+                install.depthContextFile,
+                install.backboneContextFile,
+                install.engine,
+            )
             else -> Status.Missing(soc)
         }
     }
 
     private fun sha256Hex(bytes: ByteArray): String =
         bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    private fun parseContextSpec(json: JSONObject): ContextSpec =
+        ContextSpec(
+            bytes = json.getLong("bytes"),
+            sha256 = json.getString("sha256").lowercase(Locale.US),
+            parts = json.getJSONArray("parts"),
+        )
+
+    private suspend fun downloadContext(
+        soc: String,
+        destination: File,
+        fileName: String,
+        spec: ContextSpec,
+        completedBefore: Long,
+        totalAll: Long,
+    ): File {
+        var listedBytes = 0L
+        for (i in 0 until spec.parts.length()) {
+            listedBytes += spec.parts.getJSONObject(i).getLong("bytes")
+        }
+        if (listedBytes != spec.bytes) error("QNN context part sizes do not match")
+
+        val target = File(destination, fileName)
+        val temp = File(destination, "$fileName.part")
+        temp.delete()
+        val wholeDigest = MessageDigest.getInstance("SHA-256")
+        var completed = 0L
+
+        FileOutputStream(temp).use { output ->
+            for (i in 0 until spec.parts.length()) {
+                val part = spec.parts.getJSONObject(i)
+                val name = part.getString("file")
+                val partBytes = part.getLong("bytes")
+                val partSha = part.getString("sha256").lowercase(Locale.US)
+                val partDigest = MessageDigest.getInstance("SHA-256")
+                var received = 0L
+
+                Http.client.newCall(
+                    Request.Builder().url("$BASE_URL/$name").get().build(),
+                ).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        error("Generator part download failed (HTTP ${response.code})")
+                    }
+                    val body = response.body ?: error("Empty generator part")
+                    body.byteStream().use { input ->
+                        val buffer = ByteArray(1024 * 1024)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                            partDigest.update(buffer, 0, count)
+                            wholeDigest.update(buffer, 0, count)
+                            received += count
+                            _status.value = Status.Downloading(
+                                soc,
+                                completedBefore + completed + received,
+                                totalAll,
+                            )
+                        }
+                    }
+                }
+                if (received != partBytes) error("Incomplete generator part $name")
+                if (sha256Hex(partDigest.digest()) != partSha) {
+                    error("Generator checksum mismatch for $name")
+                }
+                completed += received
+            }
+        }
+
+        if (completed != spec.bytes) error("Incomplete QNN generator context")
+        if (sha256Hex(wholeDigest.digest()) != spec.sha256) {
+            error("QNN generator context checksum mismatch")
+        }
+        if (target.exists()) target.delete()
+        if (!temp.renameTo(target)) {
+            temp.copyTo(target, overwrite = true)
+            temp.delete()
+        }
+        return target
+    }
 
     suspend fun download(context: Context) = withContext(Dispatchers.IO) {
         val soc = supportedSoc()
@@ -123,108 +232,66 @@ object BreezeQnnGeneratorArtifact {
             val root = Http.client.newCall(
                 Request.Builder().url("$BASE_URL/manifest.json").get().build(),
             ).execute().use { response ->
-                if (!response.isSuccessful) error("QNN generator release is not ready yet")
+                if (!response.isSuccessful) error("Full QNN generator release is not ready yet")
                 JSONObject(response.body?.string() ?: error("Empty generator manifest"))
             }
             if (
-                root.optInt("version") != 1 ||
+                root.optInt("version") != 2 ||
                 root.optInt("soc_model") != 87 ||
                 root.optString("htp_arch") != "V81"
             ) {
-                error("Generator manifest is not native SM8850/V81")
+                error("Generator manifest is not native SM8850/V81 v2")
             }
 
             val spec = root.getJSONObject("files").getJSONObject(soc)
-            val contextSpec = spec.getJSONObject("context")
-            val expectedBytes = contextSpec.getLong("bytes")
-            val expectedSha = contextSpec.getString("sha256").lowercase(Locale.US)
-            val parts = contextSpec.getJSONArray("parts")
-            val engine = root.optString("engine", "qnn-generator-v1")
-            val graphJson = root.getJSONArray("graph_names")
-            val graphNames = List(graphJson.length()) { graphJson.getString(it) }
-            if (parts.length() == 0 || graphNames.isEmpty()) error("Incomplete generator manifest")
+            val depthSpec = parseContextSpec(spec.getJSONObject("depth_context"))
+            val backboneSpec = parseContextSpec(spec.getJSONObject("backbone_context"))
+            val totalAll = depthSpec.bytes + backboneSpec.bytes
+            val destination = dir(context).apply { mkdirs() }
 
-            var totalPartsBytes = 0L
-            for (i in 0 until parts.length()) {
-                totalPartsBytes += parts.getJSONObject(i).getLong("bytes")
-            }
-            if (totalPartsBytes != expectedBytes) error("Generator part sizes do not match")
+            val depth = downloadContext(
+                soc,
+                destination,
+                DEPTH_CONTEXT_NAME,
+                depthSpec,
+                0L,
+                totalAll,
+            )
+            val backbone = downloadContext(
+                soc,
+                destination,
+                BACKBONE_CONTEXT_NAME,
+                backboneSpec,
+                depthSpec.bytes,
+                totalAll,
+            )
 
-            val destination = dir(context)
-            destination.mkdirs()
-            val target = File(destination, CONTEXT_NAME)
-            val temp = File(destination, "$CONTEXT_NAME.part")
-            temp.delete()
-
-            val wholeDigest = MessageDigest.getInstance("SHA-256")
-            var completed = 0L
-            FileOutputStream(temp).use { output ->
-                for (i in 0 until parts.length()) {
-                    val part = parts.getJSONObject(i)
-                    val name = part.getString("file")
-                    val partBytes = part.getLong("bytes")
-                    val partSha = part.getString("sha256").lowercase(Locale.US)
-                    val partDigest = MessageDigest.getInstance("SHA-256")
-                    var received = 0L
-                    Http.client.newCall(
-                        Request.Builder().url("$BASE_URL/$name").get().build(),
-                    ).execute().use { response ->
-                        if (!response.isSuccessful) {
-                            error("Generator part download failed (HTTP ${response.code})")
-                        }
-                        val body = response.body ?: error("Empty generator part")
-                        body.byteStream().use { input ->
-                            val buffer = ByteArray(1024 * 1024)
-                            while (true) {
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                output.write(buffer, 0, count)
-                                partDigest.update(buffer, 0, count)
-                                wholeDigest.update(buffer, 0, count)
-                                received += count
-                                _status.value = Status.Downloading(
-                                    soc,
-                                    completed + received,
-                                    expectedBytes,
-                                )
-                            }
-                        }
-                    }
-                    if (received != partBytes) error("Incomplete generator part $name")
-                    if (sha256Hex(partDigest.digest()) != partSha) {
-                        error("Generator checksum mismatch for $name")
-                    }
-                    completed += received
-                }
-            }
-
-            if (completed != expectedBytes) error("Incomplete QNN generator context")
-            if (sha256Hex(wholeDigest.digest()) != expectedSha) {
-                error("QNN generator context checksum mismatch")
-            }
-            if (target.exists()) target.delete()
-            if (!temp.renameTo(target)) {
-                temp.copyTo(target, overwrite = true)
-                temp.delete()
-            }
-
+            val engine = root.optString("engine", "qnn-full-generator-kv-v2")
+            val depthGraphs = root.getJSONArray("depth_graph_names")
+            val backboneGraphs = root.getJSONArray("backbone_graph_names")
             File(destination, "installed.json").writeText(
                 JSONObject()
-                    .put("version", 1)
+                    .put("version", 2)
                     .put("soc", soc)
                     .put("engine", engine)
-                    .put("contextFile", CONTEXT_NAME)
-                    .put("contextBytes", expectedBytes)
-                    .put("graphNames", graphJson)
+                    .put("depthContextFile", DEPTH_CONTEXT_NAME)
+                    .put("depthContextBytes", depth.length())
+                    .put("backboneContextFile", BACKBONE_CONTEXT_NAME)
+                    .put("backboneContextBytes", backbone.length())
+                    .put("depthGraphNames", depthGraphs)
+                    .put("backboneGraphNames", backboneGraphs)
+                    .put("backboneMaxSeq", root.optInt("backbone_max_seq", 512))
                     .toString(),
             )
 
-            _status.value = Status.Ready(soc, target, engine)
+            _status.value = Status.Ready(soc, depth, backbone, engine)
         }.onFailure { error ->
-            File(dir(context), "$CONTEXT_NAME.part").delete()
+            val destination = dir(context)
+            File(destination, "$DEPTH_CONTEXT_NAME.part").delete()
+            File(destination, "$BACKBONE_CONTEXT_NAME.part").delete()
             _status.value = Status.Error(
                 soc,
-                error.message ?: "QNN generator download failed",
+                error.message ?: "Full QNN generator download failed",
             )
         }
     }

@@ -9,8 +9,8 @@ namespace breeze {
 struct BreezeModel;
 
 // Optional SM8850 QNN fast path for Breeze's 15-step residual codebook decoder.
-// Sampling stays on the host so the model's temperature/top-k/top-p behavior
-// remains identical to the normal DepthRunner path.
+// V2 supports batch-1 and CFG batch-2 graphs. Sampling stays on the host so
+// temperature/top-k/top-p and CFG semantics remain identical to DepthRunner.
 class QnnDepthRunner {
 public:
     QnnDepthRunner();
@@ -19,12 +19,13 @@ public:
     QnnDepthRunner(const QnnDepthRunner &) = delete;
     QnnDepthRunner & operator=(const QnnDepthRunner &) = delete;
 
-    bool init(BreezeModel & m);
+    bool init(BreezeModel & m, int branches);
     bool ready() const;
     bool run(
         BreezeModel & m,
-        const std::vector<float> & backbone_hidden,
+        const std::vector<std::vector<float>> & backbone_hiddens,
         int first_codebook,
+        float cfg_scale,
         std::mt19937 & rng,
         std::vector<int> & residual_codebooks
     );

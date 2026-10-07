@@ -2,6 +2,7 @@
 #include "breeze/sampling.h"
 #include "breeze/text_encoder.h"
 #include "breeze/qnn_depth_decoder.h"
+#include "breeze/qnn_backbone.h"
 
 #include <algorithm>
 #include <chrono>
@@ -206,30 +207,54 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         max_new
     );
 
+    const int generator_branches = use_cfg ? 2 : 1;
+    const int qnn_capacity_need =
+        std::max(total_c, use_cfg ? total_u : total_c) + soft_target + 16;
+
+    QnnBackboneRunner qnn_backbone;
+    bool qnn_backbone_ready =
+        qnn_capacity_need <= 512 && qnn_backbone.init(m, generator_branches);
+
     BackboneState st_c, st_u;
-    st_c.init(m, total_c + max_new + 8);
-    if (use_cfg) st_u.init(m, total_u + max_new + 8);
+    bool ggml_backbone_active = false;
+    StepOut o_c, o_u;
 
     t0 = clock_now();
-    StepOut o_c = backbone_run(m, st_c, emb_c, total_c);
-    StepOut o_u;
-    if (use_cfg) o_u = backbone_run(m, st_u, emb_u, total_u);
+    if (qnn_backbone_ready) {
+        qnn_backbone_ready = qnn_backbone.prefill(
+            m,
+            emb_c,
+            total_c,
+            use_cfg ? &emb_u : nullptr,
+            total_u,
+            o_c,
+            o_u
+        );
+    }
+    if (!qnn_backbone_ready) {
+        ggml_backbone_active = true;
+        st_c.init(m, total_c + max_new + 8);
+        if (use_cfg) st_u.init(m, total_u + max_new + 8);
+        o_c = backbone_run(m, st_c, emb_c, total_c);
+        if (use_cfg) o_u = backbone_run(m, st_u, emb_u, total_u);
+    }
     tm.prefill += since(t0);
 
     DepthRunner depth;
-    depth.init(m, use_cfg ? 2 : 1);
+    depth.init(m, generator_branches);
 
-    // Optional device-specific QNN depth decoder. V1 is batch-1, so CFG keeps
-    // the proven ggml path. A failed QNN load/run disables itself and falls
-    // back per frame without changing synthesis semantics.
+    // V2 QNN depth supports both normal batch-1 and CFG batch-2. If the
+    // downloaded context is absent or its device smoke-test fails, the proven
+    // ggml-Hexagon depth path remains available.
     QnnDepthRunner qnn_depth;
-    const bool qnn_depth_requested = !use_cfg;
-    const bool qnn_depth_ready = qnn_depth_requested && qnn_depth.init(m);
+    const bool qnn_depth_ready = qnn_depth.init(m, generator_branches);
     std::fprintf(
         stderr,
-        "[BREEZE_DEPTH] backend=%s cfg=%.2f\n",
+        "[BREEZE_GENERATOR] backbone=%s depth=%s cfg=%.2f capacity_need=%d\n",
+        qnn_backbone_ready ? "qnn-htp" : "ggml-hexagon",
         qnn_depth_ready ? "qnn-htp" : "ggml-hexagon",
-        req.cfg_scale
+        req.cfg_scale,
+        qnn_capacity_need
     );
 
     // This one-frame graph is shape-stable. Replaying it avoids rebuilding and
@@ -382,8 +407,15 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         auto td = clock_now();
         std::vector<int> depth_codes;
         bool used_qnn_depth = false;
-        if (!use_cfg && qnn_depth.ready()) {
-            used_qnn_depth = qnn_depth.run(m, o_c.hidden, cb0, rng, depth_codes);
+        if (qnn_depth.ready()) {
+            used_qnn_depth = qnn_depth.run(
+                m,
+                hiddens,
+                cb0,
+                req.cfg_scale,
+                rng,
+                depth_codes
+            );
         }
         if (!used_qnn_depth) {
             depth_codes = depth.run(m, hiddens, cb0, req.cfg_scale, rng);
@@ -411,7 +443,13 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
 
         auto tb = clock_now();
         std::vector<float> ae = audio_embed.run(m, frame);
-        if (use_cfg) {
+        if (qnn_backbone_ready) {
+            if (!qnn_backbone.step(m, ae, o_c, o_u)) {
+                throw std::runtime_error(
+                    "Full QNN backbone failed during autoregressive decode"
+                );
+            }
+        } else if (use_cfg) {
             auto pair = backbone_run_cfg(m, st_c, st_u, ae);
             o_c = std::move(pair[0]);
             o_u = std::move(pair[1]);
@@ -479,8 +517,10 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         }
     }
 
-    st_c.free();
-    if (use_cfg) st_u.free();
+    if (ggml_backbone_active) {
+        st_c.free();
+        if (use_cfg) st_u.free();
+    }
     depth.free();
 
     const int total_frames = (int) frames.size() / nc;

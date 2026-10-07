@@ -82,6 +82,7 @@ set(BREEZE_SOURCES
     "${BREEZE_SOURCE_DIR}/src/audio.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-qnn-vocoder.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-qnn-depth-decoder.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-qnn-backbone.cpp"
     "${BREEZE_SOURCE_DIR}/src/config.cpp"
     "${BREEZE_OVERLAY_DIR}/src/gguf_loader.cpp"
     "${BREEZE_SOURCE_DIR}/src/tokenizer.cpp"

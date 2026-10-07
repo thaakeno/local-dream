@@ -38,6 +38,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.NavController
 import io.github.xororz.localdream.data.ModelRepository
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
+import io.github.xororz.localdream.service.BreezeQnnGeneratorArtifact
 import io.github.xororz.localdream.service.BreezeQnnVocoderArtifact
 import io.github.xororz.localdream.service.SpeechGenerationService
 import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
@@ -201,6 +202,7 @@ fun SpeechRunScreen(
 
     LaunchedEffect(modelId, model?.isDownloaded) {
         BreezeQnnVocoderArtifact.refresh(context)
+        BreezeQnnGeneratorArtifact.refresh(context)
         if (model?.isDownloaded == true && model.isVoice) {
             val supported = BreezeQnnVocoderArtifact.supportedSoc() != null
             val acceleratorReady = BreezeQnnVocoderArtifact.localFile(context) != null
@@ -1000,7 +1002,7 @@ fun SpeechRunScreen(
             }
         }
     }
-
+}
 
 @Composable
 private fun InlineEventEditor(
