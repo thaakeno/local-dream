@@ -239,12 +239,19 @@ test -f "$SPIRV_CONFIG/SPIRV-HeadersConfig.cmake" || {
     echo "SPIRV-Headers host package config missing" >&2
     exit 1
 }
+# NDK Vulkan headers can omit vulkan.hpp, which ggml-vulkan requires.
+# Use the Khronos C/C++ headers together so generated declarations agree.
+VULKAN_SRC="$DEPS_DIR/Vulkan-Headers"
+if [[ ! -f "$VULKAN_SRC/include/vulkan/vulkan.hpp" ]]; then
+    git clone -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git "$VULKAN_SRC"
+fi
+test -f "$VULKAN_SRC/include/vulkan/vulkan.hpp"
 GLSLC="$ANDROID_NDK_ROOT/shader-tools/linux-x86_64/glslc"
 test -x "$GLSLC" || { echo "Android NDK host glslc is missing" >&2; exit 1; }
 
 rm -rf "$BUILD_DIR"
 
-cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=ON -DVulkan_GLSLC_EXECUTABLE="$GLSLC" -DSPIRV-Headers_DIR="$SPIRV_CONFIG"     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
+cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=ON -DVulkan_GLSLC_EXECUTABLE="$GLSLC" -DSPIRV-Headers_DIR="$SPIRV_CONFIG" -DVulkan_INCLUDE_DIR="$VULKAN_SRC/include"     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
 
 cmake --build "$BUILD_DIR" --target breeze-server breeze-htp-selftest htp-v73 htp-v75 htp-v79 htp-v81 -j "$(nproc)"
 
