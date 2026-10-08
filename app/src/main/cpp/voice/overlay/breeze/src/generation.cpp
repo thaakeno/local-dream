@@ -518,9 +518,14 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
                 std::fprintf(stderr,
                     "[BREEZE_DEPTH_BACKEND] GPU runtime failure: %s; falling back to HTP\n",
                     e.what());
-                // Replace the cached Vulkan engine, not just its temporary
-                // depth buffers. A failed graph must not poison later requests.
-                reset_persistent_qnn(nullptr);
+                // Evict only the failing GPU engine. Never invalidate the
+                // cached QNN backbone/depth pointers while a generation is
+                // still using them; that previously risked use-after-free.
+                if (generator_branches == 2) {
+                    g_qnn_generator.adreno_b2.reset();
+                } else {
+                    g_qnn_generator.adreno_b1.reset();
+                }
                 gpu_depth = nullptr;
                 gpu_depth_ready = false;
             }
