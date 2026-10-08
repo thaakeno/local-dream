@@ -61,7 +61,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v209-qnn-v3-hybrid-safe"
+            "breeze-a0e177-hexagon-ab9acc-v210-depth-profiling"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -342,6 +342,10 @@ class SpeechGenerationService : Service() {
                 env["BREEZE_QNN_GENERATOR_ENGINE"] = generator.engine
                 env["BREEZE_QNN_BACKBONE_MAX_SEQ"] = generator.backboneMaxSeq.toString()
             }
+            // Isolated per-codebook timings are intentionally opt-in so logging
+            // does not affect actual throughput. Fused experimental graph is
+            // never activated in production after the SM8850 DSPQueue failure.
+            env["BREEZE_DEPTH_FUSION_TRIAL"] = "0"
             if (qnnVocoderFile != null) {
                 env["BREEZE_QNN_VOCODER_PATH"] = qnnVocoderFile.absolutePath
                 env["BREEZE_QNN_VOCODER_LUT_PATH"] = qnnInstall!!.lutFile.absolutePath

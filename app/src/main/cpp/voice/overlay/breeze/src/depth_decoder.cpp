@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <chrono>
 #include <stdexcept>
 #include <string>
 
@@ -465,7 +467,13 @@ std::vector<int> DepthRunner::run(BreezeModel & m, const std::vector<std::vector
         n_force == 0 &&
         m.cfg.depth_top_k > 0 &&
         m.cfg.depth_top_p >= 0.9999f;
-    if (whole_frame_eligible && !frame_fast_disabled) {
+    // IMPORTANT: the monolithic graph crashed on SM8850; never use it in a
+    // distributable build. Only a separate explicitly controlled lab run may
+    // opt in after verifying HTP numerical equivalence on the actual device.
+    const char * fusion_trial = std::getenv("BREEZE_DEPTH_FUSION_TRIAL");
+    const bool fusion_opt_in =
+        fusion_trial && fusion_trial[0] == '1' && fusion_trial[1] == '\0';
+    if (fusion_opt_in && whole_frame_eligible && !frame_fast_disabled) {
         try {
             std::vector<int> fast_codes;
             if (run_depth_frame_fast(m, *this, hiddens, cb0, rng, fast_codes)) {
@@ -493,11 +501,26 @@ std::vector<int> DepthRunner::run(BreezeModel & m, const std::vector<std::vector
     if (sp_in) sp = *sp_in;
 
     std::vector<int32_t> idx(n_branch);
-    std::vector<int> codes = { cb0 };
+    std::vector<int> codes;
+    codes.reserve((size_t) nc);
+    codes.push_back(cb0);
+    // Profile the true cost of the 15 serial steps. Large graph fusion proved
+    // unsafe on SM8850, so optimize allocations and record separate host,
+    // HTP execution and readback time without changing sampling semantics.
+    const char * depth_profile = std::getenv("BREEZE_DEPTH_PROFILE");
+    const bool profile = depth_profile && depth_profile[0] == '1';
+    using Clock = std::chrono::steady_clock;
+    double set_ms = 0.0, execute_ms = 0.0, read_ms = 0.0, sample_ms = 0.0;
+    auto elapsed = [](Clock::time_point start) {
+        return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+    };
+    std::vector<float> guided_logits;
+    if (n_branch > 1) guided_logits.resize((size_t) vs);
     for (int j = 1; j < nc; j++) {
         const int head_idx = j - 1;
         if (!steps[head_idx]) steps[head_idx] = build_depth_step(m, *this, head_idx);
         DepthStep & step = *steps[head_idx];
+        const auto ts = Clock::now();
         for (int b = 0; b < n_branch; b++) idx[b] = codes[head_idx] + head_idx * vs;
         ggml_backend_tensor_set(step.audio, idx.data(), 0, idx.size() * sizeof(int32_t));
         if (step.hidden) {
@@ -506,17 +529,40 @@ std::vector<int> DepthRunner::run(BreezeModel & m, const std::vector<std::vector
                                         (size_t) b * m.cfg.hidden_size * sizeof(float),
                                         (size_t) m.cfg.hidden_size * sizeof(float));
         }
+        if (profile) set_ms += elapsed(ts);
+        const auto te = Clock::now();
         step.graph.replay(m.backend);
+        if (profile) execute_ms += elapsed(te);
+        const auto tr = Clock::now();
         std::vector<float> out = tensor_to_f32(step.logits);
+        if (profile) read_ms += elapsed(tr);
 
-        const int vocab = (int) out.size() / n_branch;
-        std::vector<float> logits(out.begin(), out.begin() + vocab);
-        if (n_branch > 1) {
+        const auto tp = Clock::now();
+        int next_code;
+        if (j <= n_force) {
+            next_code = force[j - 1];
+        } else if (n_branch == 1) {
+            // Exact same sampling distribution, but avoid allocating/copying
+            // a second full logits vector for every residual codebook.
+            next_code = sample_token(out, sp, rng);
+        } else {
+            const int vocab = (int) out.size() / n_branch;
+            if ((int) guided_logits.size() != vocab) guided_logits.resize((size_t) vocab);
             for (int i = 0; i < vocab; i++)
-                logits[i] = out[vocab + i] + cfg_scale * (out[i] - out[vocab + i]);
+                guided_logits[(size_t) i] = out[vocab + i] + cfg_scale * (out[i] - out[vocab + i]);
+            next_code = sample_token(guided_logits, sp, rng);
         }
-        // forced steps still run the graph, later codebooks are conditioned on this one
-        codes.push_back(j <= n_force ? force[j - 1] : sample_token(logits, sp, rng));
+        codes.push_back(next_code);
+        if (profile) sample_ms += elapsed(tp);
+    }
+    if (profile) {
+        std::fprintf(
+            stderr,
+            "[BREEZE_DEPTH_BREAKDOWN] steps=%d cfg_branches=%d set_ms=%.3f "
+            "htp_ms=%.3f read_ms=%.3f sample_ms=%.3f total_ms=%.3f\n",
+            nc - 1, n_branch, set_ms, execute_ms, read_ms, sample_ms,
+            set_ms + execute_ms + read_ms + sample_ms
+        );
     }
     return std::vector<int>(codes.begin() + 1, codes.end());
 }
