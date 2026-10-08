@@ -360,6 +360,12 @@ fun SpeechRunScreen(
     var maxNewTokens by rememberSaveable { mutableIntStateOf(DEFAULT_MAX_NEW_TOKENS) }
     var showTune by remember { mutableStateOf(false) }
     var showAdvancedTune by rememberSaveable { mutableStateOf(false) }
+    var depthBackendSelection by remember {
+        mutableStateOf(
+            context.getSharedPreferences("breeze_runtime_tuning", android.content.Context.MODE_PRIVATE)
+                .getString("depth_backend", "npu") ?: "npu",
+        )
+    }
     var fuseBackboneEmbedding by remember {
         mutableStateOf(
             context.getSharedPreferences("breeze_runtime_tuning", android.content.Context.MODE_PRIVATE)
@@ -1062,6 +1068,57 @@ fun SpeechRunScreen(
                 }
 
                 if (showAdvancedTune) {
+                    Text(
+                        "Breeze depth accelerator",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Original NPU depth or Adreno GPU depth. Backbone and vocoder remain on NPU.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        listOf("npu" to "NPU", "gpu" to "GPU + NPU").forEach { choice ->
+                            FilterChip(
+                                selected = depthBackendSelection == choice.first,
+                                onClick = {
+                                    if (depthBackendSelection != choice.first) {
+                                        depthBackendSelection = choice.first
+                                        context.getSharedPreferences(
+                                            "breeze_runtime_tuning",
+                                            android.content.Context.MODE_PRIVATE,
+                                        ).edit().putString("depth_backend", choice.first).apply()
+                                        scope.launch {
+                                            context.startService(
+                                                Intent(context, SpeechGenerationService::class.java)
+                                                    .setAction(SpeechGenerationService.ACTION_STOP),
+                                            )
+                                            delay(180)
+                                            SpeechGenerationService.resetForModel(modelId)
+                                            if (model?.isDownloaded == true) {
+                                                context.startForegroundService(
+                                                    Intent(context, SpeechGenerationService::class.java)
+                                                        .setAction(SpeechGenerationService.ACTION_PRELOAD)
+                                                        .putExtra("modelId", modelId),
+                                                )
+                                            }
+                                        }
+                                    }
+                                },
+                                label = { Text(choice.second) },
+                            )
+                        }
+                    }
+                    Text(
+                        "GPU depth consumes additional memory. If Vulkan fails, the backend reports the fallback and returns to NPU depth.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    HorizontalDivider()
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,

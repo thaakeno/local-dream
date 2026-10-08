@@ -1,3 +1,4 @@
+#include "breeze/gpu_depth.h"
 #include "breeze/generation.h"
 #include "breeze/sampling.h"
 #include "breeze/text_encoder.h"
@@ -303,16 +304,28 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
 
     DepthRunner depth;
     depth.init(m, generator_branches);
-
-    // Keep the depth context resident as well; its graph pair and device self-test
-    // are invariant for the loaded Breeze model and should run once, not per chunk.
-    QnnDepthRunner * qnn_depth = persistent_depth(m, generator_branches);
+    GpuDepthEngine gpu_depth;
+    const char * selected_depth = std::getenv("BREEZE_DEPTH_BACKEND");
+    const bool want_gpu_depth = selected_depth && std::strcmp(selected_depth, "vulkan") == 0;
+    bool gpu_depth_ready = want_gpu_depth && gpu_depth.init(
+        m, generator_branches, std::getenv("BREEZE_GPU_GGUF_PATH")
+    );
+    // Full GPU depth and QNN depth cannot both own this frame's decoder.
+    // If Adreno initialization fails, preserve the known-good HTP path.
+    QnnDepthRunner * qnn_depth =
+        gpu_depth_ready ? nullptr : persistent_depth(m, generator_branches);
     const bool qnn_depth_ready = qnn_depth != nullptr && qnn_depth->ready();
+    std::fprintf(stderr,
+        "[BREEZE_DEPTH_BACKEND] requested=%s active=%s fallback=%d\n",
+        want_gpu_depth ? "adreno-vulkan" : "htp",
+        gpu_depth_ready ? "adreno-vulkan" : (qnn_depth_ready ? "qnn-htp" : "ggml-hexagon"),
+        want_gpu_depth && !gpu_depth_ready ? 1 : 0
+    );
     std::fprintf(
         stderr,
         "[BREEZE_GENERATOR] backbone=%s depth=%s cfg=%.2f capacity_need=%d\n",
         qnn_backbone_ready ? "qnn-htp" : "ggml-hexagon",
-        qnn_depth_ready ? "qnn-htp" : "ggml-hexagon",
+        gpu_depth_ready ? "adreno-vulkan" : (qnn_depth_ready ? "qnn-htp" : "ggml-hexagon"),
         req.cfg_scale,
         qnn_capacity_need
     );
@@ -477,20 +490,27 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         if (use_cfg) hiddens.push_back(o_u.hidden);
         auto td = clock_now();
         std::vector<int> depth_codes;
-        bool used_qnn_depth = false;
-        if (qnn_depth && qnn_depth->ready()) {
-            used_qnn_depth = qnn_depth->run(
-                m,
-                hiddens,
-                cb0,
-                req.cfg_scale,
-                rng,
-                depth_codes
+        bool depth_ready = false;
+        if (gpu_depth_ready) {
+            // Vulkan and Hexagon use the same sampling configuration and
+            // original GGUF quantization, with no weight conversion.
+            try {
+                depth_codes = gpu_depth.run(hiddens, cb0, req.cfg_scale, rng);
+                depth_ready = true;
+            } catch (const std::exception & e) {
+                std::fprintf(stderr,
+                    "[BREEZE_DEPTH_BACKEND] GPU runtime failure: %s; falling back to HTP\n",
+                    e.what());
+                gpu_depth.reset();
+                gpu_depth_ready = false;
+            }
+        }
+        if (!depth_ready && qnn_depth && qnn_depth->ready()) {
+            depth_ready = qnn_depth->run(
+                m, hiddens, cb0, req.cfg_scale, rng, depth_codes
             );
         }
-        if (!used_qnn_depth) {
-            depth_codes = depth.run(m, hiddens, cb0, req.cfg_scale, rng);
-        }
+        if (!depth_ready) depth_codes = depth.run(m, hiddens, cb0, req.cfg_scale, rng);
         tm.depth += since(td);
         std::vector<int> frame = { cb0 };
         frame.insert(frame.end(), depth_codes.begin(), depth_codes.end());

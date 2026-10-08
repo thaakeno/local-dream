@@ -347,6 +347,11 @@ class SpeechGenerationService : Service() {
             // never activated in production after the SM8850 DSPQueue failure.
             env["BREEZE_DEPTH_FUSION_TRIAL"] = "0"
             env["BREEZE_DEPTH_PROFILE"] = "1"
+            val gpuDepthRequested = getSharedPreferences(
+                "breeze_runtime_tuning", MODE_PRIVATE,
+            ).getString("depth_backend", "npu") == "gpu"
+            env["BREEZE_DEPTH_BACKEND"] = if (gpuDepthRequested) "vulkan" else "htp"
+            if (gpuDepthRequested) env["BREEZE_GPU_GGUF_PATH"] = modelFile.absolutePath
             // Fuse the 16-codebook embedding gather into the autoregressive
             // backbone graph, eliminating one HTP roundtrip per audio frame.
             // This is independent of the unsafe whole-frame depth fusion.

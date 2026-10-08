@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Breeze TTS 2 strict Qualcomm Hexagon HTP runtime for Local Dream.
-# No CPU or Vulkan backend is compiled into the Breeze execution path.
+# Breeze TTS 2: proven Hexagon HTP path plus optional Adreno Vulkan depth.
 set -euo pipefail
 
 : "${ANDROID_NDK_ROOT:?set ANDROID_NDK_ROOT}"
@@ -221,9 +220,17 @@ if grep -q 'u.block->data = tensor_to_f32' "$(pwd)/overlay/breeze/src/codec.cpp"
     exit 1
 fi
 
+# glslc must execute on the Linux host while targeting Android Vulkan.
+if ! dpkg-query -W -f='\x24{Status}' spirv-headers 2>/dev/null | grep -q "install ok installed"; then
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends spirv-headers
+fi
+GLSLC="$ANDROID_NDK_ROOT/shader-tools/linux-x86_64/glslc"
+test -x "$GLSLC" || { echo "Android NDK host glslc is missing" >&2; exit 1; }
+
 rm -rf "$BUILD_DIR"
 
-cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=OFF     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
+cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=ON -DVulkan_GLSLC_EXECUTABLE="$GLSLC"     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
 
 cmake --build "$BUILD_DIR" --target breeze-server breeze-htp-selftest htp-v73 htp-v75 htp-v79 htp-v81 -j "$(nproc)"
 
@@ -266,7 +273,7 @@ extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-refere
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
-generator=qnn-v5-linked-fastpath-toggle-or-ggml-fallback
+generator=qnn-v5-linked-fastpath-or-ggml-htp,optional-adreno-vulkan-depth
 vocoder=qnn-htp-feature64-serialized-or-ggml-fallback-v198
 qnn_vocoder=sm8850-v3-v81,feature64,host-lut-fp32,cached-reference-selftest,left-context25,serialized64x39,eos-first
 formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2

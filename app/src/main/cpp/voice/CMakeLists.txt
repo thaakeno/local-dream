@@ -69,7 +69,7 @@ set(GGML_HEXAGON_USE_MEMPOOL OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_CPU OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
-set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN ON CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -79,6 +79,7 @@ add_subdirectory("${GGML_SOURCE_DIR}" ggml-build)
 
 set(BREEZE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-common-htp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-gpu-depth.cpp"
     "${BREEZE_SOURCE_DIR}/src/audio.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-qnn-vocoder.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-qnn-depth-decoder.cpp"
@@ -117,6 +118,7 @@ target_include_directories(breeze_core PRIVATE
     "${QNN_SAMPLE_SRC}/WrapperUtils"
 )
 target_link_libraries(breeze_core PUBLIC ggml breeze_qnn_runtime)
+target_compile_definitions(breeze_core PRIVATE LOCALDREAM_VULKAN_DEPTH=1)
 
 set(BREEZE_WEBUI_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/breeze_webui_assets.h")
 add_custom_command(
