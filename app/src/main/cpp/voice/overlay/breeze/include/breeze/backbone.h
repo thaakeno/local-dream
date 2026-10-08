@@ -38,10 +38,12 @@ struct AudioEmbedRunner {
 std::vector<float> audio_embed_forward(BreezeModel & m, const std::vector<int> & codes, int n_frames);
 
 // run a chunk of inputs_embeds through the backbone, appending to the kv cache
-StepOut backbone_run(BreezeModel & m, BackboneState & st, const std::vector<float> & embeds, int n_tokens);
+StepOut backbone_run(BreezeModel & m, BackboneState & st, const std::vector<float> & embeds,
+                     int n_tokens, const std::vector<int> * frame_codes = nullptr);
 
 // one audio frame shared by two CFG branches, each with its own cache and position
 std::array<StepOut, 2> backbone_run_cfg(BreezeModel & m, BackboneState & cond, BackboneState & uncond,
-                                       const std::vector<float> & embed);
+                                       const std::vector<float> & embed,
+                                       const std::vector<int> * frame_codes = nullptr);
 
 }

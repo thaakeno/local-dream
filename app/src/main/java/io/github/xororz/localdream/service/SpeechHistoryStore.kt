@@ -58,8 +58,12 @@ object SpeechHistoryStore {
                 ?.filter { it.isDirectory }
                 ?.flatMap { loadFile(File(it, HISTORY_FILE)) }
                 .orEmpty()
-            (legacy + partitioned)
-                .distinctBy { it.id }
+            // The per-model index is authoritative. Loading legacy first
+            // silently undid favorite edits because old and new copies share
+            // the same UUID. Preserve legacy-only entries without shadowing
+            // values saved to a model's own history.json.
+            (partitioned + legacy)
+                .distinctBy { it.modelId to it.id }
                 .filter { File(it.filePath).isFile }
                 .sortedByDescending { it.createdAt }
         }
@@ -175,8 +179,23 @@ object SpeechHistoryStore {
                     item.copy(favorite = favorite)
                 } else item
             }
-            if (changed) saveForModelUnlocked(context, modelId, next)
-            changed
+            if (changed) {
+                saveForModelUnlocked(context, modelId, next)
+                return@withLock true
+            }
+            // Compatibility with pre-partition history. A brand-new empty
+            // per-model index may exist already; do not let that make the
+            // favorite button silently do nothing for a legacy entry.
+            val legacyFile = File(directory(context), HISTORY_FILE)
+            val legacyItem = loadFile(legacyFile).firstOrNull {
+                it.modelId == modelId && it.id == id && File(it.filePath).isFile
+            } ?: return@withLock false
+            saveForModelUnlocked(
+                context,
+                modelId,
+                listOf(legacyItem.copy(favorite = favorite)) + items,
+            )
+            true
         }
     }
 

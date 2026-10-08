@@ -107,12 +107,24 @@ static ggml_tensor * bb_layer(ggml_context * ctx, BreezeModel & m, Graph & g, Ba
     return ggml_add(ctx, res, h);
 }
 
-StepOut backbone_run(BreezeModel & m, BackboneState & st, const std::vector<float> & embeds, int n) {
+StepOut backbone_run(BreezeModel & m, BackboneState & st, const std::vector<float> & embeds,
+                     int n, const std::vector<int> * frame_codes) {
     const BackboneConfig & c = m.cfg.bb;
     const int total = st.pos + n;
     Graph g(8192);
 
-    ggml_tensor * x = g.input_f32(embeds, c.hidden, n);
+    ggml_tensor * x;
+    if (frame_codes) {
+        if (n != 1 || (int) frame_codes->size() != m.cfg.num_codebooks)
+            throw std::runtime_error("fused backbone audio frame shape mismatch");
+        std::vector<int32_t> idx((size_t) m.cfg.num_codebooks);
+        for (int cb = 0; cb < m.cfg.num_codebooks; ++cb)
+            idx[(size_t) cb] = (*frame_codes)[(size_t) cb] + cb * m.cfg.audio_vocab_size;
+        x = build_audio_embed(g.ctx, m,
+                             g.input_i32(idx, m.cfg.num_codebooks), 1);
+    } else {
+        x = g.input_f32(embeds, c.hidden, n);
+    }
     std::vector<int32_t> pos_i(n);
     for (int i = 0; i < n; i++) pos_i[i] = st.pos + i;
     ggml_tensor * pos = g.input_i32(pos_i, n);
@@ -138,10 +150,22 @@ StepOut backbone_run(BreezeModel & m, BackboneState & st, const std::vector<floa
 }
 
 std::array<StepOut, 2> backbone_run_cfg(BreezeModel & m, BackboneState & cond, BackboneState & uncond,
-                                       const std::vector<float> & embed) {
+                                       const std::vector<float> & embed,
+                                       const std::vector<int> * frame_codes) {
     const auto & c = m.cfg.bb;
     Graph g(8192);
-    auto * input = g.input_f32(embed, c.hidden);
+    ggml_tensor * input;
+    if (frame_codes) {
+        if ((int) frame_codes->size() != m.cfg.num_codebooks)
+            throw std::runtime_error("fused CFG backbone audio frame shape mismatch");
+        std::vector<int32_t> idx((size_t) m.cfg.num_codebooks);
+        for (int cb = 0; cb < m.cfg.num_codebooks; ++cb)
+            idx[(size_t) cb] = (*frame_codes)[(size_t) cb] + cb * m.cfg.audio_vocab_size;
+        input = build_audio_embed(g.ctx, m,
+                                  g.input_i32(idx, m.cfg.num_codebooks), 1);
+    } else {
+        input = g.input_f32(embed, c.hidden);
+    }
     auto * x = ggml_concat(g.ctx, input, input, 1);
     auto * pos = g.input_i32({cond.pos, uncond.pos}, 2);
     auto * mask_c = g.input_f32(std::vector<float>(cond.pos + 1, 0.0f), cond.pos + 1);

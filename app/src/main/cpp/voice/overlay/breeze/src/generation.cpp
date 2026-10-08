@@ -320,7 +320,15 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     // This one-frame graph is shape-stable. Replaying it avoids rebuilding and
     // repartitioning an HTP graph for every generated codec frame.
     AudioEmbedRunner audio_embed;
-    audio_embed.init(m);
+    const char * fuse_embed_env = std::getenv("BREEZE_BACKBONE_EMBED_FUSE");
+    const bool fuse_backbone_embed =
+        !qnn_backbone_ready && fuse_embed_env && fuse_embed_env[0] == '1';
+    if (!fuse_backbone_embed) audio_embed.init(m);
+    std::fprintf(
+        stderr,
+        "[BREEZE_BACKBONE_EMBED] fused=%d graph_submissions_per_step=%d\n",
+        fuse_backbone_embed ? 1 : 0, fuse_backbone_embed ? 1 : 2
+    );
 
     SampleParams bp;
     bp.temperature = req.temperature > 0.0f ? req.temperature : m.cfg.temperature;
@@ -505,7 +513,8 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         hist.push_back(cb0);
 
         auto tb = clock_now();
-        std::vector<float> ae = audio_embed.run(m, frame);
+        std::vector<float> ae;
+        if (!fuse_backbone_embed) ae = audio_embed.run(m, frame);
         if (qnn_backbone_ready) {
             if (!qnn_backbone->step(m, ae, o_c, o_u)) {
                 throw std::runtime_error(
@@ -513,11 +522,15 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
                 );
             }
         } else if (use_cfg) {
-            auto pair = backbone_run_cfg(m, st_c, st_u, ae);
+            auto pair = backbone_run_cfg(
+                m, st_c, st_u, ae, fuse_backbone_embed ? &frame : nullptr
+            );
             o_c = std::move(pair[0]);
             o_u = std::move(pair[1]);
         } else {
-            o_c = backbone_run(m, st_c, ae, 1);
+            o_c = backbone_run(
+                m, st_c, ae, 1, fuse_backbone_embed ? &frame : nullptr
+            );
         }
         tm.backbone += since(tb);
         comb = combine_logits(o_c.logits, o_u.logits, use_cfg, req.cfg_scale);

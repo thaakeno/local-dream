@@ -61,7 +61,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v211-depth-bottleneck"
+            "breeze-a0e177-hexagon-ab9acc-v212-embedded-backbone"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -347,6 +347,10 @@ class SpeechGenerationService : Service() {
             // never activated in production after the SM8850 DSPQueue failure.
             env["BREEZE_DEPTH_FUSION_TRIAL"] = "0"
             env["BREEZE_DEPTH_PROFILE"] = "1"
+            // Fuse the 16-codebook embedding gather into the autoregressive
+            // backbone graph, eliminating one HTP roundtrip per audio frame.
+            // This is independent of the unsafe whole-frame depth fusion.
+            env["BREEZE_BACKBONE_EMBED_FUSE"] = "1"
             if (qnnVocoderFile != null) {
                 env["BREEZE_QNN_VOCODER_PATH"] = qnnVocoderFile.absolutePath
                 env["BREEZE_QNN_VOCODER_LUT_PATH"] = qnnInstall!!.lutFile.absolutePath

@@ -1414,20 +1414,38 @@ fun SpeechRunScreen(
                                                 ),
                                                 favorite = item.favorite,
                                                 onFavoriteToggle = {
+                                                    val nextFavorite = !item.favorite
+                                                    // Update immediately, then commit. A slow
+                                                    // history.json write must not look like a dead button.
+                                                    history = history.map { old ->
+                                                        if (old.id == item.id &&
+                                                            old.modelId == item.modelId
+                                                        ) old.copy(favorite = nextFavorite) else old
+                                                    }
                                                     scope.launch {
-                                                        SpeechHistoryStore.setFavorite(
-                                                            context,
-                                                            item.modelId,
-                                                            item.id,
-                                                            !item.favorite,
-                                                        )
+                                                        val saved = runCatching {
+                                                            SpeechHistoryStore.setFavorite(
+                                                                context,
+                                                                item.modelId,
+                                                                item.id,
+                                                                nextFavorite,
+                                                            )
+                                                        }.getOrDefault(false)
                                                         history = withContext(Dispatchers.IO) {
                                                             SpeechHistoryStore.load(context)
                                                         }
-                                                        AppHaptics.perform(
-                                                            context,
-                                                            AppHaptics.Kind.Interaction,
-                                                        )
+                                                        if (!saved) {
+                                                            Toast.makeText(
+                                                                context,
+                                                                "Could not update favorite",
+                                                                Toast.LENGTH_SHORT,
+                                                            ).show()
+                                                        } else {
+                                                            AppHaptics.perform(
+                                                                context,
+                                                                AppHaptics.Kind.Interaction,
+                                                            )
+                                                        }
                                                     }
                                                 },
                                                 onUse = {
