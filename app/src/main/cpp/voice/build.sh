@@ -220,17 +220,31 @@ if grep -q 'u.block->data = tensor_to_f32' "$(pwd)/overlay/breeze/src/codec.cpp"
     exit 1
 fi
 
-# glslc must execute on the Linux host while targeting Android Vulkan.
-if ! dpkg-query -W -f='\x24{Status}' spirv-headers 2>/dev/null | grep -q "install ok installed"; then
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends spirv-headers
+# glslc executes on the Linux host while targeting Android Vulkan.
+# Ubuntu's spirv-headers package does NOT include the CMake package config
+# required by the pinned ggml Vulkan backend. Install Khronos' actual CMake
+# export separately, rather than mistaking headers-only for a complete SDK.
+SPIRV_SRC="$DEPS_DIR/SPIRV-Headers"
+if [[ ! -e "$SPIRV_SRC/CMakeLists.txt" ]]; then
+    git clone -q --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git "$SPIRV_SRC"
 fi
+cmake -S "$SPIRV_SRC" -B "$SPIRV_SRC/build-host" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DSPIRV_HEADERS_ENABLE_TESTS=OFF \
+    -DSPIRV_HEADERS_ENABLE_INSTALL=ON \
+    -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --install "$SPIRV_SRC/build-host"
+SPIRV_CONFIG=/usr/local/share/cmake/SPIRV-Headers
+test -f "$SPIRV_CONFIG/SPIRV-HeadersConfig.cmake" || {
+    echo "SPIRV-Headers host package config missing" >&2
+    exit 1
+}
 GLSLC="$ANDROID_NDK_ROOT/shader-tools/linux-x86_64/glslc"
 test -x "$GLSLC" || { echo "Android NDK host glslc is missing" >&2; exit 1; }
 
 rm -rf "$BUILD_DIR"
 
-cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=ON -DVulkan_GLSLC_EXECUTABLE="$GLSLC"     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
+cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=ON -DVulkan_GLSLC_EXECUTABLE="$GLSLC" -DSPIRV-Headers_DIR="$SPIRV_CONFIG"     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
 
 cmake --build "$BUILD_DIR" --target breeze-server breeze-htp-selftest htp-v73 htp-v75 htp-v79 htp-v81 -j "$(nproc)"
 
