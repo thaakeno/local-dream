@@ -350,7 +350,9 @@ class SpeechGenerationService : Service() {
             // Fuse the 16-codebook embedding gather into the autoregressive
             // backbone graph, eliminating one HTP roundtrip per audio frame.
             // This is independent of the unsafe whole-frame depth fusion.
-            env["BREEZE_BACKBONE_EMBED_FUSE"] = "1"
+            env["BREEZE_BACKBONE_EMBED_FUSE"] =
+                if (getSharedPreferences("breeze_runtime_tuning", MODE_PRIVATE)
+                        .getBoolean("fuse_backbone_embed", true)) "1" else "0"
             if (qnnVocoderFile != null) {
                 env["BREEZE_QNN_VOCODER_PATH"] = qnnVocoderFile.absolutePath
                 env["BREEZE_QNN_VOCODER_LUT_PATH"] = qnnInstall!!.lutFile.absolutePath

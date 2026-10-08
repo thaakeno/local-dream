@@ -360,6 +360,12 @@ fun SpeechRunScreen(
     var maxNewTokens by rememberSaveable { mutableIntStateOf(DEFAULT_MAX_NEW_TOKENS) }
     var showTune by remember { mutableStateOf(false) }
     var showAdvancedTune by rememberSaveable { mutableStateOf(false) }
+    var fuseBackboneEmbedding by remember {
+        mutableStateOf(
+            context.getSharedPreferences("breeze_runtime_tuning", android.content.Context.MODE_PRIVATE)
+                .getBoolean("fuse_backbone_embed", true),
+        )
+    }
     var showHistory by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf<List<SpeechHistoryItem>>(emptyList()) }
     var templateCategory by rememberSaveable { mutableStateOf("Realistic") }
@@ -1056,6 +1062,50 @@ fun SpeechRunScreen(
                 }
 
                 if (showAdvancedTune) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Fused backbone embedding",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Experimental HTP optimization. Reduces the number of graph submissions per audio frame. Turn off to restore the proven v66 execution path.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = fuseBackboneEmbedding,
+                            onCheckedChange = { enabled ->
+                                fuseBackboneEmbedding = enabled
+                                context.getSharedPreferences(
+                                    "breeze_runtime_tuning",
+                                    android.content.Context.MODE_PRIVATE,
+                                ).edit().putBoolean("fuse_backbone_embed", enabled).apply()
+                                scope.launch {
+                                    context.startService(
+                                        Intent(context, SpeechGenerationService::class.java)
+                                            .setAction(SpeechGenerationService.ACTION_STOP),
+                                    )
+                                    delay(180)
+                                    SpeechGenerationService.resetForModel(modelId)
+                                    if (model?.isDownloaded == true) {
+                                        context.startForegroundService(
+                                            Intent(context, SpeechGenerationService::class.java)
+                                                .setAction(SpeechGenerationService.ACTION_PRELOAD)
+                                                .putExtra("modelId", modelId),
+                                        )
+                                    }
+                                }
+                            },
+                        )
+                    }
+                    HorizontalDivider()
                     BreezeSettingSlider(
                         label = "Top P",
                         value = topP,
