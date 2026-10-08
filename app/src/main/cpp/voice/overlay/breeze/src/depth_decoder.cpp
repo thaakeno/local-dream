@@ -394,8 +394,8 @@ static std::unique_ptr<DepthFrameFast> build_depth_frame_fast(
         ggml_set_output(fast->output);
         ggml_build_forward_expand(g.gf, fast->output);
         size_t unsupported = 0;
-        for (int node_i = 0; node_i < g.gf->n_nodes; ++node_i) {
-            const ggml_tensor * node = g.gf->nodes[node_i];
+        for (int node_i = 0; node_i < ggml_graph_n_nodes(g.gf); ++node_i) {
+            const ggml_tensor * node = ggml_graph_node(g.gf, node_i);
             if (!ggml_backend_dev_supports_op(device, node)) {
                 if (unsupported < 6) {
                     std::fprintf(stderr,
@@ -411,7 +411,7 @@ static std::unique_ptr<DepthFrameFast> build_depth_frame_fast(
                                      std::to_string(unsupported) + " unsupported ops");
         }
         std::fprintf(stderr,
-            "[BREEZE_GPU_FRAME] validated nodes=%d ops=all-supported\n", g.gf->n_nodes);
+            "[BREEZE_GPU_FRAME] validated nodes=%d ops=all-supported\n", ggml_graph_n_nodes(g.gf));
     }
     g.prepare(m.backend, fast->output);
 
