@@ -351,7 +351,12 @@ class SpeechGenerationService : Service() {
                 "breeze_runtime_tuning", MODE_PRIVATE,
             ).getString("depth_backend", "npu") == "gpu"
             env["BREEZE_DEPTH_BACKEND"] = if (gpuDepthRequested) "vulkan" else "htp"
-            if (gpuDepthRequested) env["BREEZE_GPU_GGUF_PATH"] = modelFile.absolutePath
+            if (gpuDepthRequested) {
+                env["BREEZE_GPU_GGUF_PATH"] = modelFile.absolutePath
+                env["BREEZE_GPU_DEPTH_FUSED"] =
+                    if (getSharedPreferences("breeze_runtime_tuning", MODE_PRIVATE)
+                            .getBoolean("gpu_fused_depth", true)) "1" else "0"
+            }
             // Fuse the 16-codebook embedding gather into the autoregressive
             // backbone graph, eliminating one HTP roundtrip per audio frame.
             // This is independent of the unsafe whole-frame depth fusion.

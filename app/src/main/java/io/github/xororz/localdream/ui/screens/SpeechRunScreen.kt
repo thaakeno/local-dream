@@ -360,6 +360,12 @@ fun SpeechRunScreen(
     var maxNewTokens by rememberSaveable { mutableIntStateOf(DEFAULT_MAX_NEW_TOKENS) }
     var showTune by remember { mutableStateOf(false) }
     var showAdvancedTune by rememberSaveable { mutableStateOf(false) }
+    var gpuFusedDepth by remember {
+        mutableStateOf(
+            context.getSharedPreferences("breeze_runtime_tuning", android.content.Context.MODE_PRIVATE)
+                .getBoolean("gpu_fused_depth", true),
+        )
+    }
     var depthBackendSelection by remember {
         mutableStateOf(
             context.getSharedPreferences("breeze_runtime_tuning", android.content.Context.MODE_PRIVATE)
@@ -1110,6 +1116,52 @@ fun SpeechRunScreen(
                                     }
                                 },
                                 label = { Text(choice.second) },
+                            )
+                        }
+                    }
+                    if (depthBackendSelection == "gpu") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Single-graph GPU depth",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    "Experimental: run all 15 codebook steps in one Adreno graph. "
+                                        + "Turn off to compare with the previous 15-pass Vulkan backend.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = gpuFusedDepth,
+                                onCheckedChange = { enabled ->
+                                    gpuFusedDepth = enabled
+                                    context.getSharedPreferences(
+                                        "breeze_runtime_tuning",
+                                        android.content.Context.MODE_PRIVATE,
+                                    ).edit().putBoolean("gpu_fused_depth", enabled).apply()
+                                    scope.launch {
+                                        context.startService(
+                                            Intent(context, SpeechGenerationService::class.java)
+                                                .setAction(SpeechGenerationService.ACTION_STOP),
+                                        )
+                                        delay(180)
+                                        SpeechGenerationService.resetForModel(modelId)
+                                        if (model?.isDownloaded == true) {
+                                            context.startForegroundService(
+                                                Intent(context, SpeechGenerationService::class.java)
+                                                    .setAction(SpeechGenerationService.ACTION_PRELOAD)
+                                                    .putExtra("modelId", modelId),
+                                            )
+                                        }
+                                    }
+                                },
                             )
                         }
                     }

@@ -11,9 +11,16 @@ void GpuDepthEngine::reset() {
     active = false;
     source = nullptr;
     branches = 0;
+    loaded_path.clear();
 }
 bool GpuDepthEngine::init(BreezeModel & original, int n_branches, const char * gguf_path) {
-    if (active && source == &original && branches == n_branches) return true;
+    if (active && source == &original && branches == n_branches &&
+        gguf_path && loaded_path == gguf_path) {
+        std::fprintf(stderr,
+            "[BREEZE_GPU_CACHE] reusing Adreno depth weights and graphs model=%p\n",
+            (const void *) &original);
+        return true;
+    }
     reset();
     if (!gguf_path || !*gguf_path) {
         std::fprintf(stderr, "[BREEZE_GPU_DEPTH] missing GGUF path\n");
@@ -54,6 +61,7 @@ bool GpuDepthEngine::init(BreezeModel & original, int n_branches, const char * g
         source = &original;
         branches = n_branches;
         active = true;
+        loaded_path = gguf_path;
         std::fprintf(stderr,
             "[BREEZE_DEPTH_BACKEND] selected=adreno-vulkan device=%s branches=%d\n",
             name, branches);

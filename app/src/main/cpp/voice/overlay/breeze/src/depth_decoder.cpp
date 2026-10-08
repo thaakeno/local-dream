@@ -386,6 +386,33 @@ static std::unique_ptr<DepthFrameFast> build_depth_frame_fast(
         output = ggml_concat(g.ctx, output, sampled[i], 0);
     }
     fast->output = ggml_cont(g.ctx, output);
+    // Unlike ggml-Hexagon's earlier fused graph, Vulkan has a generic
+    // supports_op callback. Reject unsupported operations before attempting to
+    // submit a giant graph (the GPU mode must never silently run on the CPU).
+    if (m.backend.is_gpu) {
+        ggml_backend_dev_t device = ggml_backend_get_device(m.backend.backend);
+        ggml_set_output(fast->output);
+        ggml_build_forward_expand(g.gf, fast->output);
+        size_t unsupported = 0;
+        for (int node_i = 0; node_i < g.gf->n_nodes; ++node_i) {
+            const ggml_tensor * node = g.gf->nodes[node_i];
+            if (!ggml_backend_dev_supports_op(device, node)) {
+                if (unsupported < 6) {
+                    std::fprintf(stderr,
+                        "[BREEZE_GPU_FRAME] unsupported op=%s type=%s ne0=%lld\n",
+                        ggml_op_name(node->op), ggml_type_name(node->type),
+                        (long long)node->ne[0]);
+                }
+                ++unsupported;
+            }
+        }
+        if (unsupported) {
+            throw std::runtime_error("Vulkan full-frame graph contains " +
+                                     std::to_string(unsupported) + " unsupported ops");
+        }
+        std::fprintf(stderr,
+            "[BREEZE_GPU_FRAME] validated nodes=%d ops=all-supported\n", g.gf->n_nodes);
+    }
     g.prepare(m.backend, fast->output);
 
     std::fprintf(
@@ -469,16 +496,28 @@ std::vector<int> DepthRunner::run(BreezeModel & m, const std::vector<std::vector
         n_force == 0 &&
         m.cfg.depth_top_k > 0 &&
         m.cfg.depth_top_p >= 0.9999f;
-    // IMPORTANT: the monolithic graph crashed on SM8850; never use it in a
-    // distributable build. Only a separate explicitly controlled lab run may
-    // opt in after verifying HTP numerical equivalence on the actual device.
-    const char * fusion_trial = std::getenv("BREEZE_DEPTH_FUSION_TRIAL");
-    const bool fusion_opt_in =
-        fusion_trial && fusion_trial[0] == '1' && fusion_trial[1] == '\0';
-    if (fusion_opt_in && whole_frame_eligible && !frame_fast_disabled) {
+    // The DSPQueue abort was specific to the old HTP fused implementation.
+    // The new Vulkan path validates all required ops and retains an explicit
+    // UI switch back to the stable 15-dispatch legacy execution.
+    const char * gpu_fused = std::getenv("BREEZE_GPU_DEPTH_FUSED");
+    const bool gpu_graph = m.backend.is_gpu && gpu_fused &&
+                           gpu_fused[0] == '1' && gpu_fused[1] == '\0';
+    if (gpu_graph && whole_frame_eligible && !frame_fast_disabled) {
         try {
             std::vector<int> fast_codes;
+            const auto frame_start = std::chrono::steady_clock::now();
             if (run_depth_frame_fast(m, *this, hiddens, cb0, rng, fast_codes)) {
+                ++profiled_frames;
+                const double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - frame_start).count();
+                profiled_htp_ms += ms;
+                if (profiled_frames == 1 || profiled_frames % 32 == 0) {
+                    std::fprintf(stderr,
+                        "[BREEZE_GPU_FRAME] fused=1 frames=%d last_ms=%.2f avg_ms=%.2f "
+                        "dispatches=1 depth_steps=%d\n",
+                        profiled_frames, ms, profiled_htp_ms / profiled_frames,
+                        m.cfg.num_codebooks - 1);
+                }
                 return fast_codes;
             }
         } catch (const std::exception & e) {
@@ -486,7 +525,7 @@ std::vector<int> DepthRunner::run(BreezeModel & m, const std::vector<std::vector
             frame_fast_disabled = true;
             std::fprintf(
                 stderr,
-                "[BREEZE_DEPTH_FAST] disabled after runtime failure: %s; falling back to cached per-step graph\n",
+                "[BREEZE_GPU_FRAME] disabled after runtime failure: %s; falling back to cached per-step Vulkan graphs\n",
                 e.what()
             );
         }

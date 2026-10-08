@@ -11,6 +11,7 @@ struct GpuDepthEngine {
     const BreezeModel * source = nullptr;
     bool active = false;
     int branches = 0;
+    std::string loaded_path;
 
     ~GpuDepthEngine() { reset(); }
     void reset();
