@@ -76,6 +76,17 @@ set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${GGML_SOURCE_DIR}" ggml-build)
+# ggml-vulkan includes spirv/unified1/spirv.hpp directly. Installing the
+# Khronos CMake package only exposes its exported target, not the include
+# directory to the cross-compiled Vulkan target; attach it explicitly.
+if(TARGET ggml-vulkan)
+    if(NOT BREEZE_SPIRV_HEADERS_INCLUDE
+       OR NOT EXISTS "${BREEZE_SPIRV_HEADERS_INCLUDE}/spirv/unified1/spirv.hpp")
+        message(FATAL_ERROR "Missing SPIRV-Headers C++ headers for Android Vulkan")
+    endif()
+    target_include_directories(ggml-vulkan PRIVATE "${BREEZE_SPIRV_HEADERS_INCLUDE}")
+endif()
+
 
 set(BREEZE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/native/breeze-common-htp.cpp"
