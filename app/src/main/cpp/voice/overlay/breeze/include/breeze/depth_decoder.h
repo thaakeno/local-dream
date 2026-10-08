@@ -37,6 +37,11 @@ struct DepthRunner {
     std::vector<std::unique_ptr<DepthStep>> steps;
     std::unique_ptr<DepthFrameFast> frame_fast;
     bool frame_fast_disabled = false;
+    int profiled_frames = 0;
+    double profiled_set_ms = 0.0;
+    double profiled_htp_ms = 0.0;
+    double profiled_read_ms = 0.0;
+    double profiled_sample_ms = 0.0;
 
     ~DepthRunner() { free(); }
     void init(BreezeModel & m, int n_branches);

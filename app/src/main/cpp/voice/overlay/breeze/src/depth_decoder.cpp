@@ -58,6 +58,8 @@ void DepthRunner::init(BreezeModel & m, int n_branches) {
     steps.resize(nc - 1);
     frame_fast.reset();
     frame_fast_disabled = false;
+    profiled_frames = 0;
+    profiled_set_ms = profiled_htp_ms = profiled_read_ms = profiled_sample_ms = 0.0;
 }
 
 void DepthRunner::free() {
@@ -556,13 +558,24 @@ std::vector<int> DepthRunner::run(BreezeModel & m, const std::vector<std::vector
         if (profile) sample_ms += elapsed(tp);
     }
     if (profile) {
-        std::fprintf(
-            stderr,
-            "[BREEZE_DEPTH_BREAKDOWN] steps=%d cfg_branches=%d set_ms=%.3f "
-            "htp_ms=%.3f read_ms=%.3f sample_ms=%.3f total_ms=%.3f\n",
-            nc - 1, n_branch, set_ms, execute_ms, read_ms, sample_ms,
-            set_ms + execute_ms + read_ms + sample_ms
-        );
+        ++profiled_frames;
+        profiled_set_ms += set_ms;
+        profiled_htp_ms += execute_ms;
+        profiled_read_ms += read_ms;
+        profiled_sample_ms += sample_ms;
+        if (profiled_frames == 1 || profiled_frames % 32 == 0) {
+            const double n = (double) profiled_frames;
+            std::fprintf(
+                stderr,
+                "[BREEZE_DEPTH_BREAKDOWN] frames=%d steps=%d branches=%d "
+                "set_ms=%.2f htp_ms=%.2f read_ms=%.2f sample_ms=%.2f total_ms=%.2f\n",
+                profiled_frames, nc - 1, n_branch,
+                profiled_set_ms / n, profiled_htp_ms / n,
+                profiled_read_ms / n, profiled_sample_ms / n,
+                (profiled_set_ms + profiled_htp_ms +
+                 profiled_read_ms + profiled_sample_ms) / n
+            );
+        }
     }
     return std::vector<int>(codes.begin() + 1, codes.end());
 }
