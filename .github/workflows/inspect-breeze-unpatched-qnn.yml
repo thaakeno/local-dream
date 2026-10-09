@@ -41,7 +41,7 @@ jobs:
           echo '== QnnSampleApp interface declaration symbols =='
           grep -nE '(^ *(private|protected|public):|StatusCode (initialize|initializeBackend|createFromBinary)|QnnFunctionPointers|Qnn_ContextHandle_t|m_graphsInfo|m_ioTensor|m_context|m_deviceHandle|m_backendHandle|m_logHandle|m_profileBackendHandle|m_cachedBinaryPath)' "$hdr" | head -100
           echo '== QnnSampleApp initializer and binary loader called APIs =='
-          grep -nE '(QnnSampleApp::initialize\\(|QnnSampleApp::createFromBinary\\(|contextCreateFromBinary|systemContextGetBinaryInfo|logCreate|m_context|m_graphsInfo|m_graphsCount)' "$cpp" | head -110
+          grep -nE 'QnnSampleApp::initialize|QnnSampleApp::createFromBinary|contextCreateFromBinary|systemContextGetBinaryInfo|logCreate|m_context|m_graphsInfo|m_graphsCount' "$cpp" | head -110
           echo '== IOTensor data conversion declaration symbols =='
           grep -nE '(^ *(private|protected|public):|copyFromFloatToNative|convertToFloat|setupInputAndOutputTensors|tearDownInputAndOutputTensors|copyFromFloat)' "$io" | head -100
           echo 'QAIRT audit finished (member signatures only).'
