@@ -823,7 +823,7 @@ fun SpeechRunScreen(
         mutableStateOf(BreezeQnnGeneratorArtifact.isEnabled(context))
     }
     // Persisted independently of CFG and the existing Full-QNN A/B switch.
-    var fastRvvEnabled by remember {
+    var fastRvqEnabled by remember {
         mutableStateOf(BreezePerformanceMode.isEnabled(context))
     }
 
@@ -1662,7 +1662,7 @@ fun SpeechRunScreen(
                                     fontWeight = FontWeight.SemiBold,
                                 )
                                 Text(
-                                    if (fastRvvEnabled) {
+                                    if (fastRvqEnabled) {
                                         "ON · Speculative codebook verification. Keeps CFG and the original sampling distribution. Switch off for the verified legacy decoder."
                                     } else {
                                         "OFF · Verified original decoder. Switch on to A/B test the new algorithm. 20 FPS is a target, not a measured result."
@@ -1672,10 +1672,10 @@ fun SpeechRunScreen(
                                 )
                             }
                             Switch(
-                                checked = fastRvvEnabled,
+                                checked = fastRvqEnabled,
                                 enabled = !busy,
                                 onCheckedChange = { enabled ->
-                                    fastRvvEnabled = enabled
+                                    fastRvqEnabled = enabled
                                     BreezePerformanceMode.setEnabled(context, enabled)
                                     AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                                     scope.launch {
