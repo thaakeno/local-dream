@@ -230,7 +230,6 @@ std::vector<int> DepthRunner::run_speculative(
     bool serial_remainder = false;
     const auto t0 = std::chrono::steady_clock::now();
     while (next_head < target_count) {
-        const auto hot_start = std::chrono::steady_clock::now();
         // If speculation rejects a token, all subsequent heads run through
         // the original verified graph implementation, not a special verifier
         // padded with unused future projections.
@@ -239,6 +238,7 @@ std::vector<int> DepthRunner::run_speculative(
             if (!steps[(size_t) head_idx])
                 steps[(size_t) head_idx] = build_depth_step(m, *this, head_idx);
             DepthStep & stable = *steps[(size_t) head_idx];
+            const auto hot_start = std::chrono::steady_clock::now();
             std::vector<int32_t> indices((size_t) n_branch);
             for (int branch = 0; branch < n_branch; ++branch)
                 indices[(size_t) branch] = codes[(size_t) head_idx] + head_idx * vs;
@@ -271,6 +271,7 @@ std::vector<int> DepthRunner::run_speculative(
         if (!verification[(size_t) slot])
             verification[(size_t) slot] = build_rvq_verifier(m, *this, next_head, width);
         DepthStep & step = *verification[(size_t) slot];
+        const auto hot_start = std::chrono::steady_clock::now();
         std::vector<int32_t> inputs((size_t) width * n_branch);
         for (int i = 0; i < width; ++i) {
             // target head i predicts codebook i+1 from the PREVIOUS codebook.
