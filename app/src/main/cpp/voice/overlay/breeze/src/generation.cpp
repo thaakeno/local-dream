@@ -1,4 +1,3 @@
-#include "breeze/gpu_depth.h"
 #include "breeze/generation.h"
 #include "breeze/sampling.h"
 #include "breeze/text_encoder.h"
@@ -91,8 +90,10 @@ struct PersistentQnnGenerator {
     std::unique_ptr<QnnBackboneRunner> backbone_b2;
     std::unique_ptr<QnnDepthRunner> depth_b1;
     std::unique_ptr<QnnDepthRunner> depth_b2;
-    std::unique_ptr<GpuDepthEngine> adreno_b1;
-    std::unique_ptr<GpuDepthEngine> adreno_b2;
+    // HTP depth graphs are shape-stable; reuse 15 prepared per-codebook graphs
+    // between requests instead of paying graph creation on every generation.
+    std::unique_ptr<DepthRunner> legacy_depth_b1;
+    std::unique_ptr<DepthRunner> legacy_depth_b2;
 };
 
 static PersistentQnnGenerator g_qnn_generator;
@@ -123,20 +124,6 @@ static QnnBackboneRunner * persistent_backbone(BreezeModel & m, int branches) {
     return slot.get();
 }
 
-static GpuDepthEngine * persistent_gpu_depth(BreezeModel & m, int branches,
-                                             const char * path) {
-    reset_persistent_qnn(&m);
-    auto & slot = branches == 2
-        ? g_qnn_generator.adreno_b2
-        : g_qnn_generator.adreno_b1;
-    if (!slot) slot = std::make_unique<GpuDepthEngine>();
-    if (!slot->init(m, branches, path)) {
-        slot.reset();
-        return nullptr;
-    }
-    return slot.get();
-}
-
 static QnnDepthRunner * persistent_depth(BreezeModel & m, int branches) {
     reset_persistent_qnn(&m);
     auto & slot = branches == 2
@@ -155,6 +142,21 @@ static QnnDepthRunner * persistent_depth(BreezeModel & m, int branches) {
         );
     }
     return slot.get();
+}
+
+static DepthRunner & persistent_legacy_depth(BreezeModel & m, int branches) {
+    reset_persistent_qnn(&m);
+    auto & slot = branches == 2
+        ? g_qnn_generator.legacy_depth_b2
+        : g_qnn_generator.legacy_depth_b1;
+    if (!slot) {
+        slot = std::make_unique<DepthRunner>();
+        slot->init(m, branches);
+        std::fprintf(stderr,
+            "[BREEZE_DEPTH_CACHE] prepared persistent HTP decoder branches=%d\n",
+            branches);
+    }
+    return *slot;
 }
 
 // what a finished piece leaves behind so the next one can keep the same voice
@@ -319,33 +321,22 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     }
     tm.prefill += since(t0);
 
-    DepthRunner depth;
-    depth.init(m, generator_branches);
-    const char * selected_depth = std::getenv("BREEZE_DEPTH_BACKEND");
-    const bool want_gpu_depth = selected_depth && std::strcmp(selected_depth, "vulkan") == 0;
-    GpuDepthEngine * gpu_depth = want_gpu_depth
-        ? persistent_gpu_depth(m, generator_branches, std::getenv("BREEZE_GPU_GGUF_PATH"))
-        : nullptr;
-    bool gpu_depth_ready = gpu_depth != nullptr && gpu_depth->active;
-    // Full GPU depth and QNN depth cannot both own this frame's decoder.
-    // If Adreno initialization fails, preserve the known-good HTP path.
+    DepthRunner & depth = persistent_legacy_depth(m, generator_branches);
+    // A tested QNN depth implementation can be opt-in only. Existing
+    // SM8850 QNN depth measured ~295 ms/frame versus 85 ms/frame on ggml HTP.
+    // Never select that slower context automatically during normal TTS.
+    const char * depth_trial = std::getenv("BREEZE_QNN_DEPTH_TRIAL");
+    const bool enable_qnn_depth = depth_trial && depth_trial[0] == '1';
     QnnDepthRunner * qnn_depth =
-        gpu_depth_ready ? nullptr : persistent_depth(m, generator_branches);
+        enable_qnn_depth ? persistent_depth(m, generator_branches) : nullptr;
     const bool qnn_depth_ready = qnn_depth != nullptr && qnn_depth->ready();
+    std::fprintf(stderr, "[BREEZE_DEPTH_BACKEND] active=%s gpu=removed\n",
+                 qnn_depth_ready ? "qnn-htp-trial" : "ggml-hexagon");
     std::fprintf(stderr,
-        "[BREEZE_DEPTH_BACKEND] requested=%s active=%s fallback=%d\n",
-        want_gpu_depth ? "adreno-vulkan" : "htp",
-        gpu_depth_ready ? "adreno-vulkan" : (qnn_depth_ready ? "qnn-htp" : "ggml-hexagon"),
-        want_gpu_depth && !gpu_depth_ready ? 1 : 0
-    );
-    std::fprintf(
-        stderr,
         "[BREEZE_GENERATOR] backbone=%s depth=%s cfg=%.2f capacity_need=%d\n",
         qnn_backbone_ready ? "qnn-htp" : "ggml-hexagon",
-        gpu_depth_ready ? "adreno-vulkan" : (qnn_depth_ready ? "qnn-htp" : "ggml-hexagon"),
-        req.cfg_scale,
-        qnn_capacity_need
-    );
+        qnn_depth_ready ? "qnn-htp-trial" : "ggml-hexagon",
+        req.cfg_scale, qnn_capacity_need);
 
     // This one-frame graph is shape-stable. Replaying it avoids rebuilding and
     // repartitioning an HTP graph for every generated codec frame.
@@ -508,28 +499,6 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         auto td = clock_now();
         std::vector<int> depth_codes;
         bool depth_ready = false;
-        if (gpu_depth_ready) {
-            // Vulkan and Hexagon use the same sampling configuration and
-            // original GGUF quantization, with no weight conversion.
-            try {
-                depth_codes = gpu_depth->run(hiddens, cb0, req.cfg_scale, rng);
-                depth_ready = true;
-            } catch (const std::exception & e) {
-                std::fprintf(stderr,
-                    "[BREEZE_DEPTH_BACKEND] GPU runtime failure: %s; falling back to HTP\n",
-                    e.what());
-                // Evict only the failing GPU engine. Never invalidate the
-                // cached QNN backbone/depth pointers while a generation is
-                // still using them; that previously risked use-after-free.
-                if (generator_branches == 2) {
-                    g_qnn_generator.adreno_b2.reset();
-                } else {
-                    g_qnn_generator.adreno_b1.reset();
-                }
-                gpu_depth = nullptr;
-                gpu_depth_ready = false;
-            }
-        }
         if (!depth_ready && qnn_depth && qnn_depth->ready()) {
             depth_ready = qnn_depth->run(
                 m, hiddens, cb0, req.cfg_scale, rng, depth_codes

@@ -16,27 +16,12 @@ struct DepthStep {
     ggml_tensor * logits = nullptr;
 };
 
-struct DepthFrameFast {
-    // One exact CFG=1 frame graph: all 15 residual codebook steps stay on HTP.
-    // Sampling uses top-k softmax + inverse-CDF inside the same graph, so the
-    // AP submits once and reads back only the final 15 token ids.
-    Graph graph{65536};
-    ggml_tensor * cb0 = nullptr;
-    ggml_tensor * hidden = nullptr;
-    ggml_tensor * uniforms = nullptr;
-    ggml_tensor * output = nullptr;
-    int top_k = 0;
-    int sample_width = 0;
-};
-
 // autoregressive residual decoder: predicts codebooks 1..num_codebooks-1 for one frame
 struct DepthRunner {
     KVCache kv; // CFG branches share one cache, interleaved per position
     int n_branch = 1;
     std::vector<float> freq_factors;
     std::vector<std::unique_ptr<DepthStep>> steps;
-    std::unique_ptr<DepthFrameFast> frame_fast;
-    bool frame_fast_disabled = false;
     int profiled_frames = 0;
     double profiled_set_ms = 0.0;
     double profiled_htp_ms = 0.0;

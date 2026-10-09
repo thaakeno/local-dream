@@ -347,22 +347,13 @@ class SpeechGenerationService : Service() {
             // never activated in production after the SM8850 DSPQueue failure.
             env["BREEZE_DEPTH_FUSION_TRIAL"] = "0"
             env["BREEZE_DEPTH_PROFILE"] = "1"
-            val gpuDepthRequested = getSharedPreferences(
-                "breeze_runtime_tuning", MODE_PRIVATE,
-            ).getString("depth_backend", "npu") == "gpu"
-            env["BREEZE_DEPTH_BACKEND"] = if (gpuDepthRequested) "vulkan" else "htp"
-            if (gpuDepthRequested) {
-                env["BREEZE_GPU_GGUF_PATH"] = modelFile.absolutePath
-                env["BREEZE_GPU_DEPTH_FUSED"] =
-                    if (getSharedPreferences("breeze_runtime_tuning", MODE_PRIVATE)
-                            .getBoolean("gpu_fused_depth", true)) "1" else "0"
-            }
+            // GPU depth was slower than the verified Hexagon path on SM8850.
+            // Old GPU preferences are intentionally ignored.
+            env["BREEZE_DEPTH_BACKEND"] = "htp"
             // Fuse the 16-codebook embedding gather into the autoregressive
             // backbone graph, eliminating one HTP roundtrip per audio frame.
             // This is independent of the unsafe whole-frame depth fusion.
-            env["BREEZE_BACKBONE_EMBED_FUSE"] =
-                if (getSharedPreferences("breeze_runtime_tuning", MODE_PRIVATE)
-                        .getBoolean("fuse_backbone_embed", true)) "1" else "0"
+            env["BREEZE_BACKBONE_EMBED_FUSE"] = "1"
             if (qnnVocoderFile != null) {
                 env["BREEZE_QNN_VOCODER_PATH"] = qnnVocoderFile.absolutePath
                 env["BREEZE_QNN_VOCODER_LUT_PATH"] = qnnInstall!!.lutFile.absolutePath
