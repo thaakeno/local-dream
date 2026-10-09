@@ -378,7 +378,10 @@ class SpeechGenerationService : Service() {
                     qnnInstall.selftestAudioFile.absolutePath
                 env["BREEZE_QNN_FIRST_NEW"] = if (qnnInstall.version >= 4) "8" else "64"
                 env["BREEZE_QNN_STEADY_NEW"] = "39"
-                if (qnnSelftestCached) {
+                // New HTP transport means new coexistence behavior: first
+                // FastRPC boot rechecks the exact reference PCM, even if
+                // DSPQueue already validated this same QNN context.
+                if (qnnSelftestCached && !fastSelected) {
                     env["BREEZE_QNN_SKIP_SELFTEST"] = "1"
                 }
             }
@@ -845,12 +848,32 @@ class SpeechGenerationService : Service() {
             environment().putAll(env)
         }.start()
 
-        val output = proc.inputStream.bufferedReader().use { it.readText() }
-        val exited = proc.waitFor(15, TimeUnit.SECONDS)
+        // Drain stdout concurrently. A blocking readText() before waitFor()
+        // meant the old 15s timeout was ineffective if the DSP hung.
+        val captured = StringBuffer()
+        val reader = Thread({
+            runCatching {
+                proc.inputStream.bufferedReader().use { stream ->
+                    stream.forEachLine { line ->
+                        synchronized(captured) {
+                            if (captured.length < 250_000)
+                                captured.append(line.take(3000)).append('\n')
+                        }
+                    }
+                }
+            }
+        }, "breeze-htp-selftest-reader").apply {
+            isDaemon = true
+            start()
+        }
+        val exited = proc.waitFor(if (fastrpc) 45L else 20L, TimeUnit.SECONDS)
         if (!exited) {
             proc.destroyForcibly()
+            reader.join(1200)
             throw IllegalStateException("Breeze HTP self-test timed out")
         }
+        reader.join(2000)
+        val output = synchronized(captured) { captured.toString() }
         output.lineSequence()
             .filter { it.isNotBlank() }
             .forEach { BackendDiagnostics.append(this, "BREEZE_SELFTEST", it.take(2000)) }
