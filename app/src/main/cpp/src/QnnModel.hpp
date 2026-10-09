@@ -99,7 +99,7 @@ class QnnModel : public QnnOwnedRuntime {
 
   QnnModel(QnnFunctionPointers qnnFunctionPointers, std::string inputListPaths,
            std::string opPackagePaths, void *backendHandle,
-           std::string outputPath = s_defaultOutputPath, bool debug = false,
+           std::string outputPath = "", bool debug = false,
            qnn::tools::iotensor::OutputDataType outputDataType =
                qnn::tools::iotensor::OutputDataType::FLOAT_ONLY,
            qnn::tools::iotensor::InputDataType inputDataType =

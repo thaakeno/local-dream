@@ -7,6 +7,8 @@
 #include <QnnOwnedTensorIO.hpp>
 #include <QnnTypeMacros.hpp>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <fcntl.h>
 #include <limits>
 #include <string>
@@ -43,6 +45,16 @@ public:
     QnnOwnedRuntime(const QnnOwnedRuntime&)=delete;
     QnnOwnedRuntime& operator=(const QnnOwnedRuntime&)=delete;
     virtual ~QnnOwnedRuntime(){freeContext();freeDevice();terminateBackend();}
+    // Owned equivalents of the old SampleApp convenience methods; keep
+    // failures explicit without touching SDK access modifiers.
+    int reportError(const std::string &message) const {
+        std::fprintf(stderr, "[LocalDream QNN] %s\n", message.c_str());
+        return EXIT_FAILURE;
+    }
+    StatusCode isDevicePropertySupported() const {
+        return m_qnnFunctionPointers.qnnInterface.deviceCreate
+            ? StatusCode::SUCCESS : StatusCode::FAILURE;
+    }
     StatusCode initialize(){return StatusCode::SUCCESS;}
     StatusCode initializeBackend(){
         auto f=m_qnnFunctionPointers.qnnInterface.backendCreate;
