@@ -32,8 +32,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - name: Install SDK 37
-        run: sdkmanager --install "platforms;android-37" "build-tools;36.0.0"
+      # Ubuntu hosted runners already ship Android command-line tools. The
+      # setup-android@v3 action invokes the retired "tools" SDK package and
+      # exits before Gradle starts, so use the runner SDK directly.
+      - name: Install Android SDK 37
+        run: |
+          SDKMANAGER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "platforms;android-37" "build-tools;36.0.0"
       - name: Check Android UI and service compile
         run: ./gradlew :app:compileBasicDebugKotlin --no-daemon --stacktrace
