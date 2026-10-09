@@ -53,7 +53,6 @@ import io.github.xororz.localdream.data.ModelRepository
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
 import io.github.xororz.localdream.service.BreezeQnnGeneratorArtifact
 import io.github.xororz.localdream.service.BreezeQnnVocoderArtifact
-import io.github.xororz.localdream.service.BreezePerformanceMode
 import io.github.xororz.localdream.service.SpeechGenerationService
 import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
 import io.github.xororz.localdream.service.SpeechHistoryItem
@@ -822,11 +821,6 @@ fun SpeechRunScreen(
     var fullQnnGeneratorEnabled by remember {
         mutableStateOf(BreezeQnnGeneratorArtifact.isEnabled(context))
     }
-    // Persisted independently of CFG and the existing Full-QNN A/B switch.
-    var fastRvqEnabled by remember {
-        mutableStateOf(BreezePerformanceMode.isEnabled(context))
-    }
-
     // This screen owns the warm Breeze process. Leaving the generation panel
     // must release the GGUF, QNN contexts and HTP power votes immediately.
     DisposableEffect(modelId) {
@@ -1644,59 +1638,6 @@ fun SpeechRunScreen(
                         onValueChange = { maxNewTokens = it.roundToInt() },
                     ) { it.roundToInt().toString() }
 
-
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "Experimental RVQ fast decode",
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    if (fastRvqEnabled) {
-                                        "ON · Speculative codebook verification. Keeps CFG and the original sampling distribution. Switch off for the verified legacy decoder."
-                                    } else {
-                                        "OFF · Verified original decoder. Switch on to A/B test the new algorithm. 20 FPS is a target, not a measured result."
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = fastRvqEnabled,
-                                enabled = !busy,
-                                onCheckedChange = { enabled ->
-                                    fastRvqEnabled = enabled
-                                    BreezePerformanceMode.setEnabled(context, enabled)
-                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                                    scope.launch {
-                                        context.startService(
-                                            Intent(context, SpeechGenerationService::class.java)
-                                                .setAction(SpeechGenerationService.ACTION_STOP),
-                                        )
-                                        delay(180)
-                                        SpeechGenerationService.resetForModel(modelId)
-                                        if (model?.isDownloaded == true) {
-                                            context.startForegroundService(
-                                                Intent(context, SpeechGenerationService::class.java)
-                                                    .setAction(SpeechGenerationService.ACTION_PRELOAD)
-                                                    .putExtra("modelId", modelId),
-                                            )
-                                        }
-                                    }
-                                },
-                            )
-                        }
-                    }
 
                     Surface(
                         shape = MaterialTheme.shapes.extraLarge,

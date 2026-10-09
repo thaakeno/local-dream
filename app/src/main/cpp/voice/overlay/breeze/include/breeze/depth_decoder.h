@@ -22,10 +22,6 @@ struct DepthRunner {
     int n_branch = 1;
     std::vector<float> freq_factors;
     std::vector<std::unique_ptr<DepthStep>> steps;
-    // Cached speculative verification graphs. Stable mode never touches these.
-    std::vector<std::unique_ptr<DepthStep>> verification;
-    bool speculation_unavailable = false;
-    bool speculation_checked = false;
     int profiled_frames = 0;
     double profiled_set_ms = 0.0;
     double profiled_htp_ms = 0.0;
@@ -36,13 +32,6 @@ struct DepthRunner {
     void init(BreezeModel & m, int n_branches);
     void begin_request();
     void free();
-    std::vector<int> run_speculative(BreezeModel & m,
-                                    const std::vector<std::vector<float>> & hiddens,
-                                    int cb0, float cfg_scale, std::mt19937 & rng,
-                                    const SampleParams & sp,
-                                    std::vector<std::vector<float>> * verified_logits = nullptr,
-                                    double * hot_loop_ms = nullptr);
-
     // cond hidden first; force replaces the first n_force residual codebooks
     std::vector<int> run(BreezeModel & m, const std::vector<std::vector<float>> & hiddens,
                          int cb0, float cfg_scale, std::mt19937 & rng,

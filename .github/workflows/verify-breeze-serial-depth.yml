@@ -1,9 +1,8 @@
-name: Verify experimental Breeze RVQ mode
+name: Verify Breeze serial decoder integrity
 
 on:
   push:
     branches:
-      - breeze-fast20-cleanup-experimental
       - breeze-qnn-clean-runtime-prototype
   workflow_dispatch:
 
@@ -11,18 +10,18 @@ permissions:
   contents: read
 
 jobs:
-  native-math:
+  no-speculation:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - name: Compile independent RVQ sampling tests
+      - name: Require serial Depth decoder with no speculative artifacts
+        shell: bash
         run: |
-          c++ -std=c++17 -O2 -Wall -Wextra -Werror \
-            -I app/src/main/cpp/voice/overlay/breeze/include \
-            tools/breeze_qnn/test_rvq_speculation.cpp \
-            -o /tmp/test_rvq_speculation
-      - name: Verify speculative acceptance and residual distribution
-        run: /tmp/test_rvq_speculation
+          set -eu
+          ! grep -R -E 'run_speculative|BREEZE_RVQ_SPECULATIVE|BREEZE_RVQ_AUDIT|Experimental RVQ fast decode|BreezePerformanceMode' app/src/main || exit 1
+          test ! -f app/src/main/cpp/voice/overlay/breeze/include/breeze/rvq_speculation.h
+          test ! -f tools/breeze_qnn/test_rvq_speculation.cpp
+          test ! -f app/src/main/java/io/github/xororz/localdream/service/BreezePerformanceMode.kt
 
   kotlin-compile:
     runs-on: ubuntu-24.04
