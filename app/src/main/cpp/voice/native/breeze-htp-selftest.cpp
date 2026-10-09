@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <vector>
 
@@ -392,6 +393,54 @@ static void test_v81_hvx_gelu_matmul_chain(Backend & be) {
     );
 }
 
+// Standalone HMX correctness probe for the exact logical batch sizes produced
+// by CFG-preserving RVQ speculative verification (3 proposed positions x
+// 2 guidance streams = 6 activation rows). This MUST pass on the real SM8850
+// before an experimental release can enable GGML_HEXAGON_NHMX=1.
+static void test_v81_rvq_cfg_hmx_shapes(Backend & backend) {
+    constexpr int K = 256;
+    constexpr int OUT = 64;
+    for (int rows : {2, 6, 16}) {
+        for (int variant = 0; variant < 3; ++variant) {
+            std::vector<float> weights((size_t) K * OUT);
+            std::vector<float> activations((size_t) K * rows);
+            std::vector<float> expected((size_t) OUT * rows);
+            for (int out = 0; out < OUT; ++out)
+                for (int k = 0; k < K; ++k)
+                    weights[(size_t) k + (size_t) K * out] =
+                        0.023f * std::cos(0.013f * (float) (3 + 2 * k + out));
+            for (int row = 0; row < rows; ++row)
+                for (int k = 0; k < K; ++k)
+                    activations[(size_t) k + (size_t) K * row] =
+                        0.7f * std::sin(0.017f * (float) (variant * 131 + 3 * row + k));
+            for (int row = 0; row < rows; ++row)
+                for (int out = 0; out < OUT; ++out) {
+                    double acc = 0.0;
+                    for (int k = 0; k < K; ++k) {
+                        const float v = activations[(size_t) k + (size_t) K * row];
+                        const float gelu =
+                            0.5f * v * (1.0f + std::erf(v * 0.7071067811865475f));
+                        acc += (double) weights[(size_t) k + (size_t) K * out] * (double) gelu;
+                    }
+                    expected[(size_t) out + (size_t) OUT * row] = (float) acc;
+                }
+
+            Graph g(160);
+            auto * tw = g.input_f32(weights, K, OUT);
+            auto * tx = g.input_f32(activations, K, rows);
+            auto * output = ggml_mul_mat(g.ctx, tw, ggml_gelu_erf(g.ctx, tx));
+            g.compute(backend, output);
+            char label[128];
+            std::snprintf(label, sizeof(label),
+                "v81-rvq-cfg-hmx rows=%d variant=%d", rows, variant);
+            require_close(label, tensor_to_f32(output), expected, 1.2e-2f);
+        }
+    }
+    std::fprintf(stderr,
+        "[BREEZE_HMX_RVQ_PROBE] complete: 9 shapes. "
+        "If GGML_HEXAGON_NHMX=0, results only establish HVX correctness.\n");
+}
+
 static void test_quantized_repack_matmul(
     Backend & be,
     enum ggml_type type,
@@ -563,6 +612,8 @@ int main() {
         test_v81_direct_residual_add(be);
         test_v81_dsp_gelu_erf_reference(be);
         test_v81_hvx_gelu_matmul_chain(be);
+        const char * hmx_probe = std::getenv("BREEZE_HMX_RVQ_PROBE");
+        if (hmx_probe && hmx_probe[0] == '1') test_v81_rvq_cfg_hmx_shapes(be);
         be.free();
         std::fprintf(stderr, "[BREEZE_SELFTEST] all-ok\n");
         return 0;
