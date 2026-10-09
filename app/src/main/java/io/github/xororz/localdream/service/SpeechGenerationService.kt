@@ -388,6 +388,14 @@ class SpeechGenerationService : Service() {
                 this,
                 "Breeze strict HTP model=$modelId",
             )
+            if (BreezeHexagonTransport.isEnabled(this) && !fastSelected) {
+                BackendDiagnostics.append(
+                    this, "BREEZE_TRANSPORT",
+                    "FastRPC requested but unavailable: require paired v81 native build, " +
+                        "the installed v3 QNN vocoder, and the legacy GGUF generator. " +
+                        "Using DSPQueue."
+                )
+            }
             val installedPreferredQnn = BreezeQnnVocoderArtifact.localInstall(this)
             if (
                 qnnGeneratorInstall == null &&

@@ -824,6 +824,9 @@ fun SpeechRunScreen(
     }
     var fastRpcEnabled by remember { mutableStateOf(BreezeHexagonTransport.isEnabled(context)) }
     val fastRpcPackaged = remember { BreezeHexagonTransport.isPackaged(context) }
+    val fastRpcVocoderReady = remember(acceleratorState) {
+        BreezeQnnVocoderArtifact.localLegacyHexagonSafeInstall(context)?.version == 3
+    }
     // The transport can auto-revert when the native v81 self-test fails.
     LaunchedEffect(speechState) {
         fastRpcEnabled = BreezeHexagonTransport.isEnabled(context)
@@ -1665,6 +1668,8 @@ fun SpeechRunScreen(
                                         "The FastRPC backend is not included in this build."
                                     } else if (fullQnnGeneratorEnabled) {
                                         "Requires the Hexagon generator, not Full QNN."
+                                    } else if (!fastRpcVocoderReady) {
+                                        "Install the compatible v3 QNN vocoder to test this backend."
                                     } else if (fastRpcEnabled) {
                                         "Experimental HTP v81 transport. Requires the v3 QNN vocoder. If startup validation fails, DSPQueue is restored."
                                     } else {
@@ -1676,7 +1681,7 @@ fun SpeechRunScreen(
                             }
                             Switch(
                                 checked = fastRpcEnabled,
-                                enabled = fastRpcPackaged && !fullQnnGeneratorEnabled && !busy,
+                                enabled = fastRpcPackaged && fastRpcVocoderReady && !fullQnnGeneratorEnabled && !busy,
                                 onCheckedChange = { enabled ->
                                     fastRpcEnabled = enabled
                                     BreezeHexagonTransport.setEnabled(context, enabled)
