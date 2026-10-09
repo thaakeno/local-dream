@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
+#include <limits>
 #include <dlfcn.h>
 #include <filesystem>
 #include <fstream>
@@ -82,29 +84,100 @@ public:
         }
     }
 
+    // The pinned QAIRT metadata can describe an exported vocoder graph as a
+    // flattened tensor or as NFC/NCF. Shape *element counts*, not an assumed
+    // rank of exactly 3, determine whether an artifact contains an 8/32/64
+    // frame graph. The trusted PCM self-test still has to pass before any
+    // QNN output reaches playback.
+    static size_t tensor_elements(const Qnn_Tensor_t & tensor) {
+        const uint32_t rank = QNN_TENSOR_GET_RANK(tensor);
+        const uint32_t * dims = QNN_TENSOR_GET_DIMENSIONS(tensor);
+        if (!rank || rank > 8 || !dims) return 0;
+        size_t count = 1;
+        for (uint32_t i = 0; i < rank; ++i) {
+            if (!dims[i] || count > SIZE_MAX / dims[i]) return 0;
+            count *= dims[i];
+        }
+        return count;
+    }
+
+    static std::string describe_shape(const Qnn_Tensor_t & tensor) {
+        const uint32_t rank = QNN_TENSOR_GET_RANK(tensor);
+        const uint32_t * dims = QNN_TENSOR_GET_DIMENSIONS(tensor);
+        std::string desc;
+        for (uint32_t i = 0; i < rank && i < 8; ++i) {
+            if (i) desc += "x";
+            desc += dims ? std::to_string(dims[i]) : "?";
+        }
+        return desc.empty() ? "<scalar>" : desc;
+    }
+
     bool setup_io(size_t index) {
         if (!m_graphsInfo || index >= m_graphsCount) return false;
+        const auto & graph = (*m_graphsInfo)[index];
+        if (graph.numInputTensors != 1 || graph.numOutputTensors != 1) {
+            std::fprintf(stderr,
+                "[BREEZE_QNN_GRAPH] idx=%zu name=%s inputs=%u outputs=%u incompatible\n",
+                index, graph.graphName ? graph.graphName : "<unnamed>",
+                (unsigned)graph.numInputTensors, (unsigned)graph.numOutputTensors);
+            return false;
+        }
         if (graph_io.size() < m_graphsCount) graph_io.resize(m_graphsCount);
         auto & slot = graph_io[index];
         if (slot.inputs && slot.outputs) return true;
-        return qnn::tools::iotensor::StatusCode::SUCCESS ==
-            m_ioTensor.setupInputAndOutputTensors(
-                slot.inputs ? nullptr : &slot.inputs,
-                slot.outputs ? nullptr : &slot.outputs,
-                (*m_graphsInfo)[index]
-            );
+        const auto status = m_ioTensor.setupInputAndOutputTensors(
+            slot.inputs ? nullptr : &slot.inputs,
+            slot.outputs ? nullptr : &slot.outputs,
+            graph
+        );
+        if (status != qnn::tools::iotensor::StatusCode::SUCCESS ||
+            !slot.inputs || !slot.outputs) {
+            std::fprintf(stderr,
+                "[BREEZE_QNN_GRAPH] idx=%zu name=%s tensor-setup-failed status=%d input=%p output=%p\n",
+                index, graph.graphName ? graph.graphName : "<unnamed>",
+                (int)status, (void *)slot.inputs, (void *)slot.outputs);
+            return false;
+        }
+        return true;
     }
 
     int graph_frames(size_t index) {
         if (!setup_io(index)) return 0;
         auto & graph = (*m_graphsInfo)[index];
-        auto & in = graph_io[index].inputs[0];
-        if (graph.numInputTensors != 1 || graph.numOutputTensors != 1) return 0;
+        const auto & in = graph_io[index].inputs[0];
+        const auto & out = graph_io[index].outputs[0];
+        const size_t feature_elements = tensor_elements(in);
+        const size_t pcm_elements = tensor_elements(out);
         const uint32_t rank = QNN_TENSOR_GET_RANK(in);
         const uint32_t * dims = QNN_TENSOR_GET_DIMENSIONS(in);
-        if (rank != 3 || !dims) return 0;
-        if (dims[1] == 512 && dims[2] > 0) return (int) dims[2];
-        if (dims[2] == 512 && dims[1] > 0) return (int) dims[1];
+        if (rank == 3 && dims) {
+            const int frames = dims[1] == 512 && dims[2] > 0 ? (int)dims[2] :
+                               dims[2] == 512 && dims[1] > 0 ? (int)dims[1] : 0;
+            if (frames > 0 &&
+                feature_elements == (size_t)frames * 512u &&
+                pcm_elements == (size_t)frames * 1920u) return frames;
+        }
+        // Older exported contexts may flatten [1, frames, 512]. This is a
+        // strict compatibility path, NOT permission to accept arbitrary graphs.
+        if (feature_elements && feature_elements % 512u == 0u) {
+            const size_t frames = feature_elements / 512u;
+            if ((frames == 8u || frames == 32u || frames == 64u) &&
+                pcm_elements == frames * 1920u) {
+                std::fprintf(stderr,
+                    "[BREEZE_QNN_GRAPH] idx=%zu name=%s matched=element-count "
+                    "frames=%zu input=%s output=%s\n",
+                    index, graph.graphName ? graph.graphName : "<unnamed>",
+                    frames, describe_shape(in).c_str(), describe_shape(out).c_str());
+                return (int) frames;
+            }
+        }
+        std::fprintf(stderr,
+            "[BREEZE_QNN_GRAPH] idx=%zu name=%s rejected input_rank=%u input=%s "
+            "in_elems=%zu output_rank=%u output=%s out_elems=%zu\n",
+            index, graph.graphName ? graph.graphName : "<unnamed>",
+            (unsigned)rank, describe_shape(in).c_str(), feature_elements,
+            (unsigned)QNN_TENSOR_GET_RANK(out),
+            describe_shape(out).c_str(), pcm_elements);
         return 0;
     }
 
@@ -146,8 +219,7 @@ public:
 
         const uint32_t rank = QNN_TENSOR_GET_RANK(in);
         const uint32_t * dims = QNN_TENSOR_GET_DIMENSIONS(in);
-        size_t input_elems = 1;
-        for (uint32_t i = 0; i < rank; ++i) input_elems *= dims ? dims[i] : 1;
+        const size_t input_elems = tensor_elements(in);
         if (input_elems != feature_count) {
             std::fprintf(
                 stderr,
