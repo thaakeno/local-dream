@@ -60,9 +60,11 @@ class SpeechGenerationService : Service() {
         private const val BACKEND = "http://127.0.0.1:8082"
         private const val EXECUTABLE = "libbreeze_server.so"
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
+        private const val FAST_EXECUTABLE = "libbreeze_server_fastrpc.so"
+        private const val FAST_SELFTEST_EXECUTABLE = "libbreeze_selftest_fastrpc.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-serial-depth-20261009"
+            "breeze-a0e177-hexagon-ab9acc-dual-transport-20261009"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -222,6 +224,7 @@ class SpeechGenerationService : Service() {
     }
 
     private suspend fun startServer(modelId: String) {
+        var fastSelected = false
         val started = System.currentTimeMillis()
         _state.value = SpeechState.Loading(
             modelId,
@@ -266,7 +269,13 @@ class SpeechGenerationService : Service() {
             activeQnnSelftestMarker = qnnInstall?.let { qnnSelftestMarker(it) }
             activeQnnSelftestKey = qnnInstall?.let { qnnSelftestKey(it) }
             prepareRuntime(usingQnnRuntime)
-            val executable = File(applicationInfo.nativeLibraryDir, EXECUTABLE)
+            val fastDir = File(runtimeDir, "fastrpc")
+            fastSelected = BreezeHexagonTransport.isEnabled(this) &&
+                BreezeHexagonTransport.isPackaged(this) &&
+                qnnGeneratorInstall == null && qnnInstall?.version == 3 &&
+                File(fastDir, "libggml-htp-v81.so").isFile
+            val executable = File(applicationInfo.nativeLibraryDir,
+                if (fastSelected) FAST_EXECUTABLE else EXECUTABLE)
             if (!executable.isFile) {
                 throw IllegalStateException("Breeze native server is missing from this APK")
             }
@@ -329,6 +338,11 @@ class SpeechGenerationService : Service() {
                 // autoregressive one-frame generator.
                 "GGML_HEXAGON_OPPOLL" to "0",
             )
+            if (fastSelected) {
+                env["BREEZE_FASTRPC_SKEL_DIR"] = fastDir.absolutePath
+                env["BREEZE_TRANSPORT_FASTRPC"] = "1"
+                env["ADSP_LIBRARY_PATH"] = fastDir.absolutePath + ";" + dspPath
+            }
             if (usingQnnRuntime) {
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
                 env["LOCALDREAM_QNN_POWER_MODE"] = "high_performance"
@@ -392,7 +406,9 @@ class SpeechGenerationService : Service() {
             BackendDiagnostics.append(
                 this,
                 "BREEZE_ENV",
-                "backend=HTP0:0 transport=DSPQueue fallback=disabled " +
+                "backend=HTP0:0 transport=" +
+                    (if (fastSelected) "FastRPC-ION" else "DSPQueue") +
+                    " fallback=dspqueue-on-fastrpc-startup-failure " +
                     "queue=v202-opbatch1280x32-oppoll0 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
@@ -413,7 +429,7 @@ class SpeechGenerationService : Service() {
                     "snake=precomputed+fused diag=projection-preflight-v195 signal_validation=stream+pcm16 " +
                     "runtime=${runtimeDir.absolutePath}",
             )
-            runBackendSelfTest(env, modelId, started)
+            runBackendSelfTest(env, modelId, started, fastSelected)
             BackendDiagnostics.append(this, "BREEZE_CMD", command.joinToString(" "))
 
             val proc = ProcessBuilder(command).apply {
@@ -455,6 +471,15 @@ class SpeechGenerationService : Service() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            if (fastSelected) {
+                BackendDiagnostics.append(this, "BREEZE_TRANSPORT",
+                    "FastRPC failed self-test or startup: " +
+                        (e.message ?: "unknown failure") + "; returning to DSPQueue.")
+                BreezeHexagonTransport.setEnabled(this, false)
+                destroyProcess()
+                startServer(modelId)
+                return
+            }
             fail(e.message ?: "Breeze startup failed", modelId)
             destroyProcess()
         }
@@ -788,8 +813,10 @@ class SpeechGenerationService : Service() {
         env: Map<String, String>,
         modelId: String,
         startedAtMillis: Long,
+        fastrpc: Boolean,
     ) {
-        val marker = File(runtimeDir, ".selftest_ok")
+        val marker = File(runtimeDir,
+            if (fastrpc) ".selftest_fastrpc_ok" else ".selftest_ok")
         if (runCatching { marker.readText() }.getOrNull() == RUNTIME_VERSION) return
 
         _state.value = SpeechState.Loading(
@@ -798,7 +825,8 @@ class SpeechGenerationService : Service() {
             startedAtMillis,
             0.22f,
         )
-        val executable = File(applicationInfo.nativeLibraryDir, SELFTEST_EXECUTABLE)
+        val executable = File(applicationInfo.nativeLibraryDir,
+            if (fastrpc) FAST_SELFTEST_EXECUTABLE else SELFTEST_EXECUTABLE)
         if (!executable.isFile) {
             throw IllegalStateException("Breeze HTP self-test is missing from this APK")
         }
@@ -843,6 +871,22 @@ class SpeechGenerationService : Service() {
             val assetSize = assets.open("breezelibs/$name").use { it.available().toLong() }
             if (!target.isFile || target.length() != assetSize) {
                 assets.open("breezelibs/$name").use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+            target.setReadable(true, true)
+            target.setExecutable(true, true)
+        }
+        // Separate FastRPC and DSPQueue skels: identical filenames, but
+        // incompatible IDL/transport ABIs. No dynamic library replacement.
+        val fastDir = File(runtimeDir, "fastrpc").apply { mkdirs() }
+        assets.list("breezefastrpc").orEmpty().forEach { name ->
+            if (!name.endsWith(".so")) return@forEach
+            val target = File(fastDir, name)
+            val sourcePath = "breezefastrpc/$name"
+            val bytes = assets.open(sourcePath).use { it.available().toLong() }
+            if (!target.isFile || target.length() != bytes) {
+                assets.open(sourcePath).use { input ->
                     target.outputStream().use { output -> input.copyTo(output) }
                 }
             }
