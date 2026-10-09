@@ -3,7 +3,7 @@ name: Inspect unpatched Qualcomm SampleApp interfaces
 on:
   workflow_dispatch:
   push:
-    branches: [breeze-fast20-cleanup-experimental]
+    branches: [breeze-fast20-cleanup-experimental, breeze-qnn-clean-runtime-prototype]
     paths:
       - '.github/workflows/inspect-breeze-unpatched-qnn.yml'
 
