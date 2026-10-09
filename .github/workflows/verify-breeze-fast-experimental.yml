@@ -35,11 +35,45 @@ jobs:
       # Ubuntu hosted runners already ship Android command-line tools. The
       # setup-android@v3 action invokes the retired "tools" SDK package and
       # exits before Gradle starts, so use the runner SDK directly.
-      - name: Install Android SDK 37
+      - name: Install available Android SDK 36 for source compilation
         run: |
           SDKMANAGER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -n 1)"
           test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" --channel=3 --install "platforms;android-37" "build-tools;36.0.0"
-      - name: Check Android UI and service compile
-        run: ./gradlew :app:compileBasicDebugKotlin --no-daemon --stacktrace
+          "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Verify Android UI and service Kotlin against available platform
+        run: |
+          # API 37 is unavailable on this hosted image as of 2026-10-09.
+          # CI substitutes the compilation SDK ONLY, never the repository app.
+          sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
+          ./gradlew :app:compileBasicDebugKotlin --no-daemon --stacktrace
+
+  native-graph-syntax:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Fetch precisely pinned Breeze and ggml headers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for pair in \
+            "Breeze-TTS-2.cpp https://github.com/HoppouAI/Breeze-TTS-2.cpp.git a0e177f91242ebbd2ea8d61548d742c89e4b9e06" \
+            "ggml-hexagon https://github.com/kan-linux/ggml-hexagon.git ab9acc4476cfe3add369379a3783fea190505a48"; do
+            read -r dir url sha <<< "$pair"
+            git init -q "$RUNNER_TEMP/$dir"
+            git -C "$RUNNER_TEMP/$dir" remote add origin "$url"
+            git -C "$RUNNER_TEMP/$dir" fetch --depth 1 origin "$sha"
+            git -C "$RUNNER_TEMP/$dir" checkout --detach FETCH_HEAD
+          done
+          git -C "$RUNNER_TEMP/ggml-hexagon" submodule update --init --depth 1 || true
+      - name: Compile Depth decoder translation unit for syntax
+        shell: bash
+        run: |
+          c++ -std=c++17 -fsyntax-only \
+            -I app/src/main/cpp/voice/overlay/breeze/include \
+            -I "$RUNNER_TEMP/Breeze-TTS-2.cpp/include" \
+            -I "$RUNNER_TEMP/Breeze-TTS-2.cpp/third_party" \
+            -I "$RUNNER_TEMP/ggml-hexagon/ggml/include" \
+            -I "$RUNNER_TEMP/ggml-hexagon/ggml/src" \
+            app/src/main/cpp/voice/overlay/breeze/src/depth_decoder.cpp
