@@ -18,6 +18,7 @@ BREEZE_DIR="$DEPS_DIR/Breeze-TTS-2.cpp"
 HEXAGON_DIR="$DEPS_DIR/ggml-hexagon"
 GGML_DIR="$HEXAGON_DIR/ggml"
 BUILD_DIR="$(pwd)/build/android"
+FAST_BUILD_DIR="$(pwd)/build/android-fastrpc"
 
 fetch_pinned_repo() {
     local dir="$1"
@@ -233,9 +234,13 @@ if grep -q 'u.block->data = tensor_to_f32' "$(pwd)/overlay/breeze/src/codec.cpp"
     exit 1
 fi
 
-rm -rf "$BUILD_DIR"
+rm -rf "$BUILD_DIR" "$FAST_BUILD_DIR"
 
-cmake -S "$(pwd)" -B "$BUILD_DIR" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=OFF     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
+configure_breeze() {
+    local build_target="$1" transport="$2"
+cmake -S "$(pwd)" -B "$build_target" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL="$transport"     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=OFF     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
+}
+configure_breeze "$BUILD_DIR" OFF
 
 cmake --build "$BUILD_DIR" --target breeze-server breeze-htp-selftest htp-v73 htp-v75 htp-v79 htp-v81 -j "$(nproc)"
 
@@ -286,3 +291,36 @@ formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2
 EOF
 
 ls -lh "$JNI_DIR/libbreeze_server.so" "$JNI_DIR/libbreeze_selftest.so" "$ASSET_DIR"/libggml-htp-v*.so
+
+# Build the upstream FastRPC/ION single-mempool backend as a separate variant.
+# The DSPQueue executable/skels stay unchanged and remain the app default.
+configure_breeze "$FAST_BUILD_DIR" ON
+cmake --build "$FAST_BUILD_DIR" \
+    --target breeze-server breeze-htp-selftest htp-mempool-v81 -j "$(nproc)"
+FAST_SKEL="$(find "$FAST_BUILD_DIR" -type f -name libggml-htp-v81.so -print -quit)"
+test -s "$FAST_BUILD_DIR/breeze-server"
+test -s "$FAST_BUILD_DIR/breeze-htp-selftest"
+test -n "$FAST_SKEL"
+test -s "$FAST_SKEL"
+"$READELF" -d "$FAST_BUILD_DIR/breeze-server" > "$FAST_BUILD_DIR/breeze-needed.txt"
+if grep -Eq 'Shared library: \[libggml(-base|-hexagon)?\.so\]' "$FAST_BUILD_DIR/breeze-needed.txt"; then
+    echo "FastRPC runtime must have a fully self-contained ggml backend" >&2
+    exit 1
+fi
+cp "$FAST_BUILD_DIR/breeze-server" "$JNI_DIR/libbreeze_server_fastrpc.so"
+cp "$FAST_BUILD_DIR/breeze-htp-selftest" "$JNI_DIR/libbreeze_selftest_fastrpc.so"
+chmod +x "$JNI_DIR/libbreeze_server_fastrpc.so" "$JNI_DIR/libbreeze_selftest_fastrpc.so"
+FAST_ASSETS="$(cd ../.. && pwd)/assets/breezefastrpc"
+mkdir -p "$FAST_ASSETS"
+cp "$FAST_SKEL" "$FAST_ASSETS/libggml-htp-v81.so"
+cat > "$FAST_ASSETS/backend-version.txt" <<EOF
+mode=fastrpc-ion-single-mempool
+backend=kan-linux/ggml-hexagon
+backend_commit=$HEXAGON_COMMIT
+arch=v81
+paired_server=libbreeze_server_fastrpc.so
+requires=qnn-vocoder-v3,strict-device-selftest
+production_default=dspqueue
+EOF
+ls -lh "$JNI_DIR"/libbreeze_*fastrpc.so "$FAST_ASSETS/libggml-htp-v81.so"
+
