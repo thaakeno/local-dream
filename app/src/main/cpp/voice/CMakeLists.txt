@@ -27,7 +27,6 @@ file(COPY "${QNN_SDK_ROOT}/examples/QNN/SampleApp/SampleApp/"
      DESTINATION "${QNN_SAMPLE_APP_DIR}")
 set(QNN_SAMPLE_SRC "${QNN_SAMPLE_APP_DIR}/src")
 file(GLOB QNN_SAMPLE_SOURCES
-    "${QNN_SAMPLE_SRC}/QnnSampleApp.cpp"
     "${QNN_SAMPLE_SRC}/Log/*.cpp"
     "${QNN_SAMPLE_SRC}/PAL/src/linux/*.cpp"
     "${QNN_SAMPLE_SRC}/PAL/src/common/*.cpp"

@@ -117,14 +117,16 @@ public:
         return StatusCode::FAILURE; // profiling intentionally disabled; do not fake data
     }
     StatusCode freeContext(){
-        if(m_graphsInfo){
-            ::qnn_wrapper_api::freeGraphsInfo(&m_graphsInfo,m_graphsCount);
-            m_graphsInfo=nullptr;m_graphsCount=0;
-        }
+        // Free the QNN context first: graph handles and metadata belong to
+        // that context and must remain intact until contextFree completes.
         if(m_context){
             auto f=m_qnnFunctionPointers.qnnInterface.contextFree;
             if(f)f(m_context,nullptr);
             m_context=nullptr;
+        }
+        if(m_graphsInfo){
+            ::qnn_wrapper_api::freeGraphsInfo(&m_graphsInfo,m_graphsCount);
+            m_graphsInfo=nullptr;m_graphsCount=0;
         }
         m_isContextCreated=false;
         return StatusCode::SUCCESS;
