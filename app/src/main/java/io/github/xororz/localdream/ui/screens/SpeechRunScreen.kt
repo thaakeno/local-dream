@@ -210,6 +210,186 @@ private val BREEZE_TEMPLATES = listOf(
         "今天路上有点堵，不过没关系。我们慢慢走，到了以后先找个安静的地方坐一会儿。",
         "自然的普通话成年女声，像朋友之间真实聊天。语速舒适，语气温和，轻微停顿和自然呼吸，不要播音腔。",
     ),
+    SpeechTemplate(
+        "Missed last train",
+        "Realistic",
+        "(sigh) It says the next train is in forty-six minutes. Yeah, I'm fine. Just standing here with a coffee that's gone cold. Tell me about your day?",
+        "Adult man speaking on a late-night call outdoors. Tired but interested, conversational warmth, slight breathiness and irregular pauses, no artificial drama.",
+    ),
+    SpeechTemplate(
+        "Unexpected good news",
+        "Realistic",
+        "Wait. Read that again. (laugh) No, seriously, are you sure? I didn't even think they'd reply. Give me a second... I'm actually shaking.",
+        "Young adult woman getting wonderful news in private. Starts disbelieving, breaks into an involuntary laugh, then quiet overwhelming relief, unpolished authentic delivery.",
+    ),
+    SpeechTemplate(
+        "The last customer",
+        "Realistic",
+        "Hey, sorry, we're about to close. (sigh) You know what? Take your time. It looks like you've had a worse day than me.",
+        "Middle-aged café worker with a low slightly rough voice. Starts drained and brisk, then unexpectedly softens. Realistic background-quiet conversation.",
+    ),
+    SpeechTemplate(
+        "Hospital hallway",
+        "Realistic",
+        "She's awake. The doctor just came out and said she's awake. (breathing heavily) I don't know what to do with my hands right now. Can you come?",
+        "Adult man making a phone call after hours of worry. Trembling relief, a little breathless and exhausted, sentences arriving in uneven bursts rather than an actor's monologue.",
+    ),
+    SpeechTemplate(
+        "The lighthouse signal",
+        "Cinematic",
+        "(static) Coast Guard, do you copy? We have a light on the water. It's been following the ship for forty minutes. There is no boat underneath it.",
+        "Older coastal radio operator, restrained low register with growing uncertainty. Concrete, precise delivery and tense silences; cinematic but believable.",
+    ),
+    SpeechTemplate(
+        "The king's surrender",
+        "Cinematic",
+        "Take the crown. Keep the city. But you will not have another soldier from me. I have buried enough sons for one lifetime.",
+        "Exhausted aging monarch with a deep weathered voice. Long measured phrases, grief held behind authority, a final line spoken quietly rather than shouted.",
+    ),
+    SpeechTemplate(
+        "Emergency broadcast",
+        "Cinematic",
+        "This is not a test. Stay away from the windows. Do not respond if someone outside calls you by name. (breathing heavily) Please... just trust me.",
+        "Female emergency announcer, professionally controlled at first and privately frightened by the final sentence. Crisp broadcast enunciation, clipped urgency.",
+    ),
+    SpeechTemplate(
+        "Last message from orbit",
+        "Cinematic",
+        "The Earth is coming over the horizon now. It's beautiful. (sigh) My oxygen alarm's been ringing for six minutes. I think I'll watch the sunrise.",
+        "Adult astronaut speaking a final transmission with quiet acceptance. Close mic, warm and slightly strained breath, intimate pauses, no melodramatic sobbing.",
+    ),
+    SpeechTemplate(
+        "Library after midnight",
+        "Whisper",
+        "(whispers) That book wasn't on the shelf yesterday. Look at the date inside. It's tomorrow. Don't turn the next page until I'm back.",
+        "Soft adult woman's whisper in a deserted library. Very close, steady and clear, little restrained breaths, gentle conspiratorial urgency.",
+    ),
+    SpeechTemplate(
+        "Rain on the windowsill",
+        "Whisper",
+        "Listen... the rain's getting softer. (inhales) You don't have to solve anything tonight. Just stay here a little longer.",
+        "Low soothing adult voice with true quiet breathy whisper, intimate natural pacing and soft consonants. Comforting rather than exaggerated ASMR.",
+    ),
+    SpeechTemplate(
+        "The secret recording",
+        "Whisper",
+        "(whispers) Okay. If you're hearing this, the door finally opened. I left the key where we used to hide our letters. You remember.",
+        "Older feminine voice recorded into a small handheld recorder. Gentle whisper, fragile nostalgia and quiet urgency, no theatrical sound effects.",
+    ),
+    SpeechTemplate(
+        "One last bedtime tale",
+        "Whisper",
+        "A fox came to the edge of the garden every evening. He never asked for food. He just sat with the old man until the lights went out.",
+        "Deep, cozy storyteller speaking in a near-whisper. Soft gravelly texture, slow reassuring rhythm, natural pauses and gentle articulation.",
+    ),
+    SpeechTemplate(
+        "The retired swordsman",
+        "Anime",
+        "(sigh) I spent twenty years trying to perfect that technique. You figured it out in a week. (laugh) Well... I suppose that's why I trained you.",
+        "Older anime mentor with dry humor, soft gravelly authority and affectionate pride. Small understated laugh, natural timing instead of overacting.",
+    ),
+    SpeechTemplate(
+        "Last round of the tournament",
+        "Anime",
+        "You can keep the trophy. I didn't come here to win one. I came here to see if I could finally beat you.",
+        "Young adult female rival, cool controlled intensity and effortless confidence. Smooth, deliberate delivery with a small smile in the final line.",
+    ),
+    SpeechTemplate(
+        "The quiet villain",
+        "Anime",
+        "How strange. You've won every battle, and you still look terrified. Tell me... what do you think happens when there's nothing left to fight?",
+        "Androgynous mature antagonist, unusually serene and intelligent. Silky low resonance, precise teasing pauses, unsettling calm without shouting.",
+    ),
+    SpeechTemplate(
+        "Captain's final order",
+        "Anime",
+        "(shouts) Everyone below deck! I'll hold the line. (sigh) And if anyone asks... tell them I was never good at following orders.",
+        "Young adult anime captain, urgent projection giving way to an almost amused private farewell. Clear expressive arc, earned emotion, not squeaky.",
+    ),
+    SpeechTemplate(
+        "The black ocean",
+        "Narration",
+        "More than six thousand meters below the surface, sunlight has never reached the seafloor. Yet here, life has built a city around a crack in the Earth.",
+        "Mature nature documentary narrator with warm low timbre. Deep curiosity, measured scientific clarity and spacious pauses, no blockbuster trailer voice.",
+    ),
+    SpeechTemplate(
+        "A forgotten invention",
+        "Narration",
+        "In 1903, one small workshop produced an engine nobody expected to work. Its inventor kept the first successful test a secret for eleven days.",
+        "Thoughtful historical documentarian with crisp detailed articulation, curious restrained excitement, intimate studio microphone.",
+    ),
+    SpeechTemplate(
+        "The museum at dawn",
+        "Narration",
+        "Every scratch on this bronze mask has a story. Some were made by the artist. Others were left by people who held it centuries after the artist died.",
+        "Gentle cultured museum guide speaking to a small group. Clear natural warmth, accessible pacing, subtle reverence without pomp.",
+    ),
+    SpeechTemplate(
+        "The unsolved radio signal",
+        "Narration",
+        "At 2:17 in the morning, every receiver in the observatory picked up the same three notes. The transmission lasted exactly nine seconds. It was never repeated.",
+        "Investigative podcast narrator with low calm authority and deliberate suspense. Conversational precision, subtle curiosity, not a caricature of true crime.",
+    ),
+    SpeechTemplate(
+        "The rescue call",
+        "Intense",
+        "(breathing heavily) I can see the car. The water's rising. I've got the door open, but the seatbelt won't move. (shouts) I NEED A KNIFE!",
+        "Adult first responder in a real emergency. Controlled professional commands collapse briefly into panic, audible exertion, urgent natural breaths.",
+    ),
+    SpeechTemplate(
+        "The broken promise",
+        "Intense",
+        "Don't tell me you tried. You promised you'd be there when she woke up. (sigh) She waited for you all morning.",
+        "Middle-aged woman struggling to keep anger below the surface. Low clipped beginning, emotional crack, final sentence nearly whispered in disappointment.",
+    ),
+    SpeechTemplate(
+        "No one gets left behind",
+        "Intense",
+        "(shouts) Turn the vehicle around! I don't care what command said. There are still people in that building, and we are not leaving them.",
+        "Weathered emergency team leader with forceful grounded authority. Urgent shouting, tight controlled breaths and quick concrete phrasing.",
+    ),
+    SpeechTemplate(
+        "After the verdict",
+        "Intense",
+        "(laugh) So that's it? All those years, and you get to walk out? (sigh) Look at me. At least have the courage to look at me.",
+        "Adult man absorbing an unjust verdict. Shock becomes a brief bitter laugh, then shaking quiet anger. Raw vulnerable delivery, not theatrical rage.",
+    ),
+    SpeechTemplate(
+        "The final warning",
+        "Intense",
+        "I'm only going to say this once. Put it down. (breathing heavily) I don't want to hurt you. Don't make me choose.",
+        "Adult woman speaking under extreme pressure. Low firm voice that almost breaks, careful pauses, breath held between words; serious and human.",
+    ),
+    SpeechTemplate(
+        "深夜来电",
+        "Mandarin",
+        "(叹气) 你还没睡啊？我刚到家。今天真的有点累，不过听见你的声音，突然就觉得好多了。",
+        "自然的成年男性普通话，深夜打电话的轻声语气。略显疲惫，但听到对方回应后明显放松，呼吸和停顿自然，不要播音腔。",
+    ),
+    SpeechTemplate(
+        "地铁里的好消息",
+        "Mandarin",
+        "等等，你是说真的？(笑) 我拿到录取通知了？天哪，我还以为自己一点机会都没有！",
+        "年轻成年女性普通话，收到录取消息的真实反应。从不敢相信到忍不住笑出来，惊喜自然，不要刻意夸张。",
+    ),
+    SpeechTemplate(
+        "雨夜的故事",
+        "Mandarin",
+        "雨下了一整晚。街上的灯一个接一个熄灭，只有那家小书店，还透着一盏暖黄色的光。",
+        "温暖成熟的中文叙述女声，轻柔清晰，像在夜晚给人读故事。慢速但不拖沓，留有自然的句间停顿。",
+    ),
+    SpeechTemplate(
+        "最后的讯号",
+        "Mandarin",
+        "(喘息) 指挥中心，听得到吗？我们的电量只剩百分之三。外面那个东西……它又回来了。",
+        "成年男性中文科幻通讯语气，压低声音的紧张感逐步升级。短促呼吸，最后一句近乎耳语，不要夸张吼叫。",
+    ),
+    SpeechTemplate(
+        "老朋友重逢",
+        "Mandarin",
+        "你还是老样子啊。嘴上说着不来，结果比谁都到得早。(笑) 坐吧，我有好多事想跟你聊。",
+        "中年女性自然普通话，老友重逢时带点打趣和怀念，轻松微笑的语气，亲切自然，有生活感。",
+    ),
 )
 
 private const val DEFAULT_SEED = 42L
@@ -363,6 +543,7 @@ fun SpeechRunScreen(
     var showHistory by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf<List<SpeechHistoryItem>>(emptyList()) }
     var templateCategory by rememberSaveable { mutableStateOf("Realistic") }
+    var selectedVoiceScene by rememberSaveable { mutableStateOf<String?>(null) }
     var historySearch by rememberSaveable { mutableStateOf("") }
     var historySort by rememberSaveable { mutableStateOf(SpeechHistorySort.Newest.name) }
     var historyFavoritesOnly by rememberSaveable { mutableStateOf(false) }
@@ -549,12 +730,38 @@ fun SpeechRunScreen(
                         }
                     }
 
-                    Text(
-                        "Starting points",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // A lightweight, curated scene library. No imagery, heavy
+                    // animations or extra inference settings on the compose path.
+                    val visibleScenes = remember(templateCategory) {
+                        BREEZE_TEMPLATES.filter { it.category == templateCategory }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "Explore voices",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Pick a scene, then make it yours.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            "${BREEZE_TEMPLATES.size} ideas",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(end = 8.dp),
+                    ) {
                         items(BREEZE_TEMPLATES.map { it.category }.distinct()) { category ->
                             FilterChip(
                                 selected = templateCategory == category,
@@ -563,38 +770,93 @@ fun SpeechRunScreen(
                                     AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                                 },
                                 label = { Text(category) },
+                                shape = RoundedCornerShape(16.dp),
                             )
                         }
                     }
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(
-                            BREEZE_TEMPLATES.filter { it.category == templateCategory },
-                            key = { it.name },
-                        ) { template ->
-                            AssistChip(
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(end = 8.dp),
+                    ) {
+                        items(visibleScenes, key = { it.name }) { scene ->
+                            val selected = selectedVoiceScene == scene.name
+                            Surface(
                                 onClick = {
-                                    text = template.text
-                                    instruction = template.instruction
+                                    text = scene.text
+                                    instruction = scene.instruction
+                                    selectedVoiceScene = scene.name
                                     AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                                 },
-                                label = { Text(template.name) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                                modifier = Modifier
+                                    .width(224.dp)
+                                    .height(150.dp),
+                                shape = RoundedCornerShape(22.dp),
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
                                 },
-                            )
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp,
+                                    if (selected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f),
+                                ),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text(
+                                            if (selected) "LOADED" else "VOICE SCENE",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (selected) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontWeight = FontWeight.Medium,
+                                        )
+                                        Icon(
+                                            if (selected) Icons.Default.CheckCircle
+                                            else Icons.Default.ArrowOutward,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(17.dp),
+                                            tint = if (selected) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Text(
+                                        scene.name,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        scene.text.replace(Regex("^\\([^)]*\\)\\s*"), "")
+                                            .trim(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 3,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                         }
                     }
 
                     InlineEventEditor(
                         value = text,
-                        onValueChange = { text = it.take(12000) },
+                        onValueChange = { text = it.take(12000); selectedVoiceScene = null },
                         events = BREEZE_INLINE_EVENTS,
                         modifier = Modifier.fillMaxWidth(),
                     )
 
                     OutlinedTextField(
                         value = instruction,
-                        onValueChange = { instruction = it.take(1200) },
+                        onValueChange = { instruction = it.take(1200); selectedVoiceScene = null },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Voice direction") },
                         placeholder = {
@@ -703,9 +965,9 @@ fun SpeechRunScreen(
                         acceleratorState is BreezeQnnVocoderArtifact.Status.Ready ||
                         acceleratorState is BreezeQnnVocoderArtifact.Status.UpgradeAvailable
                     ) {
-                        "Snapdragon NPU · GGUF generator + QNN waveform decoder"
+                        "On-device · Accelerated waveform"
                     } else {
-                        "Snapdragon NPU · GGUF generator"
+                        "On-device · Local synthesis"
                     },
                     modifier = Modifier.padding(horizontal = 16.dp),
                     onReproduce = {
@@ -761,9 +1023,9 @@ fun SpeechRunScreen(
             title = {
                 Text(
                     if (accelerator is BreezeQnnVocoderArtifact.Status.UpgradeAvailable) {
-                        "Faster Snapdragon vocoder"
+                        "Faster waveform decoder"
                     } else {
-                        "Fast Snapdragon vocoder"
+                        "Waveform decoder"
                     },
                 )
             },
@@ -776,7 +1038,7 @@ fun SpeechRunScreen(
                                 "8/32/64-frame QNN graphs, so short first/tail chunks no longer " +
                                 "pay for a full 64-frame graph."
                         } else {
-                            "Download the fast Snapdragon waveform decoder. It is shared by every " +
+                            "Download the optimized waveform decoder. It is shared by every " +
                                 "Breeze Q4/Q6/Q8/F16/DD model on this phone and keeps waveform " +
                                 "synthesis on the NPU."
                         },
@@ -898,39 +1160,6 @@ fun SpeechRunScreen(
                         Icon(Icons.Default.Refresh, contentDescription = null)
                         Spacer(Modifier.width(6.dp))
                         Text("Reset")
-                    }
-                }
-
-                Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.48f),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            "Snapdragon NPU",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            if (
-                                acceleratorState is BreezeQnnVocoderArtifact.Status.Ready ||
-                                acceleratorState is BreezeQnnVocoderArtifact.Status.UpgradeAvailable
-                            ) {
-                                "GGUF generator on Hexagon + accelerated QNN waveform decoder"
-                            } else {
-                                "GGUF generator on Hexagon"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            "The detailed HTP/QNN names are implementation details; this is the practical compute path currently used.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                 }
 
@@ -2093,17 +2322,6 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                        ) {
-                            Text(
-                                "Snapdragon NPU",
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
-                        }
                     }
                     Text(
                         state.detail,
@@ -2194,11 +2412,6 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
                 )
             }
 
-            Text(
-                "Hybrid NPU pipeline: the voice model and waveform decoder take turns on the same Snapdragon accelerator.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
-            )
         }
     }
 }
