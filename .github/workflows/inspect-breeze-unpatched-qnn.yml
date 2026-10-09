@@ -44,6 +44,10 @@ jobs:
           grep -nE 'QnnSampleApp::initialize|QnnSampleApp::createFromBinary|contextCreateFromBinary|systemContextGetBinaryInfo|logCreate|m_context|m_graphsInfo|m_graphsCount' "$cpp" | head -110
           echo '== IOTensor data conversion declaration symbols =='
           grep -nE '(^ *(private|protected|public):|copyFromFloatToNative|convertToFloat|setupInputAndOutputTensors|tearDownInputAndOutputTensors|copyFromFloat)' "$io" | head -100
+          echo '== SDK QNN metadata and lifecycle call names =='
+          grep -nE 'copyMetadataToGraphsInfo|systemContextCreate|systemContextFree|backendCreate|deviceCreate|graphRetrieve|contextCreateFromBinary|QNN_TENSOR_SET_CLIENT_BUF|QNN_TENSOR_GET_CLIENT_BUF' "$cpp" | head -110
+          echo '== SDK metadata declaration =='
+          grep -R -n -m 8 'copyMetadataToGraphsInfo' "$(dirname "$hdr")" | cut -c1-200 | head -35
           echo 'QAIRT audit finished (member signatures only).'
       - name: Save SDK cache for later no-patch compilation
         if: steps.sdk.outputs.cache-hit != 'true'
