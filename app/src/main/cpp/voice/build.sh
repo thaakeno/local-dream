@@ -212,6 +212,19 @@ grep -q 'persistent_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'BREEZE_QNN_CACHE' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'depth.run(m, hiddens, cb0' "$(pwd)/overlay/breeze/src/generation.cpp"
 
+# Guard the NPU-only Breeze v70 cleanup in production builds.
+# Adreno Vulkan depth was slower than Hexagon and must not be linked again.
+if grep -Eq 'GGML_VULKAN ON|breeze-gpu-depth[.]cpp|LOCALDREAM_VULKAN_DEPTH' "$(pwd)/CMakeLists.txt"; then
+    echo "Retired Breeze Vulkan depth backend is present" >&2
+    exit 1
+fi
+if grep -Eq 'GpuDepthEngine|BREEZE_GPU_DEPTH_FUSED' "$(pwd)/overlay/breeze/src/generation.cpp"; then
+    echo "Retired Breeze GPU depth execution returned" >&2
+    exit 1
+fi
+grep -q 'persistent_legacy_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
+grep -q 'BREEZE_BACKBONE_EMBED_FUSE' "$(pwd)/overlay/breeze/src/generation.cpp"
+
 # Full-clip decode remains available for voice conversion/reference work, but
 # production decode must not attach the old full-tensor SUM diagnostic probes.
 grep -Fq 'vocoder_decode(g.ctx, *m, g, codes, n_cb, T, nullptr)' "$(pwd)/overlay/breeze/src/codec.cpp"
