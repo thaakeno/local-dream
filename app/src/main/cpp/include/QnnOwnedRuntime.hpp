@@ -17,6 +17,7 @@ namespace localdream::qnn {
 class QnnOwnedRuntime {
 public:
     using StatusCode = ::qnn::tools::sample_app::StatusCode;
+    using QnnFunctionPointers = ::qnn::tools::sample_app::QnnFunctionPointers;
     using ProfilingLevel = ::qnn::tools::sample_app::ProfilingLevel;
     using OutputDataType = ::qnn::tools::iotensor::OutputDataType;
     using InputDataType = ::qnn::tools::iotensor::InputDataType;
