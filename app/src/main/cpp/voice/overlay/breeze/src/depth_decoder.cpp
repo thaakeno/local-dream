@@ -60,6 +60,14 @@ void DepthRunner::init(BreezeModel & m, int n_branches) {
     profiled_set_ms = profiled_htp_ms = profiled_read_ms = profiled_sample_ms = 0.0;
 }
 
+void DepthRunner::begin_request() {
+    // Keep graph allocations and tensor mirrors alive across requests.
+    // run() resets KV positions for each codec frame before replay.
+    kv.reset();
+    profiled_frames = 0;
+    profiled_set_ms = profiled_htp_ms = profiled_read_ms = profiled_sample_ms = 0.0;
+}
+
 void DepthRunner::free() {
     steps.clear();
     kv.free();

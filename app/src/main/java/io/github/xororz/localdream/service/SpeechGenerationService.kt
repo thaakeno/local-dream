@@ -34,9 +34,10 @@ class SpeechGenerationService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var workJob: Job? = null
     private var activeCall: Call? = null
-    private var process: Process? = null
+    @Volatile private var process: Process? = null
     private var monitorThread: Thread? = null
     private var servingModelId: String? = null
+    @Volatile private var lastNativeFailure: String? = null
     private lateinit var runtimeDir: File
     @Volatile private var nativeEffectiveFrames: Int = 0
     @Volatile private var nativeDecodedFrames: Int = 0
@@ -368,6 +369,7 @@ class SpeechGenerationService : Service() {
                 }
             }
 
+            lastNativeFailure = null
             BackendDiagnostics.beginSession(
                 this,
                 "Breeze strict HTP model=$modelId",
@@ -498,6 +500,7 @@ class SpeechGenerationService : Service() {
                 }
 
                 val started = System.currentTimeMillis()
+                lastNativeFailure = null
                 nativeEffectiveFrames = 0
                 nativeDecodedFrames = 0
                 nativeGeneratedFrames = 0
@@ -650,8 +653,10 @@ class SpeechGenerationService : Service() {
             } catch (e: Exception) {
                 if (activeCall?.isCanceled() == true) {
                     _state.value = SpeechState.Idle
-                } else {
-                    fail(e.message ?: "Breeze generation failed", modelId)
+                } else if ((_state.value as? SpeechState.Error)?.modelId != modelId) {
+                    // A native crash may close the HTTP stream before the monitor
+                    // exits. Preserve the diagnostic instead of a generic EOF.
+                    fail(lastNativeFailure ?: e.message ?: "Breeze generation failed", modelId)
                 }
             } finally {
                 activeCall = null
@@ -968,11 +973,18 @@ class SpeechGenerationService : Service() {
         val line = raw.trim()
         if (line.isEmpty()) return
 
-        BackendDiagnostics.append(
-            this,
-            "BREEZE_NATIVE",
-            line.take(3000),
-        )
+        // Preserve the entire native record, including DSP stack traces.
+        BackendDiagnostics.append(this, "BREEZE_NATIVE", line)
+
+        if (line.contains("dspqueue_read failed", ignoreCase = true)) {
+            val nativeCode = Regex("dspqueue_read failed:\\s*(0x[0-9a-fA-F]+)")
+                .find(line)?.groupValues?.getOrNull(1)
+            lastNativeFailure = "Hexagon DSPQueue failure" +
+                (nativeCode?.let { " ($it)" } ?: "") +
+                ". The native accelerator stopped; see the complete backend log."
+        } else if (line.contains("GGML_ABORT", ignoreCase = true) && lastNativeFailure == null) {
+            lastNativeFailure = "Hexagon native abort; see the complete backend log."
+        }
 
         val loading = _state.value as? SpeechState.Loading
         if (loading?.modelId == modelId) {
@@ -1322,11 +1334,19 @@ class SpeechGenerationService : Service() {
                 }
             }
             val code = runCatching { proc.waitFor() }.getOrDefault(-1)
-            if (process === proc && code != 0 && _state.value !is SpeechState.Idle) {
-                fail(
-                    "Speech engine stopped unexpectedly (code $code).",
-                    modelId,
-                )
+            // Only the currently owned process may change the UI. Intentional
+            // shutdown clears process identity before sending SIGTERM.
+            if (process === proc) {
+                process = null
+                servingModelId = null
+                val state = _state.value
+                BackendDiagnostics.append(this, "BREEZE_EXIT",
+                    "Native process exited code=$code state=${state.javaClass.simpleName}")
+                if (code != 0 && state !is SpeechState.Idle &&
+                    state !is SpeechState.Complete && state !is SpeechState.Error
+                ) {
+                    fail(lastNativeFailure ?: "Speech engine stopped unexpectedly (code $code).", modelId)
+                }
             }
         }, "breeze-native-log").apply {
             isDaemon = true
@@ -1337,14 +1357,17 @@ class SpeechGenerationService : Service() {
     private fun destroyProcess() {
         activeCall?.cancel()
         activeCall = null
-        process?.let { proc ->
+        val oldProcess = process
+        // Publish the intentional stop before proc.destroy(): waitFor() in the
+        // logging thread may otherwise report our own SIGTERM as code 143.
+        process = null
+        servingModelId = null
+        oldProcess?.let { proc ->
             runCatching { proc.destroy() }
             runCatching {
                 if (!proc.waitFor(800, TimeUnit.MILLISECONDS)) proc.destroyForcibly()
             }
         }
-        process = null
-        servingModelId = null
         monitorThread?.interrupt()
         monitorThread = null
     }
@@ -1359,6 +1382,9 @@ class SpeechGenerationService : Service() {
     }
 
     private fun fail(message: String, modelId: String?) {
+        // Preserve the first actionable diagnostic for a failed generation.
+        val previous = _state.value as? SpeechState.Error
+        if (previous?.modelId == modelId) return
         BackendDiagnostics.append(this, "BREEZE_ERROR", message)
         _state.value = SpeechState.Error(message, modelId)
     }

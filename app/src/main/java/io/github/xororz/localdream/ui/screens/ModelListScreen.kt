@@ -382,18 +382,25 @@ private fun HapticToggleRow(
 }
 
 @Composable
-private fun NativeBackendLogsDialog(
-    onDismiss: () -> Unit,
-) {
+private fun NativeBackendLogsDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var refreshKey by remember { mutableIntStateOf(0) }
-    val logs = remember(refreshKey) { BackendDiagnostics.read(context) }
-    val preview = if (logs.length > 180_000) {
-        "… preview trimmed; Save contains the full log …\n\n" +
-            logs.takeLast(180_000)
-    } else {
-        logs
+    var selectedArchive by remember { mutableStateOf<String?>(null) }
+
+    // Keep a live preview while the native model remains loaded. The preview
+    // never limits the actual on-disk session or the Save operation.
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(2000)
+            refreshKey++
+        }
+    }
+    val archivedNames = remember(refreshKey) { BackendDiagnostics.archivedSessions(context) }
+    val sessions: List<String?> = listOf(null) + archivedNames
+    val index = sessions.indexOf(selectedArchive).coerceAtLeast(0)
+    val preview = remember(refreshKey, selectedArchive) {
+        BackendDiagnostics.readPreview(context, selectedArchive)
     }
 
     AlertDialog(
@@ -402,22 +409,35 @@ private fun NativeBackendLogsDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "Persistent yue2.cpp / FastRPC / Hexagon output. This starts before " +
-                        "model loading, so HTP startup failures are not lost.",
+                    "Complete logs are saved for each loaded model session, across all generations. " +
+                        "Preview is limited for smooth scrolling; Save exports the full file.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (selectedArchive == null) "Current session"
+                        else selectedArchive!!.removeSuffix(".log"),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    TextButton(
+                        enabled = index + 1 < sessions.size,
+                        onClick = { selectedArchive = sessions[index + 1]; refreshKey++ },
+                    ) { Text("Older") }
+                    TextButton(
+                        enabled = index > 0,
+                        onClick = { selectedArchive = sessions[index - 1]; refreshKey++ },
+                    ) { Text("Newer") }
+                }
                 Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 220.dp, max = 460.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 220.dp, max = 460.dp),
                     shape = MaterialTheme.shapes.medium,
                     color = MaterialTheme.colorScheme.surfaceContainerHighest,
                 ) {
                     Text(
                         text = preview,
-                        modifier = Modifier
-                            .fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth()
                             .verticalScroll(rememberScrollState())
                             .padding(12.dp),
                         style = MaterialTheme.typography.bodySmall.copy(
@@ -429,81 +449,76 @@ private fun NativeBackendLogsDialog(
         },
         confirmButton = {
             Row {
-                TextButton(
-                    onClick = {
-                        val result = SafeClipboard.copyText(
-                            context,
-                            "Local Dream native backend logs",
-                            logs,
-                        )
-                        val message = when {
-                            !result.copied -> "Could not copy logs; use Save"
-                            result.truncated ->
-                                "Log is huge; copied a safe tail. Save for the full log"
-                            else -> context.getString(R.string.logs_copied)
-                        }
-                        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-                    },
-                ) {
+                TextButton(onClick = {
+                    val clipboardTail = BackendDiagnostics.readPreview(
+                        context, selectedArchive, 96_000
+                    )
+                    val result = SafeClipboard.copyText(
+                        context, "Local Dream native backend logs", clipboardTail
+                    )
+                    Toast.makeText(
+                        context,
+                        if (result.copied) "Copied log preview; Save for the complete session"
+                        else "Copy failed; use Save",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }) {
                     Icon(Icons.Default.ContentCopy, contentDescription = null)
                     Spacer(Modifier.width(5.dp))
                     Text("Copy")
                 }
-                TextButton(
-                    onClick = {
-                        val timestamp = SimpleDateFormat(
-                            "yyyy-MM-dd_HH-mm-ss",
-                            Locale.US,
-                        ).format(Date())
-                        val filename = "local_dream_backend_$timestamp.log"
-                        scope.launch(Dispatchers.IO) {
-                            val savedPath = try {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                    val values = ContentValues().apply {
-                                        put(MediaStore.Downloads.DISPLAY_NAME, filename)
-                                        put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-                                        put(
-                                            MediaStore.Downloads.RELATIVE_PATH,
-                                            Environment.DIRECTORY_DOWNLOADS + "/LocalDream",
-                                        )
-                                    }
-                                    val resolver = context.contentResolver
-                                    val uri = resolver.insert(
-                                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                                        values,
-                                    ) ?: throw java.io.IOException("MediaStore insert failed")
-                                    resolver.openOutputStream(uri)?.use { out ->
-                                        out.write(logs.toByteArray(Charsets.UTF_8))
-                                    } ?: throw java.io.IOException("openOutputStream failed")
-                                    "Downloads/LocalDream/$filename"
-                                } else {
-                                    val dir = File(
-                                        Environment.getExternalStoragePublicDirectory(
-                                            Environment.DIRECTORY_DOWNLOADS,
-                                        ),
-                                        "LocalDream",
+                TextButton(onClick = {
+                    val archiveToSave = selectedArchive
+                    val timestamp = SimpleDateFormat(
+                        "yyyy-MM-dd_HH-mm-ss", Locale.US
+                    ).format(Date())
+                    val suffix = archiveToSave?.removeSuffix(".log") ?: "current"
+                    val filename = "local_dream_backend_${suffix}_$timestamp.log"
+                    scope.launch(Dispatchers.IO) {
+                        val savedPath = try {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                val values = ContentValues().apply {
+                                    put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                                    put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                                    put(
+                                        MediaStore.Downloads.RELATIVE_PATH,
+                                        Environment.DIRECTORY_DOWNLOADS + "/LocalDream",
                                     )
-                                    if (!dir.exists()) dir.mkdirs()
-                                    val file = File(dir, filename)
-                                    FileOutputStream(file).use { out ->
-                                        out.write(logs.toByteArray(Charsets.UTF_8))
-                                    }
-                                    file.absolutePath
                                 }
-                            } catch (e: Exception) {
-                                Log.e("BackendDiagnostics", "save failed", e)
-                                null
+                                val resolver = context.contentResolver
+                                val uri = resolver.insert(
+                                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, values,
+                                ) ?: throw java.io.IOException("MediaStore insert failed")
+                                resolver.openOutputStream(uri)?.use { out ->
+                                    BackendDiagnostics.exportTo(context, out, archiveToSave)
+                                } ?: throw java.io.IOException("openOutputStream failed")
+                                "Downloads/LocalDream/$filename"
+                            } else {
+                                val dir = File(
+                                    Environment.getExternalStoragePublicDirectory(
+                                        Environment.DIRECTORY_DOWNLOADS,
+                                    ), "LocalDream"
+                                )
+                                dir.mkdirs()
+                                val outFile = File(dir, filename)
+                                FileOutputStream(outFile).use { out ->
+                                    BackendDiagnostics.exportTo(context, out, archiveToSave)
+                                }
+                                outFile.absolutePath
                             }
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(
-                                    context,
-                                    savedPath?.let { "Saved to $it" } ?: "Could not save log",
-                                    Toast.LENGTH_LONG,
-                                ).show()
-                            }
+                        } catch (e: Exception) {
+                            Log.e("BackendDiagnostics", "save failed", e)
+                            null
                         }
-                    },
-                ) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                context,
+                                savedPath?.let { "Saved to $it" } ?: "Could not save log",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }) {
                     Icon(Icons.Default.Save, contentDescription = null)
                     Spacer(Modifier.width(5.dp))
                     Text("Save")
@@ -512,22 +527,18 @@ private fun NativeBackendLogsDialog(
         },
         dismissButton = {
             Row {
-                TextButton(
-                    onClick = {
-                        BackendDiagnostics.clear(context)
-                        refreshKey++
-                    },
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error,
-                    ),
-                ) {
+                TextButton(onClick = {
+                    BackendDiagnostics.clear(context)
+                    selectedArchive = null
+                    refreshKey++
+                }, colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                )) {
                     Icon(Icons.Default.DeleteSweep, contentDescription = null)
                     Spacer(Modifier.width(5.dp))
-                    Text("Clear")
+                    Text("Clear current")
                 }
-                TextButton(onClick = onDismiss) {
-                    Text("Close")
-                }
+                TextButton(onClick = onDismiss) { Text("Close") }
             }
         },
     )

@@ -322,6 +322,7 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     tm.prefill += since(t0);
 
     DepthRunner & depth = persistent_legacy_depth(m, generator_branches);
+    depth.begin_request();
     // A tested QNN depth implementation can be opt-in only. Existing
     // SM8850 QNN depth measured ~295 ms/frame versus 85 ms/frame on ggml HTP.
     // Never select that slower context automatically during normal TTS.
@@ -613,7 +614,9 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         st_c.free();
         if (use_cfg) st_u.free();
     }
-    depth.free();
+    // The native decoder is cached between requests. Its prepared graphs and
+    // KV memory must remain valid until model teardown; only per-frame KV
+    // position and per-request profiling are reset between generations.
 
     const int total_frames = (int) frames.size() / nc;
     if (total_frames <= 0) {

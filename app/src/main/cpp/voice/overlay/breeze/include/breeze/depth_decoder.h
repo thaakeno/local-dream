@@ -30,6 +30,7 @@ struct DepthRunner {
 
     ~DepthRunner() { free(); }
     void init(BreezeModel & m, int n_branches);
+    void begin_request();
     void free();
 
     // cond hidden first; force replaces the first n_force residual codebooks
