@@ -226,6 +226,35 @@ std::vector<int> DepthRunner::run_speculative(
     bool serial_remainder = false;
     const auto t0 = std::chrono::steady_clock::now();
     while (next_head < target_count) {
+        // If speculation rejects a token, all subsequent heads run through
+        // the original verified graph implementation, not a special verifier
+        // padded with unused future projections.
+        if (serial_remainder) {
+            const int head_idx = next_head;
+            if (!steps[(size_t) head_idx])
+                steps[(size_t) head_idx] = build_depth_step(m, *this, head_idx);
+            DepthStep & stable = *steps[(size_t) head_idx];
+            std::vector<int32_t> indices((size_t) n_branch);
+            for (int branch = 0; branch < n_branch; ++branch)
+                indices[(size_t) branch] = codes[(size_t) head_idx] + head_idx * vs;
+            ggml_backend_tensor_set(
+                stable.audio, indices.data(), 0, indices.size() * sizeof(int32_t));
+            stable.graph.replay(m.backend);
+            const std::vector<float> raw_logits = tensor_to_f32(stable.logits);
+            if (raw_logits.size() != (size_t) n_branch * vs)
+                throw std::runtime_error("RVQ stable tail logits mismatch");
+            std::vector<float> guided_logits((size_t) vs);
+            for (int token = 0; token < vs; ++token) {
+                const float cond = raw_logits[(size_t) token];
+                const float uncond = n_branch == 2 ?
+                    raw_logits[(size_t) vs + token] : cond;
+                guided_logits[(size_t) token] = uncond + cfg_scale * (cond - uncond);
+            }
+            codes.push_back(sample_token(guided_logits, sp, rng));
+            ++next_head;
+            ++rounds;
+            continue;
+        }
         const int remaining = target_count - next_head;
         const int width = next_head == 0 || serial_remainder ? 1 :
             std::min(remaining, 1 + (int) future_proposals.size());

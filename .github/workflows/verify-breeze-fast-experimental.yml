@@ -40,6 +40,6 @@ jobs:
           SDKMANAGER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -n 1)"
           test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" --install "platforms;android-37" "build-tools;36.0.0"
+          "$SDKMANAGER" --channel=3 --install "platforms;android-37" "build-tools;36.0.0"
       - name: Check Android UI and service compile
         run: ./gradlew :app:compileBasicDebugKotlin --no-daemon --stacktrace
