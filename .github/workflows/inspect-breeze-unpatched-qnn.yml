@@ -48,6 +48,14 @@ jobs:
           grep -nE 'copyMetadataToGraphsInfo|systemContextCreate|systemContextFree|backendCreate|deviceCreate|graphRetrieve|contextCreateFromBinary|QNN_TENSOR_SET_CLIENT_BUF|QNN_TENSOR_GET_CLIENT_BUF' "$cpp" | head -110
           echo '== SDK metadata declaration =='
           grep -R -n -m 8 'copyMetadataToGraphsInfo' "$(dirname "$hdr")" | cut -c1-200 | head -35
+          echo '== SDK QNN helper prototypes =='
+          sed -n '35,75p' "$(dirname "$hdr")/Utils/QnnSampleAppUtils.hpp"
+          echo '== SDK tensor IO declarations =='
+          sed -n '34,132p' "$io"
+          echo '== SDK QNN context metadata APIs =='
+          sed -n '430,515p' "$cpp" | grep -E 'QNN_SUCCESS|qnnSystemInterface|contextCreateFromBinary|m_(context|backend|device|graph)|copyMetadata|systemCtx|binaryInfo|binaryInfoSize|m_cachedBinary|bufferSize|status|returnStatus' | head -65
+          echo '== SDK float-to-TFN API signatures =='
+          grep -n 'floatToTfN' "$(dirname "$hdr")/Utils/DataUtil.hpp" | head -15
           echo 'QAIRT audit finished (member signatures only).'
       - name: Save SDK cache for later no-patch compilation
         if: steps.sdk.outputs.cache-hit != 'true'
