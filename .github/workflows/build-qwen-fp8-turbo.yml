@@ -10,6 +10,7 @@ on:
       - yue2-fast-instrumental-htp
       - v141-stable-yue2-full
       - breeze-qnn-v5-fastpath
+      - breeze-fast20-cleanup-experimental
       - breeze-htp-clean-v150
     paths:
       - 'app/**'
@@ -171,7 +172,7 @@ jobs:
       # artifacts are reusable, so rebuild only voice/build.sh.
       - name: Check Breeze-only native delta
         id: breeze-native-delta
-        if: steps.native-cache.outputs.cache-hit != 'true' && (github.ref_name == 'v141-stable-yue2-full' || github.ref_name == 'breeze-qnn-v5-fastpath')
+        if: steps.native-cache.outputs.cache-hit != 'true' && (github.ref_name == 'v141-stable-yue2-full' || github.ref_name == 'breeze-qnn-v5-fastpath' || github.ref_name == 'breeze-fast20-cleanup-experimental')
         shell: bash
         run: |
           set -euxo pipefail
@@ -204,7 +205,7 @@ jobs:
       # rebuild only the music backend when the new full cache key is absent.
       - name: Bootstrap unchanged alpha.58 native artifacts
         id: native-bootstrap
-        if: steps.native-cache.outputs.cache-hit != 'true' && github.ref_name != 'v141-stable-yue2-full' && github.ref_name != 'breeze-qnn-v5-fastpath'
+        if: steps.native-cache.outputs.cache-hit != 'true' && github.ref_name != 'v141-stable-yue2-full' && github.ref_name != 'breeze-qnn-v5-fastpath' && github.ref_name != 'breeze-fast20-cleanup-experimental'
         uses: actions/cache/restore@v4
         with:
           path: |
