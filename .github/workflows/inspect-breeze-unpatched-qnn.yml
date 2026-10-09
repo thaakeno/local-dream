@@ -56,6 +56,26 @@ jobs:
           sed -n '430,515p' "$cpp" | grep -E 'QNN_SUCCESS|qnnSystemInterface|contextCreateFromBinary|m_(context|backend|device|graph)|copyMetadata|systemCtx|binaryInfo|binaryInfoSize|m_cachedBinary|bufferSize|status|returnStatus' | head -65
           echo '== SDK float-to-TFN API signatures =='
           grep -n 'floatToTfN' "$(dirname "$hdr")/Utils/DataUtil.hpp" | head -15
+          echo '== Local Dream owned runtime C++ syntax test =='
+          sdk_src="$(find "$sdk_dir" -path '*/examples/QNN/SampleApp/SampleApp/src/QnnSampleApp.hpp' -type f -print -quit)"
+          sdk_src="${sdk_src%/QnnSampleApp.hpp}"
+          sdk_root="${sdk_src%/examples/QNN/SampleApp/SampleApp/src}"
+          c++ -std=c++17 -fsyntax-only -Wall -Wextra -Wno-unused-parameter -x c++ - \
+            -I app/src/main/cpp/include \
+            -I "$sdk_root/include/QNN" \
+            -I "$sdk_src" \
+            -I "$sdk_src/Utils" \
+            -I "$sdk_src/WrapperUtils" \
+            -I "$sdk_src/Log" \
+            -I "$sdk_src/PAL/include" <<'HEADER_EOF'
+          #include "QnnOwnedRuntime.hpp"
+          class TestRuntime final : public QnnOwnedRuntime {
+          public:
+              using QnnOwnedRuntime::QnnOwnedRuntime;
+          };
+          static_assert(sizeof(TestRuntime) > 0, "owned QNN runtime compiles");
+          HEADER_EOF
+          echo 'Owned QNN runtime and typed I/O C++ syntax OK'
           echo 'QAIRT audit finished (member signatures only).'
       - name: Save SDK cache for later no-patch compilation
         if: steps.sdk.outputs.cache-hit != 'true'
