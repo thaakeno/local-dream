@@ -59,6 +59,12 @@ jobs:
           sed -n '430,515p' "$cpp" | grep -E 'QNN_SUCCESS|qnnSystemInterface|contextCreateFromBinary|m_(context|backend|device|graph)|copyMetadata|systemCtx|binaryInfo|binaryInfoSize|m_cachedBinary|bufferSize|status|returnStatus' | head -65
           echo '== SDK float-to-TFN API signatures =='
           grep -n 'floatToTfN' "$(dirname "$hdr")/Utils/DataUtil.hpp" | head -15
+          echo '== QNN tensor allocation symbols and relevant source window =='
+          iocpp="${io%.hpp}.cpp"
+          grep -nE 'setupInputAndOutputTensors|setupTensors|setupTensor|deepCopy|allocateBuffer|FLOAT_16|UINT_16|UFIXED_POINT_16|tearDownInputAndOutputTensors' "$iocpp" | head -130
+          sed -n '380,570p' "$iocpp"
+          echo '== QNN tensor allocation declarations =='
+          sed -n '35,115p' "$io"
           echo '== Local Dream owned runtime C++ syntax test =='
           sdk_src="$(find "$sdk_dir" -path '*/examples/QNN/SampleApp/SampleApp/src/QnnSampleApp.hpp' -type f -print -quit)"
           sdk_src="${sdk_src%/QnnSampleApp.hpp}"
