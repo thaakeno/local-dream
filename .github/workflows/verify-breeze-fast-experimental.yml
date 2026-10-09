@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - breeze-fast20-cleanup-experimental
+      - breeze-qnn-clean-runtime-prototype
   workflow_dispatch:
 
 permissions:
