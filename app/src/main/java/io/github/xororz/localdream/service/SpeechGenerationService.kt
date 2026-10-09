@@ -62,7 +62,7 @@ class SpeechGenerationService : Service() {
         private const val SELFTEST_EXECUTABLE = "libbreeze_selftest.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-v212-embedded-backbone"
+            "breeze-a0e177-hexagon-ab9acc-v213-rvq-speculative-optin"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
@@ -347,6 +347,10 @@ class SpeechGenerationService : Service() {
             // does not affect actual throughput. Fused experimental graph is
             // never activated in production after the SM8850 DSPQueue failure.
             env["BREEZE_DEPTH_FUSION_TRIAL"] = "0"
+            // Experimental verified-speculation changes only the inner 15-codebook
+            // scheduling, not CFG, speaker conditioning, or model weights.
+            val rvqFastMode = BreezePerformanceMode.isEnabled(this)
+            env["BREEZE_RVQ_SPECULATIVE"] = if (rvqFastMode) "1" else "0"
             env["BREEZE_DEPTH_PROFILE"] = "1"
             // GPU depth was slower than the verified Hexagon path on SM8850.
             // Old GPU preferences are intentionally ignored.
@@ -396,6 +400,7 @@ class SpeechGenerationService : Service() {
                     "queue=v202-opbatch1280x32-oppoll0 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
+                    "rvq_mode=" + (if (rvqFastMode) "speculative-experimental" else "stable-legacy") + " " +
                     "generator_mode=" + (if (fullQnnEnabled) "full-qnn" else "legacy-hexagon") + " " +
                     "generator=" + (if (qnnGeneratorInstall != null) qnnGeneratorInstall.engine else "ggml-hexagon") + " " +
                     "vocoder=" + (
