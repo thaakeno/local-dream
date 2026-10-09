@@ -1,7 +1,7 @@
 #include "breeze/qnn_vocoder.h"
 
 #include <HTP/QnnHtpDevice.h>
-#include <QnnSampleApp.hpp>
+#include <QnnOwnedRuntime.hpp>
 #include <QnnTypeMacros.hpp>
 
 #include "DynamicLoadUtil.hpp"
@@ -25,7 +25,7 @@ using namespace qnn::tools::sample_app;
 namespace breeze {
 namespace {
 
-class BreezeQnnApp final : public QnnSampleApp {
+class BreezeQnnApp final : public QnnOwnedRuntime {
 public:
     struct GraphIo {
         Qnn_Tensor_t * inputs = nullptr;
@@ -41,7 +41,7 @@ public:
         QnnFunctionPointers qnnFunctionPointers,
         void * backendHandle,
         const std::string & cachedBinaryPath
-    ) : QnnSampleApp(
+    ) : QnnOwnedRuntime(
             qnnFunctionPointers,
             "",
             "",

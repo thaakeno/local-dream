@@ -25,17 +25,6 @@ endif()
 set(QNN_SAMPLE_APP_DIR "${CMAKE_CURRENT_BINARY_DIR}/3rdparty/SampleApp")
 file(COPY "${QNN_SDK_ROOT}/examples/QNN/SampleApp/SampleApp/"
      DESTINATION "${QNN_SAMPLE_APP_DIR}")
-execute_process(
-    COMMAND git apply --unsafe-paths --directory=${CMAKE_CURRENT_BINARY_DIR}
-            "${CMAKE_CURRENT_SOURCE_DIR}/../SampleApp.patch"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.."
-    RESULT_VARIABLE QNN_PATCH_RESULT
-    ERROR_VARIABLE QNN_PATCH_ERROR
-)
-if(NOT QNN_PATCH_RESULT EQUAL 0)
-    message(FATAL_ERROR "Failed to apply Local Dream QNN SampleApp patch: ${QNN_PATCH_ERROR}")
-endif()
-
 set(QNN_SAMPLE_SRC "${QNN_SAMPLE_APP_DIR}/src")
 file(GLOB QNN_SAMPLE_SOURCES
     "${QNN_SAMPLE_SRC}/QnnSampleApp.cpp"
@@ -51,6 +40,7 @@ target_compile_definitions(breeze_qnn_runtime PRIVATE
 )
 target_include_directories(breeze_qnn_runtime PUBLIC
     "${QNN_SDK_ROOT}/include/QNN"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
     "${QNN_SAMPLE_SRC}"
     "${QNN_SAMPLE_SRC}/CachingUtil"
     "${QNN_SAMPLE_SRC}/Log"

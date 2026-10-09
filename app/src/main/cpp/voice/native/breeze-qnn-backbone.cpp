@@ -3,7 +3,7 @@
 #include "breeze/model.h"
 
 #include <HTP/QnnHtpDevice.h>
-#include <QnnSampleApp.hpp>
+#include <QnnOwnedRuntime.hpp>
 #include <QnnTypeMacros.hpp>
 
 #include "DynamicLoadUtil.hpp"
@@ -99,7 +99,7 @@ static bool finite_nonzero(const std::vector<float> & values) {
     return nonzero;
 }
 
-class BreezeQnnBackboneApp final : public QnnSampleApp {
+class BreezeQnnBackboneApp final : public QnnOwnedRuntime {
 public:
     void * model_handle = nullptr;
     uint32_t power_config_id = 0;
@@ -112,7 +112,7 @@ public:
         void * backendHandle,
         const std::string & cachedBinaryPath,
         std::string expected
-    ) : QnnSampleApp(
+    ) : QnnOwnedRuntime(
             qnnFunctionPointers,
             "",
             "",

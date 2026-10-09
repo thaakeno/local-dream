@@ -9,17 +9,6 @@ set(QNN_SDK_ROOT "$ENV{QNN_SDK_ROOT}" CACHE PATH "Qualcomm AI Runtime SDK 2.50.0
 set(SAMPLE_APP_DIR "${CMAKE_CURRENT_BINARY_DIR}/3rdparty/SampleApp")
 file(COPY "${QNN_SDK_ROOT}/examples/QNN/SampleApp/SampleApp/"
     DESTINATION "${SAMPLE_APP_DIR}")
-execute_process(
-    COMMAND git apply --unsafe-paths --directory=${CMAKE_CURRENT_BINARY_DIR}
-        "${CMAKE_CURRENT_SOURCE_DIR}/SampleApp.patch"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../../.."
-    RESULT_VARIABLE patch_result
-    ERROR_VARIABLE patch_error
-)
-if(NOT patch_result EQUAL 0)
-    message(FATAL_ERROR "${patch_error}")
-endif()
-
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/qnnlibs")
 file(COPY "${QNN_SDK_ROOT}/LICENSE.pdf" "${QNN_SDK_ROOT}/NOTICE.txt"
     "${QNN_SDK_ROOT}/QNN_NOTICE.txt"

@@ -8,7 +8,7 @@
 
 #include <algorithm>
 #include <Config.hpp>
-#include <QnnSampleApp.hpp>
+#include <QnnOwnedRuntime.hpp>
 #include <QnnTypeMacros.hpp>
 #include <cstring>
 #include <cstdlib>
@@ -23,7 +23,7 @@
 
 using namespace qnn::tools::sample_app;
 
-class QnnModel : public QnnSampleApp {
+class QnnModel : public QnnOwnedRuntime {
  public:
   Qnn_Tensor_t *inputs = nullptr;
   Qnn_Tensor_t *outputs = nullptr;
@@ -107,7 +107,7 @@ class QnnModel : public QnnSampleApp {
            ProfilingLevel profilingLevel = ProfilingLevel::OFF,
            bool dumpOutputs = false, std::string cachedBinaryPath = "",
            std::string saveBinaryName = "")
-      : QnnSampleApp(qnnFunctionPointers, inputListPaths, opPackagePaths,
+      : QnnOwnedRuntime(qnnFunctionPointers, inputListPaths, opPackagePaths,
                      backendHandle, outputPath, debug, outputDataType,
                      inputDataType, profilingLevel, dumpOutputs,
                      cachedBinaryPath, saveBinaryName) {}

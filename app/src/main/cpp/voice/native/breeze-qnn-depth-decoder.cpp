@@ -4,7 +4,7 @@
 #include "breeze/sampling.h"
 
 #include <HTP/QnnHtpDevice.h>
-#include <QnnSampleApp.hpp>
+#include <QnnOwnedRuntime.hpp>
 #include <QnnTypeMacros.hpp>
 
 #include "DynamicLoadUtil.hpp"
@@ -120,7 +120,7 @@ static std::vector<float> combine_cfg(
     return out;
 }
 
-class BreezeQnnDepthApp final : public QnnSampleApp {
+class BreezeQnnDepthApp final : public QnnOwnedRuntime {
 public:
     void * model_handle = nullptr;
     uint32_t power_config_id = 0;
@@ -132,7 +132,7 @@ public:
         QnnFunctionPointers qnnFunctionPointers,
         void * backendHandle,
         const std::string & cachedBinaryPath
-    ) : QnnSampleApp(
+    ) : QnnOwnedRuntime(
             qnnFunctionPointers,
             "",
             "",
