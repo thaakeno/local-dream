@@ -53,6 +53,13 @@ struct MimiCodec {
     // between calls, matching Breeze's reference fast streaming runtime.
     std::vector<float> decode_stream(const std::vector<int> & codes, int n_frames, int n_cb = 0);
 
+private:
+    // Encapsulates the alternative stateful HTP decoder so production QNN
+    // playback can A/B audit it without changing the audible output.
+    std::vector<float> decode_htp_stateful(const std::vector<int> & codes, int n_frames, int n_cb);
+
+public:
+
     // Full-clip reference path kept for voice conversion and validation.
     std::vector<float> decode(const std::vector<int> & codes, int n_frames, int n_cb = 0);
     std::vector<int> encode(const std::vector<float> & audio, int & n_frames);

@@ -79,6 +79,11 @@ jobs:
           static_assert(sizeof(TestRuntime) > 0, "owned QNN runtime compiles");
           HEADER_EOF
           echo 'Owned QNN runtime and typed I/O C++ syntax OK'
+          echo '== Streaming vocoder waveform quality gate tests =='
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -I app/src/main/cpp/voice/overlay/breeze/include \
+            tools/breeze_qnn/test_vocoder_quality_gate.cpp -o /tmp/vocoder_quality_gate
+          /tmp/vocoder_quality_gate
           echo 'QAIRT audit finished (member signatures only).'
       - name: Save SDK cache for later no-patch compilation
         if: steps.sdk.outputs.cache-hit != 'true'

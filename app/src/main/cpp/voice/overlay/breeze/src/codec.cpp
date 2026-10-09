@@ -1,9 +1,11 @@
 #include "breeze/codec.h"
+#include "breeze/vocoder_quality_gate.h"
 
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 
@@ -103,6 +105,9 @@ void MimiCodec::stream_reset() {
     if (!m) return;
     if (qnn_vocoder && qnn_vocoder->ready()) {
         qnn_vocoder->reset();
+        // If the A/B verifier was active, do not carry stale KV/conv state
+        // into the next request.
+        if (stream.initialized) stream.reset();
         return;
     }
     if (!stream.initialized) stream.init(*m);
@@ -117,10 +122,38 @@ std::vector<float> MimiCodec::decode_stream(const std::vector<int> & codes, int 
     if (!m || T <= 0) return {};
     if (n_cb <= 0) n_cb = m->cfg.num_codebooks;
     if (qnn_vocoder && qnn_vocoder->ready()) {
-        return qnn_vocoder->decode_stream(codes, T, n_cb, m->cfg.samples_per_frame);
+        // Auditing the experimental stateful path must never change actual
+        // playback. Production always returns the stable QNN reference PCM.
+        std::vector<float> reference =
+            qnn_vocoder->decode_stream(codes, T, n_cb, m->cfg.samples_per_frame);
+        const char * audit = std::getenv("BREEZE_VOCODER_STATEFUL_AUDIT");
+        if (audit && audit[0] == '1') {
+            try {
+                auto candidate = decode_htp_stateful(codes, T, n_cb);
+                const auto report = VocoderQualityGate::evaluate(reference, candidate);
+                std::fprintf(stderr,
+                    "[BREEZE_VOCODER_STATEFUL_AUDIT] frames=%d comparable=%d passed=%d "
+                    "ref_rms=%.6g trial_rms=%.6g ratio=%.3f corr=%.4f nrmse=%.4f "
+                    "playback=stable_qnn\n",
+                    T, report.comparable ? 1 : 0, report.passed ? 1 : 0,
+                    report.reference_rms, report.candidate_rms, report.rms_ratio,
+                    report.correlation, report.normalized_error);
+            } catch (const std::exception & e) {
+                std::fprintf(stderr,
+                    "[BREEZE_VOCODER_STATEFUL_AUDIT] failed reason=%s playback=stable_qnn\n",
+                    e.what());
+                stream.free();
+            }
+        }
+        return reference;
     }
-    if (!stream.initialized) stream.init(*m);
+    return decode_htp_stateful(codes, T, n_cb);
+}
 
+std::vector<float> MimiCodec::decode_htp_stateful(
+    const std::vector<int> & codes, int T, int n_cb
+) {
+    if (!stream.initialized) stream.init(*m);
     const size_t code_count = (size_t) T * (size_t) n_cb;
     if (codes.size() != code_count) {
         throw std::runtime_error("Breeze streaming codec received a malformed code chunk");
