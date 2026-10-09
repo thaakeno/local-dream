@@ -59,6 +59,7 @@ void DepthRunner::init(BreezeModel & m, int n_branches) {
     steps.resize(nc - 1);
     verification.resize((size_t) nc * 4);
     speculation_unavailable = false;
+    speculation_checked = false;
     profiled_frames = 0;
     profiled_set_ms = profiled_htp_ms = profiled_read_ms = profiled_sample_ms = 0.0;
 }
@@ -207,11 +208,14 @@ static std::unique_ptr<DepthStep> build_rvq_verifier(
 
 std::vector<int> DepthRunner::run_speculative(
     BreezeModel & m, const std::vector<std::vector<float>> & hiddens, int cb0,
-    float cfg_scale, std::mt19937 & rng, const SampleParams & sp
+    float cfg_scale, std::mt19937 & rng, const SampleParams & sp,
+    std::vector<std::vector<float>> * verified_logits, double * hot_loop_ms
 ) {
     const int nc = m.cfg.num_codebooks;
     const int vs = m.cfg.audio_vocab_size;
     const int target_count = nc - 1;
+    if (verified_logits) verified_logits->assign((size_t) target_count, {});
+    if (hot_loop_ms) *hot_loop_ms = 0.0;
     const RvqSampleConfig spec_config{sp.temperature, sp.top_k, sp.top_p};
     if (target_count < 3 || verification.size() < (size_t) nc * 4)
         throw std::runtime_error("RVQ verifier unavailable");
@@ -226,6 +230,7 @@ std::vector<int> DepthRunner::run_speculative(
     bool serial_remainder = false;
     const auto t0 = std::chrono::steady_clock::now();
     while (next_head < target_count) {
+        const auto hot_start = std::chrono::steady_clock::now();
         // If speculation rejects a token, all subsequent heads run through
         // the original verified graph implementation, not a special verifier
         // padded with unused future projections.
@@ -250,9 +255,13 @@ std::vector<int> DepthRunner::run_speculative(
                     raw_logits[(size_t) vs + token] : cond;
                 guided_logits[(size_t) token] = uncond + cfg_scale * (cond - uncond);
             }
+            if (verified_logits)
+                (*verified_logits)[(size_t) head_idx] = guided_logits;
             codes.push_back(sample_token(guided_logits, sp, rng));
             ++next_head;
             ++rounds;
+            if (hot_loop_ms) *hot_loop_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - hot_start).count();
             continue;
         }
         const int remaining = target_count - next_head;
@@ -298,7 +307,10 @@ std::vector<int> DepthRunner::run_speculative(
         ++rounds;
         bool rejected = false;
         for (int i = 0; i < width; ++i) {
-            RvqProbabilities target = rvq_probs(guided(i), spec_config);
+            const auto actual_logits = guided(i);
+            if (verified_logits)
+                (*verified_logits)[(size_t) next_head + i] = actual_logits;
+            RvqProbabilities target = rvq_probs(actual_logits, spec_config);
             if (i + 1 < width) {
                 const int proposed = future_proposals[(size_t) i];
                 const RvqProbabilities & draft = future_distributions[(size_t) i];
@@ -330,6 +342,8 @@ std::vector<int> DepthRunner::run_speculative(
                 future_proposals.push_back(rvq_sample(future_distributions.back(), rng));
             }
         }
+        if (hot_loop_ms) *hot_loop_ms += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - hot_start).count();
     }
     const double ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t0).count();
@@ -359,7 +373,103 @@ std::vector<int> DepthRunner::run(BreezeModel & m, const std::vector<std::vector
     if (opt && opt[0] == '1' && n_force == 0 && !force && !speculation_unavailable) {
         const std::mt19937 previous_rng = rng;
         try {
-            return run_speculative(m, hiddens, cb0, cfg_scale, rng, sp);
+            std::vector<std::vector<float>> spec_logits;
+            double speculation_hot_ms = 0.0;
+            const bool audit = !speculation_checked;
+            auto result = run_speculative(m, hiddens, cb0, cfg_scale, rng, sp,
+                                          audit ? &spec_logits : nullptr,
+                                          audit ? &speculation_hot_ms : nullptr);
+            if (audit) {
+                // Differential audit at the exact codec codes the experimental
+                // path committed. Verify every CFG-mixed target distribution
+                // against the original 15-pass NPU decoder. Do not use the
+                // verifier's own output as a reference.
+                const int n_heads = nc - 1;
+                if (result.size() != (size_t) n_heads ||
+                    spec_logits.size() != (size_t) n_heads)
+                    throw std::runtime_error("RVQ audit token/logit count mismatch");
+                kv.reset();
+                int previous_code = cb0;
+                double reference_hot_ms = 0.0;
+                double max_abs_error = 0.0, squared_error = 0.0;
+                size_t compared = 0;
+                bool parity = true;
+                for (int head_idx = 0; head_idx < n_heads; ++head_idx) {
+                    if (!steps[(size_t) head_idx])
+                        steps[(size_t) head_idx] = build_depth_step(m, *this, head_idx);
+                    DepthStep & stable = *steps[(size_t) head_idx];
+                    std::vector<int32_t> input((size_t) n_branch);
+                    for (int branch = 0; branch < n_branch; ++branch)
+                        input[(size_t) branch] = previous_code + head_idx * vs;
+                    const auto start = std::chrono::steady_clock::now();
+                    ggml_backend_tensor_set(stable.audio, input.data(), 0,
+                                            input.size() * sizeof(int32_t));
+                    if (stable.hidden) {
+                        for (int branch = 0; branch < n_branch; ++branch)
+                            ggml_backend_tensor_set(
+                                stable.hidden, hiddens[(size_t) branch].data(),
+                                (size_t) branch * m.cfg.hidden_size * sizeof(float),
+                                (size_t) m.cfg.hidden_size * sizeof(float));
+                    }
+                    stable.graph.replay(m.backend);
+                    const auto original_logits = tensor_to_f32(stable.logits);
+                    reference_hot_ms += std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - start).count();
+                    if (original_logits.size() != (size_t) vs * n_branch ||
+                        spec_logits[(size_t) head_idx].size() != (size_t) vs)
+                        throw std::runtime_error("RVQ audit tensor shape mismatch");
+                    const float * cond = original_logits.data();
+                    const float * uncond = n_branch == 2 ?
+                        original_logits.data() + vs : cond;
+                    for (int token = 0; token < vs; ++token) {
+                        const float original = uncond[token] +
+                            cfg_scale * (cond[token] - uncond[token]);
+                        const float proposed =
+                            spec_logits[(size_t) head_idx][(size_t) token];
+                        if (!std::isfinite(original) || !std::isfinite(proposed)) {
+                            parity = false;
+                            continue;
+                        }
+                        const double error = std::abs((double) original - proposed);
+                        max_abs_error = std::max(max_abs_error, error);
+                        squared_error += error * error;
+                        ++compared;
+                        // Allow minor batched-kernel numerical differences but
+                        // reject significant logit drift before playback.
+                        if (error > 0.025 + 0.002 * std::abs(original))
+                            parity = false;
+                    }
+                    previous_code = result[(size_t) head_idx];
+                }
+                const double rmse = compared ? std::sqrt(squared_error / compared) : 0;
+                const bool faster = reference_hot_ms > 0.0 &&
+                    speculation_hot_ms > 0.0 &&
+                    speculation_hot_ms < reference_hot_ms * 0.98;
+                speculation_checked = true;
+                std::fprintf(stderr,
+                    "[BREEZE_RVQ_AUDIT] cfg=%.2f parity=%d faster=%d "
+                    "max_abs=%.6f rmse=%.6f spec_hot_ms=%.2f "
+                    "stable_hot_ms=%.2f speedup=%.3f n=%zu\n",
+                    cfg_scale, parity ? 1 : 0, faster ? 1 : 0,
+                    max_abs_error, rmse, speculation_hot_ms,
+                    reference_hot_ms,
+                    speculation_hot_ms > 0 ?
+                        reference_hot_ms / speculation_hot_ms : 0,
+                    compared);
+                if (!parity || !faster || !compared) {
+                    speculation_unavailable = true;
+                    rng = previous_rng;
+                    kv.reset();
+                    std::fprintf(stderr,
+                        "[BREEZE_RVQ_SPEC] fallback=stable reason=%s "
+                        "cfg=%.2f\n",
+                        !parity ? "parity" : "no-measured-benefit", cfg_scale);
+                } else {
+                    return result;
+                }
+            } else {
+                return result;
+            }
         } catch (const std::exception & e) {
             speculation_unavailable = true;
             rng = previous_rng;
