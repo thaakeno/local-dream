@@ -1,0 +1,35 @@
+name: Verify SM8850 HMX RVQ probe source
+
+on:
+  push:
+    branches: [breeze-hmx-rvq-correctness-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-syntax:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Fetch exactly pinned Breeze and ggml headers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --filter=blob:none -q https://github.com/HoppouAI/Breeze-TTS-2.cpp.git "$RUNNER_TEMP/Breeze"
+          git -C "$RUNNER_TEMP/Breeze" checkout a0e177f91242ebbd2ea8d61548d742c89e4b9e06
+          git clone --filter=blob:none -q https://github.com/kan-linux/ggml-hexagon.git "$RUNNER_TEMP/ggml-hexagon"
+          git -C "$RUNNER_TEMP/ggml-hexagon" checkout ab9acc4476cfe3add369379a3783fea190505a48
+      - name: Check HMX RVQ selftest C++ syntax
+        shell: bash
+        run: |
+          c++ -std=c++17 -fsyntax-only -Wall -Wextra \
+            -I app/src/main/cpp/voice/overlay/breeze/include \
+            -I "$RUNNER_TEMP/Breeze/include" \
+            -I "$RUNNER_TEMP/Breeze/third_party" \
+            -I "$RUNNER_TEMP/ggml-hexagon/ggml/include" \
+            -I "$RUNNER_TEMP/ggml-hexagon/ggml/src" \
+            app/src/main/cpp/voice/native/breeze-htp-selftest.cpp
+          echo "HMX RVQ probe compiles on host. Device behavior NOT verified."
