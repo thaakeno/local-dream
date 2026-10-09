@@ -6,6 +6,9 @@ on:
     branches: [breeze-fast20-cleanup-experimental, breeze-qnn-clean-runtime-prototype]
     paths:
       - '.github/workflows/inspect-breeze-unpatched-qnn.yml'
+      - 'app/src/main/cpp/include/QnnOwned*.hpp'
+      - 'app/src/main/cpp/voice/native/breeze-qnn-*.cpp'
+      - 'app/src/main/cpp/src/QnnModel.hpp'
 
 permissions:
   contents: read
