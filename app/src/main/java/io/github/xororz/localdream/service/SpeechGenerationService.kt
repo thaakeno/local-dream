@@ -915,7 +915,7 @@ class SpeechGenerationService : Service() {
             reader.join(1200)
             val recent = synchronized(captured) {
                 captured.toString().lineSequence().filter { it.isNotBlank() }
-                    .takeLast(9).joinToString(" | ").take(900)
+                    .toList().takeLast(9).joinToString(" | ").take(900)
             }
             throw IllegalStateException(
                 "Hexagon ${if (fastrpc) "FastRPC" else "DSPQueue"} self-test timed out; " +
@@ -930,7 +930,7 @@ class SpeechGenerationService : Service() {
 
         if (proc.exitValue() != 0 || !output.contains("[BREEZE_SELFTEST] all-ok")) {
             val lastLines = output.lineSequence().filter { it.isNotBlank() }
-                .takeLast(12).joinToString(" | ").take(1100)
+                .toList().takeLast(12).joinToString(" | ").take(1100)
             throw IllegalStateException(
                 "Hexagon ${if (fastrpc) "FastRPC" else "DSPQueue"} " +
                     "kernel self-test failed (exit=${proc.exitValue()}): " +
