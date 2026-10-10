@@ -64,7 +64,7 @@ class SpeechGenerationService : Service() {
         private const val FAST_SELFTEST_EXECUTABLE = "libbreeze_selftest_fastrpc.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-fastrpc-loaderdiag-20261010"
+            "breeze-a0e177-hexagon-ab9acc-fastrpc-coherent-paths-20261010"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_SWITCH_TRANSPORT = "io.github.xororz.localdream.SWITCH_BREEZE_TRANSPORT"
@@ -373,11 +373,27 @@ class SpeechGenerationService : Service() {
                 "GGML_HEXAGON_OPPOLL" to "0",
             )
             if (fastSelected) {
+                // The upstream FastRPC loader requires BOTH search variables
+                // to include the SAME directory containing its v81 DSP skel.
+                // Previously only ADSP_LIBRARY_PATH contained fastDir, so
+                // CDSP domain 3 failed to open with 0x80000600. Crucially,
+                // include it in the *process launch* LD path as well:
+                // Android's dynamic linker establishes namespaces at exec.
+                val fastLdPath = fastDir.absolutePath + ":" + env.getValue("LD_LIBRARY_PATH")
+                val fastAdspPath = fastDir.absolutePath + ";" + dspPath
+                env["LD_LIBRARY_PATH"] = fastLdPath
+                env["ADSP_LIBRARY_PATH"] = fastAdspPath
+                env["BREEZE_FASTRPC_HOST_LD_PATH"] = fastLdPath
+                env["BREEZE_FASTRPC_HOST_ADSP_PATH"] = dspPath
                 env["BREEZE_FASTRPC_SKEL_DIR"] = fastDir.absolutePath
                 env["BREEZE_TRANSPORT_FASTRPC"] = "1"
-                env["BREEZE_FASTRPC_HOST_LD_PATH"] = env.getValue("LD_LIBRARY_PATH")
-                env["BREEZE_FASTRPC_HOST_ADSP_PATH"] = dspPath
-                env["ADSP_LIBRARY_PATH"] = fastDir.absolutePath + ";" + dspPath
+                BackendDiagnostics.append(
+                    this,
+                    "BREEZE_FASTRPC_PREFLIGHT",
+                    "cdsp=3 skel_bytes=${File(fastDir, "libggml-htp-v81.so").length()} " +
+                        "ld_first=${fastLdPath.substringBefore(':')} " +
+                        "adsp_first=${fastAdspPath.substringBefore(';')}"
+                )
             }
             if (usingQnnRuntime) {
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
