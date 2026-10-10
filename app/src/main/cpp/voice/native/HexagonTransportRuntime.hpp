@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdio>
+#include <cstdint>
+#include <dlfcn.h>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -39,6 +41,56 @@ public:
         std::fprintf(stderr,
             "[BREEZE_TRANSPORT] phase=loader-ready backend=fastrpc-ion-mempool "
             "skel=%s adsp_restored=1 ld_restored=1\n", skel.c_str());
+
+        // Keep Qualcomm's upstream backend intact. The working DSPQueue
+        // implementation enables unsigned modules for the resolved CDSP
+        // domain specifically, while the mempool implementation uses -1
+        // (all domains). Establish the known-good domain policy before the
+        // FastRPC IDL stub tries to open the v81 skel.
+        probeDomain3();
+    }
+
+private:
+    static void probeDomain3() {
+        using SessionControl = int (*)(uint32_t, void *, uint32_t);
+        using Open = int (*)(const char *, uint64_t *);
+        using Close = int (*)(uint64_t);
+        struct UnsignedModule { int domain; int enable; };
+
+        void * library = ::dlopen("libcdsprpc.so", RTLD_NOW | RTLD_LOCAL);
+        if (!library) {
+            std::fprintf(stderr, "[BREEZE_FASTRPC_PROBE] phase=dlopen success=0 reason=%s\n",
+                         ::dlerror());
+            return;
+        }
+        auto control = reinterpret_cast<SessionControl>(::dlsym(library, "remote_session_control"));
+        auto open = reinterpret_cast<Open>(::dlsym(library, "remote_handle64_open"));
+        auto close = reinterpret_cast<Close>(::dlsym(library, "remote_handle64_close"));
+        if (!control || !open || !close) {
+            std::fprintf(stderr, "[BREEZE_FASTRPC_PROBE] phase=symbols control=%d open=%d close=%d\n",
+                control != nullptr, open != nullptr, close != nullptr);
+            ::dlclose(library);
+            return;
+        }
+        UnsignedModule unsignedModule{3, 1};
+        const int policy = control(2u, &unsignedModule, sizeof(unsignedModule));
+        std::fprintf(stderr, "[BREEZE_FASTRPC_PROBE] phase=unsigned-domain3 result=0x%x\n", policy);
+        // The probe uses the pinned mempool IDL ABI (ggml_htp / 0.0.2).
+        // Diagnostic only: no graph execution, resource allocations, or
+        // changes to the working DSPQueue backend.
+        static constexpr const char * uri =
+            "file:///libggml-htp-v81.so?ggml_htp_skel_handle_invoke"
+            "&_modver=1.0&_idlver=0.0.2&_dom=cdsp&_session=0";
+        uint64_t handle = 0;
+        const int result = open(uri, &handle);
+        std::fprintf(stderr,
+            "[BREEZE_FASTRPC_PROBE] phase=skel-open domain=3 result=0x%x handle=%d\n",
+            result, handle != 0);
+        if (result == 0 && handle != 0) {
+            const int closed = close(handle);
+            std::fprintf(stderr, "[BREEZE_FASTRPC_PROBE] phase=skel-close result=0x%x\n", closed);
+        }
+        ::dlclose(library);
     }
 };
 }
