@@ -22,15 +22,23 @@ public:
         if (::stat(skel.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 65536) {
             throw std::runtime_error("FastRPC v81 skel missing: " + skel);
         }
-        const char * existing = std::getenv("ADSP_LIBRARY_PATH");
-        const std::string paths = std::string(dir) + ";" +
-            (existing ? existing : "/vendor/lib/rfsa/adsp;/vendor/dsp/cdsp;/dsp");
-        if (::setenv("ADSP_LIBRARY_PATH", paths.c_str(), 1) != 0) {
-            throw std::runtime_error("FastRPC DSP library path setup failed");
+        // The pinned upstream registry resets BOTH path variables to its
+        // desktop/test location. Recover the app's original library search
+        // paths after registry construction, before any CDSP session starts.
+        // This avoids modifying the Qualcomm SDK or the upstream backend.
+        const char * hostLd = std::getenv("BREEZE_FASTRPC_HOST_LD_PATH");
+        const char * hostAdsp = std::getenv("BREEZE_FASTRPC_HOST_ADSP_PATH");
+        if (!hostLd || !*hostLd || !hostAdsp || !*hostAdsp) {
+            throw std::runtime_error("Missing FastRPC app-private loader path configuration");
+        }
+        const std::string adsp = std::string(dir) + ";" + hostAdsp;
+        if (::setenv("ADSP_LIBRARY_PATH", adsp.c_str(), 1) != 0 ||
+            ::setenv("LD_LIBRARY_PATH", hostLd, 1) != 0) {
+            throw std::runtime_error("FastRPC app-private loader path restoration failed");
         }
         std::fprintf(stderr,
-            "[BREEZE_TRANSPORT] backend=fastrpc-ion-mempool skel=%s path_restored=1\n",
-            skel.c_str());
+            "[BREEZE_TRANSPORT] phase=loader-ready backend=fastrpc-ion-mempool "
+            "skel=%s adsp_restored=1 ld_restored=1\n", skel.c_str());
     }
 };
 }

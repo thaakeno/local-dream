@@ -64,7 +64,7 @@ class SpeechGenerationService : Service() {
         private const val FAST_SELFTEST_EXECUTABLE = "libbreeze_selftest_fastrpc.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-dual-transport-20261009"
+            "breeze-a0e177-hexagon-ab9acc-fastrpc-loaderdiag-20261010"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_SWITCH_TRANSPORT = "io.github.xororz.localdream.SWITCH_BREEZE_TRANSPORT"
@@ -375,6 +375,8 @@ class SpeechGenerationService : Service() {
             if (fastSelected) {
                 env["BREEZE_FASTRPC_SKEL_DIR"] = fastDir.absolutePath
                 env["BREEZE_TRANSPORT_FASTRPC"] = "1"
+                env["BREEZE_FASTRPC_HOST_LD_PATH"] = env.getValue("LD_LIBRARY_PATH")
+                env["BREEZE_FASTRPC_HOST_ADSP_PATH"] = dspPath
                 env["ADSP_LIBRARY_PATH"] = fastDir.absolutePath + ";" + dspPath
             }
             if (usingQnnRuntime) {
@@ -929,12 +931,33 @@ class SpeechGenerationService : Service() {
             .forEach { BackendDiagnostics.append(this, "BREEZE_SELFTEST", it.take(2000)) }
 
         if (proc.exitValue() != 0 || !output.contains("[BREEZE_SELFTEST] all-ok")) {
-            val lastLines = output.lineSequence().filter { it.isNotBlank() }
-                .toList().takeLast(12).joinToString(" | ").take(1100)
+            val lines = output.lineSequence().filter { it.isNotBlank() }.toList()
+            if (fastrpc) {
+                // Preserve the complete native failure separately even if a
+                // subsequent DSPQueue startup resets the active log session.
+                runCatching {
+                    File(filesDir, "breeze_fastrpc_last_selftest.log")
+                        .writeText(output.takeLast(250_000))
+                }
+            }
+            // Report actual first failure, NOT the profiler epilogue:
+            // a failed FastRPC session has zero graph calls, and printing
+            // those zero-value statistics hid the original loader error.
+            val diagnostic = lines.filter { line ->
+                val v = line.lowercase()
+                listOf("failed", "failure", "error", "unsupported",
+                    "not available", "denied", "unable to", "mmap(",
+                    "rpcmem_to_fd", "init rpc mempool", "unsigned pd",
+                    "ggml_htp_open").any { it in v }
+            }.filterNot { "dump_perf_stats" in it }
+            val selected = (diagnostic.take(4) +
+                lines.filter { "[BREEZE_SELFTEST] failed:" in it }.takeLast(1))
+                .distinct().ifEmpty { lines.takeLast(3) }
+                .joinToString(" | ").take(1300)
             throw IllegalStateException(
                 "Hexagon ${if (fastrpc) "FastRPC" else "DSPQueue"} " +
                     "kernel self-test failed (exit=${proc.exitValue()}): " +
-                    lastLines.ifBlank { "(no native output)" }
+                    selected.ifBlank { "(no native output)" }
             )
         }
         marker.writeText(RUNTIME_VERSION)
