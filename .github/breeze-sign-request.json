@@ -1,6 +1,6 @@
 {
-  "source_run_id": "38037386710",
+  "source_run_id": "38038710195",
   "source_artifact_name": "LocalDream-Qwen-FP8-Turbo",
   "output_artifact_name": "LocalDream-Breeze-Canonical",
-  "request_nonce": "breeze-fastrpc-failure-diagnostic-7c56ddc-20261010"
+  "request_nonce": "breeze-fastrpc-loaderdiag-e9e8347-20261010"
 }
