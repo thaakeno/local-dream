@@ -1,6 +1,6 @@
 {
-  "source_run_id": "37968764715",
+  "source_run_id": "37979042682",
   "source_artifact_name": "LocalDream-Qwen-FP8-Turbo",
   "output_artifact_name": "LocalDream-Breeze-Canonical",
-  "request_nonce": "qnn-owned-fp16-allocator-8456ec4-20261009"
+  "request_nonce": "breeze-fastrpc-ion-e8ddd488-20261010"
 }
