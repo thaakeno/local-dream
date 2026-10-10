@@ -823,6 +823,8 @@ fun SpeechRunScreen(
         mutableStateOf(BreezeQnnGeneratorArtifact.isEnabled(context))
     }
     var fastRpcEnabled by remember { mutableStateOf(BreezeHexagonTransport.isEnabled(context)) }
+    val fastRpcFailure by BreezeHexagonTransport.failure.collectAsState()
+    val fastRpcFailureText = fastRpcFailure ?: BreezeHexagonTransport.lastFailure(context)
     val fastRpcPackaged = remember { BreezeHexagonTransport.isPackaged(context) }
     val fastRpcVocoderReady = remember(acceleratorState) {
         BreezeQnnVocoderArtifact.localLegacyHexagonSafeInstall(context)?.version == 3
@@ -1670,6 +1672,9 @@ fun SpeechRunScreen(
                                         "Requires the Hexagon generator, not Full QNN."
                                     } else if (!fastRpcVocoderReady) {
                                         "Install the compatible v3 QNN vocoder to test this backend."
+                                    } else if (fastRpcFailureText != null) {
+                                        "FastRPC could not start, so DSPQueue was restored. " +
+                                            "Reason: ${fastRpcFailureText.take(480)}"
                                     } else if (busy) {
                                         "Switching transports stops the active load or generation and safely restarts Breeze."
                                     } else if (fastRpcEnabled) {

@@ -425,6 +425,12 @@ class SpeechGenerationService : Service() {
                 this,
                 "Breeze strict HTP model=$modelId",
             )
+            BreezeHexagonTransport.lastFailure(this)?.let { reason ->
+                BackendDiagnostics.append(
+                    this, "BREEZE_TRANSPORT_FAILURE",
+                    "Previous FastRPC start failed: $reason; DSPQueue remains the safe fallback."
+                )
+            }
             if (BreezeHexagonTransport.isEnabled(this) && !fastSelected) {
                 BackendDiagnostics.append(
                     this, "BREEZE_TRANSPORT",
@@ -517,11 +523,14 @@ class SpeechGenerationService : Service() {
             throw e
         } catch (e: Exception) {
             if (fastSelected) {
-                BackendDiagnostics.append(this, "BREEZE_TRANSPORT",
-                    "FastRPC failed self-test or startup: " +
-                        (e.message ?: "unknown failure") + "; returning to DSPQueue.")
-                BreezeHexagonTransport.setEnabled(this, false)
+                val reason = lastNativeFailure ?: e.message ?: "FastRPC native startup error"
+                BreezeHexagonTransport.recordFailure(this, reason)
+                BackendDiagnostics.append(this, "BREEZE_TRANSPORT_FAILURE",
+                    "FastRPC failed: $reason; falling back to DSPQueue.")
                 destroyProcess()
+                // startServer starts a new diagnostics session. The persisted
+                // reason is explicitly replayed below so a copied log shows
+                // WHY the toggle reverted, not just the stable backend.
                 startServer(modelId)
                 return
             }
@@ -904,7 +913,14 @@ class SpeechGenerationService : Service() {
         if (!exited) {
             proc.destroyForcibly()
             reader.join(1200)
-            throw IllegalStateException("Breeze HTP self-test timed out")
+            val recent = synchronized(captured) {
+                captured.toString().lineSequence().filter { it.isNotBlank() }
+                    .takeLast(9).joinToString(" | ").take(900)
+            }
+            throw IllegalStateException(
+                "Hexagon ${if (fastrpc) "FastRPC" else "DSPQueue"} self-test timed out; " +
+                    "last output: ${recent.ifBlank { "(none)" }}"
+            )
         }
         reader.join(2000)
         val output = synchronized(captured) { captured.toString() }
@@ -913,8 +929,12 @@ class SpeechGenerationService : Service() {
             .forEach { BackendDiagnostics.append(this, "BREEZE_SELFTEST", it.take(2000)) }
 
         if (proc.exitValue() != 0 || !output.contains("[BREEZE_SELFTEST] all-ok")) {
+            val lastLines = output.lineSequence().filter { it.isNotBlank() }
+                .takeLast(12).joinToString(" | ").take(1100)
             throw IllegalStateException(
-                "Hexagon speech kernel self-test failed before model loading",
+                "Hexagon ${if (fastrpc) "FastRPC" else "DSPQueue"} " +
+                    "kernel self-test failed (exit=${proc.exitValue()}): " +
+                    lastLines.ifBlank { "(no native output)" }
             )
         }
         marker.writeText(RUNTIME_VERSION)
