@@ -967,10 +967,16 @@ class SpeechGenerationService : Service() {
                     "rpcmem_to_fd", "init rpc mempool", "unsigned pd",
                     "ggml_htp_open").any { it in v }
             }.filterNot { "dump_perf_stats" in it }
-            val selected = (diagnostic.take(4) +
+            val probes = lines.filter {
+                "[BREEZE_FASTRPC_PROBE]" in it ||
+                    "[BREEZE_TRANSPORT] phase=loader-ready" in it
+            }
+            // Preserve the actual native skel-open result across the
+            // deliberate DSPQueue recovery (which creates a new log).
+            val selected = (probes.takeLast(5) + diagnostic.take(3) +
                 lines.filter { "[BREEZE_SELFTEST] failed:" in it }.takeLast(1))
                 .distinct().ifEmpty { lines.takeLast(3) }
-                .joinToString(" | ").take(1300)
+                .joinToString(" | ").take(1700)
             throw IllegalStateException(
                 "Hexagon ${if (fastrpc) "FastRPC" else "DSPQueue"} " +
                     "kernel self-test failed (exit=${proc.exitValue()}): " +
