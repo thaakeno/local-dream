@@ -67,6 +67,7 @@ class SpeechGenerationService : Service() {
             "breeze-a0e177-hexagon-ab9acc-dual-transport-20261009"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
+        const val ACTION_SWITCH_TRANSPORT = "io.github.xororz.localdream.SWITCH_BREEZE_TRANSPORT"
         const val ACTION_GENERATE = "io.github.xororz.localdream.GENERATE_BREEZE"
         const val ACTION_STOP = "io.github.xororz.localdream.STOP_BREEZE"
 
@@ -166,6 +167,11 @@ class SpeechGenerationService : Service() {
             }
 
             ACTION_GENERATE -> generate(intent)
+            ACTION_SWITCH_TRANSPORT -> {
+                val modelId = intent.getStringExtra("modelId").orEmpty()
+                if (modelId.isBlank()) fail("Missing Breeze model id", null)
+                else switchTransport(modelId)
+            }
             ACTION_STOP -> stopEverything()
             // A recreated/startForegroundService call without an action must
             // never tear down a warm 2+ GB Breeze process.
@@ -180,6 +186,34 @@ class SpeechGenerationService : Service() {
         destroyProcess()
         scope.coroutineContext[Job]?.cancel()
         super.onDestroy()
+    }
+
+    /**
+     * Atomically change the current Breeze transport while keeping this
+     * foreground service alive. In particular, do NOT send ACTION_STOP and
+     * restart after an arbitrary delay: stopSelf()/onDestroy() can race with
+     * the new preload and kill the replacement server.
+     *
+     * The setting is already persisted by the UI. Cancel active generation
+     * before launching a new model load; waiting for the old Job guarantees
+     * the previous native model cannot resume after the replacement starts.
+     * Repeated rapid toggle changes supersede earlier pending switches.
+     */
+    private fun switchTransport(modelId: String) {
+        val previous = workJob
+        previous?.cancel()
+        activeCall?.cancel()
+        destroyProcess()
+        _state.value = SpeechState.Loading(
+            modelId,
+            "Switching Hexagon transport",
+            System.currentTimeMillis(),
+            0.05f,
+        )
+        workJob = scope.launch {
+            previous?.join()
+            startServer(modelId)
+        }
     }
 
     private fun preload(modelId: String) {

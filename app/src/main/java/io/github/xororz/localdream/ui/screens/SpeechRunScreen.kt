@@ -1670,6 +1670,8 @@ fun SpeechRunScreen(
                                         "Requires the Hexagon generator, not Full QNN."
                                     } else if (!fastRpcVocoderReady) {
                                         "Install the compatible v3 QNN vocoder to test this backend."
+                                    } else if (busy) {
+                                        "Switching transports stops the active load or generation and safely restarts Breeze."
                                     } else if (fastRpcEnabled) {
                                         "Experimental HTP v81 transport. Requires the v3 QNN vocoder. If startup validation fails, DSPQueue is restored."
                                     } else {
@@ -1681,26 +1683,20 @@ fun SpeechRunScreen(
                             }
                             Switch(
                                 checked = fastRpcEnabled,
-                                enabled = fastRpcPackaged && fastRpcVocoderReady && !fullQnnGeneratorEnabled && !busy,
+                                // Ready/Loading/Generating are all switchable:
+                                // the service cancels prior work and restarts
+                                // atomically. Busy must NOT disable this control.
+                                enabled = fastRpcPackaged && fastRpcVocoderReady &&
+                                    !fullQnnGeneratorEnabled && model?.isDownloaded == true,
                                 onCheckedChange = { enabled ->
                                     fastRpcEnabled = enabled
                                     BreezeHexagonTransport.setEnabled(context, enabled)
                                     AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                                    scope.launch {
-                                        context.startService(
-                                            Intent(context, SpeechGenerationService::class.java)
-                                                .setAction(SpeechGenerationService.ACTION_STOP),
-                                        )
-                                        delay(180)
-                                        SpeechGenerationService.resetForModel(modelId)
-                                        if (model?.isDownloaded == true) {
-                                            context.startForegroundService(
-                                                Intent(context, SpeechGenerationService::class.java)
-                                                    .setAction(SpeechGenerationService.ACTION_PRELOAD)
-                                                    .putExtra("modelId", modelId),
-                                            )
-                                        }
-                                    }
+                                    context.startForegroundService(
+                                        Intent(context, SpeechGenerationService::class.java)
+                                            .setAction(SpeechGenerationService.ACTION_SWITCH_TRANSPORT)
+                                            .putExtra("modelId", modelId),
+                                    )
                                 },
                             )
                         }
