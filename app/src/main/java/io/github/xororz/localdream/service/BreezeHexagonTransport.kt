@@ -40,6 +40,36 @@ object BreezeHexagonTransport {
             .edit().putBoolean(KEY, enabled).apply()
     }
 
+    /**
+     * FastRPC and DSPQueue ship a skel with the same filename but different
+     * generated IDLs. Never let the shared DSPQueue staging directory appear
+     * in FastRPC's DSP-specific loader paths.
+     */
+    fun configureFastRpcEnvironment(
+        env: MutableMap<String, String>,
+        fastDir: File,
+    ) {
+        val skel = File(fastDir, "libggml-htp-v81.so")
+        require(skel.isFile && skel.length() > 65536L) {
+            "FastRPC v81 DSP library is missing"
+        }
+        val vendorPaths = listOf(
+            "/vendor/lib/rfsa/adsp",
+            "/vendor/dsp/cdsp",
+            "/dsp",
+        ).joinToString(";")
+        val dspPaths = fastDir.absolutePath + ";" + vendorPaths
+        val linkerPaths = fastDir.absolutePath + ":" + env.getValue("LD_LIBRARY_PATH")
+
+        env["ADSP_LIBRARY_PATH"] = dspPaths
+        env["DSP_LIBRARY_PATH"] = dspPaths
+        env["LD_LIBRARY_PATH"] = linkerPaths
+        env["BREEZE_FASTRPC_HOST_LD_PATH"] = linkerPaths
+        env["BREEZE_FASTRPC_HOST_ADSP_PATH"] = vendorPaths
+        env["BREEZE_FASTRPC_SKEL_DIR"] = fastDir.absolutePath
+        env["BREEZE_TRANSPORT_FASTRPC"] = "1"
+    }
+
     fun isPackaged(context: Context): Boolean {
         val native = File(context.applicationInfo.nativeLibraryDir)
         return File(native, "libbreeze_server_fastrpc.so").isFile &&
