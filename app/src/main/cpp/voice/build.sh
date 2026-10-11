@@ -302,6 +302,16 @@ test -s "$FAST_BUILD_DIR/breeze-server"
 test -s "$FAST_BUILD_DIR/breeze-htp-selftest"
 test -n "$FAST_SKEL"
 test -s "$FAST_SKEL"
+# Both transports produce libggml-htp-v81.so, but their generated IDLs
+# are incompatible. Assert the *FastRPC* skel's symbol before packaging.
+if ! grep -aFq 'ggml_htp_skel_handle_invoke_uri' "$FAST_SKEL"; then
+    echo "FastRPC build contains an invalid skel: missing ggml_htp IDL URI symbol" >&2
+    exit 1
+fi
+if grep -aFq 'htp_iface_skel_handle_invoke_uri' "$FAST_SKEL"; then
+    echo "FastRPC build contains a DSPQueue IDL skel" >&2
+    exit 1
+fi
 "$READELF" -d "$FAST_BUILD_DIR/breeze-server" > "$FAST_BUILD_DIR/breeze-needed.txt"
 if grep -Eq 'Shared library: \[libggml(-base|-hexagon)?\.so\]' "$FAST_BUILD_DIR/breeze-needed.txt"; then
     echo "FastRPC runtime must have a fully self-contained ggml backend" >&2
