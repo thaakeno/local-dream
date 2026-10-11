@@ -51,7 +51,6 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.NavController
 import io.github.xororz.localdream.data.ModelRepository
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
-import io.github.xororz.localdream.service.BreezeHexagonTransport
 import io.github.xororz.localdream.service.BreezeQnnGeneratorArtifact
 import io.github.xororz.localdream.service.BreezeQnnVocoderArtifact
 import io.github.xororz.localdream.service.SpeechGenerationService
@@ -821,17 +820,6 @@ fun SpeechRunScreen(
     val generatorState by BreezeQnnGeneratorArtifact.status.collectAsState()
     var fullQnnGeneratorEnabled by remember {
         mutableStateOf(BreezeQnnGeneratorArtifact.isEnabled(context))
-    }
-    var fastRpcEnabled by remember { mutableStateOf(BreezeHexagonTransport.isEnabled(context)) }
-    val fastRpcFailure by BreezeHexagonTransport.failure.collectAsState()
-    val fastRpcFailureText = fastRpcFailure ?: BreezeHexagonTransport.lastFailure(context)
-    val fastRpcPackaged = remember { BreezeHexagonTransport.isPackaged(context) }
-    val fastRpcVocoderReady = remember(acceleratorState) {
-        BreezeQnnVocoderArtifact.localLegacyHexagonSafeInstall(context)?.version == 3
-    }
-    // The transport can auto-revert when the native v81 self-test fails.
-    LaunchedEffect(speechState) {
-        fastRpcEnabled = BreezeHexagonTransport.isEnabled(context)
     }
     // This screen owns the warm Breeze process. Leaving the generation panel
     // must release the GGUF, QNN contexts and HTP power votes immediately.
@@ -1650,62 +1638,6 @@ fun SpeechRunScreen(
                         onValueChange = { maxNewTokens = it.roundToInt() },
                     ) { it.roundToInt().toString() }
 
-
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "FastRPC + ION shared memory",
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    if (!fastRpcPackaged) {
-                                        "The FastRPC backend is not included in this build."
-                                    } else if (fullQnnGeneratorEnabled) {
-                                        "Requires the Hexagon generator, not Full QNN."
-                                    } else if (!fastRpcVocoderReady) {
-                                        "Install the compatible v3 QNN vocoder to test this backend."
-                                    } else if (fastRpcFailureText != null) {
-                                        "FastRPC could not start, so DSPQueue was restored. " +
-                                            "Reason: ${fastRpcFailureText.take(480)}"
-                                    } else if (busy) {
-                                        "Switching transports stops the active load or generation and safely restarts Breeze."
-                                    } else if (fastRpcEnabled) {
-                                        "Experimental HTP v81 transport. Requires the v3 QNN vocoder. If startup validation fails, DSPQueue is restored."
-                                    } else {
-                                        "DSPQueue is currently selected. Enable to test native FastRPC/ION execution."
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = fastRpcEnabled,
-                                // Ready/Loading/Generating are all switchable:
-                                // the service cancels prior work and restarts
-                                // atomically. Busy must NOT disable this control.
-                                enabled = fastRpcPackaged && fastRpcVocoderReady &&
-                                    !fullQnnGeneratorEnabled && model?.isDownloaded == true,
-                                onCheckedChange = { enabled ->
-                                    fastRpcEnabled = enabled
-                                    BreezeHexagonTransport.setEnabled(context, enabled)
-                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                                    context.startForegroundService(
-                                        Intent(context, SpeechGenerationService::class.java)
-                                            .setAction(SpeechGenerationService.ACTION_SWITCH_TRANSPORT)
-                                            .putExtra("modelId", modelId),
-                                    )
-                                },
-                            )
-                        }
-                    }
 
                     Surface(
                         shape = MaterialTheme.shapes.extraLarge,

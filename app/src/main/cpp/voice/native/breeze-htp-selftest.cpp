@@ -603,18 +603,12 @@ int main() {
         Backend be;
         be.init(true);
         std::fprintf(stderr, "[BREEZE_SELFTEST] backend=%s\n", be.name());
-        const char * transport = std::getenv("BREEZE_TRANSPORT_FASTRPC");
-        const bool fastrpc = transport && transport[0] == '1';
-        // FastRPC requires the QNN vocoder; codec-only custom ops remain
-        // handled by the original DSPQueue runtime.
-        if (!fastrpc) test_sin(be);
+        test_sin(be);
         test_get_rows_f32(be);
         test_get_rows_f32_ordinary_buffer(be);
         test_quantized_repack_matmuls(be);
-        if (!fastrpc) {
-            test_snake(be);
-            test_col2im_bias(be);
-        }
+        test_snake(be);
+        test_col2im_bias(be);
         test_v81_direct_residual_add(be);
         test_v81_dsp_gelu_erf_reference(be);
         test_v81_hvx_gelu_matmul_chain(be);

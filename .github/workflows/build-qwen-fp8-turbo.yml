@@ -164,7 +164,6 @@ jobs:
             app/src/main/assets/ditlibs
             app/src/main/assets/yue2libs
             app/src/main/assets/breezelibs
-            app/src/main/assets/breezefastrpc
             app/src/main/assets/qnnlibs
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
@@ -198,7 +197,6 @@ jobs:
             app/src/main/assets/ditlibs
             app/src/main/assets/yue2libs
             app/src/main/assets/breezelibs
-            app/src/main/assets/breezefastrpc
             app/src/main/assets/qnnlibs
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ env.BREEZE_NATIVE_BASE_CACHE_KEY }}
@@ -322,18 +320,19 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          # A native-cache hit can restore binaries from the retired Breeze
+          # FastRPC experiment. Exclude them from every APK regardless of cache.
+          rm -f app/src/main/jniLibs/arm64-v8a/libbreeze_server_fastrpc.so
+          rm -f app/src/main/jniLibs/arm64-v8a/libbreeze_selftest_fastrpc.so
+          rm -rf app/src/main/assets/breezefastrpc
+          test ! -e app/src/main/jniLibs/arm64-v8a/libbreeze_server_fastrpc.so
+          test ! -e app/src/main/assets/breezefastrpc
           test -s app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
           test -s app/src/main/jniLibs/arm64-v8a/libdit_engine.so
           test -s app/src/main/jniLibs/arm64-v8a/libyue2_server.so
           test -s app/src/main/jniLibs/arm64-v8a/libyue2_server_fastrpc.so
           test -s app/src/main/jniLibs/arm64-v8a/libyue2_bench_dspqueue.so
           test -s app/src/main/jniLibs/arm64-v8a/libyue2_bench_fastrpc.so
-          if [ "${GITHUB_REF_NAME}" = "breeze-qnn-clean-runtime-prototype" ]; then
-            test -s app/src/main/jniLibs/arm64-v8a/libbreeze_server_fastrpc.so
-            test -s app/src/main/jniLibs/arm64-v8a/libbreeze_selftest_fastrpc.so
-            test -s app/src/main/assets/breezefastrpc/libggml-htp-v81.so
-            grep -q '^mode=fastrpc-ion-single-mempool$' app/src/main/assets/breezefastrpc/backend-version.txt
-          fi
           test -s app/src/main/jniLibs/arm64-v8a/libbreeze_server.so
           test -s app/src/main/jniLibs/arm64-v8a/libbreeze_selftest.so
           readelf -d app/src/main/jniLibs/arm64-v8a/libbreeze_server.so | tee /tmp/breeze-elf-needed.txt
@@ -414,7 +413,6 @@ jobs:
             app/src/main/assets/ditlibs
             app/src/main/assets/yue2libs
             app/src/main/assets/breezelibs
-            app/src/main/assets/breezefastrpc
             app/src/main/assets/qnnlibs
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}

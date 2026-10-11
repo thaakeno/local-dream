@@ -1,6 +1,5 @@
 #include "breeze/common.h"
 #include "ggml-hexagon.h"
-#include "HexagonTransportRuntime.hpp"
 
 #include <cmath>
 #include <cstring>
@@ -17,7 +16,6 @@ void Backend::init(bool prefer_gpu) {
         );
     }
 
-    HexagonTransportRuntime::prepareAfterRegistry();
     ggml_backend_dev_t dev = ggml_backend_reg_dev_get(reg, 0);
     backend = dev ? ggml_backend_dev_init(dev, nullptr) : nullptr;
     is_gpu = backend != nullptr;
