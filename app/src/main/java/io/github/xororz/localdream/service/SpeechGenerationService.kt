@@ -64,7 +64,7 @@ class SpeechGenerationService : Service() {
         private const val FAST_SELFTEST_EXECUTABLE = "libbreeze_selftest_fastrpc.so"
         private const val RUNTIME_DIR = "runtime_breeze_htp"
         private const val RUNTIME_VERSION =
-            "breeze-a0e177-hexagon-ab9acc-fastrpc-coherent-paths-20261010"
+            "breeze-a0e177-hexagon-ab9acc-fastrpc-isolated-idl-20261011"
 
         const val ACTION_PRELOAD = "io.github.xororz.localdream.PRELOAD_BREEZE"
         const val ACTION_SWITCH_TRANSPORT = "io.github.xororz.localdream.SWITCH_BREEZE_TRANSPORT"
@@ -373,20 +373,7 @@ class SpeechGenerationService : Service() {
                 "GGML_HEXAGON_OPPOLL" to "0",
             )
             if (fastSelected) {
-                // The upstream FastRPC loader requires BOTH search variables
-                // to include the SAME directory containing its v81 DSP skel.
-                // Previously only ADSP_LIBRARY_PATH contained fastDir, so
-                // CDSP domain 3 failed to open with 0x80000600. Crucially,
-                // include it in the *process launch* LD path as well:
-                // Android's dynamic linker establishes namespaces at exec.
-                val fastLdPath = fastDir.absolutePath + ":" + env.getValue("LD_LIBRARY_PATH")
-                val fastAdspPath = fastDir.absolutePath + ";" + dspPath
-                env["LD_LIBRARY_PATH"] = fastLdPath
-                env["ADSP_LIBRARY_PATH"] = fastAdspPath
-                env["BREEZE_FASTRPC_HOST_LD_PATH"] = fastLdPath
-                env["BREEZE_FASTRPC_HOST_ADSP_PATH"] = dspPath
-                env["BREEZE_FASTRPC_SKEL_DIR"] = fastDir.absolutePath
-                env["BREEZE_TRANSPORT_FASTRPC"] = "1"
+                BreezeHexagonTransport.configureFastRpcEnvironment(env, fastDir)
             }
             if (usingQnnRuntime) {
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
@@ -440,8 +427,11 @@ class SpeechGenerationService : Service() {
                 BackendDiagnostics.append(
                     this, "BREEZE_FASTRPC_PREFLIGHT",
                     "cdsp=3 skel_bytes=${File(fastDir, "libggml-htp-v81.so").length()} " +
+                        "dspqueue_bytes=${File(runtimeDir, "libggml-htp-v81.so").length()} " +
+                        "cwd=${fastDir.absolutePath} " +
                         "ld_first=${env.getValue("LD_LIBRARY_PATH").substringBefore(':')} " +
-                        "adsp_first=${env.getValue("ADSP_LIBRARY_PATH").substringBefore(';')}"
+                        "adsp_first=${env.getValue("ADSP_LIBRARY_PATH").substringBefore(';')} " +
+                        "dsp_first=${env.getValue("DSP_LIBRARY_PATH").substringBefore(';')}"
                 )
             }
             BreezeHexagonTransport.lastFailure(this)?.let { reason ->
@@ -503,7 +493,8 @@ class SpeechGenerationService : Service() {
             BackendDiagnostics.append(this, "BREEZE_CMD", command.joinToString(" "))
 
             val proc = ProcessBuilder(command).apply {
-                directory(runtimeDir)
+                // The FastRPC skel has a different IDL from the DSPQueue skel.
+                directory(if (fastSelected) fastDir else runtimeDir)
                 redirectErrorStream(true)
                 environment().putAll(env)
             }.start()
@@ -905,7 +896,7 @@ class SpeechGenerationService : Service() {
         }
 
         val proc = ProcessBuilder(executable.absolutePath).apply {
-            directory(runtimeDir)
+            directory(if (fastrpc) File(runtimeDir, "fastrpc") else runtimeDir)
             redirectErrorStream(true)
             environment().putAll(env)
         }.start()
