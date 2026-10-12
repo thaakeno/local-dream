@@ -15,6 +15,12 @@ for summary in client.get_job_summaries(limit=20):
     found += 1
     print(json.dumps({"id": summary.job_id, "name": summary.name,
                       "status": str(summary.status), "url": summary.url}), flush=True)
+    if summary.status.success and summary.name.endswith("_parity"):
+        profile = client.get_job(summary.job_id).download_profile()
+        print("Hosted profile: " + json.dumps({k: profile.get(k) for k in [
+            "estimated_inference_time", "first_load_time", "warm_load_time",
+            "estimated_inference_peak_memory", "first_load_peak_memory",
+        ]}), flush=True)
     if summary.status.failure:
         job = client.get_job(summary.job_id)
         logs = job.download_job_logs("/tmp/recall-qnn-inspect/" + summary.job_id)
