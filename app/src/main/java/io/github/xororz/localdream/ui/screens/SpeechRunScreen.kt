@@ -51,6 +51,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.NavController
 import io.github.xororz.localdream.data.ModelRepository
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
+import io.github.xororz.localdream.service.BreezeDepthDiagnostic
 import io.github.xororz.localdream.service.BreezeHmxDiagnostic
 import io.github.xororz.localdream.service.BreezeQnnGeneratorArtifact
 import io.github.xororz.localdream.service.BreezeQnnVocoderArtifact
@@ -721,6 +722,34 @@ private const val DEFAULT_MAX_NEW_TOKENS = 750
 private fun freshSpeechSeed(): Long =
     ((System.nanoTime() xor System.currentTimeMillis()) and 0x7fffffffL).coerceAtLeast(1L)
 
+private fun copyDepthDiagnostic(context: android.content.Context) {
+    val file = BreezeDepthDiagnostic.logFile(context)
+    if (!file.isFile) return
+    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+        as android.content.ClipboardManager
+    clipboard.setPrimaryClip(
+        android.content.ClipData.newPlainText("Breeze full Depth parity log", file.readText()),
+    )
+    Toast.makeText(context, "Depth log copied", Toast.LENGTH_SHORT).show()
+}
+
+private fun shareDepthDiagnostic(context: android.content.Context) {
+    val file = BreezeDepthDiagnostic.logFile(context)
+    if (!file.isFile) return
+    val uri = FileProvider.getUriForFile(
+        context,
+        context.packageName + ".fileprovider",
+        file,
+    )
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        clipData = android.content.ClipData.newRawUri("Breeze full Depth parity", uri)
+    }
+    context.startActivity(Intent.createChooser(send, "Share full Depth test"))
+}
+
 private fun copyHmxDiagnostic(context: android.content.Context) {
     val file = BreezeHmxDiagnostic.logFile(context)
     if (!file.isFile) return
@@ -854,6 +883,8 @@ fun SpeechRunScreen(
     }
     var hmxDiagnosticRunning by remember { mutableStateOf(false) }
     var hmxDiagnosticResult by remember { mutableStateOf<String?>(null) }
+    var depthDiagnosticRunning by remember { mutableStateOf(false) }
+    var depthDiagnosticResult by remember { mutableStateOf<String?>(null) }
     // This screen owns the warm Breeze process. Leaving the generation panel
     // must release the GGUF, QNN contexts and HTP power votes immediately.
     DisposableEffect(modelId) {
@@ -1691,7 +1722,7 @@ fun SpeechRunScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             OutlinedButton(
-                                enabled = !hmxDiagnosticRunning &&
+                                enabled = !hmxDiagnosticRunning && !depthDiagnosticRunning &&
                                     model?.isDownloaded == true &&
                                     speechState is SpeechState.Ready,
                                 onClick = {
@@ -1737,6 +1768,74 @@ fun SpeechRunScreen(
                                 },
                             ) {
                                 Text(if (hmxDiagnosticRunning) "Testing HMX..." else "Run HMX test")
+                            }
+                            Text(
+                                "Full 15-step Depth Decoder · CFG 3.2",
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Executes all 15 depth codebooks with real model weights " +
+                                    "in isolated HVX and HMX processes, comparing every " +
+                                    "logit. Preserves the production generator.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            OutlinedButton(
+                                enabled = !hmxDiagnosticRunning && !depthDiagnosticRunning &&
+                                    model?.isDownloaded == true &&
+                                    speechState is SpeechState.Ready,
+                                onClick = {
+                                    depthDiagnosticRunning = true
+                                    depthDiagnosticResult = "Testing full Depth model; this may take several minutes..."
+                                    scope.launch {
+                                        try {
+                                            context.startService(
+                                                Intent(context, SpeechGenerationService::class.java)
+                                                    .setAction(SpeechGenerationService.ACTION_STOP),
+                                            )
+                                            val stopped = withTimeoutOrNull(8_000L) {
+                                                SpeechGenerationService.state.first {
+                                                    it is SpeechState.Idle
+                                                }
+                                            } != null
+                                            if (!stopped) {
+                                                throw IllegalStateException("Breeze did not release its HTP session.")
+                                            }
+                                            val result = withContext(Dispatchers.IO) {
+                                                BreezeDepthDiagnostic.run(context.applicationContext, modelId)
+                                            }
+                                            depthDiagnosticResult = result.message
+                                        } catch (error: Exception) {
+                                            depthDiagnosticResult = "Depth test unavailable: " +
+                                                (error.message ?: error.javaClass.simpleName)
+                                        } finally {
+                                            depthDiagnosticRunning = false
+                                            SpeechGenerationService.resetForModel(modelId)
+                                            if (model?.isDownloaded == true) {
+                                                context.startForegroundService(
+                                                    Intent(context, SpeechGenerationService::class.java)
+                                                        .setAction(SpeechGenerationService.ACTION_PRELOAD)
+                                                        .putExtra("modelId", modelId),
+                                                )
+                                            }
+                                        }
+                                    }
+                                },
+                            ) {
+                                Text(if (depthDiagnosticRunning) "Running 15-step test..." else "Run full Depth test")
+                            }
+                            depthDiagnosticResult?.let { diagnostic ->
+                                Text(diagnostic, style = MaterialTheme.typography.bodySmall)
+                                if (!depthDiagnosticRunning && BreezeDepthDiagnostic.logFile(context).isFile) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedButton(onClick = { copyDepthDiagnostic(context) }) {
+                                            Text("Copy Depth log")
+                                        }
+                                        OutlinedButton(onClick = { shareDepthDiagnostic(context) }) {
+                                            Text("Share Depth log")
+                                        }
+                                    }
+                                }
                             }
                             hmxDiagnosticResult?.let { diagnostic ->
                                 Text(
