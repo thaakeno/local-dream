@@ -112,22 +112,39 @@ private:
         auto * b = graph.input_f32(bias, kHidden, 1);
         auto * w1 = graph.input_f32(last, kHidden, kOutput);
         auto * mat0 = ggml_mul_mat(graph.ctx, w0, v);
-        auto * add = ggml_add(graph.ctx, mat0, b);
+        // Alternate direct and strided producer/consumer boundaries. The
+        // transposed copy cases exercise the DMA/CONT path independently.
+        auto * producer = mat0;
+        if ((variant & 1) != 0) {
+            auto * first_copy = ggml_cont(graph.ctx, ggml_transpose(graph.ctx, mat0));
+            producer = ggml_cont(graph.ctx, ggml_transpose(graph.ctx, first_copy));
+        }
+        auto * add = ggml_add(graph.ctx, producer, b);
         auto * gelu = ggml_gelu_erf(graph.ctx, add);
         auto * out = ggml_mul_mat(graph.ctx, w1, gelu);
+        // Intermediate tensors must retain their own storage after execution.
+        // Otherwise the graph allocator can reuse their backing memory and
+        // turn a correct kernel into a false numerical mismatch on readback.
+        ggml_set_output(add);
+        ggml_set_output(gelu);
+        graph.prepare(backend, out);
+        graph.replay(backend); // exclude DSP mapping/warmup from the timing
+
+        constexpr int timed_replays = 4;
         const auto begin = std::chrono::steady_clock::now();
-        graph.compute(backend, out);
+        for (int i = 0; i < timed_replays; ++i) graph.replay(backend);
         const auto end = std::chrono::steady_clock::now();
 
-        // Read every intermediate, not only the final matmul. This detects
+        // Check every retained intermediate, not only the final matmul. This detects
         // stale data across HMX -> HVX -> HMX boundaries, not just bad GEMMs.
         check("ADD", breeze::tensor_to_f32(add), expected_add, rows, variant);
         check("GELU_ERF", breeze::tensor_to_f32(gelu), expected_gelu, rows, variant);
         check("FINAL_MUL_MAT", breeze::tensor_to_f32(out), expected_output, rows, variant);
         const double duration_ms =
-            std::chrono::duration<double, std::milli>(end - begin).count();
+            std::chrono::duration<double, std::milli>(end - begin).count() /
+            timed_replays;
         std::fprintf(stderr,
-            "[BREEZE_HMX_CHAIN_BENCH] rows=%d variant=%d compute_ms=%.3f\n",
-            rows, variant, duration_ms);
+            "[BREEZE_HMX_CHAIN_BENCH] rows=%d variant=%d replay_ms=%.3f samples=%d\n",
+            rows, variant, duration_ms, timed_replays);
     }
 };
