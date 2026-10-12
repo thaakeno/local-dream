@@ -1,0 +1,23 @@
+name: Inspect Recall QNN cloud jobs
+on:
+  push:
+    branches: [recall-d3-nano-qnn]
+    paths: [recall-qnn-monitor/**, .github/workflows/recall-qnn-monitor.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: recall-qnn-monitor
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install qai-hub==0.56.0
+      - name: Read bounded job metadata and failure logs
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.D3_QAI_HUB_API_TOKEN }}
+        run: python recall-qnn-monitor/monitor.py
