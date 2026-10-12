@@ -69,6 +69,8 @@ import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -1661,7 +1663,9 @@ fun SpeechRunScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             OutlinedButton(
-                                enabled = !hmxDiagnosticRunning && model?.isDownloaded == true,
+                                enabled = !hmxDiagnosticRunning &&
+                                    model?.isDownloaded == true &&
+                                    speechState is SpeechState.Ready,
                                 onClick = {
                                     hmxDiagnosticRunning = true
                                     hmxDiagnosticResult = "Checking Hexagon matrices..."
@@ -1671,7 +1675,18 @@ fun SpeechRunScreen(
                                                 Intent(context, SpeechGenerationService::class.java)
                                                     .setAction(SpeechGenerationService.ACTION_STOP),
                                             )
-                                            delay(750)
+                                            // Wait for the service to actually close HTP rather
+                                            // than racing another DSP process with a guessed delay.
+                                            val stopped = withTimeoutOrNull(8_000L) {
+                                                SpeechGenerationService.state.first {
+                                                    it is SpeechState.Idle
+                                                }
+                                            } != null
+                                            if (!stopped) {
+                                                throw IllegalStateException(
+                                                    "Breeze did not release its HTP session."
+                                                )
+                                            }
                                             val result = withContext(Dispatchers.IO) {
                                                 BreezeHmxDiagnostic.run(context.applicationContext)
                                             }
