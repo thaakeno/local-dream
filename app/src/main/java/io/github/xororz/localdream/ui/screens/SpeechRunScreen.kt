@@ -51,6 +51,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.NavController
 import io.github.xororz.localdream.data.ModelRepository
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
+import io.github.xororz.localdream.service.BreezeHmxDiagnostic
 import io.github.xororz.localdream.service.BreezeQnnGeneratorArtifact
 import io.github.xororz.localdream.service.BreezeQnnVocoderArtifact
 import io.github.xororz.localdream.service.SpeechGenerationService
@@ -821,6 +822,8 @@ fun SpeechRunScreen(
     var fullQnnGeneratorEnabled by remember {
         mutableStateOf(BreezeQnnGeneratorArtifact.isEnabled(context))
     }
+    var hmxDiagnosticRunning by remember { mutableStateOf(false) }
+    var hmxDiagnosticResult by remember { mutableStateOf<String?>(null) }
     // This screen owns the warm Breeze process. Leaving the generation panel
     // must release the GGUF, QNN contexts and HTP power votes immediately.
     DisposableEffect(modelId) {
@@ -1638,6 +1641,69 @@ fun SpeechRunScreen(
                         onValueChange = { maxNewTokens = it.roundToInt() },
                     ) { it.roundToInt().toString() }
 
+
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Text(
+                                "HMX correctness test · SM8850",
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Tests the HMX → ADD → GELU → HMX dependency chain " +
+                                    "without changing the production DSPQueue/HVX engine or CFG.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            OutlinedButton(
+                                enabled = !hmxDiagnosticRunning && model?.isDownloaded == true,
+                                onClick = {
+                                    hmxDiagnosticRunning = true
+                                    hmxDiagnosticResult = "Checking Hexagon matrices..."
+                                    scope.launch {
+                                        try {
+                                            context.startService(
+                                                Intent(context, SpeechGenerationService::class.java)
+                                                    .setAction(SpeechGenerationService.ACTION_STOP),
+                                            )
+                                            delay(750)
+                                            val result = withContext(Dispatchers.IO) {
+                                                BreezeHmxDiagnostic.run(context.applicationContext)
+                                            }
+                                            hmxDiagnosticResult = result.message
+                                        } catch (error: Exception) {
+                                            hmxDiagnosticResult = "Probe unavailable: " +
+                                                (error.message ?: error.javaClass.simpleName)
+                                        } finally {
+                                            hmxDiagnosticRunning = false
+                                            SpeechGenerationService.resetForModel(modelId)
+                                            if (model?.isDownloaded == true) {
+                                                context.startForegroundService(
+                                                    Intent(context, SpeechGenerationService::class.java)
+                                                        .setAction(SpeechGenerationService.ACTION_PRELOAD)
+                                                        .putExtra("modelId", modelId),
+                                                )
+                                            }
+                                        }
+                                    }
+                                },
+                            ) {
+                                Text(if (hmxDiagnosticRunning) "Testing HMX..." else "Run HMX test")
+                            }
+                            hmxDiagnosticResult?.let { diagnostic ->
+                                Text(
+                                    diagnostic,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
 
                     Surface(
                         shape = MaterialTheme.shapes.extraLarge,
