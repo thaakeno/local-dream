@@ -8,6 +8,17 @@ if os.environ.get("GITHUB_ACTIONS") != "true":
 import qai_hub as hub
 
 client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
+
+
+def compact(value, depth=0):
+    if isinstance(value, list):
+        return {"entries": len(value)}
+    if isinstance(value, dict):
+        return ({"keys": list(value)[:30]} if depth >= 4 else
+                {k: compact(v, depth + 1) for k, v in list(value.items())[:30]})
+    return value
+
+
 found = 0
 for summary in client.get_job_summaries(limit=20):
     if not summary.name.startswith("Recall_D3Nano_"):
@@ -17,10 +28,7 @@ for summary in client.get_job_summaries(limit=20):
                       "status": str(summary.status), "url": summary.url}), flush=True)
     if summary.status.success and summary.name.endswith("_parity"):
         profile = client.get_job(summary.job_id).download_profile()
-        print("Hosted profile: " + json.dumps({k: profile.get(k) for k in [
-            "estimated_inference_time", "first_load_time", "warm_load_time",
-            "estimated_inference_peak_memory", "first_load_peak_memory",
-        ]}), flush=True)
+        print("Hosted profile: " + json.dumps(compact(profile)), flush=True)
     if summary.status.failure:
         job = client.get_job(summary.job_id)
         logs = job.download_job_logs("/tmp/recall-qnn-inspect/" + summary.job_id)
