@@ -77,3 +77,14 @@ jobs:
             -I "$RUNNER_TEMP/ggml-hexagon/ggml/include" \
             -I "$RUNNER_TEMP/ggml-hexagon/ggml/src" \
             app/src/main/cpp/voice/overlay/breeze/src/depth_decoder.cpp
+      - name: Compile HMX dependency probe and Breeze selftest for syntax
+        shell: bash
+        run: |
+          c++ -std=c++17 -fsyntax-only \
+            -I app/src/main/cpp/voice/native \
+            -I app/src/main/cpp/voice/overlay/breeze/include \
+            -I "$RUNNER_TEMP/Breeze-TTS-2.cpp/include" \
+            -I "$RUNNER_TEMP/Breeze-TTS-2.cpp/third_party" \
+            -I "$RUNNER_TEMP/ggml-hexagon/ggml/include" \
+            -I "$RUNNER_TEMP/ggml-hexagon/ggml/src" \
+            app/src/main/cpp/voice/native/breeze-htp-selftest.cpp

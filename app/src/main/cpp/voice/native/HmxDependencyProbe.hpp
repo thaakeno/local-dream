@@ -2,6 +2,7 @@
 
 #include "breeze/common.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
