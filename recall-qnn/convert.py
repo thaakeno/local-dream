@@ -299,6 +299,12 @@ def main():
         valid = torch.zeros(LENGTH)
         valid[:384] = 1
         layer_inputs = {"hidden": hidden, "cos": cos, "sin": sin, "key_valid": valid}
+        if os.environ.get("D3_DIAGNOSE_LAYER00") == "true":
+            from diagnose import diagnose
+            diagnose(lambda: Layer(0), layer_inputs, root, client, hub.Device(os.environ["QAI_DEVICE"]))
+            report["status"] = "diagnostic_complete_not_deployable"
+            save()
+            return
         # Qualify both backbone layer types before spending cloud resources on
         # all remaining layers. This is a full-model feasibility gate, not a
         # vision-only product or a substitute model.

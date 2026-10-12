@@ -20,6 +20,7 @@ jobs:
       QAI_DEVICE: Samsung Galaxy S26 (Family)
       OMP_NUM_THREADS: '2'
       MKL_NUM_THREADS: '2'
+      D3_DIAGNOSE_LAYER00: 'true'
     steps:
       - uses: actions/checkout@v6
         with:
