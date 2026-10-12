@@ -6,22 +6,37 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
- * Isolated SM8850 Hexagon v81 HMX correctness validation.
+ * Diagnostic-only runner for SM8850/v81 HMX producer/consumer correctness.
  *
- * Production decoding always keeps GGML_HEXAGON_NHMX=0. This runner creates
- * an entirely separate subprocess after the caller stops the speech service.
- * A failed parity test never changes a persisted setting or enables HMX.
+ * Each backend is tested in a fresh native process. No setting is persisted,
+ * and production generation remains DSPQueue/HVX-only with the original CFG.
  */
 object BreezeHmxDiagnostic {
     data class Result(val passed: Boolean, val message: String)
 
+    private enum class Engine(val label: String, val nhmx: String, val matmul: String) {
+        HVX("HVX reference", "0", "1"),
+        HMX("HMX experimental", "1", "2"),
+    }
+
+    private data class ProbeRun(
+        val engine: Engine,
+        val complete: Boolean,
+        val errors: String?,
+        val hmxUnits: Int?,
+        val samples: Map<String, Double>,
+    ) {
+        val passed: Boolean get() = complete && errors == null && samples.size == 16
+    }
+
     fun run(context: Context): Result {
         val app = context.applicationContext
-        val native = File(app.applicationInfo.nativeLibraryDir, "libbreeze_selftest.so")
+        val runner = File(app.applicationInfo.nativeLibraryDir, "libbreeze_selftest.so")
+        if (!runner.isFile) return Result(false, "The Breeze native self-test is missing.")
+
         val runtime = File(app.filesDir, "runtime_breeze_htp")
-        val skel = File(runtime, "libggml-htp-v81.so")
-        if (!native.isFile) return Result(false, "Native Breeze self-test is missing.")
         runtime.mkdirs()
+        val skel = File(runtime, "libggml-htp-v81.so")
         if (!skel.isFile || skel.length() < 100_000L) {
             app.assets.open("breezelibs/libggml-htp-v81.so").use { source ->
                 skel.outputStream().use { destination -> source.copyTo(destination) }
@@ -29,29 +44,76 @@ object BreezeHmxDiagnostic {
         }
         skel.setReadable(true, true)
 
-        val dspPaths = listOf(
+        val baseline = execute(app, runner, runtime, Engine.HVX)
+        if (!baseline.passed) {
+            return Result(false, "HVX reference probe failed: ${baseline.errors ?: "incomplete"}")
+        }
+        val hmx = execute(app, runner, runtime, Engine.HMX)
+        if (!hmx.passed) {
+            return Result(false, "HMX correctness failed: ${hmx.errors ?: "incomplete"}; production HVX is unchanged.")
+        }
+        if (hmx.hmxUnits == null || hmx.hmxUnits <= 0) {
+            return Result(
+                false,
+                "Numerical parity passed, but the native backend did not report " +
+                    "available HMX hardware. Acceleration is unverified; HVX stays active.",
+            )
+        }
+
+        // These are warmed *isolated synthetic chains*, never TTS throughput.
+        // Only compare identical shapes, never total test-process wall time.
+        val ratios = baseline.samples.mapNotNull { (shape, hvxMs) ->
+            val hmxMs = hmx.samples[shape] ?: return@mapNotNull null
+            if (hvxMs > 0.0 && hmxMs > 0.0) hvxMs / hmxMs else null
+        }.sorted()
+        val median = ratios.getOrNull(ratios.size / 2)
+        val comparison = if (ratios.size == 16 && median != null) {
+            "Median isolated chain HMX/HVX speed ratio: " +
+                String.format(java.util.Locale.US, "%.2fx", median) + ". "
+        } else {
+            "Speed comparison unavailable. "
+        }
+
+        return Result(
+            true,
+            "Numerical parity passed for both backends (16 shapes each), " +
+                "HMX units reported: ${hmx.hmxUnits}. " +
+                comparison +
+                "Synthetic microbenchmark only; production remains HVX until " +
+                "actual HMX operator utilization, full audio quality, and sustained " +
+                "throughput are validated.",
+        )
+    }
+
+    private fun execute(
+        context: Context,
+        executable: File,
+        runtime: File,
+        engine: Engine,
+    ): ProbeRun {
+        val dspPath = listOf(
             runtime.absolutePath,
             "/vendor/lib/rfsa/adsp",
             "/vendor/dsp/cdsp",
             "/dsp",
         ).joinToString(";")
-        val proc = ProcessBuilder(native.absolutePath).apply {
+        val process = ProcessBuilder(executable.absolutePath).apply {
             directory(runtime)
             redirectErrorStream(true)
             environment().putAll(
                 mapOf(
                     "LD_LIBRARY_PATH" to listOf(
-                        app.applicationInfo.nativeLibraryDir,
+                        context.applicationInfo.nativeLibraryDir,
                         runtime.absolutePath,
                         "/system/lib64",
                         "/vendor/lib64",
                     ).joinToString(":"),
-                    "ADSP_LIBRARY_PATH" to dspPaths,
-                    "DSP_LIBRARY_PATH" to dspPaths,
+                    "ADSP_LIBRARY_PATH" to dspPath,
+                    "DSP_LIBRARY_PATH" to dspPath,
                     "GGML_HEXAGON_DEVICES" to "HTP0:0",
-                    "GGML_HEXAGON_NHMX" to "1",
+                    "GGML_HEXAGON_NHMX" to engine.nhmx,
                     "GGML_HEXAGON_NHVX" to "0",
-                    "GGML_HEXAGON_MM_SELECT" to "2",
+                    "GGML_HEXAGON_MM_SELECT" to engine.matmul,
                     "GGML_HEXAGON_FA_SELECT" to "1",
                     "GGML_HEXAGON_GDN_SELECT" to "1",
                     "GGML_HEXAGON_OPFUSION" to "0",
@@ -60,50 +122,65 @@ object BreezeHmxDiagnostic {
             )
         }.start()
 
-        val output = StringBuffer()
+        val lines = mutableListOf<String>()
         val reader = Thread({
             runCatching {
-                proc.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
-                        synchronized(output) {
-                            if (output.length < 180_000) output.append(line.take(1600)).append('\n')
+                process.inputStream.bufferedReader().useLines { stream ->
+                    stream.forEach { line ->
+                        synchronized(lines) {
+                            if (lines.size < 650) lines.add(line.take(1600))
                         }
                     }
                 }
             }
-        }, "breeze-hmx-probe-reader").apply {
+        }, "breeze-hmx-diagnostic-reader").apply {
             isDaemon = true
             start()
         }
-        val exited = proc.waitFor(90L, TimeUnit.SECONDS)
-        if (!exited) proc.destroyForcibly()
-        reader.join(1800)
-        val transcript = synchronized(output) { output.toString() }
-        transcript.lineSequence()
+        val exited = process.waitFor(90L, TimeUnit.SECONDS)
+        if (!exited) {
+            process.destroyForcibly()
+            process.waitFor(3L, TimeUnit.SECONDS)
+        }
+        reader.join(2500L)
+        val transcript = synchronized(lines) { lines.toList() }
+        transcript
             .filter { line ->
                 line.contains("BREEZE_HMX_CHAIN") ||
                     line.contains("BREEZE_SELFTEST") ||
                     line.contains("hwinfo:") ||
                     line.contains("failed", ignoreCase = true)
             }
-            .forEach { BackendDiagnostics.append(app, "BREEZE_HMX_TEST", it.take(1600)) }
+            .forEach { BackendDiagnostics.append(context, "BREEZE_HMX_TEST", "${engine.label}: " + it) }
 
-        if (!exited) return Result(false, "HMX probe timed out; normal HVX restored.")
-        val complete = "[BREEZE_HMX_CHAIN] complete 16 cases" in transcript
-        val passed = proc.exitValue() == 0 && complete &&
-            "[BREEZE_SELFTEST] all-ok" in transcript
-        if (!passed) {
-            val detail = transcript.lineSequence()
-                .filter { "failed:" in it || "mismatch" in it || "non-finite" in it }
-                .lastOrNull()?.take(250)
-                ?: "exit=${proc.exitValue()}; see Backend log"
-            return Result(false, "HMX failed numerical validation: $detail. HVX remains enabled.")
+        val failed = transcript.lastOrNull {
+            it.contains("[BREEZE_SELFTEST] failed") ||
+                it.contains("mismatch") ||
+                it.contains("non-finite")
         }
-        return Result(
-            true,
-            "Dependency-chain numerical checks passed with HMX requested. " +
-                "Inspect the Backend log for HMX utilization and timings; " +
-                "production generation remains on HVX.",
+        val error = when {
+            !exited -> "timeout"
+            process.exitValue() != 0 -> failed?.take(260) ?: "exit=${process.exitValue()}"
+            else -> null
+        }
+        val hwinfo = Regex("""hwinfo:.*\bhmx\s+(\d+)""")
+            .find(transcript.joinToString("\n"))?.groupValues?.get(1)?.toIntOrNull()
+        val bench = Regex(
+            """\[BREEZE_HMX_CHAIN_BENCH\] rows=(\d+) variant=(\d+) replay_ms=([0-9.]+)"""
+        )
+        val samples = transcript.mapNotNull { line ->
+            val match = bench.find(line) ?: return@mapNotNull null
+            "${match.groupValues[1]}:${match.groupValues[2]}" to
+                (match.groupValues[3].toDoubleOrNull() ?: return@mapNotNull null)
+        }.toMap()
+        return ProbeRun(
+            engine,
+            error == null &&
+                transcript.any { it.contains("[BREEZE_HMX_CHAIN] complete 16 cases") } &&
+                transcript.any { it.contains("[BREEZE_SELFTEST] all-ok") },
+            error,
+            hwinfo,
+            samples,
         )
     }
 }
