@@ -48,7 +48,7 @@ object BreezeHmxDiagnostic {
         log.writeText(
             "Local Dream SM8850/v81 HMX correctness diagnostic\n" +
                 "Production backend: DSPQueue/HVX (unchanged)\n" +
-                "Build: 28ceab1; tests: HVX reference, unfused HMX, " +
+                "Tests: HVX reference, unfused HMX, " +
                 "HMX with safe fusion\n"
         )
         val runner = File(app.applicationInfo.nativeLibraryDir, "libbreeze_selftest.so")
@@ -151,19 +151,34 @@ object BreezeHmxDiagnostic {
             )
         }.start()
 
+        // Verbose Hexagon prints thousands of buffer/queue lines. Those
+        // previously exhausted the 2,500-line collector before the first HMX
+        // process, producing an apparently complete but unusable export.
+        // Retain every test result and timing line, hardware/coverage evidence,
+        // and errors. Discard routine tensor-transfer chatter *while draining*
+        // stdout continuously, so the native process cannot block on a pipe.
         val lines = mutableListOf<String>()
         val reader = Thread({
             runCatching {
                 process.inputStream.bufferedReader().useLines { stream ->
                     stream.forEach { line ->
-                        synchronized(lines) {
-                            if (lines.size < 2500 && (
-                                line.contains("BREEZE_") ||
-                                line.contains("ggml-hex", ignoreCase = true) ||
-                                line.contains("hmx", ignoreCase = true) ||
-                                line.contains("failed", ignoreCase = true) ||
-                                line.contains("error", ignoreCase = true)
-                            )) lines.add(line.take(1600))
+                        val important = line.contains("[BREEZE_") ||
+                            line.contains("hwinfo:") ||
+                            line.contains("mul_mat coverage:") ||
+                            line.contains("skip v81 HMX MUL_MAT+ADD fusion") ||
+                            line.contains("dspqueue_read failed", ignoreCase = true) ||
+                            line.contains("fatal", ignoreCase = true) ||
+                            line.contains("failed", ignoreCase = true) ||
+                            line.contains("error:", ignoreCase = true)
+                        if (important) {
+                            synchronized(lines) {
+                                if (lines.size < 5000) {
+                                    lines.add(line.take(1600))
+                                } else if (lines.size == 5000) {
+                                    lines.add("[BREEZE_DIAGNOSTIC] trace exceeded 5000 " +
+                                        "relevant lines; output truncated")
+                                }
+                            }
                         }
                     }
                 }

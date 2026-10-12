@@ -721,6 +721,17 @@ private const val DEFAULT_MAX_NEW_TOKENS = 750
 private fun freshSpeechSeed(): Long =
     ((System.nanoTime() xor System.currentTimeMillis()) and 0x7fffffffL).coerceAtLeast(1L)
 
+private fun copyHmxDiagnostic(context: android.content.Context) {
+    val file = BreezeHmxDiagnostic.logFile(context)
+    if (!file.isFile) return
+    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+        as android.content.ClipboardManager
+    clipboard.setPrimaryClip(
+        android.content.ClipData.newPlainText("Breeze HMX test log", file.readText()),
+    )
+    Toast.makeText(context, "HMX test log copied", Toast.LENGTH_SHORT).show()
+}
+
 private fun shareHmxDiagnostic(context: android.content.Context) {
     val file = BreezeHmxDiagnostic.logFile(context)
     if (!file.isFile) return
@@ -1734,10 +1745,19 @@ fun SpeechRunScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                                 if (!hmxDiagnosticRunning && BreezeHmxDiagnostic.logFile(context).isFile) {
-                                    OutlinedButton(
-                                        onClick = { shareHmxDiagnostic(context) },
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
-                                        Text("Share HMX test log")
+                                        OutlinedButton(
+                                            onClick = { copyHmxDiagnostic(context) },
+                                        ) {
+                                            Text("Copy test log")
+                                        }
+                                        OutlinedButton(
+                                            onClick = { shareHmxDiagnostic(context) },
+                                        ) {
+                                            Text("Share test log")
+                                        }
                                     }
                                 }
                             }
