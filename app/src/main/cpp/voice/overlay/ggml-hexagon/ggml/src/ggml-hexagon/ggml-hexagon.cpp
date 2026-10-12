@@ -3403,10 +3403,27 @@ struct ggml_hexagon_opbatch {
 
         if (src2->type != GGML_TYPE_F32) return false;
 
+        // ggml-org/llama.cpp #30143: the fused kernel writes the matrix
+        // product's shape. It cannot implement an ADD which broadcasts that
+        // product into a larger destination.
+        if (!ggml_are_same_shape(mm_out, node.dst())) return false;
+
         const struct htp_mm_kernel_params * orig_kparams = (const struct htp_mm_kernel_params *) last_node.kernel_params;
         struct htp_mm_kernel_params kparams;
         ggml_hexagon_precompute_fused_matmul_add_params(sess, src0, src1, src2, node.dst(), &kparams);
         if (kparams.kernel_type == HTP_MM_KERNEL_UNSUPPORTED) {
+            return false;
+        }
+
+        // SM8850 / v81: a reproducible one-row F32 MUL_MAT+ADD chain is
+        // numerically incorrect with the HMX fused epilogue (worst 0.0373
+        // versus 0.012 tolerance). Unfused HMX MUL_MAT followed by the
+        // regular DSP ADD passes this exact graph. Keep HMX matmul enabled,
+        // but reject only its unverified fused bias epilogue. Do not disable
+        // the other fusion families or rewrite the scheduler.
+        if (kparams.n_hmx > 0 && opt_arch >= 81) {
+            HEX_VERBOSE("ggml-hex: %s skip v81 HMX MUL_MAT+ADD fusion: parity guard\n",
+                        sess->c_name());
             return false;
         }
 
