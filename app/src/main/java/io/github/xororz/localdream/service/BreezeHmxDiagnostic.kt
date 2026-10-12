@@ -47,11 +47,19 @@ object BreezeHmxDiagnostic {
         if (!baseline.passed) {
             return Result(false, "HVX reference probe failed: ${baseline.errors ?: "incomplete"}")
         }
-        val hmx = execute(app, runner, runtime, Engine.HMX)
+        val hmx = execute(app, runner, runtime, Engine.HMX, fused = false)
         if (!hmx.passed) {
-            return Result(false, "HMX correctness failed: ${hmx.errors ?: "incomplete"}; production HVX is unchanged.")
+            return Result(false, "Unfused HMX failed: ${hmx.errors ?: "incomplete"}; production HVX is unchanged.")
         }
-        if (hmx.hmxUnits == null || hmx.hmxUnits <= 0) {
+        // Fusion itself has had upstream correctness issues with broadcast ADD.
+        // Validate it in a separate process instead of implicitly assuming
+        // that successful unfused matmul results prove fused correctness.
+        val fusedHmx = execute(app, runner, runtime, Engine.HMX, fused = true)
+        if (!fusedHmx.passed) {
+            return Result(false, "Fused HMX failed: ${fusedHmx.errors ?: "incomplete"}; production HVX is unchanged.")
+        }
+        if (hmx.hmxUnits == null || hmx.hmxUnits <= 0 ||
+            fusedHmx.hmxUnits == null || fusedHmx.hmxUnits <= 0) {
             return Result(
                 false,
                 "Numerical parity passed, but the native backend did not report " +
@@ -75,7 +83,7 @@ object BreezeHmxDiagnostic {
 
         return Result(
             true,
-            "Numerical parity passed for both backends (16 shapes each), " +
+            "Numerical parity passed in HVX, HMX, and fused HMX modes (16 shapes each), " +
                 "HMX units reported: ${hmx.hmxUnits}. " +
                 comparison +
                 "Synthetic microbenchmark only; production remains HVX until " +
@@ -89,6 +97,7 @@ object BreezeHmxDiagnostic {
         executable: File,
         runtime: File,
         engine: Engine,
+        fused: Boolean = false,
     ): ProbeRun {
         val dspPath = listOf(
             runtime.absolutePath,
@@ -115,7 +124,7 @@ object BreezeHmxDiagnostic {
                     "GGML_HEXAGON_MM_SELECT" to engine.matmul,
                     "GGML_HEXAGON_FA_SELECT" to "1",
                     "GGML_HEXAGON_GDN_SELECT" to "1",
-                    "GGML_HEXAGON_OPFUSION" to "0",
+                    "GGML_HEXAGON_OPFUSION" to (if (fused) "1" else "0"),
                     "BREEZE_HMX_DEPENDENCY_PROBE" to "1",
                 ),
             )
@@ -150,7 +159,12 @@ object BreezeHmxDiagnostic {
                     line.contains("hwinfo:") ||
                     line.contains("failed", ignoreCase = true)
             }
-            .forEach { BackendDiagnostics.append(context, "BREEZE_HMX_TEST", "${engine.label}: " + it) }
+            .forEach {
+                BackendDiagnostics.append(
+                    context, "BREEZE_HMX_TEST",
+                    "${engine.label} fusion=${if (fused) 1 else 0}: " + it
+                )
+            }
 
         val failed = transcript.lastOrNull {
             it.contains("[BREEZE_SELFTEST] failed") ||
