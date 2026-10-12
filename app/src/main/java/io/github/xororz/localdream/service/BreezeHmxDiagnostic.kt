@@ -14,6 +14,18 @@ import java.util.concurrent.TimeUnit
 object BreezeHmxDiagnostic {
     data class Result(val passed: Boolean, val message: String)
 
+    fun logFile(context: Context): File =
+        File(context.filesDir, "hmx_diagnostics/latest.txt")
+
+    private fun appendRunLog(context: Context, label: String, lines: List<String>) {
+        val file = logFile(context)
+        file.parentFile?.mkdirs()
+        file.appendText(
+            "\n===== " + label + " =====\n" +
+                lines.joinToString("\n") + "\n"
+        )
+    }
+
     private enum class Engine(val label: String, val nhmx: String, val matmul: String) {
         HVX("HVX reference", "0", "1"),
         HMX("HMX experimental", "1", "2"),
@@ -31,6 +43,14 @@ object BreezeHmxDiagnostic {
 
     fun run(context: Context): Result {
         val app = context.applicationContext
+        val log = logFile(app)
+        log.parentFile?.mkdirs()
+        log.writeText(
+            "Local Dream SM8850/v81 HMX correctness diagnostic\n" +
+                "Production backend: DSPQueue/HVX (unchanged)\n" +
+                "Build: 28ceab1; tests: HVX reference, unfused HMX, " +
+                "HMX with safe fusion\n"
+        )
         val runner = File(app.applicationInfo.nativeLibraryDir, "libbreeze_selftest.so")
         if (!runner.isFile) return Result(false, "The Breeze native self-test is missing.")
 
@@ -51,12 +71,12 @@ object BreezeHmxDiagnostic {
         if (!hmx.passed) {
             return Result(false, "Unfused HMX failed: ${hmx.errors ?: "incomplete"}; production HVX is unchanged.")
         }
-        // Fusion itself has had upstream correctness issues with broadcast ADD.
-        // Validate it in a separate process instead of implicitly assuming
-        // that successful unfused matmul results prove fused correctness.
+        // Validate the normal optimizer configuration too. The proven-bad
+        // v81 HMX MUL_MAT+ADD epilogue is now rejected by the upstream-style
+        // backend eligibility check; other permitted graph fusions still run.
         val fusedHmx = execute(app, runner, runtime, Engine.HMX, fused = true)
         if (!fusedHmx.passed) {
-            return Result(false, "Fused HMX failed: ${fusedHmx.errors ?: "incomplete"}; production HVX is unchanged.")
+            return Result(false, "Safe-fusion HMX failed: ${fusedHmx.errors ?: "incomplete"}; production HVX is unchanged.")
         }
         if (hmx.hmxUnits == null || hmx.hmxUnits <= 0 ||
             fusedHmx.hmxUnits == null || fusedHmx.hmxUnits <= 0) {
@@ -83,7 +103,7 @@ object BreezeHmxDiagnostic {
 
         return Result(
             true,
-            "Numerical parity passed in HVX, HMX, and fused HMX modes (16 shapes each), " +
+            "Numerical parity passed in HVX, HMX, and safe-fusion HMX modes (16 shapes each), " +
                 "HMX units reported: ${hmx.hmxUnits}. " +
                 comparison +
                 "Synthetic microbenchmark only; production remains HVX until " +
@@ -125,6 +145,7 @@ object BreezeHmxDiagnostic {
                     "GGML_HEXAGON_FA_SELECT" to "1",
                     "GGML_HEXAGON_GDN_SELECT" to "1",
                     "GGML_HEXAGON_OPFUSION" to (if (fused) "1" else "0"),
+                    "GGML_HEXAGON_VERBOSE" to "1",
                     "BREEZE_HMX_DEPENDENCY_PROBE" to "1",
                 ),
             )
@@ -136,7 +157,13 @@ object BreezeHmxDiagnostic {
                 process.inputStream.bufferedReader().useLines { stream ->
                     stream.forEach { line ->
                         synchronized(lines) {
-                            if (lines.size < 650) lines.add(line.take(1600))
+                            if (lines.size < 2500 && (
+                                line.contains("BREEZE_") ||
+                                line.contains("ggml-hex", ignoreCase = true) ||
+                                line.contains("hmx", ignoreCase = true) ||
+                                line.contains("failed", ignoreCase = true) ||
+                                line.contains("error", ignoreCase = true)
+                            )) lines.add(line.take(1600))
                         }
                     }
                 }
@@ -152,6 +179,7 @@ object BreezeHmxDiagnostic {
         }
         reader.join(2500L)
         val transcript = synchronized(lines) { lines.toList() }
+        appendRunLog(context, engine.label + " fusion=" + if (fused) "1" else "0", transcript)
         transcript
             .filter { line ->
                 line.contains("BREEZE_HMX_CHAIN") ||

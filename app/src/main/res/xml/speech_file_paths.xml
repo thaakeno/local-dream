@@ -3,4 +3,5 @@
     <files-path
         name="speech_history"
         path="speech_history/" />
+    <files-path name="hmx_diagnostics" path="hmx_diagnostics/" />
 </paths>

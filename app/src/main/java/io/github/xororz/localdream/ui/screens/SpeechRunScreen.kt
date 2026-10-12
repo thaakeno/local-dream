@@ -721,6 +721,23 @@ private const val DEFAULT_MAX_NEW_TOKENS = 750
 private fun freshSpeechSeed(): Long =
     ((System.nanoTime() xor System.currentTimeMillis()) and 0x7fffffffL).coerceAtLeast(1L)
 
+private fun shareHmxDiagnostic(context: android.content.Context) {
+    val file = BreezeHmxDiagnostic.logFile(context)
+    if (!file.isFile) return
+    val uri = FileProvider.getUriForFile(
+        context,
+        context.packageName + ".fileprovider",
+        file,
+    )
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        clipData = android.content.ClipData.newRawUri("Breeze HMX diagnostic", uri)
+    }
+    context.startActivity(Intent.createChooser(send, "Share HMX diagnostic"))
+}
+
 private fun shareSpeechFile(context: android.content.Context, file: File) {
     if (!file.isFile) return
     val uri = FileProvider.getUriForFile(
@@ -1716,6 +1733,13 @@ fun SpeechRunScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                if (!hmxDiagnosticRunning && BreezeHmxDiagnostic.logFile(context).isFile) {
+                                    OutlinedButton(
+                                        onClick = { shareHmxDiagnostic(context) },
+                                    ) {
+                                        Text("Share HMX test log")
+                                    }
+                                }
                             }
                         }
                     }
