@@ -1,0 +1,47 @@
+name: Recall D3 Nano full QNN qualification
+on:
+  push:
+    branches: [recall-d3-nano-qnn]
+    paths: [recall-qnn/**, .github/workflows/recall-d3-nano-qnn.yml]
+permissions:
+  contents: read
+concurrency:
+  group: recall-d3-nano-qnn
+  cancel-in-progress: false
+jobs:
+  convert:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      PYTHONUNBUFFERED: '1'
+      HF_HOME: ${{ runner.temp }}/d3-hf
+      D3_WORK: ${{ runner.temp }}/d3-qnn
+      QAI_DEVICE: Samsung Galaxy S26 (Family)
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: recall-qnn
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install cloud-only conversion dependencies
+        run: |
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'qai-hub>=0.56.0' 'huggingface-hub>=0.34' safetensors 'numpy<3' 'onnx==1.18.0' 'onnxruntime==1.22.1' 'transformers>=5.0' pillow 'torchvision==0.23.0' --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Export, qualify and compile the complete pipeline
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.D3_QAI_HUB_API_TOKEN }}
+        run: python recall-qnn/convert.py
+      - name: Preserve qualification report and converted contexts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recall-d3-nano-qnn-qualification
+          path: |
+            ${{ runner.temp }}/d3-qnn/report.json
+            ${{ runner.temp }}/d3-qnn/*.json
+            ${{ runner.temp }}/d3-qnn/contexts/**
+          if-no-files-found: warn
+          retention-days: 14
