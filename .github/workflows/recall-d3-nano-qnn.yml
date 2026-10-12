@@ -14,8 +14,8 @@ jobs:
     timeout-minutes: 180
     env:
       PYTHONUNBUFFERED: '1'
-      HF_HOME: ${{ runner.temp }}/d3-hf
-      D3_WORK: ${{ runner.temp }}/d3-qnn
+      HF_HOME: /tmp/recall-d3-hf
+      D3_WORK: /tmp/recall-d3-qnn
       QAI_DEVICE: Samsung Galaxy S26 (Family)
       OMP_NUM_THREADS: '2'
       MKL_NUM_THREADS: '2'
@@ -40,8 +40,8 @@ jobs:
         with:
           name: recall-d3-nano-qnn-qualification
           path: |
-            ${{ runner.temp }}/d3-qnn/report.json
-            ${{ runner.temp }}/d3-qnn/*.json
-            ${{ runner.temp }}/d3-qnn/contexts/**
+            /tmp/recall-d3-qnn/report.json
+            /tmp/recall-d3-qnn/*.json
+            /tmp/recall-d3-qnn/contexts/**
           if-no-files-found: warn
           retention-days: 14
