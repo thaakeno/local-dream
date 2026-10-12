@@ -5,6 +5,7 @@ on:
     paths: [recall-qnn/**, .github/workflows/recall-d3-nano-qnn.yml]
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: recall-d3-nano-qnn
   cancel-in-progress: false
@@ -33,7 +34,10 @@ jobs:
       - name: Export, qualify and compile the complete pipeline
         env:
           QAI_HUB_API_TOKEN: ${{ secrets.D3_QAI_HUB_API_TOKEN }}
-        run: python recall-qnn/convert.py
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 38317802422 --repo thaakeno/local-dream --name recall-d3-nano-qnn-qualification --dir /tmp/recall-d3-resume
+          D3_REUSE_REPORT=/tmp/recall-d3-resume/report.json python recall-qnn/convert.py
       - name: Preserve qualification report and converted contexts
         if: always()
         uses: actions/upload-artifact@v4

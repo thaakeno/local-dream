@@ -16,6 +16,7 @@ from pathlib import Path
 import sys
 import time
 import traceback
+from collections import Counter
 
 MODEL_ID = "vllm-sr/d3-nano"
 MODEL_REV = "9d9b937f5f117f78c030ea7ba677c0b3d328ec58"
@@ -55,6 +56,14 @@ def main():
         "packages": {p: importlib.metadata.version(p) for p in ["torch", "onnx", "onnxruntime", "qai-hub", "transformers"]},
         "components": [],
     }
+    reuse = {}
+    if os.environ.get("D3_REUSE_REPORT"):
+        prior = json.loads(Path(os.environ["D3_REUSE_REPORT"]).read_text())
+        contract = ["model", "model_revision", "graph_source", "graph_revision", "device",
+                    "sequence_bucket", "vision_patch_bucket", "precision"]
+        if any(prior.get(key) != report.get(key) for key in contract):
+            raise RuntimeError("Previous cloud run has a different model/export contract")
+        reuse = {c["name"]: c for c in prior["components"]}
 
     def save():
         (root / "report.json").write_text(json.dumps(report, indent=2))
@@ -177,6 +186,10 @@ def main():
                 external_data=True,
             )
             graph = onnx.load(str(target))
+            component["onnx_node_count"] = len(graph.graph.node)
+            component["onnx_ops"] = dict(Counter(node.op_type for node in graph.graph.node))
+            component["input_shapes"] = {k: list(v.shape) for k, v in values.items()}
+            component["output_shape"] = list(expected.shape)
             # AI Hub external-data format: exactly one .onnx plus one .data.
             for extra in directory.iterdir():
                 if extra != target:
@@ -199,12 +212,13 @@ def main():
             component["status"] = "submitting"
             save()
             specs = {k: (tuple(v.shape), "int32" if v.dtype == torch.int32 else "float32") for k, v in values.items() if k in feed}
-            compile_job = client.submit_compile_job(
-                model=str(directory), device=hub.Device(os.environ["QAI_DEVICE"]),
-                name="Recall_D3Nano_" + name,
-                input_specs=specs,
-                options="--target_runtime qnn_dlc --qnn_options default_graph_htp_precision=FLOAT16",
-            )
+            previous = reuse.get(name, {})
+            compile_job = (client.get_job(previous["compile_id"]) if previous.get("compile_id") else
+                           client.submit_compile_job(
+                               model=str(directory), device=hub.Device(os.environ["QAI_DEVICE"]),
+                               name="Recall_D3Nano_" + name, input_specs=specs,
+                               options="--target_runtime qnn_dlc --qnn_options default_graph_htp_precision=FLOAT16",
+                           ))
             component["compile_id"] = compile_job.job_id
             component["compile_url"] = compile_job.url
             event("AI Hub compile " + name + ": " + compile_job.url)
@@ -214,29 +228,52 @@ def main():
             save()
             if not status.success:
                 raise RuntimeError(name + ": AI Hub compilation failed; see " + compile_job.url)
-            link_job = client.submit_link_job(
-                models=[compile_job.get_target_model()], device=hub.Device(os.environ["QAI_DEVICE"]),
-                name="Recall_D3Nano_" + name + "_HTP",
-                options="--qnn_options default_graph_htp_optimizations=O=3",
-            )
+            link_job = (client.get_job(previous["link_id"]) if previous.get("link_id") else
+                        client.submit_link_job(
+                            models=[compile_job.get_target_model()], device=hub.Device(os.environ["QAI_DEVICE"]),
+                            name="Recall_D3Nano_" + name + "_HTP",
+                            options="--qnn_options default_graph_htp_optimizations=O=3",
+                        ))
             component["link_id"] = link_job.job_id
             component["link_url"] = link_job.url
             save()
             if not link_job.wait().success:
                 raise RuntimeError(name + ": HTP context linking failed; see " + link_job.url)
             context = link_job.get_target_model()
-            link_job.download_target_model(str(contexts / (name + ".bin")))
-            inference = client.submit_inference_job(
-                model=context, device=hub.Device(os.environ["QAI_DEVICE"]),
-                inputs={k: [v] for k, v in feed.items()}, profile=True,
-                name="Recall_D3Nano_" + name + "_parity",
-            )
+            context_path = contexts / (name + ".bin")
+            link_job.download_target_model(str(context_path))
+            import zipfile
+            if zipfile.is_zipfile(context_path):
+                with zipfile.ZipFile(context_path) as archive:
+                    candidates = [n for n in archive.namelist() if n.endswith(".bin") and not n.endswith("/")]
+                    if len(candidates) != 1:
+                        raise RuntimeError(name + ": ambiguous context archive")
+                    payload = archive.read(candidates[0])
+                context_path.write_bytes(payload)
+            component["context_bytes"] = context_path.stat().st_size
+            with context_path.open("rb") as context_file:
+                component["context_sha256"] = hashlib.file_digest(context_file, "sha256").hexdigest()
+            inference = (client.get_job(previous["inference_id"]) if previous.get("inference_id") else
+                         client.submit_inference_job(
+                             model=context, device=hub.Device(os.environ["QAI_DEVICE"]),
+                             inputs={k: [v] for k, v in feed.items()}, profile=True,
+                             name="Recall_D3Nano_" + name + "_parity",
+                         ))
             component["inference_id"] = inference.job_id
             component["inference_url"] = inference.url
             save()
             if not inference.wait().success:
                 raise RuntimeError(name + ": hosted NPU inference failed; see " + inference.url)
-            device_out = inference.download_output_data()[output_name][0]
+            outputs = inference.download_output_data()
+            if outputs is None or len(outputs) != 1:
+                raise RuntimeError(name + ": expected exactly one compiled output")
+            compiled_output_name, batches = next(iter(outputs.items()))
+            if len(batches) != 1:
+                raise RuntimeError(name + ": unexpected compiled output batch count")
+            device_out = batches[0]
+            if device_out.shape != expected.shape:
+                raise RuntimeError(name + ": compiled output shape differs from the ONNX contract")
+            component["compiled_output_name"] = compiled_output_name
             device_err = np.abs(device_out.astype(np.float64) - expected.astype(np.float64))
             component["qnn_max_abs_error"] = float(device_err.max())
             component["qnn_rmse"] = float(np.sqrt(np.mean(device_err * device_err)))
