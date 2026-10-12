@@ -188,7 +188,25 @@ std::vector<int> DepthRunner::run(BreezeModel & m, const std::vector<std::vector
         if (profile) execute_ms += elapsed(te);
         const auto tr = Clock::now();
         std::vector<float> out = tensor_to_f32(step.logits);
-        if (logits_observer) logits_observer->on_logits(j, out);
+        if (logits_observer) {
+            // Compare the actual CFG=3.2 guidance result (not merely the
+            // independent conditional/unconditional logits) even when the
+            // diagnostic forces codebook history to be identical across
+            // separate HVX and HMX processes.
+            if (n_branch > 1) {
+                const int vocab = (int) out.size() / n_branch;
+                if ((int) guided_logits.size() != vocab) {
+                    guided_logits.resize((size_t) vocab);
+                }
+                for (int i = 0; i < vocab; ++i) {
+                    guided_logits[(size_t) i] =
+                        out[vocab + i] + cfg_scale * (out[i] - out[vocab + i]);
+                }
+                logits_observer->on_logits(j, guided_logits);
+            } else {
+                logits_observer->on_logits(j, out);
+            }
+        }
         if (profile) read_ms += elapsed(tr);
 
         const auto tp = Clock::now();
