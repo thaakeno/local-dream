@@ -27,8 +27,11 @@ for summary in client.get_job_summaries(limit=20):
     print(json.dumps({"id": summary.job_id, "name": summary.name,
                       "status": str(summary.status), "url": summary.url}), flush=True)
     if summary.status.success and summary.name.endswith("_parity"):
-        profile = client.get_job(summary.job_id).download_profile()
+        job = client.get_job(summary.job_id)
+        profile = job.download_profile()
         print("Hosted profile: " + json.dumps(compact(profile)), flush=True)
+        outputs = job.download_output_data()
+        print("Output contract: " + json.dumps({k: [list(x.shape) for x in v] for k, v in outputs.items()}), flush=True)
     if summary.status.failure:
         job = client.get_job(summary.job_id)
         logs = job.download_job_logs("/tmp/recall-qnn-inspect/" + summary.job_id)
