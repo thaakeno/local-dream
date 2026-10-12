@@ -48,6 +48,10 @@ set(HTP_OPS_SRCS
     allreduce-ops.c
 )
 
+# Device-only opt-in: the production library retains the exact scalar erff()
+# path until the experimental vector GELU probe matches reference output.
+option(BREEZE_EXPERIMENTAL_HVX_GELU "Try upstream corrected vector GELU_ERF (probe builds only)" OFF)
+
 # Both variants build ggml-htp-${DSP_VERSION} (libggml-htp-vXX.so); only one
 # is built per configuration.
 option(GGML_HEXAGON_USE_MEMPOOL "Build the mempool/FastRPC-invoke skel variant (entry.c) instead of the dspqueue variant (main.c)" OFF)
@@ -89,6 +93,10 @@ else()
         $<IF:$<BOOL:${HEXAGON_HTP_DEBUG}>,HTP_DEBUG=1,NDEBUG=1>
         $<IF:$<BOOL:${HEXAGON_HTP_DEBUG}>,FARF_HIGH=1,>
     )
+
+    if (BREEZE_EXPERIMENTAL_HVX_GELU)
+        target_compile_definitions(${HTP_LIB} PRIVATE BREEZE_EXPERIMENTAL_HVX_GELU=1)
+    endif()
 
     build_idl(htp_iface.idl ${HTP_LIB})
 

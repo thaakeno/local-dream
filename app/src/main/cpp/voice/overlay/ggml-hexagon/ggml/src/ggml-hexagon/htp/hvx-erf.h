@@ -13,7 +13,7 @@ static __attribute__((noinline)) HVX_Vector hvx_vec_erf_f32(HVX_Vector x) {
     HVX_Vector t = hvx_vec_inverse_f32(hvx_vec_add_f32_f32(
         hvx_vec_splat_f32(1.0f), hvx_vec_mul_f32_f32(hvx_vec_splat_f32(0.3275911f), ax)));
 
-    HVX_Vector poly = hvx_vec_mul_f32_f32(hvx_vec_splat_f32(1.061405429f), t);
+    HVX_Vector poly = hvx_vec_splat_f32(1.061405429f);
     poly = hvx_vec_add_f32_f32(hvx_vec_splat_f32(-1.453152027f), hvx_vec_mul_f32_f32(poly, t));
     poly = hvx_vec_add_f32_f32(hvx_vec_splat_f32(1.421413741f), hvx_vec_mul_f32_f32(poly, t));
     poly = hvx_vec_add_f32_f32(hvx_vec_splat_f32(-0.284496736f), hvx_vec_mul_f32_f32(poly, t));
@@ -48,6 +48,25 @@ static inline HVX_Vector hvx_vec_gelu_erf_f32(HVX_Vector x) {
 }
 
 static inline void hvx_gelu_erf_f32_aa(uint8_t * restrict dst, const uint8_t * restrict src, uint32_t n) {
+#ifdef BREEZE_EXPERIMENTAL_HVX_GELU
+    // The upstream PR #30104 vector polynomial fixes the former t^6 bug.
+    // Explicit opt-in for device correctness validation. Never enable this
+    // for the shipping HVX backend without matching reference-output tests.
+    if ((((uintptr_t)dst | (uintptr_t)src) & 127U) == 0U) {
+        HVX_Vector * restrict vdst = (HVX_Vector *) dst;
+        const HVX_Vector * restrict vsrc = (const HVX_Vector *) src;
+        const uint32_t vec_count = n / 32;
+        for (uint32_t i = 0; i < vec_count; ++i) {
+            vdst[i] = hvx_vec_gelu_erf_f32(vsrc[i]);
+        }
+        const uint32_t remaining = n - vec_count * 32;
+        if (remaining) {
+            HVX_Vector v = hvx_vec_gelu_erf_f32(vsrc[vec_count]);
+            hvx_vec_store_a((void *) &vdst[vec_count], remaining * sizeof(float), v);
+        }
+        return;
+    }
+#endif
     // SM8850 / Hexagon v81: the recently-added vector GELU_ERF path is
     // numerically wrong on-device (the LocalDream startup test reproducibly
     // sees ~5.6e-2 downstream error). Breeze's codec transformer/decoder uses

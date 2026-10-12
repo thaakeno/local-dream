@@ -11,7 +11,17 @@ cd "$(dirname "$0")"
 BREEZE_REPO="https://github.com/HoppouAI/Breeze-TTS-2.cpp.git"
 BREEZE_COMMIT="a0e177f91242ebbd2ea8d61548d742c89e4b9e06"
 HEXAGON_REPO="https://github.com/kan-linux/ggml-hexagon.git"
-HEXAGON_COMMIT="ab9acc4476cfe3add369379a3783fea190505a48"
+# Production is fixed to the verified DSPQueue/HVX revision. This alternate
+# dependency is *only* for explicit isolated HMX/DMA compatibility builds.
+# It is not silently substituted into the shipping APK.
+HEXAGON_COMMIT_STABLE="ab9acc4476cfe3add369379a3783fea190505a48"
+HEXAGON_COMMIT_DMA="93461362eeb9"
+BREEZE_EXPERIMENTAL_UPSTREAM="${BREEZE_EXPERIMENTAL_UPSTREAM:-0}"
+if [[ "$BREEZE_EXPERIMENTAL_UPSTREAM" == "1" ]]; then
+    HEXAGON_COMMIT="$HEXAGON_COMMIT_DMA"
+else
+    HEXAGON_COMMIT="$HEXAGON_COMMIT_STABLE"
+fi
 
 DEPS_DIR="$(pwd)/build/deps"
 BREEZE_DIR="$DEPS_DIR/Breeze-TTS-2.cpp"
@@ -127,6 +137,9 @@ grep -Fq 'GGML_TYPE_Q2_K, "q2k", 1' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -Fq 'GGML_TYPE_Q2_K, "q2k", 40' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'v81-dsp-gelu-erf-reference' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'v81-hvx-gelu-matmul-chain' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'BREEZE_HMX_DEPENDENCY_PROBE' "$(pwd)/native/breeze-htp-selftest.cpp"
+grep -q 'v81-hmx-chain' "$(pwd)/native/HmxDependencyProbe.hpp"
+grep -Fq 'HVX_Vector poly = hvx_vec_splat_f32(1.061405429f);' "$GGML_DIR/src/ggml-hexagon/htp/hvx-erf.h"
 grep -q 'Hexagon libm erff() per element' "$GGML_DIR/src/ggml-hexagon/htp/hvx-erf.h"
 grep -q 'ordinary HTP codebook mirrors verified' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
 grep -q 'quantized GGUF weights repacked for HTP' "$(pwd)/overlay/breeze/src/gguf_loader.cpp"
@@ -237,7 +250,7 @@ rm -rf "$BUILD_DIR"
 
 configure_breeze() {
     local build_target="$1"
-cmake -S "$(pwd)" -B "$build_target" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=OFF     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10
+cmake -S "$(pwd)" -B "$build_target" -G Ninja     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake"     -DANDROID_ABI=arm64-v8a     -DANDROID_PLATFORM=android-28     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16+dotprod+i8mm -D_GNU_SOURCE"     -DBREEZE_SOURCE_DIR="$BREEZE_DIR"     -DGGML_SOURCE_DIR="$GGML_DIR"     -DBUILD_SHARED_LIBS=OFF     -DGGML_STATIC=ON     -DGGML_HEXAGON=ON     -DGGML_HEXAGON_USE_MEMPOOL=OFF     -DGGML_OPENMP=OFF     -DGGML_CPU=OFF     -DGGML_VULKAN=OFF     -DGGML_CUDA=OFF     -DGGML_LLAMAFILE=OFF     -DGGML_BACKEND_DL=OFF     -DPREBUILT_LIB_DIR=android_aarch64     -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"     -DQNN_SDK_ROOT="$QNN_SDK_ROOT"     -DCMAKE_POLICY_VERSION_MINIMUM=3.10 -DBREEZE_EXPERIMENTAL_HVX_GELU="${BREEZE_EXPERIMENTAL_HVX_GELU:-OFF}"
 }
 configure_breeze "$BUILD_DIR"
 
