@@ -35,14 +35,13 @@ object BreezeHmxDiagnostic {
         if (!runner.isFile) return Result(false, "The Breeze native self-test is missing.")
 
         val runtime = File(app.filesDir, "runtime_breeze_htp")
-        runtime.mkdirs()
+        // The button is only available after Breeze reports Ready. Reuse its
+        // installed, version-checked DSP runtime instead of duplicating the
+        // install/extraction logic in another subsystem.
         val skel = File(runtime, "libggml-htp-v81.so")
         if (!skel.isFile || skel.length() < 100_000L) {
-            app.assets.open("breezelibs/libggml-htp-v81.so").use { source ->
-                skel.outputStream().use { destination -> source.copyTo(destination) }
-            }
+            return Result(false, "Load Breeze first; its Hexagon runtime is not installed.")
         }
-        skel.setReadable(true, true)
 
         val baseline = execute(app, runner, runtime, Engine.HVX)
         if (!baseline.passed) {
