@@ -188,6 +188,7 @@ std::vector<int> DepthRunner::run(BreezeModel & m, const std::vector<std::vector
         if (profile) execute_ms += elapsed(te);
         const auto tr = Clock::now();
         std::vector<float> out = tensor_to_f32(step.logits);
+        if (logits_observer) logits_observer->on_logits(j, out);
         if (profile) read_ms += elapsed(tr);
 
         const auto tp = Clock::now();

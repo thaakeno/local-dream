@@ -1,5 +1,6 @@
 #include "breeze/common.h"
 #include "HmxDependencyProbe.hpp"
+#include "DepthParityProbe.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -551,8 +552,16 @@ static void test_sin(Backend & be) {
     require_close("sin-f32", tensor_to_f32(out), expected, 3e-3f);
 }
 
-int main() {
+int main(int argc, char ** argv) {
     try {
+        if (argc == 4 && std::string(argv[1]) == "--depth-parity") {
+            // Real 15-step model execution with checkpoint weights and CFG=3.2.
+            // Only reached from the isolated diagnostics process; production
+            // inference never enters this branch.
+            DepthParityProbe probe;
+            probe.run(argv[2], argv[3]);
+            return 0;
+        }
         Backend be;
         be.init(true);
         std::fprintf(stderr, "[BREEZE_SELFTEST] backend=%s\n", be.name());

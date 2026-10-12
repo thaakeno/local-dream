@@ -3415,13 +3415,12 @@ struct ggml_hexagon_opbatch {
             return false;
         }
 
-        // SM8850 / v81: a reproducible one-row F32 MUL_MAT+ADD chain is
-        // numerically incorrect with the HMX fused epilogue (worst 0.0373
-        // versus 0.012 tolerance). Unfused HMX MUL_MAT followed by the
-        // regular DSP ADD passes this exact graph. Keep HMX matmul enabled,
-        // but reject only its unverified fused bias epilogue. Do not disable
-        // the other fusion families or rewrite the scheduler.
-        if (kparams.n_hmx > 0 && opt_arch >= 81) {
+        // SM8850/v81 HMX session: numerical parity fails for one-row
+        // MUL_MAT + bias ADD even when the *fused* kernel planner selects
+        // HVX (kparams.n_hmx == 0). Guard the actual session mode, not
+        // the proposed kernel's execution mode. This preserves separate
+        // HMX matmul and ADD, and does not disable unrelated fusions.
+        if (sess->n_hmx > 0 && opt_arch >= 81) {
             HEX_VERBOSE("ggml-hex: %s skip v81 HMX MUL_MAT+ADD fusion: parity guard\n",
                         sess->c_name());
             return false;

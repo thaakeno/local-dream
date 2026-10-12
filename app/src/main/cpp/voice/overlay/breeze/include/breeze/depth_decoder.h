@@ -17,7 +17,15 @@ struct DepthStep {
 };
 
 // autoregressive residual decoder: predicts codebooks 1..num_codebooks-1 for one frame
+// Receives complete pre-guidance logits for each of the 15 residual codebooks.
+// Optional diagnostics only; production inference does not install an observer.
+struct DepthLogitsObserver {
+    virtual ~DepthLogitsObserver() = default;
+    virtual void on_logits(int codebook, const std::vector<float> & logits) = 0;
+};
+
 struct DepthRunner {
+    DepthLogitsObserver * logits_observer = nullptr;
     KVCache kv; // CFG branches share one cache, interleaved per position
     int n_branch = 1;
     std::vector<float> freq_factors;
