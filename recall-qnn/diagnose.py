@@ -89,6 +89,8 @@ def diagnose(model_factory, values, root, client, device):
     observations["boundary_contract"] = []
     for tensor in boundary:
         info = information[tensor]
+        if info.type.tensor_type.elem_type != TensorProto.FLOAT:
+            continue  # Shape/index tensors are not floating activation probes.
         dims = [d.dim_value for d in info.type.tensor_type.shape.dim]
         if not dims or any(d <= 0 for d in dims) or np.prod(dims) > 1000000:
             continue
@@ -100,6 +102,7 @@ def diagnose(model_factory, values, root, client, device):
                                                   "compiled_ordinal": index, "shape": dims})
     onnx.save_model(graph, str(path), save_as_external_data=True, all_tensors_to_one_file=True,
                     location="decoder_probe.data", size_threshold=1024)
+    onnx.checker.check_model(str(path), full_check=True)
     del graph
     session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
     feed = {i.name: values[i.name].numpy() for i in session.get_inputs()}
