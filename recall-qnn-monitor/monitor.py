@@ -44,15 +44,19 @@ print("Matching recent conversion jobs:", found)
 
 # Read reports on the cloud runner. Never transfer an artifact ZIP containing
 # QNN model weights to the user's workstation just to inspect its JSON report.
-run = os.environ.get("QUALIFICATION_RUN")
-if run:
+for run, artifact in [
+    (os.environ.get("QUALIFICATION_RUN"), "recall-d3-nano-qnn-qualification"),
+    (os.environ.get("FUSED_QUALIFICATION_RUN"), "recall-d3-nano-qnn-fused-qualification"),
+]:
+    if not run:
+        continue
     metadata = json.loads(subprocess.check_output([
         "gh", "run", "view", run, "--repo", "thaakeno/local-dream", "--json", "status,conclusion"
     ], text=True))
-    print("Qualification workflow: " + json.dumps(metadata), flush=True)
+    print("Qualification workflow: " + json.dumps({"run": run, **metadata}), flush=True)
     if metadata["status"] == "completed":
-        target = Path("/tmp/recall-qnn-qualification-report")
+        target = Path("/tmp/recall-qnn-qualification-report") / run
         subprocess.run(["gh", "run", "download", run, "--repo", "thaakeno/local-dream",
-                        "--name", "recall-d3-nano-qnn-qualification", "--dir", str(target)], check=True)
+                        "--name", artifact, "--dir", str(target)], check=True)
         report = json.loads((target / "report.json").read_text())
         print("Qualification report: " + json.dumps(report), flush=True)

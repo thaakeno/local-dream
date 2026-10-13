@@ -23,4 +23,5 @@ jobs:
           QAI_HUB_API_TOKEN: ${{ secrets.D3_QAI_HUB_API_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           QUALIFICATION_RUN: '38355815962'
+          FUSED_QUALIFICATION_RUN: '38358771714'
         run: python recall-qnn-monitor/monitor.py
