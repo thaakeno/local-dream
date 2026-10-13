@@ -51,6 +51,7 @@ def main():
         "graph_source": GRAPH_ID, "graph_revision": GRAPH_REV,
         "device": os.environ["QAI_DEVICE"],
         "sequence_bucket": LENGTH, "vision_patch_bucket": PATCHES,
+        "delta_chunk_size": CHUNK,
         "vision_tokens": PATCHES // 4, "precision": "QNN HTP FLOAT16 request",
         "validation_scope": "PyTorch/ONNX graph parity and hosted QNN component inference; end-to-end official-model/ranking parity still required",
         "packages": {p: importlib.metadata.version(p) for p in ["torch", "onnx", "onnxruntime", "qai-hub", "transformers"]},
@@ -197,10 +198,25 @@ def main():
             onnx.save_model(graph, str(target), save_as_external_data=True,
                             all_tensors_to_one_file=True, location=name + ".data", size_threshold=1024)
             del graph
+            onnx.checker.check_model(str(target), full_check=True)
+            # A prior job is reusable only for these exact graph bytes and inputs.
+            # Revision/shape checks alone would incorrectly reuse a failed graph
+            # after changing its numerical lowering or seeded test fixture.
+            graph_hash = hashlib.sha256()
+            for part in sorted(directory.iterdir()):
+                graph_hash.update(part.name.encode())
+                with part.open("rb") as stream:
+                    graph_hash.update(hashlib.file_digest(stream, "sha256").digest())
+            component["export_sha256"] = graph_hash.hexdigest()
             session = ort.InferenceSession(str(target), providers=["CPUExecutionProvider"],
                                            sess_options=ort.SessionOptions())
             # The exporter removes unused RoPE/mask inputs on DeltaNet layers.
             feed = {i.name: values[i.name].numpy() for i in session.get_inputs()}
+            feed_hash = hashlib.sha256()
+            for key, value in sorted(feed.items()):
+                feed_hash.update(json.dumps([key, str(value.dtype), list(value.shape)]).encode())
+                feed_hash.update(value.tobytes(order="C"))
+            component["fixture_sha256"] = feed_hash.hexdigest()
             actual = session.run(None, feed)[0]
             err = np.abs(actual.astype(np.float64) - expected.astype(np.float64))
             component["onnx_max_abs_error"] = float(err.max())
@@ -213,6 +229,8 @@ def main():
             save()
             specs = {k: (tuple(v.shape), "int32" if v.dtype == torch.int32 else "float32") for k, v in values.items() if k in feed}
             previous = reuse.get(name, {})
+            if any(previous.get(key) != component[key] for key in ("export_sha256", "fixture_sha256")):
+                previous = {}
             compile_job = (client.get_job(previous["compile_id"]) if previous.get("compile_id") else
                            client.submit_compile_job(
                                model=str(directory), device=hub.Device(os.environ["QAI_DEVICE"]),

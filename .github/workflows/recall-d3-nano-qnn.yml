@@ -21,6 +21,7 @@ jobs:
       OMP_NUM_THREADS: '2'
       MKL_NUM_THREADS: '2'
       D3_DIAGNOSE_LAYER00: 'true'
+      D3_DIAGNOSE_EXP_ONLY: 'true'
     steps:
       - uses: actions/checkout@v6
         with:

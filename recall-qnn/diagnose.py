@@ -1,5 +1,6 @@
 """Observe the first invalid tensor in the NPU graph. Never patch model values."""
 import json
+import os
 
 
 def diagnose(model_factory, values, root, client, device):
@@ -114,6 +115,13 @@ def diagnose(model_factory, values, root, client, device):
         for c in observations["boundary_contract"]}), flush=True)
     if not all(np.isfinite(x).all() for x in ref):
         raise RuntimeError("Instrumented ONNX reference itself is invalid")
+    if os.environ.get("D3_DIAGNOSE_EXP_ONLY") == "true":
+        from exp_repro import run_exp_repro
+        contract = next(c for c in observations["boundary_contract"] if c["source"] == focus.input[0])
+        fixture = ref[outputs.index(contract["output"])].copy()
+        del session, model, ref
+        run_exp_repro(fixture, root, client, device)
+        return
     del session, model, ref
     compile_job = client.submit_compile_job(
         str(directory), device=device, name="Recall_D3Nano_decoder00_probe",
