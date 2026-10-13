@@ -20,6 +20,22 @@ import kotlin.math.sqrt
 object BreezeDepthDiagnostic {
     data class Result(val passed: Boolean, val message: String)
 
+    private const val PREFS = "breeze_depth_qkv_nx"
+    fun isQualified(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean("qualified", false)
+
+    fun isEnabled(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return prefs.getBoolean("qualified", false) && prefs.getBoolean("enabled", false)
+    }
+
+    fun setEnabled(context: Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (enabled && !prefs.getBoolean("qualified", false)) return
+        prefs.edit().putBoolean("enabled", enabled).apply()
+    }
+
     private enum class Mode(
         val label: String, val nhmx: String, val fusion: String, val groupedQkv: Boolean,
     ) {
@@ -84,13 +100,25 @@ object BreezeDepthDiagnostic {
                 "HMX matmul coverage (if emitted): ${hmx.coverage ?: "not reported"}\n"
         )
         val passes = groupedPass && unfusedPass && safePass
+        val qualifies = passes && grouped.nxFusions >= 12 && groupedRatio >= 1.08
+        // Never activate an optimization solely because it compiled. The
+        // user must explicitly turn it on after the real-model on-device
+        // parity + repeated-timing gate has been passed.
+        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("qualified", qualifies).apply()
+        if (!qualifies) prefs.edit().putBoolean("enabled", false).apply()
+        file.appendText(
+            "QKV production eligibility: ${if (qualifies) "QUALIFIED" else "NOT_QUALIFIED"} " +
+                "(requires parity, >=12 Nx fusion events, and >=1.08x median speedup).\n"
+        )
         val message = if (!passes) {
             "Full Depth logits differ beyond diagnostic tolerance. " +
                 "No production changes. Share the Depth log."
         } else {
             "All 15 Depth steps passed the numerical checks at CFG 3.2. " +
                 "Experimental grouped-QKV HVX: ${format(groupedRatio)}x " +
-                "(${grouped.nxFusions} logged MUL_MAT_NX fusions). " +
+                "(${grouped.nxFusions} logged MUL_MAT_NX fusions; " +
+                "optional fast path ${if (qualifies) "qualified" else "not qualified"}). " +
                 "HMX ${format(speedRatio)}x, safe fusion ${format(safeRatio)}x " +
                 "(medians of five warmed frames, not sustained FPS). " +
                 if ((hmx.coverage ?: 0) > 0) {
@@ -99,10 +127,9 @@ object BreezeDepthDiagnostic {
                     "Actual HMX matmul usage not yet verified."
                 }
         }
-        // Test passes are not proof of a fast path: return an experimental
-        // success only when grouped projection parity AND Nx kernel selection
-        // were observed, and never enable this in production automatically.
-        return Result(passes && grouped.nxFusions > 0, message)
+        // Qualification alone never changes production. The user must enable
+        // the optional grouped path and can revert to reference HVX instantly.
+        return Result(qualifies, message)
     }
 
     private fun execute(
