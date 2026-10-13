@@ -52,6 +52,7 @@ def main():
         "device": os.environ["QAI_DEVICE"],
         "sequence_bucket": LENGTH, "vision_patch_bucket": PATCHES,
         "delta_chunk_size": CHUNK,
+        "stable_decay_lowering_requested": os.environ.get("D3_STABLE_DECAY") == "true",
         "vision_tokens": PATCHES // 4, "precision": "QNN HTP FLOAT16 request",
         "validation_scope": "PyTorch/ONNX graph parity and hosted QNN component inference; end-to-end official-model/ranking parity still required",
         "packages": {p: importlib.metadata.version(p) for p in ["torch", "onnx", "onnxruntime", "qai-hub", "transformers"]},
@@ -187,6 +188,11 @@ def main():
                 external_data=True,
             )
             graph = onnx.load(str(target))
+            if os.environ.get("D3_STABLE_DECAY") == "true":
+                from lowering import lower_nonpositive_exp
+                component["numerical_lowering"] = lower_nonpositive_exp(graph)
+                if name.startswith("decoder_") and model.layer.is_linear and not component["numerical_lowering"]:
+                    raise RuntimeError(name + ": failed to prove nonpositive DeltaNet decay inputs")
             component["onnx_node_count"] = len(graph.graph.node)
             component["onnx_ops"] = dict(Counter(node.op_type for node in graph.graph.node))
             component["input_shapes"] = {k: list(v.shape) for k, v in values.items()}
@@ -327,6 +333,10 @@ def main():
         # all remaining layers. This is a full-model feasibility gate, not a
         # vision-only product or a substitute model.
         qualify("decoder_00", Layer(0), layer_inputs, "hidden_out")
+        if os.environ.get("D3_FIRST_LAYER_ONLY") == "true":
+            report["status"] = "first_layer_qualified_pending_full_model"
+            save()
+            return
         qualify("decoder_03", Layer(3), layer_inputs, "hidden_out")
         vision, vcfg, _ = load_vision(checkpoint, PATCHES)
         vision_inputs = {

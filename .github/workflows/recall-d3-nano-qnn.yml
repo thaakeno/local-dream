@@ -20,8 +20,10 @@ jobs:
       QAI_DEVICE: Samsung Galaxy S26 (Family)
       OMP_NUM_THREADS: '2'
       MKL_NUM_THREADS: '2'
-      D3_DIAGNOSE_LAYER00: 'true'
-      D3_DIAGNOSE_EXP_ONLY: 'true'
+      D3_DIAGNOSE_LAYER00: 'false'
+      D3_DIAGNOSE_EXP_ONLY: 'false'
+      D3_STABLE_DECAY: 'true'
+      D3_FIRST_LAYER_ONLY: 'true'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -38,6 +40,7 @@ jobs:
           QAI_HUB_API_TOKEN: ${{ secrets.D3_QAI_HUB_API_TOKEN }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          python recall-qnn/test_lowering.py
           gh run download 38317802422 --repo thaakeno/local-dream --name recall-d3-nano-qnn-qualification --dir /tmp/recall-d3-resume
           D3_REUSE_REPORT=/tmp/recall-d3-resume/report.json python recall-qnn/convert.py
       - name: Preserve qualification report and converted contexts
