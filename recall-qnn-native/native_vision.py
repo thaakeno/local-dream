@@ -36,6 +36,12 @@ def qualify_native_vision(model_factory, root, client, device):
         if zipfile.is_zipfile(path):
             with zipfile.ZipFile(path) as z:
                 files = [n for n in z.namelist() if n.endswith(suffix)]
+                # DLC is itself a ZIP container, unlike an AI Hub download
+                # wrapper. If it contains no nested DLC, feed it unchanged to
+                # the SDK parser, which validates the actual DLC schema.
+                if not files and suffix == ".dlc":
+                    event("Direct DLC container entries: " + json.dumps(z.namelist()[:20]))
+                    return path
                 if len(files) != 1:
                     raise RuntimeError("Unexpected model archive contract")
                 output = destination.with_name(destination.stem + "_unwrapped" + suffix)
