@@ -885,6 +885,8 @@ fun SpeechRunScreen(
     var hmxDiagnosticResult by remember { mutableStateOf<String?>(null) }
     var depthDiagnosticRunning by remember { mutableStateOf(false) }
     var depthDiagnosticResult by remember { mutableStateOf<String?>(null) }
+    var qkvQualified by remember { mutableStateOf(BreezeDepthDiagnostic.isQualified(context)) }
+    var qkvEnabled by remember { mutableStateOf(BreezeDepthDiagnostic.isEnabled(context)) }
     // This screen owns the warm Breeze process. Leaving the generation panel
     // must release the GGUF, QNN contexts and HTP power votes immediately.
     DisposableEffect(modelId) {
@@ -1806,6 +1808,8 @@ fun SpeechRunScreen(
                                                 BreezeDepthDiagnostic.run(context.applicationContext, modelId)
                                             }
                                             depthDiagnosticResult = result.message
+                                            qkvQualified = BreezeDepthDiagnostic.isQualified(context)
+                                            qkvEnabled = BreezeDepthDiagnostic.isEnabled(context)
                                         } catch (error: Exception) {
                                             depthDiagnosticResult = "Depth test unavailable: " +
                                                 (error.message ?: error.javaClass.simpleName)
@@ -1837,6 +1841,54 @@ fun SpeechRunScreen(
                                         }
                                     }
                                 }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "QKV grouped Depth fast path (experimental)",
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        if (qkvQualified) {
+                                            "On-device parity, Nx fusion and >=8% median " +
+                                                "Depth speedup verified. Opt in to test actual speech."
+                                        } else {
+                                            "Locked until the Depth A/B test verifies the " +
+                                                "same logits, actual Nx fusion, and a speed gain."
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Switch(
+                                    checked = qkvEnabled,
+                                    enabled = qkvQualified && !depthDiagnosticRunning &&
+                                        !hmxDiagnosticRunning && !fullQnnGeneratorEnabled,
+                                    onCheckedChange = { enabled ->
+                                        BreezeDepthDiagnostic.setEnabled(context, enabled)
+                                        qkvEnabled = BreezeDepthDiagnostic.isEnabled(context)
+                                        AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                        scope.launch {
+                                            context.startService(
+                                                Intent(context, SpeechGenerationService::class.java)
+                                                    .setAction(SpeechGenerationService.ACTION_STOP),
+                                            )
+                                            delay(180)
+                                            SpeechGenerationService.resetForModel(modelId)
+                                            if (model?.isDownloaded == true) {
+                                                context.startForegroundService(
+                                                    Intent(context, SpeechGenerationService::class.java)
+                                                        .setAction(SpeechGenerationService.ACTION_PRELOAD)
+                                                        .putExtra("modelId", modelId),
+                                                )
+                                            }
+                                        }
+                                    },
+                                )
                             }
                             hmxDiagnosticResult?.let { diagnostic ->
                                 Text(
