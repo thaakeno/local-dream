@@ -20,6 +20,7 @@ jobs:
       OMP_NUM_THREADS: '2'
       MKL_NUM_THREADS: '2'
       D3_VISION_DIAGNOSTIC: 'true'
+      D3_VISION_FIRST_BLOCK: 'true'
     steps:
       - uses: actions/checkout@v6
         with:

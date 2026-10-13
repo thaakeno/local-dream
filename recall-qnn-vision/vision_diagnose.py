@@ -1,6 +1,7 @@
 """Cloud-only layerwise observation of the measured vision accuracy failure."""
 import gc
 import json
+import os
 
 
 def diagnose_vision(model_factory, root, client, device):
@@ -59,17 +60,68 @@ def diagnose_vision(model_factory, root, client, device):
 
     output_names = ["final", "patch_position", "block_00", "block_03", "block_07", "block_11",
                     "block_15", "block_19", "block_23", "merger_norm", "merger_fc1"]
-    model = ObservedVision(model_factory()).eval()
+    class ObservedFirstBlock(nn.Module):
+        """Observe unchanged first-block arithmetic; score probes cover 16 queries."""
+        def __init__(self, vision):
+            super().__init__()
+            self.vision = vision
+
+        def forward(self, patches, pos_embeds, cos, sin, mask):
+            v = self.vision
+            b = v.blocks[0]
+            x = v.patch_embed(patches) + pos_embeds
+            h = b.norm1(x)
+            packed = b.qkv(h)
+            qkv = packed.reshape(x.shape[0], 3, b.cfg.heads, b.cfg.head_dim)
+            q, k, value = qkv[:, 0], qkv[:, 1], qkv[:, 2]
+            def rotate(t):
+                half = t.shape[-1] // 2
+                return torch.cat((-t[..., half:], t[..., :half]), dim=-1)
+            c, s = cos[:, None, :], sin[:, None, :]
+            q = q * c + rotate(q) * s
+            k = k * c + rotate(k) * s
+            qh = q.permute(1, 0, 2)[None]
+            kh = k.permute(1, 0, 2)[None]
+            vh = value.permute(1, 0, 2)[None]
+            scores = torch.matmul(qh, kh.transpose(-1, -2)) * b.scale
+            probability = torch.softmax(scores + mask, dim=-1)
+            attention = torch.matmul(probability, vh)[0].permute(1, 0, 2).reshape(x.shape[0], b.cfg.hidden)
+            projected = b.proj(attention)
+            residual = x + projected
+            normalized = b.norm2(residual)
+            pre_activation = b.fc1(normalized)
+            activation = F.gelu(pre_activation, approximate="tanh" if b.cfg.act == "gelu_pytorch_tanh" else "none")
+            delta = b.fc2(activation)
+            result = residual + delta
+            return (result, x, h, packed, q, k, scores[:, :, :16, :],
+                    probability[:, :, :16, :], attention, projected, residual,
+                    normalized, pre_activation, activation, delta)
+
+    first_block = os.environ.get("D3_VISION_FIRST_BLOCK") == "true"
+    observed = ObservedFirstBlock if first_block else ObservedVision
+    if first_block:
+        output_names = ["final", "patch_position", "norm1", "qkv", "rotated_q", "rotated_k",
+                        "score_query_sample", "probability_query_sample", "attention", "projection",
+                        "attention_residual", "norm2", "mlp_fc1", "mlp_activation", "mlp_fc2"]
+        report["scope"] += "; first block, attention-score probes sample first 16 queries"
+    model = observed(model_factory()).eval()
     with torch.inference_mode():
         ref = [x.numpy().copy() for x in model(*values.values())]
     if len(ref) != len(output_names) or any(not np.isfinite(x).all() for x in ref):
         raise RuntimeError("Vision reference output contract is invalid")
-    device_original = original.download_output_data()
-    if len(device_original) != 1:
-        raise RuntimeError("Original vision output contract changed")
-    original_value = next(iter(device_original.values()))[0]
-    report["original_qnn"] = compare(ref[0], original_value)
-    del device_original, original_value
+    if first_block:
+        with torch.inference_mode():
+            native = model.vision.blocks[0](torch.from_numpy(ref[1]), values["cos"], values["sin"], values["mask"]).numpy()
+        np.testing.assert_allclose(ref[0], native, rtol=0.00001, atol=0.00001)
+        report["manual_vs_original_block"] = compare(native, ref[0])
+        del native
+    else:
+        device_original = original.download_output_data()
+        if len(device_original) != 1:
+            raise RuntimeError("Original vision output contract changed")
+        original_value = next(iter(device_original.values()))[0]
+        report["original_qnn"] = compare(ref[0], original_value)
+        del device_original, original_value
 
     # Compare unchanged original weights in half precision before instrumenting
     # the device. Reload FP32 parameters afterward; never half().float() them.
@@ -81,7 +133,7 @@ def diagnose_vision(model_factory, root, client, device):
     print("Vision CPU half stage comparisons: " + json.dumps(report["cpu_half_stages"]), flush=True)
     del model, half
     gc.collect()
-    model = ObservedVision(model_factory()).eval()
+    model = observed(model_factory()).eval()
     directory = root / "vision_observed.onnx"
     directory.mkdir(exist_ok=True)
     path = directory / "vision_observed.onnx"

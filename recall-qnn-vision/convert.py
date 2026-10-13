@@ -356,6 +356,12 @@ def main():
             import shutil
             shutil.rmtree(directory)
 
+        if os.environ.get("D3_VISION_REAL_IMAGE") == "true":
+            from vision_real import run_real_vision
+            run_real_vision(checkpoint, weights, root, client, hub.Device(os.environ["QAI_DEVICE"]))
+            report["status"] = "vision_real_image_comparison_complete_not_deployable"
+            save()
+            return
         if os.environ.get("D3_VISION_DIAGNOSTIC") == "true":
             from vision_diagnose import diagnose_vision
             diagnose_vision(lambda: load_vision(checkpoint, PATCHES)[0], root, client,
