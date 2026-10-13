@@ -55,6 +55,7 @@ report_runs = [
 for workflow, artifact in [
     ("recall-d3-nano-qnn-vision.yml", "recall-d3-nano-qnn-vision-diagnosis"),
     ("recall-d3-nano-qnn-real-vision.yml", "recall-d3-nano-qnn-real-vision"),
+    ("recall-d3-nano-qnn-native.yml", "recall-d3-nano-qnn-native-vision"),
 ]:
     recent = json.loads(subprocess.check_output([
         "gh", "run", "list", "--repo", "thaakeno/local-dream", "--workflow", workflow,
