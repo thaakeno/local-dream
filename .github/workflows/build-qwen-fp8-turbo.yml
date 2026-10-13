@@ -489,7 +489,7 @@ jobs:
           retention-days: 14
 
       - name: Canonical Breeze signer handoff
-        if: github.ref_name == 'breeze-qnn-v5-fastpath'
+        if: github.ref_name == 'breeze-qnn-v5-fastpath' || github.ref_name == 'breeze-qnn-clean-runtime-prototype'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
