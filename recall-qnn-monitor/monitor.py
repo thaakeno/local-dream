@@ -1,6 +1,7 @@
 """Cloud metadata only: no model downloads, private media or API key output."""
 import json
 import os
+import subprocess
 from pathlib import Path
 
 if os.environ.get("GITHUB_ACTIONS") != "true":
@@ -40,3 +41,18 @@ for summary in client.get_job_summaries(limit=20):
             if p.suffix in (".log", ".txt"):
                 print(p.name + ":\n" + p.read_text(errors="replace")[-12000:])
 print("Matching recent conversion jobs:", found)
+
+# Read reports on the cloud runner. Never transfer an artifact ZIP containing
+# QNN model weights to the user's workstation just to inspect its JSON report.
+run = os.environ.get("QUALIFICATION_RUN")
+if run:
+    metadata = json.loads(subprocess.check_output([
+        "gh", "run", "view", run, "--repo", "thaakeno/local-dream", "--json", "status,conclusion"
+    ], text=True))
+    print("Qualification workflow: " + json.dumps(metadata), flush=True)
+    if metadata["status"] == "completed":
+        target = Path("/tmp/recall-qnn-qualification-report")
+        subprocess.run(["gh", "run", "download", run, "--repo", "thaakeno/local-dream",
+                        "--name", "recall-d3-nano-qnn-qualification", "--dir", str(target)], check=True)
+        report = json.loads((target / "report.json").read_text())
+        print("Qualification report: " + json.dumps(report), flush=True)

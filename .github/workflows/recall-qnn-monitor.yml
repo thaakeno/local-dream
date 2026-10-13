@@ -5,6 +5,7 @@ on:
     paths: [recall-qnn-monitor/**, .github/workflows/recall-qnn-monitor.yml]
 permissions:
   contents: read
+  actions: read
 jobs:
   inspect:
     runs-on: ubuntu-24.04
@@ -20,4 +21,6 @@ jobs:
       - name: Read bounded job metadata and failure logs
         env:
           QAI_HUB_API_TOKEN: ${{ secrets.D3_QAI_HUB_API_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          QUALIFICATION_RUN: '38354453227'
         run: python recall-qnn-monitor/monitor.py
