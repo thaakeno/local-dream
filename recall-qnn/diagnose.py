@@ -72,6 +72,32 @@ def diagnose(model_factory, values, root, client, device):
         graph.graph.output.append(helper.make_tensor_value_info(name, TensorProto.FLOAT, [1]))
         observations["graph_probes"].append({"probe": name, "node": node.name, "op": node.op_type, "tensor": node.output[0]})
     graph.graph.initializer.append(helper.make_tensor("probe_shape", TensorProto.INT64, [1], [1]))
+    # Observe full tensors around the first failing Exp, including its producers.
+    # Scalar magnitude probes alone cannot distinguish a bad Exp from a bad input.
+    graph = onnx.shape_inference.infer_shapes(graph)
+    information = {v.name: v for v in list(graph.graph.value_info) + list(graph.graph.input)}
+    producers = {out: node for node in original_nodes for out in node.output}
+    focus = next(n for n in original_nodes if n.name == "/layer/linear_attn/Exp_1")
+    boundary = []
+    def ancestors(tensor, depth):
+        if tensor in information and tensor not in boundary:
+            boundary.append(tensor)
+        if depth and tensor in producers:
+            for source in producers[tensor].input:
+                ancestors(source, depth - 1)
+    ancestors(focus.output[0], 4)
+    observations["boundary_contract"] = []
+    for tensor in boundary:
+        info = information[tensor]
+        dims = [d.dim_value for d in info.type.tensor_type.shape.dim]
+        if not dims or any(d <= 0 for d in dims) or np.prod(dims) > 1000000:
+            continue
+        index = len(graph.graph.output)
+        name = f"boundary_{index}"
+        graph.graph.node.append(helper.make_node("Identity", [tensor], [name], name=name))
+        graph.graph.output.append(helper.make_tensor_value_info(name, TensorProto.FLOAT, dims))
+        observations["boundary_contract"].append({"source": tensor, "output": name,
+                                                  "compiled_ordinal": index, "shape": dims})
     onnx.save_model(graph, str(path), save_as_external_data=True, all_tensors_to_one_file=True,
                     location="decoder_probe.data", size_threshold=1024)
     del graph
@@ -80,6 +106,9 @@ def diagnose(model_factory, values, root, client, device):
     ref = session.run(None, feed)
     outputs = [x.name for x in session.get_outputs()]
     observations["reference_outputs"] = {n: stats(v) for n, v in zip(outputs, ref)}
+    print("Boundary reference: " + json.dumps({
+        c["output"]: {**c, **observations["reference_outputs"][c["output"]]}
+        for c in observations["boundary_contract"]}), flush=True)
     if not all(np.isfinite(x).all() for x in ref):
         raise RuntimeError("Instrumented ONNX reference itself is invalid")
     del session, model, ref
@@ -111,3 +140,4 @@ def diagnose(model_factory, values, root, client, device):
     observations["profile"] = inference.download_profile()
     persist()
     print("NPU diagnostic outputs: " + json.dumps(observations["npu_outputs"]), flush=True)
+    print("Boundary contract: " + json.dumps(observations["boundary_contract"]), flush=True)
