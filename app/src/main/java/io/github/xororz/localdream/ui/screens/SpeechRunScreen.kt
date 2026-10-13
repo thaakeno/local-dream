@@ -885,8 +885,8 @@ fun SpeechRunScreen(
     var hmxDiagnosticResult by remember { mutableStateOf<String?>(null) }
     var depthDiagnosticRunning by remember { mutableStateOf(false) }
     var depthDiagnosticResult by remember { mutableStateOf<String?>(null) }
-    var qkvQualified by remember { mutableStateOf(BreezeDepthDiagnostic.isQualified(context)) }
-    var qkvEnabled by remember { mutableStateOf(BreezeDepthDiagnostic.isEnabled(context)) }
+    var qkvQualified by remember { mutableStateOf(BreezeDepthDiagnostic.isQualified(context, modelId)) }
+    var qkvEnabled by remember { mutableStateOf(BreezeDepthDiagnostic.isEnabled(context, modelId)) }
     // This screen owns the warm Breeze process. Leaving the generation panel
     // must release the GGUF, QNN contexts and HTP power votes immediately.
     DisposableEffect(modelId) {
@@ -1808,8 +1808,8 @@ fun SpeechRunScreen(
                                                 BreezeDepthDiagnostic.run(context.applicationContext, modelId)
                                             }
                                             depthDiagnosticResult = result.message
-                                            qkvQualified = BreezeDepthDiagnostic.isQualified(context)
-                                            qkvEnabled = BreezeDepthDiagnostic.isEnabled(context)
+                                            qkvQualified = BreezeDepthDiagnostic.isQualified(context, modelId)
+                                            qkvEnabled = BreezeDepthDiagnostic.isEnabled(context, modelId)
                                         } catch (error: Exception) {
                                             depthDiagnosticResult = "Depth test unavailable: " +
                                                 (error.message ?: error.javaClass.simpleName)
@@ -1869,8 +1869,8 @@ fun SpeechRunScreen(
                                     enabled = qkvQualified && !depthDiagnosticRunning &&
                                         !hmxDiagnosticRunning && !fullQnnGeneratorEnabled,
                                     onCheckedChange = { enabled ->
-                                        BreezeDepthDiagnostic.setEnabled(context, enabled)
-                                        qkvEnabled = BreezeDepthDiagnostic.isEnabled(context)
+                                        BreezeDepthDiagnostic.setEnabled(context, modelId, enabled)
+                                        qkvEnabled = BreezeDepthDiagnostic.isEnabled(context, modelId)
                                         AppHaptics.perform(context, AppHaptics.Kind.Interaction)
                                         scope.launch {
                                             context.startService(
