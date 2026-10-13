@@ -82,9 +82,23 @@ static ggml_tensor * dd_layer(ggml_context * ctx, BreezeModel & m, Graph & g, KV
 
     ggml_tensor * res = x;
     ggml_tensor * h = rms_norm(ctx, x, m.w(p + ".attn_norm.weight"), c.rms_eps);
-    ggml_tensor * q = ggml_reshape_3d(ctx, linear(ctx, m.w(p + ".attn_q.weight"), h), c.head_dim, c.n_head, n);
-    ggml_tensor * k = ggml_reshape_3d(ctx, linear(ctx, m.w(p + ".attn_k.weight"), h), c.head_dim, c.n_kv_head, n);
-    ggml_tensor * v = ggml_reshape_3d(ctx, linear(ctx, m.w(p + ".attn_v.weight"), h), c.head_dim, c.n_kv_head, n);
+    // Experimental exact QKV grouping for the existing Hexagon MUL_MAT_NX
+    // kernel. Extra graph roots force the three independent projections to
+    // appear consecutively in the topological execution order. They share
+    // the same normalized input and are still computed only once. This does
+    // not pad CFG branches, alter weights, or touch production inference.
+    ggml_tensor * q_proj = linear(ctx, m.w(p + ".attn_q.weight"), h);
+    ggml_tensor * k_proj = linear(ctx, m.w(p + ".attn_k.weight"), h);
+    ggml_tensor * v_proj = linear(ctx, m.w(p + ".attn_v.weight"), h);
+    const char * group_qkv = std::getenv("BREEZE_DEPTH_QKV_GROUP");
+    if (group_qkv && group_qkv[0] == '1') {
+        g.write(q_proj);
+        g.write(k_proj);
+        g.write(v_proj);
+    }
+    ggml_tensor * q = ggml_reshape_3d(ctx, q_proj, c.head_dim, c.n_head, n);
+    ggml_tensor * k = ggml_reshape_3d(ctx, k_proj, c.head_dim, c.n_kv_head, n);
+    ggml_tensor * v = ggml_reshape_3d(ctx, v_proj, c.head_dim, c.n_kv_head, n);
     q = ggml_rope_ext(ctx, q, pos, ff, c.head_dim, GGML_ROPE_TYPE_NEOX, 0, c.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
     k = ggml_rope_ext(ctx, k, pos, ff, c.head_dim, GGML_ROPE_TYPE_NEOX, 0, c.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
 
