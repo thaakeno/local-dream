@@ -48,10 +48,23 @@ print("Matching recent conversion jobs:", found)
 
 # Read reports on the cloud runner. Never transfer an artifact ZIP containing
 # QNN model weights to the user's workstation just to inspect its JSON report.
-for run, artifact in [
+report_runs = [
     (os.environ.get("QUALIFICATION_RUN"), "recall-d3-nano-qnn-qualification"),
     (os.environ.get("FUSED_QUALIFICATION_RUN"), "recall-d3-nano-qnn-fused-qualification"),
+]
+for workflow, artifact in [
+    ("recall-d3-nano-qnn-vision.yml", "recall-d3-nano-qnn-vision-diagnosis"),
+    ("recall-d3-nano-qnn-real-vision.yml", "recall-d3-nano-qnn-real-vision"),
 ]:
+    recent = json.loads(subprocess.check_output([
+        "gh", "run", "list", "--repo", "thaakeno/local-dream", "--workflow", workflow,
+        "--branch", "recall-d3-nano-qnn", "--limit", "3", "--json", "databaseId,status,conclusion"
+    ], text=True))
+    print("Diagnostic workflows: " + json.dumps({"workflow": workflow, "runs": recent}), flush=True)
+    completed = next((r for r in recent if r["status"] == "completed"), None)
+    if completed:
+        report_runs.append((str(completed["databaseId"]), artifact))
+for run, artifact in report_runs:
     if not run:
         continue
     metadata = json.loads(subprocess.check_output([
@@ -62,5 +75,6 @@ for run, artifact in [
         target = Path("/tmp/recall-qnn-qualification-report") / run
         subprocess.run(["gh", "run", "download", run, "--repo", "thaakeno/local-dream",
                         "--name", artifact, "--dir", str(target)], check=True)
-        report = json.loads((target / "report.json").read_text())
-        print("Qualification report: " + json.dumps(report), flush=True)
+        for path in sorted(target.rglob("*.json")):
+            report = json.loads(path.read_text())
+            print("Qualification report " + run + " " + path.name + ": " + json.dumps(compact(report)), flush=True)
