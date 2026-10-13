@@ -40,7 +40,8 @@ object BreezeDepthDiagnostic {
         val label: String, val nhmx: String, val fusion: String, val groupedQkv: Boolean,
     ) {
         HVX("HVX reference", "0", "0", false),
-        HVX_GROUPED("HVX grouped QKV / MUL_MAT_NX candidate", "0", "0", true),
+        HVX_GROUPED("HVX grouped QKV / MUL_MAT_NX timing", "0", "0", true),
+        HVX_GROUPED_TRACE("HVX grouped QKV / fusion evidence", "0", "0", true),
         HMX("HMX unfused", "1", "0", false),
         HMX_SAFE("HMX safe fusion", "1", "1", false),
     }
@@ -79,12 +80,18 @@ object BreezeDepthDiagnostic {
             ?: return Result(false, "HVX full Depth baseline failed; share the Depth log.")
         val grouped = execute(app, runtime, executable, model, Mode.HVX_GROUPED, file)
             ?: return Result(false, "Grouped QKV Depth test failed; leave production HVX unchanged and share log.")
+        // Verbose logging adds host-side overhead on every graph replay.
+        // Measure the grouped candidate with logging OFF, then launch a
+        // separate isolated verbose session solely to prove real Nx fusions.
+        val groupedTrace = execute(app, runtime, executable, model, Mode.HVX_GROUPED_TRACE, file)
+            ?: return Result(false, "Grouped QKV kernel trace failed; share the Depth log.")
         val hmx = execute(app, runtime, executable, model, Mode.HMX, file)
             ?: return Result(false, "Unfused HMX full Depth test failed; share the Depth log.")
         val safe = execute(app, runtime, executable, model, Mode.HMX_SAFE, file)
             ?: return Result(false, "Safe-fusion HMX full Depth test failed; share the Depth log.")
 
-        val groupedPass = compare(file, baseline, grouped)
+        val groupedPass = compare(file, baseline, grouped) &&
+            compare(file, baseline, groupedTrace)
         val unfusedPass = compare(file, baseline, hmx)
         val safePass = compare(file, baseline, safe)
         val groupedRatio = if (grouped.ms > 0) baseline.ms / grouped.ms else 0.0
@@ -96,11 +103,11 @@ object BreezeDepthDiagnostic {
                 "HMX=${format(hmx.ms)} ms; safe-fusion=${format(safe.ms)} ms\n" +
                 "Speedup: grouped-QKV=${format(groupedRatio)}x, " +
                 "unfused-HMX=${format(speedRatio)}x, safe-fusion=${format(safeRatio)}x\n" +
-                "Reported MUL_MAT_NX fusions (grouped): ${grouped.nxFusions}\n" +
+                "Reported MUL_MAT_NX fusions (grouped trace): ${groupedTrace.nxFusions}\n" +
                 "HMX matmul coverage (if emitted): ${hmx.coverage ?: "not reported"}\n"
         )
         val passes = groupedPass && unfusedPass && safePass
-        val qualifies = passes && grouped.nxFusions >= 12 && groupedRatio >= 1.08
+        val qualifies = passes && groupedTrace.nxFusions >= 12 && groupedRatio >= 1.08
         // Never activate an optimization solely because it compiled. The
         // user must explicitly turn it on after the real-model on-device
         // parity + repeated-timing gate has been passed.
@@ -117,7 +124,7 @@ object BreezeDepthDiagnostic {
         } else {
             "All 15 Depth steps passed the numerical checks at CFG 3.2. " +
                 "Experimental grouped-QKV HVX: ${format(groupedRatio)}x " +
-                "(${grouped.nxFusions} logged MUL_MAT_NX fusions; " +
+                "(${groupedTrace.nxFusions} logged MUL_MAT_NX fusions; " +
                 "optional fast path ${if (qualifies) "qualified" else "not qualified"}). " +
                 "HMX ${format(speedRatio)}x, safe fusion ${format(safeRatio)}x " +
                 "(medians of five warmed frames, not sustained FPS). " +
@@ -165,7 +172,7 @@ object BreezeDepthDiagnostic {
                     "GGML_HEXAGON_MM_SELECT" to (if (mode == Mode.HVX) "1" else "2"),
                     "GGML_HEXAGON_OPFUSION" to mode.fusion,
                     "GGML_HEXAGON_PROFILE" to "1",
-                    "GGML_HEXAGON_VERBOSE" to (if (mode.groupedQkv) "1" else "0"),
+                    "GGML_HEXAGON_VERBOSE" to (if (mode == Mode.HVX_GROUPED_TRACE) "1" else "0"),
                     "BREEZE_DEPTH_QKV_GROUP" to (if (mode.groupedQkv) "1" else "0"),
                     "BREEZE_DEPTH_PROFILE" to "1",
                 )
