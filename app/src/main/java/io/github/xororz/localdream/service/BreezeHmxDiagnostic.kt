@@ -37,6 +37,8 @@ object BreezeHmxDiagnostic {
         val errors: String?,
         val hmxUnits: Int?,
         val samples: Map<String, Double>,
+        val fusionGuardSeen: Boolean,
+        val hmxMatmulOps: Int?,
     ) {
         val passed: Boolean get() = complete && errors == null && samples.size == 16
     }
@@ -78,6 +80,14 @@ object BreezeHmxDiagnostic {
         if (!fusedHmx.passed) {
             return Result(false, "Safe-fusion HMX failed: ${fusedHmx.errors ?: "incomplete"}; production HVX is unchanged.")
         }
+        // This is the exact failing one-row MUL_MAT+ADD path. A successful
+        // numeric comparison is insufficient unless the guard demonstrably
+        // rejected the unsafe fused epilogue in the HMX session.
+        if (!fusedHmx.fusionGuardSeen) {
+            return Result(false, "Safe-fusion parity passed, but the v81 " +
+                "HMX bias-fusion guard was not observed. Keep HVX active " +
+                "and share the HMX test log.")
+        }
         if (hmx.hmxUnits == null || hmx.hmxUnits <= 0 ||
             fusedHmx.hmxUnits == null || fusedHmx.hmxUnits <= 0) {
             return Result(
@@ -101,14 +111,19 @@ object BreezeHmxDiagnostic {
             "Speed comparison unavailable. "
         }
 
+        val kernelEvidence = if ((hmx.hmxMatmulOps ?: 0) > 0) {
+            "HMX matmul executions reported: ${hmx.hmxMatmulOps}. "
+        } else {
+            "HMX matmul execution not confirmed by profiler. "
+        }
         return Result(
             true,
             "Numerical parity passed in HVX, HMX, and safe-fusion HMX modes (16 shapes each), " +
+                "unsafe v81 MUL_MAT+ADD fusion was blocked. " +
                 "HMX units reported: ${hmx.hmxUnits}. " +
-                comparison +
+                kernelEvidence + comparison +
                 "Synthetic microbenchmark only; production remains HVX until " +
-                "actual HMX operator utilization, full audio quality, and sustained " +
-                "throughput are validated.",
+                "full audio quality and sustained throughput are validated.",
         )
     }
 
@@ -146,6 +161,7 @@ object BreezeHmxDiagnostic {
                     "GGML_HEXAGON_GDN_SELECT" to "1",
                     "GGML_HEXAGON_OPFUSION" to (if (fused) "1" else "0"),
                     "GGML_HEXAGON_VERBOSE" to "1",
+                    "GGML_HEXAGON_PROFILE" to "1",
                     "BREEZE_HMX_DEPENDENCY_PROBE" to "1",
                 ),
             )
@@ -224,6 +240,12 @@ object BreezeHmxDiagnostic {
         val bench = Regex(
             """\[BREEZE_HMX_CHAIN_BENCH\] rows=(\d+) variant=(\d+) replay_ms=([0-9.]+)"""
         )
+        val fusionGuardSeen = transcript.any {
+            it.contains("skip v81 HMX MUL_MAT+ADD fusion: parity guard")
+        }
+        val hmxMatmulOps = Regex("""mul_mat coverage:.*?hmx=(\d+)""")
+            .find(transcript.joinToString("\n"))
+            ?.groupValues?.get(1)?.toIntOrNull()
         val samples = transcript.mapNotNull { line ->
             val match = bench.find(line) ?: return@mapNotNull null
             "${match.groupValues[1]}:${match.groupValues[2]}" to
@@ -237,6 +259,8 @@ object BreezeHmxDiagnostic {
             error,
             hwinfo,
             samples,
+            fusionGuardSeen,
+            hmxMatmulOps,
         )
     }
 }
