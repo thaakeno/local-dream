@@ -162,6 +162,19 @@ def main():
                 is_image = (input_ids == config["image_token_id"]).unsqueeze(-1)
                 return torch.where(is_image, selected, text)
 
+        class VisionPositions(nn.Module):
+            def __init__(self, table):
+                super().__init__()
+                self.register_buffer("table", table.float())
+
+            def forward(self, indices, interpolation_weights):
+                # The host supplies geometry-derived neighbors/weights only.
+                # Learned position lookup and interpolation run on QNN, rather
+                # than inheriting the CoreML export's host-side parameter work.
+                selected = torch.index_select(self.table, 0, indices.reshape(-1))
+                selected = selected.reshape(PATCHES, 4, self.table.shape[1])
+                return (selected * interpolation_weights.unsqueeze(-1)).sum(1)
+
         def qualify(name, model, values, output_name):
             """Fail closed on export, compilation or non-finite inference output.
 
@@ -235,8 +248,9 @@ def main():
             save()
             specs = {k: (tuple(v.shape), "int32" if v.dtype == torch.int32 else "float32") for k, v in values.items() if k in feed}
             previous = reuse.get(name, {})
-            if any(previous.get(key) != component[key] for key in ("export_sha256", "fixture_sha256")):
+            if previous.get("export_sha256") != component["export_sha256"]:
                 previous = {}
+            same_fixture = previous.get("fixture_sha256") == component["fixture_sha256"]
             compile_job = (client.get_job(previous["compile_id"]) if previous.get("compile_id") else
                            client.submit_compile_job(
                                model=str(directory), device=hub.Device(os.environ["QAI_DEVICE"]),
@@ -277,7 +291,7 @@ def main():
             component["context_bytes"] = context_path.stat().st_size
             with context_path.open("rb") as context_file:
                 component["context_sha256"] = hashlib.file_digest(context_file, "sha256").hexdigest()
-            inference = (client.get_job(previous["inference_id"]) if previous.get("inference_id") else
+            inference = (client.get_job(previous["inference_id"]) if same_fixture and previous.get("inference_id") else
                          client.submit_inference_job(
                              model=context, device=hub.Device(os.environ["QAI_DEVICE"]),
                              inputs={k: [v] for k, v in feed.items()}, profile=True,
@@ -351,7 +365,7 @@ def main():
             save()
             return
         qualify("decoder_03", Layer(3), layer_inputs, "hidden_out")
-        vision, vcfg, _ = load_vision(checkpoint, PATCHES)
+        vision, vcfg, position_table = load_vision(checkpoint, PATCHES)
         vision_inputs = {
             "patches": torch.randn(PATCHES, vcfg.patch_dim) * 0.25,
             "pos_embeds": torch.randn(PATCHES, vcfg.hidden) * 0.1,
@@ -361,6 +375,13 @@ def main():
         }
         qualify("vision_p1024", vision, vision_inputs, "tokens")
         del vision
+        position_weights = torch.rand(PATCHES, 4)
+        position_weights /= position_weights.sum(1, keepdim=True)
+        qualify("vision_positions", VisionPositions(position_table), {
+            "indices": torch.randint(position_table.shape[0], (PATCHES, 4), dtype=torch.int32),
+            "interpolation_weights": position_weights,
+        }, "position_embeddings")
+        del position_table
         last = torch.zeros(1, LENGTH)
         last[0, 383] = 1
         qualify("decision_readout", Readout(), {"hidden": hidden, "last_onehot": last}, "code_logits")
