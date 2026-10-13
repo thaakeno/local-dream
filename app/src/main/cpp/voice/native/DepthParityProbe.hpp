@@ -3,6 +3,7 @@
 #include "breeze/depth_decoder.h"
 #include "breeze/model.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -73,25 +74,40 @@ public:
             runner.run(model, hidden, 42 % model.cfg.audio_vocab_size,
                        cfg_scale, rng, nullptr, forced.data(),
                        static_cast<int>(forced.size()));
-            runner.begin_request();
-            trace_.clear();
-            runner.logits_observer = this;
-            const auto start = std::chrono::steady_clock::now();
-            const auto result = runner.run(
-                model, hidden, 42 % model.cfg.audio_vocab_size, cfg_scale,
-                rng, nullptr, forced.data(), static_cast<int>(forced.size())
-            );
-            const double elapsed_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - start
-            ).count();
-            if (result != forced || trace_.size() != forced.size()) {
-                throw std::runtime_error("Depth diagnostic incomplete 15-step output");
+            // A single warmed run has ~5-10% scheduler/clock noise on
+            // mobile. Repeat the exact same serial 15-step workload five
+            // times and report its median; keep only the final logits trace.
+            constexpr int repeats = 5;
+            std::vector<double> durations;
+            durations.reserve(repeats);
+            std::vector<int> result;
+            for (int rep = 0; rep < repeats; ++rep) {
+                runner.begin_request();
+                trace_.clear();
+                runner.logits_observer = (rep == repeats - 1) ? this : nullptr;
+                const auto start = std::chrono::steady_clock::now();
+                result = runner.run(
+                    model, hidden, 42 % model.cfg.audio_vocab_size, cfg_scale,
+                    rng, nullptr, forced.data(), static_cast<int>(forced.size())
+                );
+                const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - start
+                ).count();
+                durations.push_back(elapsed_ms);
+                if (result != forced) {
+                    throw std::runtime_error("Depth diagnostic codebook output mismatch");
+                }
+            }
+            if (trace_.size() != forced.size()) {
+                throw std::runtime_error("Depth diagnostic incomplete 15-step trace");
             }
             save(output_file);
+            std::sort(durations.begin(), durations.end());
             std::fprintf(stderr,
                 "[BREEZE_DEPTH_MODEL_TEST] steps=%zu branches=2 cfg=3.20 "
-                "duration_ms=%.3f trace=%s all-ok\n",
-                trace_.size(), elapsed_ms, output_file.c_str());
+                "duration_ms=%.3f min_ms=%.3f max_ms=%.3f samples=%d trace=%s all-ok\n",
+                trace_.size(), durations[repeats / 2], durations.front(),
+                durations.back(), repeats, output_file.c_str());
             runner.logits_observer = nullptr;
         }
         model.free();
