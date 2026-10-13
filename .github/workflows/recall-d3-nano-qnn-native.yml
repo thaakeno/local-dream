@@ -1,0 +1,48 @@
+name: Recall D3 Nano native activation fusion comparison
+on:
+  push:
+    branches: [recall-d3-nano-qnn]
+    paths: [recall-qnn-native/**, .github/workflows/recall-d3-nano-qnn-native.yml]
+permissions:
+  contents: read
+concurrency:
+  group: recall-d3-nano-qnn-native
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PYTHONUNBUFFERED: '1'
+      HF_HOME: /tmp/recall-d3-hf
+      D3_WORK: /tmp/recall-d3-qnn-native
+      QAI_DEVICE: Samsung Galaxy S26 (Family)
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+      D3_NATIVE_VISION: 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: recall-qnn-native
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install cloud-only numerical dependencies
+        run: |
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'qai-hub==0.56.0' 'huggingface-hub>=0.34' safetensors 'numpy<3' 'onnx==1.18.0' 'onnxruntime==1.22.1' 'transformers>=5.0' pillow 'torchvision==0.23.0' --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Compile unchanged vision DLC with explicit fusion settings
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.D3_QAI_HUB_API_TOKEN }}
+        run: python recall-qnn-native/convert.py
+      - name: Preserve numerical reports and native preparation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recall-d3-nano-qnn-native-vision
+          path: |
+            /tmp/recall-d3-qnn-native/report.json
+            /tmp/recall-d3-qnn-native/native-vision.json
+            /tmp/recall-d3-qnn-native/baseline-metadata.json
+            /tmp/recall-d3-qnn-native/*.log
+          retention-days: 14
