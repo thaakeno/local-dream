@@ -20,13 +20,19 @@ import kotlin.math.sqrt
 object BreezeDepthDiagnostic {
     data class Result(val passed: Boolean, val message: String)
 
-    private enum class Mode(val label: String, val nhmx: String, val fusion: String) {
-        HVX("HVX reference", "0", "0"),
-        HMX("HMX unfused", "1", "0"),
-        HMX_SAFE("HMX safe fusion", "1", "1"),
+    private enum class Mode(
+        val label: String, val nhmx: String, val fusion: String, val groupedQkv: Boolean,
+    ) {
+        HVX("HVX reference", "0", "0", false),
+        HVX_GROUPED("HVX grouped QKV / MUL_MAT_NX candidate", "0", "0", true),
+        HMX("HMX unfused", "1", "0", false),
+        HMX_SAFE("HMX safe fusion", "1", "1", false),
     }
 
-    private data class RunData(val mode: Mode, val ms: Double, val coverage: Int?, val trace: List<FloatArray>)
+    private data class RunData(
+        val mode: Mode, val ms: Double, val coverage: Int?, val trace: List<FloatArray>,
+        val nxFusions: Int,
+    )
 
     fun logFile(context: Context) = File(context.filesDir, "depth_diagnostics/latest.txt")
 
@@ -38,6 +44,8 @@ object BreezeDepthDiagnostic {
             "Breeze TTS 2 full Depth diagnostic | SM8850/v81\n" +
                 "Real GGUF weights, 15 sequential depth steps, CFG 3.2\n" +
                 "Synthetic deterministic input activations; fixed residual codebook history\n" +
+                "HVX QKV NX experiment: original graph versus explicitly grouped projections\n" +
+                "Five warmed repetitions per mode; median timing; real GGUF/CFG 3.2\n" +
                 "Production DSPQueue/HVX is unchanged\n"
         )
         val model = File(File(Model.getModelsDir(app), modelId), "model.gguf")
@@ -53,37 +61,48 @@ object BreezeDepthDiagnostic {
 
         val baseline = execute(app, runtime, executable, model, Mode.HVX, file)
             ?: return Result(false, "HVX full Depth baseline failed; share the Depth log.")
+        val grouped = execute(app, runtime, executable, model, Mode.HVX_GROUPED, file)
+            ?: return Result(false, "Grouped QKV Depth test failed; leave production HVX unchanged and share log.")
         val hmx = execute(app, runtime, executable, model, Mode.HMX, file)
             ?: return Result(false, "Unfused HMX full Depth test failed; share the Depth log.")
         val safe = execute(app, runtime, executable, model, Mode.HMX_SAFE, file)
             ?: return Result(false, "Safe-fusion HMX full Depth test failed; share the Depth log.")
 
+        val groupedPass = compare(file, baseline, grouped)
         val unfusedPass = compare(file, baseline, hmx)
         val safePass = compare(file, baseline, safe)
+        val groupedRatio = if (grouped.ms > 0) baseline.ms / grouped.ms else 0.0
         val speedRatio = if (hmx.ms > 0) baseline.ms / hmx.ms else 0.0
         val safeRatio = if (safe.ms > 0) baseline.ms / safe.ms else 0.0
         file.appendText(
             "\nDepth model durations (excluding load/warmup): " +
-                "HVX=${format(baseline.ms)} ms; HMX=${format(hmx.ms)} ms; " +
-                "safe-fusion=${format(safe.ms)} ms\n" +
-                "Speedup: unfused=${format(speedRatio)}x, safe-fusion=${format(safeRatio)}x\n" +
+                "HVX=${format(baseline.ms)} ms; grouped-QKV=${format(grouped.ms)} ms; " +
+                "HMX=${format(hmx.ms)} ms; safe-fusion=${format(safe.ms)} ms\n" +
+                "Speedup: grouped-QKV=${format(groupedRatio)}x, " +
+                "unfused-HMX=${format(speedRatio)}x, safe-fusion=${format(safeRatio)}x\n" +
+                "Reported MUL_MAT_NX fusions (grouped): ${grouped.nxFusions}\n" +
                 "HMX matmul coverage (if emitted): ${hmx.coverage ?: "not reported"}\n"
         )
-        val passes = unfusedPass && safePass
+        val passes = groupedPass && unfusedPass && safePass
         val message = if (!passes) {
             "Full Depth logits differ beyond diagnostic tolerance. " +
                 "No production changes. Share the Depth log."
         } else {
-            "All 15 Depth steps passed the exploratory numerical checks at CFG 3.2. " +
-                "HMX ${format(speedRatio)}x, safe fusion ${format(safeRatio)}x vs HVX " +
-                "(single warmed frame; not a sustained FPS benchmark). " +
+            "All 15 Depth steps passed the numerical checks at CFG 3.2. " +
+                "Experimental grouped-QKV HVX: ${format(groupedRatio)}x " +
+                "(${grouped.nxFusions} logged MUL_MAT_NX fusions). " +
+                "HMX ${format(speedRatio)}x, safe fusion ${format(safeRatio)}x " +
+                "(medians of five warmed frames, not sustained FPS). " +
                 if ((hmx.coverage ?: 0) > 0) {
                     "HMX matmul execution reported."
                 } else {
                     "Actual HMX matmul usage not yet verified."
                 }
         }
-        return Result(passes && (hmx.coverage ?: 0) > 0, message)
+        // Test passes are not proof of a fast path: return an experimental
+        // success only when grouped projection parity AND Nx kernel selection
+        // were observed, and never enable this in production automatically.
+        return Result(passes && grouped.nxFusions > 0, message)
     }
 
     private fun execute(
@@ -119,7 +138,8 @@ object BreezeDepthDiagnostic {
                     "GGML_HEXAGON_MM_SELECT" to (if (mode == Mode.HVX) "1" else "2"),
                     "GGML_HEXAGON_OPFUSION" to mode.fusion,
                     "GGML_HEXAGON_PROFILE" to "1",
-                    "GGML_HEXAGON_VERBOSE" to "0",
+                    "GGML_HEXAGON_VERBOSE" to (if (mode.groupedQkv) "1" else "0"),
+                    "BREEZE_DEPTH_QKV_GROUP" to (if (mode.groupedQkv) "1" else "0"),
                     "BREEZE_DEPTH_PROFILE" to "1",
                 )
             )
@@ -134,6 +154,7 @@ object BreezeDepthDiagnostic {
                             line.contains("BREEZE_DEPTH") ||
                             line.contains("hwinfo:") ||
                             line.contains("mul_mat coverage:") ||
+                            line.contains("fused MUL_MAT_NX") ||
                             line.contains("failed", ignoreCase = true) ||
                             line.contains("error:", ignoreCase = true)
                         ) synchronized(lines) {
@@ -162,8 +183,10 @@ object BreezeDepthDiagnostic {
             ?: return null
         val coverage = Regex("""mul_mat coverage:.*?hmx=(\d+)""")
             .find(output.joinToString("\n"))?.groupValues?.get(1)?.toIntOrNull()
+        val nxFusions = output.count { it.contains("fused MUL_MAT_NX") }
+        report.appendText("${mode.label}: NX fusion log lines=${nxFusions}\n")
         return try {
-            RunData(mode, timing, coverage, loadTrace(traceFile))
+            RunData(mode, timing, coverage, loadTrace(traceFile), nxFusions)
         } catch (err: Exception) {
             report.appendText("Trace read failed: ${err.message}\n")
             null
