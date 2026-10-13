@@ -9,6 +9,10 @@ if os.environ.get("GITHUB_ACTIONS") != "true":
 import qai_hub as hub
 
 client = hub.Client(hub.ClientConfig(api_token=os.environ["QAI_HUB_API_TOKEN"]))
+print("Available QAIRT versions: " + json.dumps([
+    {"name": f.name, "api_version": f.api_version, "api_tags": f.api_tags, "full_version": f.full_version}
+    for f in client.get_frameworks() if f.name.upper() in {"QAIRT", "QNN"}
+]), flush=True)
 
 
 def compact(value, depth=0):
