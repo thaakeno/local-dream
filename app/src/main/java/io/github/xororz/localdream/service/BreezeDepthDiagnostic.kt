@@ -8,6 +8,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -103,7 +104,7 @@ object BreezeDepthDiagnostic {
                 "HMX=${format(hmx.ms)} ms; safe-fusion=${format(safe.ms)} ms\n" +
                 "Speedup: grouped-QKV=${format(groupedRatio)}x, " +
                 "unfused-HMX=${format(speedRatio)}x, safe-fusion=${format(safeRatio)}x\n" +
-                "Reported MUL_MAT_NX fusions (grouped trace): ${groupedTrace.nxFusions}\n" +
+                "Observed 3-way QKV MUL_MAT_NX fusions (trace): ${groupedTrace.nxFusions}\n" +
                 "HMX matmul coverage (if emitted): ${hmx.coverage ?: "not reported"}\n"
         )
         val passes = groupedPass && unfusedPass && safePass
@@ -124,7 +125,7 @@ object BreezeDepthDiagnostic {
         } else {
             "All 15 Depth steps passed the numerical checks at CFG 3.2. " +
                 "Experimental grouped-QKV HVX: ${format(groupedRatio)}x " +
-                "(${groupedTrace.nxFusions} logged MUL_MAT_NX fusions; " +
+                "(${groupedTrace.nxFusions} three-way QKV Nx fusions; " +
                 "optional fast path ${if (qualifies) "qualified" else "not qualified"}). " +
                 "HMX ${format(speedRatio)}x, safe fusion ${format(safeRatio)}x " +
                 "(medians of five warmed frames, not sustained FPS). " +
@@ -180,19 +181,27 @@ object BreezeDepthDiagnostic {
         }.start()
 
         val lines = mutableListOf<String>()
+        val nxTriples = AtomicInteger(0)
         val reader = Thread({
             runCatching {
                 process.inputStream.bufferedReader().useLines { stream ->
                     stream.forEach { line ->
-                        if (
-                            line.contains("BREEZE_DEPTH") ||
+                        // Count actual three-way QKV fusions separately from
+                        // already-existing two-way FFN gate/up fusions. With
+                        // verbose tracing, thousands of fusions can occur;
+                        // never let debug messages evict the final all-ok
+                        // marker or timing data from the bounded transcript.
+                        val qkvNx = line.contains("fused MUL_MAT_NX (N=3")
+                        if (qkvNx) nxTriples.incrementAndGet()
+                        val critical = line.contains("BREEZE_DEPTH") ||
                             line.contains("hwinfo:") ||
                             line.contains("mul_mat coverage:") ||
-                            line.contains("fused MUL_MAT_NX") ||
                             line.contains("failed", ignoreCase = true) ||
                             line.contains("error:", ignoreCase = true)
-                        ) synchronized(lines) {
-                            if (lines.size < 1000) lines.add(line.take(1500))
+                        if (critical || qkvNx) synchronized(lines) {
+                            if (critical || lines.size < 60) {
+                                if (lines.size < 1000) lines.add(line.take(1500))
+                            }
                         }
                     }
                 }
@@ -217,8 +226,8 @@ object BreezeDepthDiagnostic {
             ?: return null
         val coverage = Regex("""mul_mat coverage:.*?hmx=(\d+)""")
             .find(output.joinToString("\n"))?.groupValues?.get(1)?.toIntOrNull()
-        val nxFusions = output.count { it.contains("fused MUL_MAT_NX") }
-        report.appendText("${mode.label}: NX fusion log lines=${nxFusions}\n")
+        val nxFusions = nxTriples.get()
+        report.appendText("${mode.label}: actual three-way QKV Nx fusion count=${nxFusions}\n")
         return try {
             RunData(mode, timing, coverage, loadTrace(traceFile), nxFusions)
         } catch (err: Exception) {
