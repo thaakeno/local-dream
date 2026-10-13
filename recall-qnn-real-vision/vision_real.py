@@ -100,7 +100,7 @@ def run_real_vision(checkpoint, load_weights, root, client, device):
     supported = {f.api_version for f in client.get_frameworks() if f.name.upper() == "QAIRT"}
     if "2.51" not in supported:
         raise RuntimeError("QAIRT 2.51 is no longer available for the planned comparison")
-    compile_job = client.submit_compile_job(client.get_job("jp3ow99zp").get_source_model(), device=device,
+    compile_job = client.submit_compile_job(client.get_job("jp3ow99zp").model, device=device,
         name="Recall_D3Nano_vision_qairt251",
         options="--target_runtime qnn_dlc --qairt_version 2.51 --qnn_options default_graph_htp_precision=FLOAT16")
     report["compile_2.51"] = compile_job.url
