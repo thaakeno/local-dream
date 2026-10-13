@@ -1770,13 +1770,14 @@ fun SpeechRunScreen(
                                 Text(if (hmxDiagnosticRunning) "Testing HMX..." else "Run HMX test")
                             }
                             Text(
-                                "Full 15-step Depth Decoder · CFG 3.2",
+                                "Depth optimization A/B · CFG 3.2",
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                "Executes all 15 depth codebooks with real model weights " +
-                                    "in isolated HVX and HMX processes, comparing every " +
-                                    "logit. Preserves the production generator.",
+                                "Tests exact QKV projection grouping on HVX against " +
+                                    "the original 15-step Depth decoder, then checks HMX. " +
+                                    "Five warmed runs per mode, kernel fusion evidence, " +
+                                    "and complete logits parity. Production stays unchanged.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
