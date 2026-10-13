@@ -39,6 +39,49 @@ def diagnose_vision(model_factory, root, client, device):
                           cosine=float(a @ b / denominator) if denominator else None)
         return result
 
+    if os.environ.get("D3_VISION_OPTIMIZATION_TEST") == "true":
+        # Controlled compiler-setting comparison. Reuse the original uploaded
+        # DLC and fixture; no tensor arithmetic or trained parameters change.
+        model = model_factory().eval()
+        with torch.inference_mode():
+            reference = model(*values.values()).numpy().copy()
+        del model
+        gc.collect()
+        original_outputs = original.download_output_data()
+        if len(original_outputs) != 1:
+            raise RuntimeError("Original vision output contract changed")
+        baseline = next(iter(original_outputs.values()))[0]
+        report["original_O3"] = compare(reference, baseline)
+        report["scope"] += "; original DLC, same fixture, O=1 versus O=3"
+        save()
+        compiled = client.get_job("jp3ow99zp").get_target_model()
+        link = client.submit_link_job([compiled], device=device,
+            name="Recall_D3Nano_vision_O1_HTP",
+            options="--qairt_version 2.50 --qnn_options default_graph_htp_optimizations=O=1")
+        report["link_url"] = link.url
+        save()
+        if not link.wait().success:
+            raise RuntimeError("Vision O=1 linking failed")
+        inference = client.submit_inference_job(link.get_target_model(), device=device,
+            inputs=entries, profile=True, options="--qairt_version 2.50",
+            name="Recall_D3Nano_vision_O1_parity")
+        report["inference_url"] = inference.url
+        save()
+        if not inference.wait().success:
+            raise RuntimeError("Vision O=1 inference failed")
+        outputs = inference.download_output_data()
+        if len(outputs) != 1 or len(next(iter(outputs.values()))) != 1:
+            raise RuntimeError("Vision O=1 output contract changed")
+        result = next(iter(outputs.values()))[0]
+        if result.shape != reference.shape:
+            raise RuntimeError("Vision O=1 output shape changed")
+        report["O1_vs_reference"] = compare(reference, result)
+        report["profile"] = inference.download_profile()
+        report["status"] = "compiler_setting_comparison_pending_quality_review"
+        save()
+        print("Vision optimization comparison: " + json.dumps(report), flush=True)
+        return
+
     class ObservedVision(nn.Module):
         def __init__(self, vision):
             super().__init__()
