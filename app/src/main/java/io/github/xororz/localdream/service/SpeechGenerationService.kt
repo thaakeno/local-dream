@@ -348,7 +348,7 @@ class SpeechGenerationService : Service() {
             // full-model A/B test verified logits, actual Nx fusion, and a
             // repeated-run speedup. Never enable HMX or whole-frame fusion.
             env["BREEZE_DEPTH_QKV_GROUP"] =
-                if (!fullQnnEnabled && BreezeDepthDiagnostic.isEnabled(this)) "1" else "0"
+                if (!fullQnnEnabled && BreezeDepthDiagnostic.isEnabled(this, modelId)) "1" else "0"
             // Isolated per-codebook timings are intentionally opt-in so logging
             // does not affect actual throughput. Fused experimental graph is
             // never activated in production after the SM8850 DSPQueue failure.
