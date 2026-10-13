@@ -22,19 +22,30 @@ object BreezeDepthDiagnostic {
     data class Result(val passed: Boolean, val message: String)
 
     private const val PREFS = "breeze_depth_qkv_nx"
-    fun isQualified(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean("qualified", false)
+    private fun modelFile(context: Context, modelId: String): File =
+        File(File(Model.getModelsDir(context), modelId), "model.gguf")
 
-    fun isEnabled(context: Context): Boolean {
+    // Qualification is tied to the exact installed GGUF, not a global toggle
+    // that could mistakenly carry over to a different quantization variant.
+    fun isQualified(context: Context, modelId: String): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return prefs.getBoolean("qualified", false) && prefs.getBoolean("enabled", false)
+        val file = modelFile(context, modelId)
+        return file.isFile &&
+            prefs.getBoolean("qualified", false) &&
+            prefs.getString("model_id", null) == modelId &&
+            prefs.getLong("model_size", -1) == file.length() &&
+            prefs.getLong("model_modified", -1) == file.lastModified()
     }
 
-    fun setEnabled(context: Context, enabled: Boolean) {
+    fun isEnabled(context: Context, modelId: String): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (enabled && !prefs.getBoolean("qualified", false)) return
-        prefs.edit().putBoolean("enabled", enabled).apply()
+        return isQualified(context, modelId) && prefs.getBoolean("enabled", false)
+    }
+
+    fun setEnabled(context: Context, modelId: String, enabled: Boolean) {
+        if (enabled && !isQualified(context, modelId)) return
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean("enabled", enabled).apply()
     }
 
     private enum class Mode(
@@ -113,7 +124,12 @@ object BreezeDepthDiagnostic {
         // user must explicitly turn it on after the real-model on-device
         // parity + repeated-timing gate has been passed.
         val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.edit().putBoolean("qualified", qualifies).apply()
+        prefs.edit()
+            .putBoolean("qualified", qualifies)
+            .putString("model_id", modelId)
+            .putLong("model_size", model.length())
+            .putLong("model_modified", model.lastModified())
+            .apply()
         if (!qualifies) prefs.edit().putBoolean("enabled", false).apply()
         file.appendText(
             "QKV production eligibility: ${if (qualifies) "QUALIFIED" else "NOT_QUALIFIED"} " +
