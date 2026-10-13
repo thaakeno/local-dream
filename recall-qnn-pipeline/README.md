@@ -91,6 +91,31 @@ quality-preserving or faster than Recall's existing backend.
 
 Sources:
 
+Current vision findings (2026-10-13): official Transformers versus the export
+matches on the public receipt fixture (cosine 0.9999999991). QAIRT 2.50 and
+2.51 produce identical real-image differences (relative RMSE 0.0765927).
+Native FP16 reference differs much less than the original QNN synthetic vision
+output. Exposing first-block internal tensors reduces its measured error,
+suggesting a fusion/kernel-selection dependency, not proving a particular op.
+O=1 versus O=3 gives identical synthetic output errors and slows that profile
+from about 124 ms to 300 ms; do not treat O=1 as an accuracy fix.
+
+`dispatch.py --native` runs an unchanged-DLC A/B through the official native
+QAIRT 2.50 SDK with advanced_activation_fusion explicitly false/true. SDK,
+models, preparation and inference remain on cloud runners/AI Hub. The cited
+SM8850 deployment report is a hypothesis source, not Nano validation. Native
+host tools require libc++ and libc++abi. DLC is itself a ZIP container and must
+not be mistaken for an AI Hub wrapper archive.
+
+Fused run 38358771714 has completed all six four-layer blocks. The individual
+profiles are about 38.6 ms per block at L384. These are not complete Nano
+timings. `dispatch.py --pipeline` validates actual public-image prompts through
+QNN position lookup, vision, embedding insertion, every decoder block and the
+readout against the official D3 runtime. It preserves probability differences,
+component profiles and deployable=false. Sequential hosted API calls cannot
+measure an Android resident pipeline's complete latency or cold loading;
+neither summed component profiles nor RPC wall time is that measurement.
+
 - [Official Nano checkpoint](https://huggingface.co/vllm-sr/d3-nano/tree/9d9b937f5f117f78c030ea7ba677c0b3d328ec58)
 - [Published tensor graphs, Apache-2.0 repository metadata](https://huggingface.co/FluidInference/d3-coreml/tree/62b6a996e15342bdd3d608030d8f445f11a52367/nano/python)
 - [AI Hub ONNX, DLC and context-binary compilation](https://workbench.aihub.qualcomm.com/docs/hub/compile_examples.html)

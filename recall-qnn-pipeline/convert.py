@@ -86,9 +86,14 @@ def main():
         save()
         # Only original model files and the three tensor-graph sources, never
         # CoreML weights. Downloads take place exclusively on this runner.
+        package_patterns = ["*.json", "*.safetensors", "*.py", "*.txt", "*.jinja", "LICENSE", "NOTICE"]
+        if os.environ.get("D3_FULL_PIPELINE") == "true":
+            # The official runtime verifies its complete published package,
+            # including documentation/examples. Keep verification enabled.
+            package_patterns += ["README.md", "assets/*"]
         checkpoint = Path(snapshot_download(
             MODEL_ID, revision=MODEL_REV,
-            allow_patterns=["*.json", "*.safetensors", "*.py", "*.txt", "*.jinja", "LICENSE", "NOTICE"],
+            allow_patterns=package_patterns,
         ))
         source = root / "upstream"
         source.mkdir(exist_ok=True)
