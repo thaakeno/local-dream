@@ -51,9 +51,12 @@ object BreezeDepthDiagnostic {
     private enum class Mode(
         val label: String, val nhmx: String, val fusion: String, val groupedQkv: Boolean,
     ) {
-        HVX("HVX reference", "0", "0", false),
-        HVX_GROUPED("HVX grouped QKV / MUL_MAT_NX timing", "0", "0", true),
-        HVX_GROUPED_TRACE("HVX grouped QKV / fusion evidence", "0", "0", true),
+        // Match production's GGML_HEXAGON_OPFUSION=1 in BOTH HVX arms.
+        // Previously fusion=0 disabled MUL_MAT_NX entirely, so the grouped
+        // test could never qualify even if its graph was eligible.
+        HVX("HVX reference", "0", "1", false),
+        HVX_GROUPED("HVX grouped QKV / MUL_MAT_NX timing", "0", "1", true),
+        HVX_GROUPED_TRACE("HVX grouped QKV / fusion evidence", "0", "1", true),
         HMX("HMX unfused", "1", "0", false),
         HMX_SAFE("HMX safe fusion", "1", "1", false),
     }
@@ -166,6 +169,11 @@ object BreezeDepthDiagnostic {
     ): RunData? {
         val traceFile = File(report.parentFile, "depth_${mode.name.lowercase(Locale.US)}.bin")
         traceFile.delete()
+        report.appendText(
+            "\n[DEPTH_CONFIG] mode=${mode.name} nhmx=${mode.nhmx} " +
+                "opfusion=${mode.fusion} grouped_qkv=${mode.groupedQkv} " +
+                "mm_select=${if (mode.nhmx == "0") 1 else 2}\n"
+        )
         val dsp = listOf(
             runtime.absolutePath, "/vendor/lib/rfsa/adsp", "/vendor/dsp/cdsp", "/dsp"
         ).joinToString(";")
@@ -186,7 +194,9 @@ object BreezeDepthDiagnostic {
                     "GGML_HEXAGON_DEVICES" to "HTP0:0",
                     "GGML_HEXAGON_NHMX" to mode.nhmx,
                     "GGML_HEXAGON_NHVX" to "0",
-                    "GGML_HEXAGON_MM_SELECT" to (if (mode == Mode.HVX) "1" else "2"),
+                    // All reference/grouped HVX modes must use the same
+                    // production HVX kernel selection; HMX modes may use HMX.
+                    "GGML_HEXAGON_MM_SELECT" to (if (mode.nhmx == "0") "1" else "2"),
                     "GGML_HEXAGON_OPFUSION" to mode.fusion,
                     "GGML_HEXAGON_PROFILE" to "1",
                     "GGML_HEXAGON_VERBOSE" to (if (mode == Mode.HVX_GROUPED_TRACE) "1" else "0"),
