@@ -23,7 +23,8 @@ jobs:
       D3_DIAGNOSE_LAYER00: 'false'
       D3_DIAGNOSE_EXP_ONLY: 'false'
       D3_STABLE_DECAY: 'true'
-      D3_FIRST_LAYER_ONLY: 'true'
+      D3_FIRST_LAYER_ONLY: 'false'
+      D3_FEASIBILITY_ONLY: 'true'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -41,7 +42,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python recall-qnn/test_lowering.py
-          gh run download 38317802422 --repo thaakeno/local-dream --name recall-d3-nano-qnn-qualification --dir /tmp/recall-d3-resume
+          gh run download 38354453227 --repo thaakeno/local-dream --name recall-d3-nano-qnn-qualification --dir /tmp/recall-d3-resume
           D3_REUSE_REPORT=/tmp/recall-d3-resume/report.json python recall-qnn/convert.py
       - name: Preserve qualification report and converted contexts
         if: always()

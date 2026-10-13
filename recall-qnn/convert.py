@@ -299,9 +299,17 @@ def main():
                 raise RuntimeError(name + ": compiled output shape differs from the ONNX contract")
             component["compiled_output_name"] = compiled_output_name
             device_err = np.abs(device_out.astype(np.float64) - expected.astype(np.float64))
-            component["qnn_max_abs_error"] = float(device_err.max())
-            component["qnn_rmse"] = float(np.sqrt(np.mean(device_err * device_err)))
             component["qnn_finite"] = bool(np.isfinite(device_out).all())
+            component["qnn_nonfinite_count"] = int((~np.isfinite(device_out)).sum())
+            component["qnn_max_abs_error"] = float(device_err.max()) if component["qnn_finite"] else None
+            component["qnn_rmse"] = float(np.sqrt(np.mean(device_err * device_err))) if component["qnn_finite"] else None
+            if component["qnn_finite"]:
+                ref64 = expected.astype(np.float64).reshape(-1)
+                out64 = device_out.astype(np.float64).reshape(-1)
+                denominator = float(np.linalg.norm(ref64) * np.linalg.norm(out64))
+                component["qnn_reference_cosine"] = float(np.dot(ref64, out64) / denominator) if denominator else None
+                reference_rms = float(np.sqrt(np.mean(ref64 * ref64)))
+                component["qnn_relative_rmse"] = component["qnn_rmse"] / reference_rms if reference_rms else None
             # Download profile is JSON/metadata; stays on the cloud runner.
             if hasattr(inference, "download_profile"):
                 profile = inference.download_profile()
@@ -311,7 +319,12 @@ def main():
             component["status"] = "compiled_and_profiled_numeric_review_required"
             component["elapsed_seconds"] = round(time.monotonic() - started, 2)
             save()
-            event("Compiled and profiled " + name + "; numeric review required")
+            event("Component qualification: " + json.dumps(component))
+            # Hub retains the compiled model by recorded job ID. Qualification
+            # artifacts need reports/provenance, not gigabytes of duplicate
+            # weights. A later qualified release can fetch and hash-check them.
+            if os.environ.get("D3_KEEP_CONTEXTS") != "true":
+                context_path.unlink()
             # Keep only the small report and QNN context; don't accumulate ONNX
             # weights on the limited runner disk after successful conversion.
             import shutil
@@ -359,6 +372,10 @@ def main():
         qualify("token_embedding", embed, {"input_ids": ids, "vision": torch.randn(256, cfg.hidden_size) * 0.1,
                                            "image_positions": positions}, "hidden")
         del embed
+        if os.environ.get("D3_FEASIBILITY_ONLY") == "true":
+            report["status"] = "component_types_qualified_pending_remaining_layers_and_end_to_end"
+            save()
+            return
         for index in range(cfg.num_layers):
             if index not in (0, 3):
                 qualify(f"decoder_{index:02d}", Layer(index), layer_inputs, "hidden_out")
