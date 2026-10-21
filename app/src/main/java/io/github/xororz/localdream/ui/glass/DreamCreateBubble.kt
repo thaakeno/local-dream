@@ -3,7 +3,6 @@ package io.github.xororz.localdream.ui.glass
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.*
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -31,10 +30,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.platform.LocalContext
 import android.os.Build
 import android.provider.Settings
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
