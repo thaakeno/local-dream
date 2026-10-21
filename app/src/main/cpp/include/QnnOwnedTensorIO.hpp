@@ -1,6 +1,7 @@
 #pragma once
 // Local Dream-owned, patch-free tensor adapter. Qualcomm's SDK allocation
 // helpers are reused unchanged; conversions and validation live in our code.
+#include "QnnNativeScalar.hpp"
 #include <IOTensor.hpp>
 #include <QnnSampleAppUtils.hpp>
 #include <cstdlib>
@@ -161,6 +162,23 @@ public:
             if(!capacity<_Float16>(b,n)) return Result::FAILURE;
             auto *out=static_cast<_Float16*>(b.data);
             for(size_t i=0;i<n;++i) out[i]=static_cast<_Float16>(src[i]);
+            return Result::SUCCESS;
+        }
+        // SDXL serializes its timestamp / timestep as INT32 even though
+        // PipelineSdxl supplies the scalar in a float input buffer. The
+        // original owned adapter returned FAILURE before graphExecute here.
+        case QNN_DATATYPE_INT_32: {
+            if(!capacity<int32_t>(b,n)) return Result::FAILURE;
+            auto *out=static_cast<int32_t*>(b.data);
+            for(size_t i=0;i<n;++i)
+                if(!finite_round_to_integer(src[i],out[i])) return Result::FAILURE;
+            return Result::SUCCESS;
+        }
+        case QNN_DATATYPE_UINT_32: {
+            if(!capacity<uint32_t>(b,n)) return Result::FAILURE;
+            auto *out=static_cast<uint32_t*>(b.data);
+            for(size_t i=0;i<n;++i)
+                if(!finite_round_to_integer(src[i],out[i])) return Result::FAILURE;
             return Result::SUCCESS;
         }
         case QNN_DATATYPE_UFIXED_POINT_8:

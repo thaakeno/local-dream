@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -83,12 +84,16 @@ class PipelineDit : public Pipeline {
 
   PromptTokenizeResult tokenizePrompt(const std::string &text) override {
     if (!ctx_ || !api_) throw std::runtime_error("DiT engine not initialized");
-    dit_tokenize_result result{};
-    if (!api_->tokenize(ctx_, text.c_str(), &result)) {
-      throw std::runtime_error(std::string("DiT tokenize failed: ") +
-                               api_->last_error(ctx_));
-    }
-    return {result.count, result.max_length, result.overflow_offset};
+    // No fake 77-token CLIP budget: Qwen, MOSS, Flux and Z-Image use their
+    // separate tokenizer.json with no frontend truncation. The pinned
+    // stable-diffusion.cpp C API exposes no sd_tokenize_text(), so reuse the
+    // same tokenizer.json already loaded by main.cpp for this model.
+    auto *tokenizer = text_encoder_.tokenizer();
+    if (!tokenizer) throw std::runtime_error("DiT tokenizer not loaded");
+    const size_t count = tokenizer->Encode(text).size();
+    if (count > static_cast<size_t>(std::numeric_limits<int>::max()))
+      throw std::runtime_error("DiT prompt token count out of range");
+    return {static_cast<int>(count), 0, -1};
   }
 
   GenerationResult generate(GenerationRequest &req,

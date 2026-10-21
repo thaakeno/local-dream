@@ -1,8 +1,6 @@
 #include "breeze/generation.h"
 #include "breeze/sampling.h"
 #include "breeze/text_encoder.h"
-#include "breeze/qnn_depth_decoder.h"
-#include "breeze/qnn_backbone.h"
 
 #include <algorithm>
 #include <chrono>
@@ -81,74 +79,21 @@ static std::vector<float> combine_logits(const std::vector<float> & cond, const 
     return out;
 }
 
-// The server serializes generations with a mutex, so one process-wide cache is
-// enough. Keeping QAIRT contexts alive avoids paying multi-gigabyte context
-// deserialization and depth self-test costs again for every chunk/request.
-struct PersistentQnnGenerator {
+// Cache only the verified ggml-Hexagon DepthRunner graphs. QNN generation
+// experiments have been retired; the independent QNN vocoder remains active.
+struct PersistentDepthCache {
     BreezeModel * model = nullptr;
-    std::unique_ptr<QnnBackboneRunner> backbone_b1;
-    std::unique_ptr<QnnBackboneRunner> backbone_b2;
-    std::unique_ptr<QnnDepthRunner> depth_b1;
-    std::unique_ptr<QnnDepthRunner> depth_b2;
-    // HTP depth graphs are shape-stable; reuse 15 prepared per-codebook graphs
-    // between requests instead of paying graph creation on every generation.
-    std::unique_ptr<DepthRunner> legacy_depth_b1;
-    std::unique_ptr<DepthRunner> legacy_depth_b2;
+    std::unique_ptr<DepthRunner> b1;
+    std::unique_ptr<DepthRunner> b2;
 };
-
-static PersistentQnnGenerator g_qnn_generator;
-
-static void reset_persistent_qnn(BreezeModel * model) {
-    if (g_qnn_generator.model == model) return;
-    g_qnn_generator = PersistentQnnGenerator{};
-    g_qnn_generator.model = model;
-}
-
-static QnnBackboneRunner * persistent_backbone(BreezeModel & m, int branches) {
-    reset_persistent_qnn(&m);
-    auto & slot = branches == 2
-        ? g_qnn_generator.backbone_b2
-        : g_qnn_generator.backbone_b1;
-    if (!slot) {
-        slot = std::make_unique<QnnBackboneRunner>();
-        if (!slot->init(m, branches)) {
-            slot.reset();
-            return nullptr;
-        }
-        std::fprintf(
-            stderr,
-            "[BREEZE_QNN_CACHE] backbone created branches=%d\n",
-            branches
-        );
-    }
-    return slot.get();
-}
-
-static QnnDepthRunner * persistent_depth(BreezeModel & m, int branches) {
-    reset_persistent_qnn(&m);
-    auto & slot = branches == 2
-        ? g_qnn_generator.depth_b2
-        : g_qnn_generator.depth_b1;
-    if (!slot) {
-        slot = std::make_unique<QnnDepthRunner>();
-        if (!slot->init(m, branches)) {
-            slot.reset();
-            return nullptr;
-        }
-        std::fprintf(
-            stderr,
-            "[BREEZE_QNN_CACHE] depth created branches=%d\n",
-            branches
-        );
-    }
-    return slot.get();
-}
+static PersistentDepthCache g_depth_cache;
 
 static DepthRunner & persistent_legacy_depth(BreezeModel & m, int branches) {
-    reset_persistent_qnn(&m);
-    auto & slot = branches == 2
-        ? g_qnn_generator.legacy_depth_b2
-        : g_qnn_generator.legacy_depth_b1;
+    if (g_depth_cache.model != &m) {
+        g_depth_cache = PersistentDepthCache{};
+        g_depth_cache.model = &m;
+    }
+    auto & slot = branches == 2 ? g_depth_cache.b2 : g_depth_cache.b1;
     if (!slot) {
         slot = std::make_unique<DepthRunner>();
         slot->init(m, branches);
@@ -289,62 +234,28 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
     );
 
     const int generator_branches = use_cfg ? 2 : 1;
-    const int qnn_capacity_need =
-        std::max(total_c, use_cfg ? total_u : total_c) + soft_target + 16;
-
-    QnnBackboneRunner * qnn_backbone =
-        qnn_capacity_need <= 512 ? persistent_backbone(m, generator_branches) : nullptr;
-    bool qnn_backbone_ready = qnn_backbone != nullptr;
-
     BackboneState st_c, st_u;
-    bool ggml_backbone_active = false;
     StepOut o_c, o_u;
 
     t0 = clock_now();
-    if (qnn_backbone_ready) {
-        qnn_backbone_ready = qnn_backbone->prefill(
-            m,
-            emb_c,
-            total_c,
-            use_cfg ? &emb_u : nullptr,
-            total_u,
-            o_c,
-            o_u
-        );
-    }
-    if (!qnn_backbone_ready) {
-        ggml_backbone_active = true;
-        st_c.init(m, total_c + max_new + 8);
-        if (use_cfg) st_u.init(m, total_u + max_new + 8);
-        o_c = backbone_run(m, st_c, emb_c, total_c);
-        if (use_cfg) o_u = backbone_run(m, st_u, emb_u, total_u);
-    }
+    st_c.init(m, total_c + max_new + 8);
+    if (use_cfg) st_u.init(m, total_u + max_new + 8);
+    o_c = backbone_run(m, st_c, emb_c, total_c);
+    if (use_cfg) o_u = backbone_run(m, st_u, emb_u, total_u);
     tm.prefill += since(t0);
 
     DepthRunner & depth = persistent_legacy_depth(m, generator_branches);
     depth.begin_request();
-    // A tested QNN depth implementation can be opt-in only. Existing
-    // SM8850 QNN depth measured ~295 ms/frame versus 85 ms/frame on ggml HTP.
-    // Never select that slower context automatically during normal TTS.
-    const char * depth_trial = std::getenv("BREEZE_QNN_DEPTH_TRIAL");
-    const bool enable_qnn_depth = depth_trial && depth_trial[0] == '1';
-    QnnDepthRunner * qnn_depth =
-        enable_qnn_depth ? persistent_depth(m, generator_branches) : nullptr;
-    const bool qnn_depth_ready = qnn_depth != nullptr && qnn_depth->ready();
-    std::fprintf(stderr, "[BREEZE_DEPTH_BACKEND] active=%s gpu=removed\n",
-                 qnn_depth_ready ? "qnn-htp-trial" : "ggml-hexagon");
     std::fprintf(stderr,
-        "[BREEZE_GENERATOR] backbone=%s depth=%s cfg=%.2f capacity_need=%d\n",
-        qnn_backbone_ready ? "qnn-htp" : "ggml-hexagon",
-        qnn_depth_ready ? "qnn-htp-trial" : "ggml-hexagon",
-        req.cfg_scale, qnn_capacity_need);
+        "[BREEZE_GENERATOR] backbone=ggml-hexagon depth=ggml-hexagon cfg=%.2f\n",
+        req.cfg_scale);
 
     // This one-frame graph is shape-stable. Replaying it avoids rebuilding and
     // repartitioning an HTP graph for every generated codec frame.
     AudioEmbedRunner audio_embed;
     const char * fuse_embed_env = std::getenv("BREEZE_BACKBONE_EMBED_FUSE");
     const bool fuse_backbone_embed =
-        !qnn_backbone_ready && fuse_embed_env && fuse_embed_env[0] == '1';
+        fuse_embed_env && fuse_embed_env[0] == '1';
     if (!fuse_backbone_embed) audio_embed.init(m);
     std::fprintf(
         stderr,
@@ -498,14 +409,8 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         std::vector<std::vector<float>> hiddens = { o_c.hidden };
         if (use_cfg) hiddens.push_back(o_u.hidden);
         auto td = clock_now();
-        std::vector<int> depth_codes;
-        bool depth_ready = false;
-        if (!depth_ready && qnn_depth && qnn_depth->ready()) {
-            depth_ready = qnn_depth->run(
-                m, hiddens, cb0, req.cfg_scale, rng, depth_codes
-            );
-        }
-        if (!depth_ready) depth_codes = depth.run(m, hiddens, cb0, req.cfg_scale, rng);
+        std::vector<int> depth_codes =
+            depth.run(m, hiddens, cb0, req.cfg_scale, rng);
         tm.depth += since(td);
         std::vector<int> frame = { cb0 };
         frame.insert(frame.end(), depth_codes.begin(), depth_codes.end());
@@ -530,13 +435,7 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         auto tb = clock_now();
         std::vector<float> ae;
         if (!fuse_backbone_embed) ae = audio_embed.run(m, frame);
-        if (qnn_backbone_ready) {
-            if (!qnn_backbone->step(m, ae, o_c, o_u)) {
-                throw std::runtime_error(
-                    "Full QNN backbone failed during autoregressive decode"
-                );
-            }
-        } else if (use_cfg) {
+        if (use_cfg) {
             auto pair = backbone_run_cfg(
                 m, st_c, st_u, ae, fuse_backbone_embed ? &frame : nullptr
             );
@@ -610,10 +509,8 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
         }
     }
 
-    if (ggml_backbone_active) {
-        st_c.free();
-        if (use_cfg) st_u.free();
-    }
+    st_c.free();
+    if (use_cfg) st_u.free();
     // The native decoder is cached between requests. Its prepared graphs and
     // KV memory must remain valid until model teardown; only per-frame KV
     // position and per-request profiling are reset between generations.

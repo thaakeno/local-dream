@@ -1,0 +1,456 @@
+# Complete native/Hexagon integration build with a persistent signing identity.
+# The permanent keystore is supplied ONLY by protected GitHub Actions secrets;
+# no signing keys or credentials are committed to source control.
+name: Local Dream integration Hexagon build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - integration/2026-10-glass-moss-upstream
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  QNN_VERSION: '2.51.0.260929'
+  QNN_URL: 'https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.51.0.260929/v2.51.0.260929.zip'
+  BUILD_GIT_SHA: ${{ github.sha }}
+  BUILD_GIT_BRANCH: ${{ github.ref_name }}
+  BUILD_REPOSITORY: ${{ github.repository }}
+  BUILD_UPSTREAM_REPOSITORY: 'xororz/local-dream'
+  BUILD_IS_FORK: 'true'
+  BREEZE_NATIVE_BASE_SHA: '70a473e5ed09c1988eda2421ce604032727f3b7d'
+  BREEZE_NATIVE_BASE_CACHE_KEY: 'localdream-native-b0b0a31bb69f8750f08e0ceabd686873bac5bec8b7328afef3b26faf4b08c27a'
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: localdream-integration-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Initialize required submodules
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git submodule update --init --depth 1 \
+            app/src/main/cpp/3rdparty/MNN \
+            app/src/main/cpp/3rdparty/cpp-httplib \
+            app/src/main/cpp/3rdparty/json \
+            app/src/main/cpp/3rdparty/stable-diffusion.cpp \
+            app/src/main/cpp/3rdparty/moss-stable-diffusion.cpp \
+            app/src/main/cpp/3rdparty/stb \
+            app/src/main/cpp/3rdparty/tokenizers-cpp \
+            app/src/main/cpp/3rdparty/xsimd \
+            app/src/main/cpp/3rdparty/xtensor \
+            app/src/main/cpp/3rdparty/xtensor-blas \
+            app/src/main/cpp/3rdparty/xtl \
+            app/src/main/cpp/3rdparty/zstd \
+            app/src/main/cpp/3rdparty/yue2.cpp
+          git -C app/src/main/cpp/3rdparty/stable-diffusion.cpp submodule update --init --depth 1 ggml
+          git -C app/src/main/cpp/3rdparty/moss-stable-diffusion.cpp submodule update --init --depth 1 ggml
+          git -C app/src/main/cpp/3rdparty/yue2.cpp submodule update --init --depth 1 vendor/cpp-httplib
+          git -C app/src/main/cpp/3rdparty/tokenizers-cpp submodule update --init --depth 1 msgpack sentencepiece
+
+      - name: Compute native cache key
+        id: native-key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          native_key="$(
+            {
+              git rev-parse HEAD:app/src/main/cpp
+              git rev-parse HEAD:app/src/main/rust/xet_downloader
+              git submodule status --recursive app/src/main/cpp
+              printf '%s\n' "qnn=$QNN_VERSION" "toolchain=arm64-android-v0.8"
+            } | sha256sum | awk '{print $1}'
+          )"
+          echo "key=localdream-native-$native_key" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK platform
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdkmanager_bin="$(find "${ANDROID_HOME}/cmdline-tools" -type f -name sdkmanager -perm -u+x | head -n 1)"
+          test -x "$sdkmanager_bin"
+          yes | "$sdkmanager_bin" --licenses >/dev/null || true
+          # Android 17 / API 37 is currently published on the preview
+          # channel. Compose 1.12 / Material3 1.5 require compileSdk 37.
+          "$sdkmanager_bin" --channel=3 "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Kotlin compile preflight
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:compileBasicDebugKotlin
+
+      - name: Cache QAIRT SDK
+        id: qnn-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/qnn-sdk-${{ env.QNN_VERSION }}
+          key: qairt-${{ env.QNN_VERSION }}-linux-v1
+
+      - name: Download QAIRT SDK
+        if: steps.qnn-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          install_dir="${RUNNER_TEMP}/qnn-sdk-${QNN_VERSION}"
+          zip_path="${RUNNER_TEMP}/qnn-sdk.zip"
+          mkdir -p "$install_dir"
+          curl -fL --retry 5 --retry-delay 2 "$QNN_URL" -o "$zip_path"
+          unzip -q "$zip_path" -d "$install_dir"
+          rm -f "$zip_path"
+
+      - name: Locate QAIRT SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          install_dir="${RUNNER_TEMP}/qnn-sdk-${QNN_VERSION}"
+          sdk_root=""
+          for c in "$install_dir" "$install_dir/qairt" "$install_dir/qairt/$QNN_VERSION"; do
+            if [ -d "$c/include/QNN" ] && [ -d "$c/lib/aarch64-android" ]; then
+              sdk_root="$(cd "$c" && pwd)"
+              break
+            fi
+          done
+          if [ -z "$sdk_root" ]; then
+            while IFS= read -r d; do
+              if [ -d "$d/include/QNN" ] && [ -d "$d/lib/aarch64-android" ]; then
+                sdk_root="$d"
+                break
+              fi
+            done < <(find "$install_dir" -mindepth 1 -maxdepth 3 -type d)
+          fi
+          test -n "$sdk_root"
+          test -f "$sdk_root/lib/aarch64-android/libQnnHtp.so"
+          test -f "$sdk_root/lib/aarch64-android/libQnnHtpV81Stub.so"
+          test -f "$sdk_root/lib/aarch64-android/libQnnHtpV85Stub.so"
+          echo "QNN_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          echo "QAIRT root: $sdk_root"
+
+      - name: Restore native artifacts
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a
+            app/src/main/assets/ditlibs
+            app/src/main/assets/mosslibs
+            app/src/main/assets/yue2libs
+            app/src/main/assets/breezelibs
+            app/src/main/assets/qnnlibs
+            app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
+          key: ${{ steps.native-key.outputs.key }}
+
+      - name: Build Android core and Hexagon DiT engine
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker pull ghcr.io/snapdragon-toolchain/arm64-android:v0.8
+          docker run --rm -i --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$QNN_SDK_ROOT:/qnn:ro" \
+            ghcr.io/snapdragon-toolchain/arm64-android:v0.8 \
+            bash -s <<'CONTAINER_SCRIPT'
+          set -euxo pipefail
+
+          toolchain_file="$(find /opt /usr/local -path "*/build/cmake/android.toolchain.cmake" -print -quit)"
+          test -n "$toolchain_file"
+          ndk_root="${toolchain_file%/build/cmake/android.toolchain.cmake}"
+          test -d "$ndk_root"
+
+          ninja_bin="$(command -v ninja || true)"
+          if [ -z "$ninja_bin" ]; then
+            ninja_bin="$(find /opt /usr/local /usr -type f -name ninja -perm -u+x -print -quit)"
+          fi
+          test -x "$ninja_bin"
+          export PATH="$(dirname "$ninja_bin"):$PATH"
+
+          hexagon_root="$(find /opt/hexagon -maxdepth 2 -type d -name "6.7*" -print -quit)"
+          test -d "$hexagon_root"
+
+          mkdir -p /data
+          rm -rf /data/android-ndk-r28
+          ln -s "$ndk_root" /data/android-ndk-r28
+
+          export ANDROID_NDK_ROOT="$ndk_root"
+          export QNN_SDK_ROOT=/qnn
+          export HEXAGON_SDK_ROOT="$hexagon_root"
+
+          # Rust build scripts and proc-macros execute on the x86_64 Linux host
+          # even though the final static library targets Android. The Snapdragon
+          # image ships Android clang but no host cc, so install one.
+          if ! command -v cc >/dev/null 2>&1; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config
+            rm -rf /var/lib/apt/lists/*
+          fi
+          command -v cc
+          cc --version
+
+          # tokenizers-cpp predates Rust 1.89, where
+          # dangerous_implicit_autorefs became deny-by-default. Pin 1.88.
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | \
+              sh -s -- -y --profile minimal --default-toolchain 1.88.0
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+          rustup target add --toolchain 1.88.0 aarch64-linux-android
+
+          echo "NDK: $ANDROID_NDK_ROOT"
+          echo "Ninja: $ninja_bin"
+          echo "Hexagon: $HEXAGON_SDK_ROOT"
+          cmake --version
+          ninja --version
+          cargo --version
+          rustc --version
+          rustup show active-toolchain
+          rustup target list --installed --toolchain 1.88.0
+          test -f /data/android-ndk-r28/build/cmake/android.toolchain.cmake
+
+          # Preserve the known-good October 13 v0.7 Snapdragon toolchain,
+          # QAIRT setup and canonical APK signer. Only the disposable Docker
+          # checkout needs safe.directory entries for its mounted Git owner.
+          # Never set safe.directory='*' or alter the runner/global repo.
+          for worktree in \
+            /workspace \
+            /workspace/app/src/main/cpp/3rdparty/stable-diffusion.cpp \
+            /workspace/app/src/main/cpp/3rdparty/stable-diffusion.cpp/ggml \
+            /workspace/app/src/main/cpp/3rdparty/moss-stable-diffusion.cpp \
+            /workspace/app/src/main/cpp/3rdparty/moss-stable-diffusion.cpp/ggml; do
+            test -d "$worktree"
+            git config --global --add safe.directory "$worktree"
+            git -C "$worktree" rev-parse --verify HEAD
+          done
+
+          cd /workspace/app/src/main/cpp
+          # Mandatory cold native build for all changed backends and both DiT ABIs.
+          bash voice/build.sh
+          bash /workspace/app/src/main/rust/xet_downloader/build.sh
+          bash build.sh
+          bash dit/build.sh
+          bash music/build.sh
+          bash moss/build.sh
+          CONTAINER_SCRIPT
+
+      - name: Verify staged native artifacts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s app/src/main/jniLibs/arm64-v8a/libstable_diffusion_core.so
+          test -s app/src/main/jniLibs/arm64-v8a/libdit_engine.so
+          test -s app/src/main/jniLibs/arm64-v8a/libmoss_engine.so
+          test -s app/src/main/jniLibs/arm64-v8a/libyue2_server.so
+          test -s app/src/main/jniLibs/arm64-v8a/libyue2_server_fastrpc.so
+          test -s app/src/main/jniLibs/arm64-v8a/libyue2_bench_dspqueue.so
+          test -s app/src/main/jniLibs/arm64-v8a/libyue2_bench_fastrpc.so
+          test -s app/src/main/jniLibs/arm64-v8a/libbreeze_server.so
+          test -s app/src/main/jniLibs/arm64-v8a/libbreeze_selftest.so
+          readelf -d app/src/main/jniLibs/arm64-v8a/libbreeze_server.so | tee /tmp/breeze-elf-needed.txt
+          readelf -d app/src/main/jniLibs/arm64-v8a/libbreeze_selftest.so | tee /tmp/breeze-selftest-elf-needed.txt
+          if grep -Eq 'Shared library: \[libggml(-base|-hexagon)?\.so\]' /tmp/breeze-elf-needed.txt; then
+            echo "Breeze APK runtime still has private ggml shared-library dependencies" >&2
+            exit 1
+          fi
+          test -s app/src/main/jniLibs/arm64-v8a/liblocaldream_xet.so
+          test -s app/src/main/assets/ditlibs/libggml-htp-v79.so
+          test -s app/src/main/assets/ditlibs/libggml-htp-v81.so
+          test -s app/src/main/assets/ditlibs/libggml-htp-v85.so
+          test -s app/src/main/assets/mosslibs/libggml-htp-v81.so
+          test -s app/src/main/assets/qnnlibs/libQnnHtpV85Stub.so
+          test -s app/src/main/assets/qnnlibs/libQnnHtpV85Skel.so
+          for arch in v79 v81; do
+            test -s "app/src/main/assets/yue2libs/libggml-htp-$arch.so"
+            test -s "app/src/main/assets/yue2libs/libggml-htp-$arch-dspqueue.so"
+            test -s "app/src/main/assets/yue2libs/libggml-htp-$arch-fastrpc.so"
+          done
+          grep -q 'commit=37f752b77fc4d661e2552128f42cb811d7bdb628' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'variant=dual-transport-yue2-native-0.7.0' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q '^integration=' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'snake-hvx-fused' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'sin-hvx' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'col2im1d-htp' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'col2im-bias-fused' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'col2im-channel-blocked' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'channel-bcast-addmul-hvx' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'adaptive-binary-vtcm' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'dpmpp2m-sgm-uniform' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'htp-kv-window64' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'vae-cpu-parity-gate' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'dual-transport-server' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'dual-transport-bench' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'strict-accelerator' app/src/main/assets/yue2libs/backend-version.txt
+          grep -q 'cpu_fallback=disabled' app/src/main/assets/yue2libs/backend-version.txt
+          for arch in v73 v75 v79 v81; do
+            test -s "app/src/main/assets/breezelibs/libggml-htp-$arch.so"
+          done
+          grep -q 'runtime_commit=a0e177f91242ebbd2ea8d61548d742c89e4b9e06' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'backend_commit=ab9acc4476cfe3add369379a3783fea190505a48' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'mode=strict-htp-dspqueue' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'fallback=disabled' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'integration=pinned-source-overlay' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'queue=v202-opbatch1280x32-oppoll0' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'upstream-dcache-64b-pr29977' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'v81_visibility=none-v153-scheduler' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'v81_execution=hvx-only-no-hmx' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'gelu_erf=dsp-libm-reference-v81' app/src/main/assets/breezelibs/backend-version.txt
+          grep -Fxq 'generator=legacy-hexagon-fastpath' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'quant-weight-repack-ordinary-map' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'raw-quant-matmul-guard' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'decoder-codebook-ordinary-htp-mirror' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'stateful-vocoder-htp-resident' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'pingpong-causal-state' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'exact-tconv-output-overlap' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'bounded-stream-kv' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'precomputed-snake-params' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'snake-hotgraph-fused' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'vocoder=qnn-htp-feature64-serialized-or-ggml-fallback-v198' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'qnn_vocoder=sm8850-v3-v81,feature64,host-lut-fp32,cached-reference-selftest,left-context25,serialized64x39,eos-first' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'formats=f16,q8_0,q6_k,q4_k,q8_0-dd4,q8_0-dd2,q4_k-dd2' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'sin-hvx' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'col2im1d-htp' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'col2im-bias-fused' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'channel-bcast-addmul-hvx' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'snake-hvx-fused' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'adaptive-binary-vtcm' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'exact-elu-lowering' app/src/main/assets/breezelibs/backend-version.txt
+          grep -q 'transpose-conv-gemm-col2im' app/src/main/assets/breezelibs/backend-version.txt
+          test -s app/src/main/assets/qnnlibs/libQnnHtp.so
+          find app/src/main/jniLibs/arm64-v8a app/src/main/assets/ditlibs app/src/main/assets/yue2libs app/src/main/assets/breezelibs -maxdepth 1 -type f -ls
+
+      - name: Save native artifacts cache
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a
+            app/src/main/assets/ditlibs
+            app/src/main/assets/yue2libs
+            app/src/main/assets/breezelibs
+            app/src/main/assets/qnnlibs
+            app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
+          key: ${{ steps.native-key.outputs.key }}
+
+      # Permanent installer identity; NEVER generate a replacement when secrets
+      # are present or when supplied key differs from the pinned fingerprint.
+      # Until the private key is explicitly restored in GitHub Actions secrets,
+      # only a clearly named and labelled staging APK is published.
+      - name: Prepare permanent signing identity or staging preview
+        id: identity
+        shell: bash
+        env:
+          PERMANENT_KEY_BASE64: ${{ secrets.LOCALDREAM_PERMANENT_KEYSTORE_BASE64 }}
+          PERMANENT_STORE_PASSWORD: ${{ secrets.LOCALDREAM_PERMANENT_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -n "$PERMANENT_KEY_BASE64" ] || [ -n "$PERMANENT_STORE_PASSWORD" ]; then
+            if [ -z "$PERMANENT_KEY_BASE64" ] || [ -z "$PERMANENT_STORE_PASSWORD" ]; then
+              echo "::error::Both permanent signing secrets are required."
+              exit 1
+            fi
+            printf '%s' "$PERMANENT_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/localdream-signing.p12"
+            test -s "$RUNNER_TEMP/localdream-signing.p12"
+            chmod 600 "$RUNNER_TEMP/localdream-signing.p12"
+            keytool -list -keystore "$RUNNER_TEMP/localdream-signing.p12" \
+              -storetype PKCS12 -storepass "$PERMANENT_STORE_PASSWORD" \
+              -alias localdream >/dev/null
+            actual="$(keytool -exportcert -rfc \
+              -keystore "$RUNNER_TEMP/localdream-signing.p12" \
+              -storetype PKCS12 -storepass "$PERMANENT_STORE_PASSWORD" \
+              -alias localdream | openssl x509 -noout -fingerprint -sha256 |
+              sed 's/.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+            expected="e6d1a8635da6a0e77bcfc1a0e478522cbbb08f0a9e1d2043fd954914bd833956"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::Wrong release signing certificate. Refusing to rotate keys."
+              exit 1
+            fi
+            echo "mode=permanent" >> "$GITHUB_OUTPUT"
+            echo "artifact=LocalDream-Glass-Permanent" >> "$GITHUB_OUTPUT"
+            echo "Permanent certificate verified: $actual"
+          else
+            keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/localdream-signing.p12" \
+              -storetype PKCS12 -storepass android -keypass android -alias localdream \
+              -keyalg RSA -keysize 2048 -validity 1 \
+              -dname "CN=Local Dream STAGING ONLY,O=thaakeno,C=DE"
+            echo "mode=staging" >> "$GITHUB_OUTPUT"
+            echo "artifact=LocalDream-Integration-Staging-NOT-UPDATEABLE" >> "$GITHUB_OUTPUT"
+            echo "::warning::Permanent signing secrets unavailable; this is NOT a permanent installable release."
+          fi
+
+      - name: Build APK
+        shell: bash
+        env:
+          PERMANENT_STORE_PASSWORD: ${{ secrets.LOCALDREAM_PERMANENT_STORE_PASSWORD }}
+          SIGNING_MODE: ${{ steps.identity.outputs.mode }}
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          if [ "$SIGNING_MODE" = "permanent" ]; then
+            password="$PERMANENT_STORE_PASSWORD"
+          else
+            password="android"
+          fi
+          ./gradlew --no-daemon :app:assembleBasicDebug \
+            -PRELEASE_STORE_FILE="$RUNNER_TEMP/localdream-signing.p12" \
+            -PRELEASE_STORE_PASSWORD="$password" \
+            -PRELEASE_KEY_ALIAS=localdream \
+            -PRELEASE_KEY_PASSWORD="$password"
+          find app/build/outputs/apk -type f -name '*.apk' -ls
+
+      - name: Verify APK signature and permanent identity
+        shell: bash
+        env:
+          SIGNING_MODE: ${{ steps.identity.outputs.mode }}
+        run: |
+          set -euo pipefail
+          apk="$(find app/build/outputs/apk/basic/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -s "$apk"
+          signer="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n1)"
+          "$signer" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-verification.txt"
+          if [ "$SIGNING_MODE" = "permanent" ]; then
+            grep -iq 'e6d1a8635da6a0e77bcfc1a0e478522cbbb08f0a9e1d2043fd954914bd833956' \
+              "$RUNNER_TEMP/apk-verification.txt"
+          fi
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.identity.outputs.artifact }}
+          path: app/build/outputs/apk/basic/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Erase signing keystore from CI runner
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/localdream-signing.p12"
+
+
+      # The legacy v141 signer is retained on its own branch for old installs,
+      # but cannot sign this release: its original private key was evicted.
+      # Never auto-dispatch it from the new permanent-identity pipeline.

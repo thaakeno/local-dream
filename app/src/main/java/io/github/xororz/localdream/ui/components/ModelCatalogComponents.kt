@@ -1,5 +1,12 @@
 package io.github.xororz.localdream.ui.components
 
+import io.github.xororz.localdream.ui.glass.GlassCatalogControls
+import io.github.xororz.localdream.ui.glass.DreamGlassRole
+import io.github.xororz.localdream.ui.glass.DreamGlassSurface
+import io.github.xororz.localdream.ui.glass.DreamElevatedCard
+import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
+import io.github.xororz.localdream.ui.glass.CompactFamilyCard
+
 import android.content.Intent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -22,6 +29,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
@@ -79,8 +87,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.xororz.localdream.data.Model
-import io.github.xororz.localdream.service.BreezeQnnGeneratorArtifact
-import io.github.xororz.localdream.service.ModelDownloadService
 import java.io.File
 import io.github.xororz.localdream.utils.AppHaptics
 import java.util.Locale
@@ -162,6 +168,18 @@ fun ModelCatalogControls(
     onSortChange: (CatalogSortMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    if (LocalDreamGlassEnabled.current) {
+        GlassCatalogControls(
+            query = query,
+            onQueryChange = onQueryChange,
+            filter = filter,
+            onFilterChange = onFilterChange,
+            sort = sort,
+            onSortChange = onSortChange,
+            modifier = modifier,
+        )
+        return
+    }
     var sortMenu by remember { mutableStateOf(false) }
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -233,6 +251,27 @@ private fun AnimatedFamilyHero(
     voice: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    if (LocalDreamGlassEnabled.current) {
+        DreamGlassSurface(
+            modifier = modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(30.dp),
+            role = DreamGlassRole.OVERLAY,
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 25.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(if (voice) "VOICE STUDIO" else if (music) "MUSIC STUDIO" else "IMAGE STUDIO",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(title, style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.SemiBold)
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        return
+    }
     val gradient = when {
         voice -> Brush.linearGradient(
             listOf(
@@ -368,6 +407,42 @@ private fun FamilyVariantTile(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    if (LocalDreamGlassEnabled.current) {
+        DreamGlassSurface(
+            modifier = modifier.heightIn(min = 84.dp).combinedClickable(
+                onClick = {
+                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                    onClick()
+                },
+                onLongClick = {
+                    if (installed) {
+                        AppHaptics.perform(context, AppHaptics.Kind.Stage)
+                        onLongClick?.invoke()
+                    }
+                },
+            ),
+            shape = RoundedCornerShape(24.dp),
+            role = if (selected) DreamGlassRole.SELECTION else DreamGlassRole.CARD,
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Icon(icon, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurface)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium)
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                }
+                if (installed) Icon(Icons.Default.CheckCircle, "Installed",
+                    Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurface)
+                else if (selected) Text("SELECTED", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        return
+    }
     Surface(
         modifier = modifier
             .heightIn(min = 106.dp)
@@ -465,7 +540,19 @@ fun QwenFamilyCard(
         ?: variants.firstOrNull { it.isDownloaded }
         ?: variants.first()
 
-    ElevatedCard(
+    if (LocalDreamGlassEnabled.current) {
+        CompactFamilyCard(
+            title = "Qwen Image 2.1",
+            subtitle = "Image generation",
+            variants = variants,
+            onClick = {
+                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                showSheet = true
+            },
+            modifier = modifier,
+        )
+    } else {
+    DreamElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
@@ -535,6 +622,7 @@ fun QwenFamilyCard(
             }
         }
     }
+    }
 
     if (showSheet) {
         QwenVariantSheet(
@@ -589,7 +677,13 @@ private fun QwenVariantSheet(
     val baseReady = precisionReady(precision)
     val turboReady = adapterReady(adapter)
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = if (LocalDreamGlassEnabled.current)
+            MaterialTheme.colorScheme.surface.copy(alpha = .97f)
+            else MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp),
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -797,7 +891,19 @@ fun Yue2FamilyCard(
     val selected = supported.firstOrNull { it.id == selectedId } ?: initial
     val installed = supported.count { it.isDownloaded }
 
-    ElevatedCard(
+    if (LocalDreamGlassEnabled.current) {
+        CompactFamilyCard(
+            title = "YuE2 3B",
+            subtitle = "Music generation",
+            variants = supported,
+            onClick = {
+                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                showSheet = true
+            },
+            modifier = modifier,
+        )
+    } else {
+    DreamElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
@@ -862,6 +968,7 @@ fun Yue2FamilyCard(
             }
         }
     }
+    }
 
     if (showSheet) {
         Yue2VariantSheet(
@@ -906,7 +1013,13 @@ private fun Yue2VariantSheet(
         ?: variants.firstOrNull { it.recommendedVariant }
         ?: variants.first()
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = if (LocalDreamGlassEnabled.current)
+            MaterialTheme.colorScheme.surface.copy(alpha = .97f)
+            else MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp),
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -921,7 +1034,7 @@ private fun Yue2VariantSheet(
                 music = true,
             )
 
-            sorted.chunked(2).forEach { row ->
+            sorted.chunked(if (LocalDreamGlassEnabled.current) 1 else 2).forEach { row ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1190,33 +1303,6 @@ fun BreezeFamilyCard(
     if (variants.isEmpty()) return
 
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val qnnGeneratorState by BreezeQnnGeneratorArtifact.status.collectAsState()
-    var fullQnnEnabled by remember {
-        mutableStateOf(BreezeQnnGeneratorArtifact.isEnabled(context))
-    }
-    val sharedDownloadState by ModelDownloadService.downloadState.collectAsState()
-    val qnnTransferState = sharedDownloadState.takeIf { state ->
-        when (state) {
-            is ModelDownloadService.DownloadState.Downloading ->
-                state.modelId == BreezeQnnGeneratorArtifact.DOWNLOAD_MODEL_ID
-            is ModelDownloadService.DownloadState.Paused ->
-                state.modelId == BreezeQnnGeneratorArtifact.DOWNLOAD_MODEL_ID
-            is ModelDownloadService.DownloadState.Success ->
-                state.modelId == BreezeQnnGeneratorArtifact.DOWNLOAD_MODEL_ID
-            is ModelDownloadService.DownloadState.Error ->
-                state.modelId == BreezeQnnGeneratorArtifact.DOWNLOAD_MODEL_ID
-            else -> false
-        }
-    }
-    LaunchedEffect(Unit) {
-        BreezeQnnGeneratorArtifact.refresh(context)
-    }
-    LaunchedEffect(qnnTransferState) {
-        if (qnnTransferState is ModelDownloadService.DownloadState.Success) {
-            BreezeQnnGeneratorArtifact.refresh(context)
-        }
-    }
     val order = listOf(
         "Q8_0",
         "Q6_K",
@@ -1239,7 +1325,19 @@ fun BreezeFamilyCard(
     val selected = sorted.firstOrNull { it.id == selectedId } ?: initial
     val installed = sorted.count { it.isDownloaded }
 
-    ElevatedCard(
+    if (LocalDreamGlassEnabled.current) {
+        CompactFamilyCard(
+            title = "Breeze TTS 2",
+            subtitle = "Speech generation",
+            variants = sorted,
+            onClick = {
+                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                showSheet = true
+            },
+            modifier = modifier,
+        )
+    } else {
+    DreamElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
@@ -1298,9 +1396,16 @@ fun BreezeFamilyCard(
             }
         }
     }
+    }
 
     if (showSheet) {
-        ModalBottomSheet(onDismissRequest = { showSheet = false }) {
+        ModalBottomSheet(
+        onDismissRequest = { showSheet = false },
+        containerColor = if (LocalDreamGlassEnabled.current)
+            MaterialTheme.colorScheme.surface.copy(alpha = .97f)
+            else MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp),
+    ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1322,7 +1427,7 @@ fun BreezeFamilyCard(
                     fontWeight = FontWeight.SemiBold,
                 )
                 sorted.filterNot { "DD" in it.variantPrecision }
-                    .chunked(2)
+                    .chunked(if (LocalDreamGlassEnabled.current) 1 else 2)
                     .forEach { row ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1364,7 +1469,7 @@ fun BreezeFamilyCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 sorted.filter { "DD" in it.variantPrecision }
-                    .chunked(2)
+                    .chunked(if (LocalDreamGlassEnabled.current) 1 else 2)
                     .forEach { row ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1390,279 +1495,6 @@ fun BreezeFamilyCard(
                             if (row.size == 1) Spacer(Modifier.weight(1f))
                         }
                     }
-
-                Text(
-                    "Snapdragon acceleration",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Surface(
-                                modifier = Modifier.size(46.dp),
-                                shape = MaterialTheme.shapes.large,
-                                color = MaterialTheme.colorScheme.tertiaryContainer,
-                            ) {
-                                Icon(
-                                    Icons.Default.Bolt,
-                                    contentDescription = null,
-                                    modifier = Modifier.padding(11.dp),
-                                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "Full QNN Generator",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    when (val transfer = qnnTransferState) {
-                                        is ModelDownloadService.DownloadState.Downloading ->
-                                            "Downloading accelerator"
-                                        is ModelDownloadService.DownloadState.Paused ->
-                                            "Download paused"
-                                        is ModelDownloadService.DownloadState.Error ->
-                                            transfer.message
-                                        else -> when (val status = qnnGeneratorState) {
-                                            is BreezeQnnGeneratorArtifact.Status.Ready ->
-                                                if (fullQnnEnabled) {
-                                                    "Installed · Full QNN enabled"
-                                                } else {
-                                                    "Installed · Legacy generator enabled"
-                                                }
-                                            is BreezeQnnGeneratorArtifact.Status.Unsupported ->
-                                                "Not available on this Snapdragon"
-                                            is BreezeQnnGeneratorArtifact.Status.Error ->
-                                                status.message
-                                            BreezeQnnGeneratorArtifact.Status.Checking ->
-                                                "Checking device"
-                                            is BreezeQnnGeneratorArtifact.Status.Missing ->
-                                                "Optional · QNN backbone + depth accelerator"
-                                            is BreezeQnnGeneratorArtifact.Status.Downloading ->
-                                                "Preparing shared download service"
-                                        }
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (
-                                        qnnTransferState is ModelDownloadService.DownloadState.Error ||
-                                        qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Error
-                                    ) {
-                                        MaterialTheme.colorScheme.error
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                    maxLines = 2,
-                                )
-                            }
-
-                            when {
-                                qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Ready -> {
-                                    Switch(
-                                        checked = fullQnnEnabled,
-                                        onCheckedChange = { enabled ->
-                                            fullQnnEnabled = enabled
-                                            BreezeQnnGeneratorArtifact.setEnabled(context, enabled)
-                                            AppHaptics.perform(
-                                                context,
-                                                AppHaptics.Kind.Interaction,
-                                            )
-                                        },
-                                    )
-                                }
-                                qnnTransferState is ModelDownloadService.DownloadState.Downloading ||
-                                    qnnTransferState is ModelDownloadService.DownloadState.Paused -> Unit
-                                qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Unsupported ||
-                                    qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Checking -> Unit
-                                else -> {
-                                    Button(
-                                        onClick = {
-                                            context.startForegroundService(
-                                                Intent(
-                                                    context,
-                                                    ModelDownloadService::class.java,
-                                                ).setAction(
-                                                    ModelDownloadService
-                                                        .ACTION_START_BREEZE_QNN_GENERATOR,
-                                                ),
-                                            )
-                                        },
-                                    ) {
-                                        Icon(Icons.Default.CloudDownload, contentDescription = null)
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(
-                                            if (
-                                                qnnGeneratorState is BreezeQnnGeneratorArtifact.Status.Error ||
-                                                qnnTransferState is ModelDownloadService.DownloadState.Error
-                                            ) {
-                                                "Retry"
-                                            } else {
-                                                "Download"
-                                            },
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        val transfer = qnnTransferState
-                        if (
-                            transfer is ModelDownloadService.DownloadState.Downloading ||
-                            transfer is ModelDownloadService.DownloadState.Paused
-                        ) {
-                            val progress = when (transfer) {
-                                is ModelDownloadService.DownloadState.Downloading -> transfer.progress
-                                is ModelDownloadService.DownloadState.Paused -> transfer.progress
-                                else -> 0f
-                            }
-                            val downloaded = when (transfer) {
-                                is ModelDownloadService.DownloadState.Downloading ->
-                                    transfer.downloadedBytes
-                                is ModelDownloadService.DownloadState.Paused ->
-                                    transfer.downloadedBytes
-                                else -> 0L
-                            }
-                            val total = when (transfer) {
-                                is ModelDownloadService.DownloadState.Downloading ->
-                                    transfer.totalBytes
-                                is ModelDownloadService.DownloadState.Paused ->
-                                    transfer.totalBytes
-                                else -> 0L
-                            }
-                            val speed = (
-                                transfer as? ModelDownloadService.DownloadState.Downloading
-                                )?.bytesPerSecond ?: 0L
-                            val eta = (
-                                transfer as? ModelDownloadService.DownloadState.Downloading
-                                )?.etaSeconds
-                            val currentFile = when (transfer) {
-                                is ModelDownloadService.DownloadState.Downloading ->
-                                    transfer.currentFileName
-                                is ModelDownloadService.DownloadState.Paused ->
-                                    transfer.currentFileName
-                                else -> null
-                            }
-                            val paused = transfer is ModelDownloadService.DownloadState.Paused
-
-                            SmoothLinearWavyProgressIndicator(
-                                progress = progress,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                            ) {
-                                Text(
-                                    String.format(
-                                        Locale.US,
-                                        "%d%% · %.0f / %.0f MB",
-                                        (progress * 100f).toInt(),
-                                        downloaded / 1048576.0,
-                                        total / 1048576.0,
-                                    ),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                if (!paused && speed > 0L) {
-                                    Text(
-                                        buildString {
-                                            append(
-                                                String.format(
-                                                    Locale.US,
-                                                    "%.1f MB/s",
-                                                    speed / 1048576.0,
-                                                ),
-                                            )
-                                            eta?.takeIf { it > 0L }?.let {
-                                                append(" · ")
-                                                if (it >= 60L) {
-                                                    append("${it / 60L}m")
-                                                } else {
-                                                    append("${it}s")
-                                                }
-                                                append(" left")
-                                            }
-                                        },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-
-                            currentFile?.let {
-                                Text(
-                                    it,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                )
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                TextButton(
-                                    onClick = {
-                                        context.startService(
-                                            Intent(
-                                                context,
-                                                ModelDownloadService::class.java,
-                                            ).setAction(
-                                                if (paused) {
-                                                    ModelDownloadService.ACTION_RESUME_DOWNLOAD
-                                                } else {
-                                                    ModelDownloadService.ACTION_PAUSE_DOWNLOAD
-                                                },
-                                            ),
-                                        )
-                                    },
-                                ) {
-                                    Icon(
-                                        if (paused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                                        contentDescription = null,
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(if (paused) "Resume" else "Pause")
-                                }
-                                TextButton(
-                                    onClick = {
-                                        context.startService(
-                                            Intent(
-                                                context,
-                                                ModelDownloadService::class.java,
-                                            ).setAction(
-                                                ModelDownloadService.ACTION_CANCEL_DOWNLOAD,
-                                            ),
-                                        )
-                                    },
-                                ) {
-                                    Icon(Icons.Default.Close, contentDescription = null)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Cancel")
-                                }
-                            }
-                        }
-
-                        Text(
-                            "Separate from the Breeze GGUF. Uses the proven SM8850 batch-1 QNN depth context with serial CFG branches plus QNN backbone prompt/AR1 contexts. Hexagon remains the fallback.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
 
                 val current = sorted.firstOrNull { it.id == selectedId } ?: selected
                 Surface(

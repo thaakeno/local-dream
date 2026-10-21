@@ -15,6 +15,7 @@ import io.github.xororz.localdream.BuildConfig
 import io.github.xororz.localdream.R
 import io.github.xororz.localdream.data.GenerationPreferences
 import io.github.xororz.localdream.data.Model
+import io.github.xororz.localdream.data.ModelStorage
 import io.github.xororz.localdream.utils.DownloadDiagnostics
 import io.github.xororz.localdream.utils.Http
 import java.io.File
@@ -120,7 +121,6 @@ class ModelDownloadService : Service() {
         val downloadState: StateFlow<DownloadState> = _downloadState
 
         const val ACTION_START_DOWNLOAD = "action_start_download"
-        const val ACTION_START_BREEZE_QNN_GENERATOR = "action_start_breeze_qnn_generator"
         const val ACTION_CANCEL_DOWNLOAD = "action_cancel_download"
         const val ACTION_PAUSE_DOWNLOAD = "action_pause_download"
         const val ACTION_RESUME_DOWNLOAD = "action_resume_download"
@@ -133,7 +133,6 @@ class ModelDownloadService : Service() {
         const val TYPE_SD = "sd"
         const val TYPE_UPSCALER = "upscaler"
         const val TYPE_MULTI_FILE = "multi_file"
-        const val TYPE_BREEZE_QNN_GENERATOR = "breeze_qnn_generator"
         const val EXTRA_FILE_NAMES = "file_names"
         const val EXTRA_INSTALL_DIR = "install_dir"
         const val EXTRA_MARKER_FILE = "marker_file"
@@ -208,26 +207,6 @@ class ModelDownloadService : Service() {
                 startDownload(request)
             }
 
-            ACTION_START_BREEZE_QNN_GENERATOR -> {
-                val request = DownloadRequest(
-                    modelId = BreezeQnnGeneratorArtifact.DOWNLOAD_MODEL_ID,
-                    modelName = BreezeQnnGeneratorArtifact.DOWNLOAD_MODEL_NAME,
-                    fileUrl = "",
-                    isZip = false,
-                    modelType = TYPE_BREEZE_QNN_GENERATOR,
-                    fileNames = emptyList(),
-                    installDir = null,
-                    markerFile = null,
-                    inferenceProfile = null,
-                    targetFileName = null,
-                )
-                activeRequest = request
-                pauseRequested = false
-                cancelRequested = false
-                startForeground(NOTIFICATION_ID, createNotification(request.modelName, 0f))
-                startDownload(request)
-            }
-
             ACTION_PAUSE_DOWNLOAD -> pauseDownload()
             ACTION_RESUME_DOWNLOAD -> resumeDownload()
             ACTION_CANCEL_DOWNLOAD -> cancelDownload()
@@ -260,41 +239,7 @@ class ModelDownloadService : Service() {
                     )
                 }
 
-                if (request.modelType == TYPE_BREEZE_QNN_GENERATOR) {
-                    val estimator = RollingThroughputEstimator(4_000L)
-                    val ok = BreezeQnnGeneratorArtifact.download(
-                        this@ModelDownloadService,
-                    ) { transfer ->
-                        val now = SystemClock.elapsedRealtime()
-                        val speed = estimator.sample(now, transfer.received)
-                        val eta = if (speed > 0L && transfer.total > transfer.received) {
-                            ((transfer.total - transfer.received) / speed).coerceAtLeast(0L)
-                        } else {
-                            null
-                        }
-                        emitProgress(
-                            modelId = request.modelId,
-                            modelName = request.modelName,
-                            done = transfer.received,
-                            total = transfer.total,
-                            speed = speed,
-                            eta = eta,
-                            currentFileName = transfer.currentFileName,
-                            usingXet = false,
-                        )
-                    }
-                    if (!ok) {
-                        val detail = (
-                            BreezeQnnGeneratorArtifact.status.value
-                                as? BreezeQnnGeneratorArtifact.Status.Error
-                            )?.message ?: "Breeze QNN accelerator download failed"
-                        throw IOException(detail)
-                    }
-                    completeDownload(request.modelId, request.modelName)
-                    return@launch
-                }
-
-                val tempDir = File(filesDir, "temp_downloads").apply { mkdirs() }
+                val tempDir = ModelStorage.tempDownloadsDir(this@ModelDownloadService)
 
                 if (request.modelType == TYPE_MULTI_FILE) {
                     val xetSetting = GenerationPreferences(this@ModelDownloadService)
@@ -509,7 +454,7 @@ class ModelDownloadService : Service() {
         } else {
             discardPartialFiles(request.modelType, request.modelId, request.installDir)
             if (request.modelType != TYPE_MULTI_FILE) {
-                File(filesDir, "temp_downloads/${request.modelId}.part").delete()
+                File(ModelStorage.tempDownloadsDir(this), "${request.modelId}.part").delete()
             }
             _downloadState.value = DownloadState.Idle
             activeRequest = null
@@ -1402,7 +1347,7 @@ class ModelDownloadService : Service() {
         } else if (request != null) {
             discardPartialFiles(request.modelType, request.modelId, request.installDir)
             if (request.modelType != TYPE_MULTI_FILE) {
-                File(filesDir, "temp_downloads/${request.modelId}.part").delete()
+                File(ModelStorage.tempDownloadsDir(this), "${request.modelId}.part").delete()
             }
             _downloadState.value = DownloadState.Idle
             activeRequest = null
@@ -1416,10 +1361,6 @@ class ModelDownloadService : Service() {
         modelId: String,
         installDir: String? = null,
     ) {
-        if (modelType == TYPE_BREEZE_QNN_GENERATOR) {
-            BreezeQnnGeneratorArtifact.discardPartials(this)
-            return
-        }
         if (modelType != TYPE_MULTI_FILE) return
         val modelDir = File(
             getModelsDir(),
@@ -1429,9 +1370,7 @@ class ModelDownloadService : Service() {
             ?.forEach { it.delete() }
     }
 
-    private fun getModelsDir(): File = File(filesDir, "models").apply {
-        if (!exists()) mkdirs()
-    }
+    private fun getModelsDir(): File = ModelStorage.modelsDir(this)
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(

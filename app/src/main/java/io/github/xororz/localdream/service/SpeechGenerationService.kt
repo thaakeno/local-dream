@@ -240,28 +240,12 @@ class SpeechGenerationService : Service() {
             _state.value = SpeechState.Loading(
                 modelId, "Preparing accelerator runtime", started, 0.12f,
             )
-            val fullQnnEnabled = BreezeQnnGeneratorArtifact.isEnabled(this)
-            val qnnGeneratorInstall = if (fullQnnEnabled) {
-                BreezeQnnGeneratorArtifact.localInstall(this)
-            } else {
-                null
-            }
-
-            // Do not combine the resident v4 multigraph vocoder context with
-            // the legacy ggml-Hexagon generator on SM8850. The v4 context
-            // self-test succeeds, but the first subsequent ggml-Hexagon graph
-            // can abort in dspqueue_read with 0x2e / code 134. Use the proven
-            // v3 single-graph QNN vocoder for the hybrid path. If v3 is not
-            // installed, fall back to Breeze's built-in vocoder rather than
-            // crashing the native process. Full-QNN may still opt into v4.
-            val qnnInstall = if (qnnGeneratorInstall != null) {
-                BreezeQnnVocoderArtifact.localInstall(this)
-            } else {
-                BreezeQnnVocoderArtifact.localLegacyHexagonSafeInstall(this)
-            }
+            // Keep the proven ggml-Hexagon generator and compatible QNN vocoder.
+            // Previously saved accelerator experiments can no longer activate.
+            val qnnInstall = BreezeQnnVocoderArtifact.localLegacyHexagonSafeInstall(this)
             val qnnVocoderFile = qnnInstall?.contextFile
             usingQnnVocoder = qnnInstall != null
-            val usingQnnRuntime = qnnInstall != null || qnnGeneratorInstall != null
+            val usingQnnRuntime = qnnInstall != null
             val qnnSelftestCached = qnnInstall?.let { qnnSelftestValidated(it) } == true
             activeQnnSelftestMarker = qnnInstall?.let { qnnSelftestMarker(it) }
             activeQnnSelftestKey = qnnInstall?.let { qnnSelftestKey(it) }
@@ -333,22 +317,7 @@ class SpeechGenerationService : Service() {
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
                 env["LOCALDREAM_QNN_POWER_MODE"] = "high_performance"
             }
-            qnnGeneratorInstall?.let { generator ->
-                env["BREEZE_QNN_DEPTH_PATH"] =
-                    generator.depthContextFile.absolutePath
-                env["BREEZE_QNN_BACKBONE_PREFILL_PATH"] =
-                    generator.backbonePrefillFile.absolutePath
-                env["BREEZE_QNN_BACKBONE_STEP_PATH"] =
-                    generator.backboneStepFile.absolutePath
-                env["BREEZE_QNN_GENERATOR_ENGINE"] = generator.engine
-                env["BREEZE_QNN_BACKBONE_MAX_SEQ"] = generator.backboneMaxSeq.toString()
-            }
-            // The exact QKV graph-root reordering is a separate, strictly
-            // opt-in optimization. It can only be activated if the on-device
-            // full-model A/B test verified logits, actual Nx fusion, and a
-            // repeated-run speedup. Never enable HMX or whole-frame fusion.
-            env["BREEZE_DEPTH_QKV_GROUP"] =
-                if (!fullQnnEnabled && BreezeDepthDiagnostic.isEnabled(this, modelId)) "1" else "0"
+            // The retired grouped-QKV generator path no longer exists.
             // Isolated per-codebook timings are intentionally opt-in so logging
             // does not affect actual throughput. Fused experimental graph is
             // never activated in production after the SM8850 DSPQueue failure.
@@ -382,7 +351,6 @@ class SpeechGenerationService : Service() {
             )
             val installedPreferredQnn = BreezeQnnVocoderArtifact.localInstall(this)
             if (
-                qnnGeneratorInstall == null &&
                 installedPreferredQnn?.version == 4
             ) {
                 BackendDiagnostics.append(
@@ -402,8 +370,7 @@ class SpeechGenerationService : Service() {
                     "queue=v202-opbatch1280x32-oppoll0 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
-                    "generator_mode=" + (if (fullQnnEnabled) "full-qnn" else "legacy-hexagon") + " " +
-                    "generator=" + (if (qnnGeneratorInstall != null) qnnGeneratorInstall.engine else "ggml-hexagon") + " " +
+                    "generator_mode=legacy-hexagon generator=ggml-hexagon " +
                     "vocoder=" + (
                         if (usingQnnVocoder) {
                             if ((qnnInstall?.version ?: 0) >= 4) "qnn-htp-multigraph-v4"

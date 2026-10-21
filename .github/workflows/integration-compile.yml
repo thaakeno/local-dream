@@ -1,0 +1,43 @@
+name: Integration Kotlin compile
+
+on:
+  push:
+    branches:
+      - "integration/**"
+  workflow_dispatch:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Check SDXL integer conversion with UBSan
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=undefined \
+            -I app/src/main/cpp/include app/src/test/cpp/QnnNativeScalarTest.cpp \
+            -o /tmp/localdream-qnn-scalar-test
+          /tmp/localdream-qnn-scalar-test
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-37.0'
+      - name: Alias Android SDK 37.0 for existing compileSdk 37 build
+        run: |
+          test -f "$ANDROID_HOME/platforms/android-37.0/source.properties"
+          if [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37"
+          fi
+      - name: Compile Kotlin UI and resources (no Qualcomm SDK required)
+        run: ./gradlew :app:compileBasicDebugKotlin --no-daemon --stacktrace

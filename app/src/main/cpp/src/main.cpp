@@ -63,6 +63,8 @@ struct ServerOptions {
     kZImage,
     kFlux2Klein,
     kQwenImage21,
+    kKrea2Turbo,
+    kMossImage,
   };
 
   int port = 8081;
@@ -102,7 +104,8 @@ struct ServerOptions {
   // DiT formats served by libdit_engine.so: no fixed canvas, no QNN contexts.
   bool isDit() const {
     return type == ModelType::kZImage || type == ModelType::kFlux2Klein ||
-           type == ModelType::kQwenImage21;
+           type == ModelType::kQwenImage21 || type == ModelType::kKrea2Turbo ||
+           type == ModelType::kMossImage;
   }
 };
 
@@ -110,7 +113,7 @@ static void showHelp() {
   std::cout
       << "Usage:\n"
          "  stable_diffusion_core --type "
-         "<sd15cpu|sd15npu|sdxl|sdxlmnn|anima|zimage|klein|qwen21> "
+         "<sd15cpu|sd15npu|sdxl|sdxlmnn|anima|zimage|klein|qwen21|krea2turbo|moss> "
          "--model_dir <dir> [--lib_dir <dir>] [options]\n"
          "  stable_diffusion_core --upscaler_mode [--lib_dir <dir>] "
          "[options]\n"
@@ -119,7 +122,7 @@ static void showHelp() {
          "Modes:\n"
          "  --type <type>          Model format: sd15cpu (MNN), sd15npu "
          "(QNN), sdxl (QNN), sdxlmnn (MNN), anima (QNN), "
-         "zimage/klein/qwen21 "
+         "zimage/klein/qwen21/krea2turbo/moss "
          "(DiT engine)\n"
          "  --upscaler_mode        Upscale-only server, no diffusion model\n"
          "  --convert <dir>        Convert model.safetensors in <dir> to MNN "
@@ -291,6 +294,10 @@ static ServerOptions processCommandLine(int argc, char **argv) {
     opts.type = ServerOptions::ModelType::kFlux2Klein;
   else if (typeStr == "qwen21")
     opts.type = ServerOptions::ModelType::kQwenImage21;
+  else if (typeStr == "krea2turbo")
+    opts.type = ServerOptions::ModelType::kKrea2Turbo;
+  else if (typeStr == "moss")
+    opts.type = ServerOptions::ModelType::kMossImage;
   else
     showHelpAndExit(typeStr.empty() ? "Missing --type"
                                     : "Invalid --type: " + typeStr);
@@ -355,14 +362,17 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
     // native F8_E4M3 safetensor path. Prefer FP8 when the package provides it,
     // while keeping the existing Q4 model fully backward compatible.
     std::string dit_file = "dit.safetensors";
-    if (opts.type == ServerOptions::ModelType::kQwenImage21 &&
+    if ((opts.type == ServerOptions::ModelType::kQwenImage21 ||
+         opts.type == ServerOptions::ModelType::kKrea2Turbo ||
+         opts.type == ServerOptions::ModelType::kMossImage) &&
         !std::filesystem::exists(dir / dit_file)) {
       dit_file = "dit.gguf";
     }
     std::string dit_path = (dir / dit_file).string();
     std::string llm_path = (dir / "llm.gguf").string();
     std::string llm_vision_path =
-        opts.type == ServerOptions::ModelType::kQwenImage21
+        (opts.type == ServerOptions::ModelType::kQwenImage21 ||
+         opts.type == ServerOptions::ModelType::kKrea2Turbo)
             ? (dir / "llm_vision.gguf").string()
             : "";
     std::string vae_path = (dir / "vae.safetensors").string();
@@ -373,7 +383,9 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
       showHelpAndExit("File not found: " + llm_vision_path);
     if (opts.lib_dir.empty()) showHelpAndExit("Missing --lib_dir for DiT");
     const std::string engine_path =
-        (std::filesystem::path(opts.lib_dir) / "libdit_engine.so").string();
+        (std::filesystem::path(opts.lib_dir) /
+         (opts.type == ServerOptions::ModelType::kMossImage
+              ? "libmoss_engine.so" : "libdit_engine.so")).string();
     if (!std::filesystem::exists(engine_path))
       showHelpAndExit("DiT engine not installed: " + engine_path);
     const dit_model_kind kind =
@@ -381,7 +393,11 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
             ? DIT_MODEL_Z_IMAGE
             : opts.type == ServerOptions::ModelType::kFlux2Klein
                   ? DIT_MODEL_FLUX2_KLEIN
-                  : DIT_MODEL_QWEN_IMAGE_2_1;
+                  : opts.type == ServerOptions::ModelType::kKrea2Turbo
+                        ? DIT_MODEL_KREA_2_TURBO
+                        : opts.type == ServerOptions::ModelType::kMossImage
+                              ? DIT_MODEL_MOSS_IMAGE
+                              : DIT_MODEL_QWEN_IMAGE_2_1;
     // The Qwen3-VL encoder is only needed for conditioning. Releasing it
     // afterwards leaves substantially more memory for Qwen's DiT while keeping
     // the diffusion transformer resident across denoising steps. The old
@@ -405,7 +421,10 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
     return std::make_unique<PipelineDit>(
         text_encoder, opts.model_dir, engine_path, dit_path, llm_path,
         llm_vision_path, vae_path, kind, runtime_backend, params_backend,
-        opts.dit_threads, opts.dit_vae_tile_size, !opts.no_img2img);
+        opts.dit_threads, opts.dit_vae_tile_size,
+        !opts.no_img2img &&
+            opts.type != ServerOptions::ModelType::kKrea2Turbo &&
+            opts.type != ServerOptions::ModelType::kMossImage);
   }
 
   // Anima: Qwen "CLIP" (clip.bin, QNN) + split DiT (unet_part1/2.bin) + 16-ch

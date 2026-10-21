@@ -148,11 +148,43 @@ std::vector<float> qwen_raw_sigmas(int steps) {
   std::vector<float> raw;
   raw.reserve(static_cast<size_t>(steps));
   for (int i = 0; i < steps; ++i) {
-    // Diffusers QwenImage21Pipeline:
-    // np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
     raw.push_back(1.0f - static_cast<float>(i) / static_cast<float>(steps));
   }
   return raw;
+}
+
+// This fork's pinned stable-diffusion.cpp API accepts only *final* custom
+// sigmas. Its FluxScheduler applies a resolution-dependent shift internally
+// to generated schedules, but bypasses that shift for custom_sigmas. Apply
+// precisely the same formula for Viggle's published *raw* scheduler nodes.
+// Keep in sync with src/runtime/denoiser.hpp FluxScheduler (256..4096 anchors)
+// and src/model/vae/vae.hpp (Qwen Image 2.1 VAE scale factor = 16).
+std::vector<float> qwen_shift_raw_sigmas(const std::vector<float> &raw,
+                                         int width, int height) {
+  const float latent_tokens =
+      static_cast<float>((width / 16) * (height / 16));
+  constexpr float kBaseTokens = 256.0f;
+  constexpr float kMaxTokens = 4096.0f;
+  constexpr float kBaseMu = 0.5f;
+  constexpr float kMaxMu = 1.15f;
+  const float mu = kBaseMu +
+      (latent_tokens - kBaseTokens) *
+          (kMaxMu - kBaseMu) / (kMaxTokens - kBaseTokens);
+  const float shift = std::exp(mu);
+  std::vector<float> shifted;
+  shifted.reserve(raw.size() + 1);
+  float last = std::numeric_limits<float>::infinity();
+  for (float node : raw) {
+    if (!std::isfinite(node) || node <= 0.0f || node > 1.0f ||
+        node > last) return {};
+    const float value =
+        shift / (shift + (1.0f / node - 1.0f));
+    if (!std::isfinite(value) || value > last) return {};
+    shifted.push_back(value);
+    last = value;
+  }
+  shifted.push_back(0.0f);
+  return shifted;
 }
 
 }  // namespace
@@ -172,45 +204,27 @@ void forward_log(enum sd_log_level_t level, const char *text, void *) {
   if (g_log_cb) g_log_cb(static_cast<int>(level), text ? text : "", g_log_user_data);
 }
 
-void forward_phase(enum sd_generation_phase_t phase, void *) {
+// The pinned stable-diffusion.cpp provides a sampling progress callback, not
+// the newer typed phase/model-loading callbacks. Never reinterpret a model-load
+// counter as a sampler step. Phase transitions can be reported only when the
+// pinned backend supplies an actual sampling event.
+void forward_progress(int step, int steps, float time, void *) {
   if (!g_active.ctx) return;
-  switch (phase) {
-    case SD_PHASE_ENCODING_INPUT: g_active.current_phase = DIT_PHASE_ENCODING_INPUT; break;
-    case SD_PHASE_ENCODING_PROMPT: g_active.current_phase = DIT_PHASE_ENCODING_PROMPT; break;
-    case SD_PHASE_DENOISING: g_active.current_phase = DIT_PHASE_DENOISING; break;
-    case SD_PHASE_DECODING: g_active.current_phase = DIT_PHASE_DECODING; break;
-    case SD_PHASE_FINALIZING: g_active.current_phase = DIT_PHASE_FINALIZING; break;
-    case SD_PHASE_PREPARING:
-    default: g_active.current_phase = DIT_PHASE_PREPARING; break;
+  const bool sampling = steps > 0 && steps == g_active.sampling_steps;
+  if (sampling && g_active.current_phase != DIT_PHASE_DENOISING) {
+    g_active.current_phase = DIT_PHASE_DENOISING;
+    if (g_active.phase)
+      g_active.phase(DIT_PHASE_DENOISING, g_active.user_data);
   }
-  if (g_active.phase) g_active.phase(g_active.current_phase, g_active.user_data);
-}
-
-void forward_progress_event(enum sd_progress_kind_t kind, int step, int steps,
-                            float time, void *) {
   if (!g_active.progress) return;
-
-  // Preserve progress kind across the engine ABI. Model loading can now be
-  // rendered as its own determinate stage (for example 123/265 tensors)
-  // without ever entering the sampler denominator.
-  const bool sampler_progress =
-      kind == SD_PROGRESS_SAMPLING &&
-      g_active.current_phase == DIT_PHASE_DENOISING &&
-      steps > 0;
-  const dit_progress_kind routed_kind =
-      sampler_progress
-          ? DIT_PROGRESS_SAMPLING
-          : (kind == SD_PROGRESS_MODEL_LOADING ? DIT_PROGRESS_MODEL_LOADING
-                                               : DIT_PROGRESS_AUXILIARY);
-  const int routed_steps =
-      (sampler_progress || routed_kind == DIT_PROGRESS_MODEL_LOADING)
-          ? std::max(0, steps)
-          : 0;
-
-  if (!g_active.progress(routed_kind, step, routed_steps, time,
+  const dit_progress_kind kind = sampling
+      ? DIT_PROGRESS_SAMPLING
+      : DIT_PROGRESS_AUXILIARY;
+  if (!g_active.progress(kind, std::max(0, step),
+                         sampling ? steps : 0, time,
                          g_active.user_data)) {
     g_active.cancelled = true;
-    if (g_active.ctx && g_active.ctx->sd)
+    if (g_active.ctx->sd)
       sd_cancel_generation(g_active.ctx->sd, SD_CANCEL_ALL);
   }
 }
@@ -263,13 +277,9 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   sd_params.llm_vision_path = params->llm_vision_path;
   sd_params.vae_path = params->vae_path;
   sd_params.n_threads = params->n_threads > 0 ? params->n_threads : 4;
-  // Small exact LRU on host memory: repeated prompts skip the multi-GB
-  // Qwen3-VL encode while model/adapter changes invalidate the key.
-  sd_params.conditioning_cache_size = 4;
-  // Keep only encoded conditioning in the small host LRU. Qwen3-VL itself must
-  // leave HTP after prompt encoding so the DiT and VAE get a clean address
-  // space instead of competing with a multi-GB idle text encoder.
-  sd_params.keep_conditioner_resident = false;
+  // Do not set the abandoned conditioning-cache/resident fields. They are
+  // absent from this pinned runtime's sd_ctx_params_t. Native conditioning
+  // lifetime is owned by stable-diffusion.cpp, not this adapter.
   sd_params.flash_attn = params->flash_attn;
   sd_params.diffusion_flash_attn = params->flash_attn;
   sd_params.vae_conv_direct = params->vae_conv_direct;
@@ -353,7 +363,6 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   }
 
   std::vector<float> profile_sigmas;
-  std::string scheduler_args;
   const auto &raw_sigmas = ctx->inference_profile.raw_sigmas;
   const bool is_qwen = ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1;
   const bool has_turbo = !ctx->turbo_lora_path.empty();
@@ -362,14 +371,15 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
     // Viggle publishes scheduler-domain nodes. Pass those raw nodes to the
     // Qwen scheduler itself; the runtime owns the 256..8192 / 0.5..0.9
     // resolution shift. Distillation intentionally disables terminal stretch.
-    profile_sigmas =
+    const std::vector<float> raw =
         (!raw_sigmas.empty() && static_cast<int>(raw_sigmas.size()) == params->steps)
             ? raw_sigmas
             : qwen_raw_sigmas(params->steps);
-    profile_sigmas.push_back(0.0f);
-    gen.sample_params.custom_sigmas_are_raw = true;
-    scheduler_args = "shift_terminal=-1";
-    gen.sample_params.extra_sample_args = scheduler_args.c_str();
+    profile_sigmas = qwen_shift_raw_sigmas(raw, params->width, params->height);
+    if (profile_sigmas.empty()) {
+      ctx->last_error = "invalid Qwen Turbo raw sigma schedule";
+      return false;
+    }
     if (g_log_cb) {
       const std::string message =
           (!raw_sigmas.empty() && static_cast<int>(raw_sigmas.size()) == params->steps)
@@ -446,7 +456,11 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
     gen.ref_images = reference_images.data();
     gen.ref_images_count = static_cast<int>(reference_images.size());
     gen.ref_image_args =
-        ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1 ? "preset=qwen" : "preset=flux2";
+        ctx->kind == DIT_MODEL_QWEN_IMAGE_2_1
+            ? "preset=qwen"
+            : ctx->kind == DIT_MODEL_KREA_2_TURBO
+                  ? "preset=krea2_ostris_edit"
+                  : "preset=flux2";
   }
 
   if (params->vae_tile_size > 0) {
@@ -467,11 +481,10 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
                               DIT_PHASE_PREPARING, sampling_steps};
   if (g_active.phase)
     g_active.phase(DIT_PHASE_PREPARING, g_active.user_data);
-  // Use typed progress so model-loading counters and sampler steps cannot be
-  // confused with one another.
-  sd_set_progress_callback(nullptr, nullptr);
-  sd_set_progress_event_callback(progress ? forward_progress_event : nullptr, nullptr);
-  sd_set_phase_callback(phase ? forward_phase : nullptr, nullptr);
+  // This pinned API has one untyped progress callback; forward_progress
+  // distinguishes sampler steps from auxiliary/model-loading progress.
+  sd_set_progress_callback((progress || phase) ? forward_progress : nullptr,
+                           nullptr);
   if (preview && ctx->preview_interval > 0) {
     sd_set_preview_callback(forward_preview, PREVIEW_PROJ, ctx->preview_interval,
                             /*denoised=*/true, /*noisy=*/false, nullptr);
@@ -483,9 +496,9 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   int image_count = 0;
   const bool ok = generate_image(ctx->sd, &gen, &images, &image_count);
 
-  sd_set_progress_event_callback(nullptr, nullptr);
   sd_set_progress_callback(nullptr, nullptr);
-  sd_set_phase_callback(nullptr, nullptr);
+  if (g_active.phase && !g_active.cancelled)
+    g_active.phase(DIT_PHASE_FINALIZING, g_active.user_data);
   sd_set_preview_callback(nullptr, PREVIEW_NONE, 0, false, false, nullptr);
   const bool cancelled = g_active.cancelled;
   g_active = ActiveGeneration{};
@@ -524,13 +537,13 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
 void engine_free_image(uint8_t *pixels) { free(pixels); }
 
 bool engine_tokenize(dit_ctx *ctx, const char *text, dit_tokenize_result *result) {
-  if (!ctx || !ctx->sd || !text || !result) return false;
-  sd_tokenize_result_t native{};
-  if (!sd_tokenize_text(ctx->sd, text, &native)) return false;
-  result->count = native.count;
-  result->max_length = native.max_length;
-  result->overflow_offset = native.overflow_offset;
-  return true;
+  // The pinned stable-diffusion.cpp C API does not expose a tokenizer. Keep
+  // this ABI function for compatibility but never fabricate a model token
+  // count; PipelineDit counts via its already-loaded tokenizer.json instead.
+  (void)ctx;
+  (void)text;
+  (void)result;
+  return false;
 }
 
 const char *engine_last_error(const dit_ctx *ctx) {

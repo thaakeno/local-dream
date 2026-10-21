@@ -88,6 +88,8 @@ val chipsetModelSuffixes = mapOf(
     "SM8850P" to "8gen2",
     "SM8735" to "8gen2",
     "SM8845" to "8gen2",
+    "SM8950" to "8gen2",
+    "SM8975" to "8gen2",
 )
 
 sealed class DownloadResult {
@@ -277,7 +279,7 @@ data class Model(
 
             newId == id -> return@withContext RenameResult.Success
 
-            ModelRepository.isReservedModelId(newId) ->
+            ModelRepository.isReservedModelId(newId, ModelStorage.ignoresCase(context)) ->
                 return@withContext RenameResult.Error(RenameResult.Reason.Reserved)
         }
 
@@ -309,8 +311,6 @@ data class Model(
     }
 
     companion object {
-        private const val MODELS_DIR = "models"
-
         // Where each part of a DiT package comes from, and the name the
         // native side expects on disk (see PipelineDit). The weights are
         // pulled from the repositories that publish them rather than rehosted:
@@ -362,6 +362,23 @@ data class Model(
             "unsloth/Qwen-Image-2.1-FP8/resolve/main/" +
                 "Qwen-Image-2.1-FP8.safetensors|" + QwenFamilyStorage.DIT_FP8,
         ) + QWEN_IMAGE_2_1_COMMON_FILES
+
+        // Upstream Qwen Image 2.1 Turbo is a separate distilled transformer,
+        // NOT a Viggle LoRA. Preserve all existing Q4/Q8/FP8 shared-family files.
+        val QWEN_IMAGE_2_1_TURBO_PACKAGE_FILES = listOf(
+            "unsloth/Qwen-Image-2.1-Turbo-FP8/resolve/main/" +
+                "Qwen-Image-2.1-Turbo-FP8.safetensors|dit.safetensors",
+        ) + QWEN_IMAGE_2_1_COMMON_FILES
+
+        val KREA_2_TURBO_PACKAGE_FILES = listOf(
+            "gguf-org/krea-2-gguf/resolve/main/krea2_turbo-mxfp4_moe.gguf|dit.gguf",
+            "bartowski/Qwen_Qwen3-VL-4B-Instruct-GGUF/resolve/main/" +
+                "Qwen_Qwen3-VL-4B-Instruct-Q4_0.gguf|llm.gguf",
+            "bartowski/Qwen_Qwen3-VL-4B-Instruct-GGUF/resolve/main/" +
+                "mmproj-Qwen_Qwen3-VL-4B-Instruct-f16.gguf|llm_vision.gguf",
+            "Qwen/Qwen3-VL-4B-Instruct/resolve/main/tokenizer.json|tokenizer.json",
+            "Osrivers/wan_2.1_vae.safetensors/resolve/main/wan_2.1_vae.safetensors|vae.safetensors",
+        )
 
         private val VIGGLE_R128 =
             "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
@@ -474,9 +491,7 @@ data class Model(
             return null
         }
 
-        fun getModelsDir(context: Context): File = File(context.filesDir, MODELS_DIR).apply {
-            if (!exists()) mkdirs()
-        }
+        fun getModelsDir(context: Context): File = ModelStorage.modelsDir(context)
 
         fun isModelDownloaded(context: Context, modelId: String, isCustom: Boolean = false): Boolean {
             if (isCustom) {
@@ -526,6 +541,8 @@ data class Model(
             "zimage" -> "ZIMAGE"
             "klein" -> "KLEIN"
             "qwen21" -> "QWEN_IMAGE_2_1"
+            "krea2turbo" -> "KREA_2_TURBO"
+            "moss" -> MossImagePackages.MODEL_MARKER
             else -> ""
         }
 
@@ -710,6 +727,8 @@ class ModelRepository private constructor(private val context: Context) {
                 val zImageFile = File(dir, "ZIMAGE")
                 val kleinFile = File(dir, "KLEIN")
                 val qwenImage21File = File(dir, "QWEN_IMAGE_2_1")
+                val krea2TurboFile = File(dir, "KREA_2_TURBO")
+                val mossFile = File(dir, MossImagePackages.MODEL_MARKER)
 
                 when {
                     zImageFile.exists() && DitEngine.isSupportedDevice() ->
@@ -720,6 +739,12 @@ class ModelRepository private constructor(private val context: Context) {
 
                     qwenImage21File.exists() && DitEngine.isSupportedDevice() ->
                         customModels.add(createCustomModel(dir, isNpu = true, ditKind = "qwen21"))
+
+                    krea2TurboFile.exists() && DitEngine.isSupportedDevice() ->
+                        customModels.add(createCustomModel(dir, isNpu = true, ditKind = "krea2turbo"))
+
+                    mossFile.exists() && MossImagePackages.engineAvailable(context) ->
+                        customModels.add(createCustomModel(dir, isNpu = true, ditKind = "moss"))
 
                     animaFile.exists() ->
                         customModels.add(createCustomModel(dir, isNpu = true, isAnima = true))
@@ -783,6 +808,12 @@ class ModelRepository private constructor(private val context: Context) {
             if (DitEngine.isSupportedDevice()) {
                 add(createZImageTurboModel())
                 add(createFlux2KleinModel())
+                add(createKrea2TurboModel())
+                add(createQwenImage21OfficialTurboModel())
+                if (MossImagePackages.engineAvailable(context)) {
+                    add(createMossImageModel(sft = true))
+                    add(createMossImageModel(sft = false))
+                }
                 add(createQwenImage21Model())
                 add(createQwenImage21GgufViggleTurboModel())
                 add(createQwenImage21Q4ViggleR256Model())
@@ -1073,6 +1104,88 @@ class ModelRepository private constructor(private val context: Context) {
         recommendedVariant = recommended,
     )
 
+    /** Official distilled Turbo: same Qwen3-VL pipeline, separate 8-step DiT. */
+    private fun createQwenImage21OfficialTurboModel(): Model {
+        val id = "qwen_image_2_1_turbo"
+        return Model(
+            id = id,
+            name = "Qwen Image 2.1 Turbo",
+            description = "Official FP8 distilled 8-step Qwen Image 2.1 model",
+            baseUrl = baseUrl,
+            packageFiles = Model.QWEN_IMAGE_2_1_TURBO_PACKAGE_FILES,
+            generationSize = 1024,
+            approximateSize = "13.7GB",
+            isDownloaded = Model.isDitPackageDownloaded(
+                context, id, "qwen21", Model.QWEN_IMAGE_2_1_TURBO_PACKAGE_FILES,
+            ),
+            codeDefaults = ModelConfig(
+                prompt = "A beautifully lit cinematic portrait, natural texture and fine detail",
+                negativePrompt = "",
+                steps = 8f,
+                cfg = 1f,
+                scheduler = "euler",
+                denoiseStrength = 1f,
+            ),
+            runOnCpu = false,
+            ditKind = "qwen21",
+        )
+    }
+
+    private fun createMossImageModel(sft: Boolean): Model {
+        val id = if (sft) "moss_image_sft_q4" else "moss_image_base_q4"
+        val packageFiles = if (sft) MossImagePackages.SFT_Q4 else MossImagePackages.BASE_Q4
+        return Model(
+            id = id,
+            name = if (sft) "MOSS-Image SFT · Q4_K" else "MOSS-Image Base · Q4_K",
+            description = if (sft) {
+                "5B text-to-image diffusion • Qwen3.5-9B • detailed illustrations and text"
+            } else {
+                "5B foundation diffusion • Qwen3.5-9B • flexible styles and future LoRAs"
+            },
+            baseUrl = baseUrl,
+            packageFiles = packageFiles,
+            generationSize = 1024,
+            approximateSize = "9.4GB",
+            isDownloaded = Model.isDitPackageDownloaded(context, id, "moss", packageFiles),
+            codeDefaults = ModelConfig(
+                prompt = "A cinematic portrait with natural lighting, intricate detail",
+                negativePrompt = "",
+                steps = MossImagePackages.STEPS.toFloat(),
+                cfg = MossImagePackages.CFG,
+                scheduler = "euler",
+                denoiseStrength = 1f,
+            ),
+            runOnCpu = false,
+            ditKind = "moss",
+        )
+    }
+
+    private fun createKrea2TurboModel(): Model {
+        val id = "krea_2_turbo"
+        return Model(
+            id = id,
+            name = "Krea 2 Turbo",
+            description = "Fast 8-step Krea image generation with the Qwen3-VL text encoder",
+            baseUrl = baseUrl,
+            packageFiles = Model.KREA_2_TURBO_PACKAGE_FILES,
+            generationSize = 1024,
+            approximateSize = "9.6GB",
+            isDownloaded = Model.isDitPackageDownloaded(
+                context, id, "krea2turbo", Model.KREA_2_TURBO_PACKAGE_FILES,
+            ),
+            codeDefaults = ModelConfig(
+                prompt = "a lovely cat wearing black sunglasses, studio photo,",
+                negativePrompt = "",
+                steps = 8f,
+                cfg = 1f,
+                scheduler = "euler",
+                denoiseStrength = 1f,
+            ),
+            runOnCpu = false,
+            ditKind = "krea2turbo",
+        )
+    }
+
     private fun createQwenVariant(
         id: String,
         precision: String,
@@ -1251,7 +1364,7 @@ class ModelRepository private constructor(private val context: Context) {
             adapterBytes = 1_360_000_000L,
         )
 
-    private fun isSdxlCapableSoc(soc: String): Boolean = soc in setOf("SM8750", "SM8750P", "SM8850", "SM8850P", "SM8845", "SM8650")
+    private fun isSdxlCapableSoc(soc: String): Boolean = soc in setOf("SM8750", "SM8750P", "SM8850", "SM8850P", "SM8845", "SM8950", "SM8975", "SM8650")
 
     private fun createCyberRealisticV10Model(): Model {
         val id = "cyber_realistic_v10"
@@ -1625,7 +1738,8 @@ class ModelRepository private constructor(private val context: Context) {
             "anythingv5cpu", "qteamixcpu", "cuteyukimixcpu",
             "absoluterealitycpu", "chilloutmixcpu",
             // DiT
-            "z_image_turbo", "flux2_klein_4b", "qwen_image_2_1",
+            "z_image_turbo", "flux2_klein_4b", "qwen_image_2_1", "krea_2_turbo",
+            "moss_image_sft_q4", "moss_image_base_q4", "qwen_image_2_1_turbo",
             "qwen_image_2_1_fp8", "qwen_image_2_1_viggle_turbo",
             "qwen_image_2_1_viggle_turbo_gguf",
             "qwen_image_2_1_q4_viggle_r256",
@@ -1638,7 +1752,9 @@ class ModelRepository private constructor(private val context: Context) {
             "breeze_tts2_q8_dd4", "breeze_tts2_q8_dd2", "breeze_tts2_q4_dd2",
         )
 
-        fun isReservedModelId(id: String): Boolean = id in RESERVED_MODEL_IDS
+        fun isReservedModelId(id: String, ignoreCase: Boolean = false): Boolean = if (ignoreCase) {
+            RESERVED_MODEL_IDS.any { it.equals(id, ignoreCase = true) }
+        } else id in RESERVED_MODEL_IDS
 
         @SuppressLint("StaticFieldLeak")
         @Volatile

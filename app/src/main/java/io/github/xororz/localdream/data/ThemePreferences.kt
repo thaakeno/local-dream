@@ -11,6 +11,7 @@ data class ThemeState(
     val dynamicColor: Boolean = true,
     val preset: ThemePreset = ThemePreset.TANGERINE,
     val darkMode: DarkModePreference = DarkModePreference.SYSTEM,
+    val liquidGlass: Boolean = true,
 )
 
 class ThemePreferences(context: Context) {
@@ -25,7 +26,7 @@ class ThemePreferences(context: Context) {
         val darkMode = prefs.getString(KEY_DARK_MODE, null)
             ?.let { name -> runCatching { DarkModePreference.valueOf(name) }.getOrNull() }
             ?: DarkModePreference.SYSTEM
-        return ThemeState(dynamic, preset, darkMode)
+        return ThemeState(dynamic, preset, darkMode, prefs.getBoolean(KEY_LIQUID_GLASS, true))
     }
 
     fun write(state: ThemeState) {
@@ -33,6 +34,7 @@ class ThemePreferences(context: Context) {
             putBoolean(KEY_DYNAMIC, state.dynamicColor)
             putString(KEY_PRESET, state.preset.name)
             putString(KEY_DARK_MODE, state.darkMode.name)
+            putBoolean(KEY_LIQUID_GLASS, state.liquidGlass)
         }
     }
 
@@ -41,5 +43,6 @@ class ThemePreferences(context: Context) {
         private const val KEY_DYNAMIC = "dynamic_color"
         private const val KEY_PRESET = "preset"
         private const val KEY_DARK_MODE = "dark_mode"
+        private const val KEY_LIQUID_GLASS = "liquid_glass"
     }
 }

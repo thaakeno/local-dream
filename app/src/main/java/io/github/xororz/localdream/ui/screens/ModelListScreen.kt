@@ -1,5 +1,12 @@
 package io.github.xororz.localdream.ui.screens
 
+import io.github.xororz.localdream.ui.glass.GlassSettingsCard
+import io.github.xororz.localdream.ui.glass.CompactModelCard
+import io.github.xororz.localdream.ui.glass.DreamCreateBubble
+import io.github.xororz.localdream.ui.glass.DreamGlassTabRow
+import io.github.xororz.localdream.ui.glass.DreamElevatedCard
+import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
+
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
@@ -616,7 +623,7 @@ private fun RenameModelDialog(
     // models are created. Validate against that derived id.
     val newId = name.replace(" ", "")
     val isBlank = newId.isEmpty()
-    val isReserved = ModelRepository.isReservedModelId(newId)
+    val isReserved = ModelRepository.isReservedModelId(newId, ModelStorage.ignoresCase(LocalContext.current))
     val isTaken = newId in existingIds
     val errorText = when {
         isReserved -> stringResource(R.string.custom_model_id_reserved)
@@ -1468,6 +1475,23 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     }
 
     Scaffold(
+        floatingActionButton = {
+            if (LocalDreamGlassEnabled.current && !isSelectionMode &&
+                pagerState.currentPage < 2
+            ) {
+                DreamCreateBubble(
+                    onAddModel = {
+                        if (pagerState.currentPage == 0) {
+                            showCustomModelDialog = true
+                        } else {
+                            showCustomNpuModelDialog = true
+                        }
+                    },
+                    onHistory = { navController.navigate(Screen.History.route) },
+                    onSettings = { showSettingsDialog = true },
+                )
+            }
+        },
         topBar = {
             MediumTopAppBar(
                 title = {
@@ -1679,6 +1703,13 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             }
             }
 
+            if (LocalDreamGlassEnabled.current) {
+                DreamGlassTabRow(
+                    titles = tabTitles,
+                    selectedIndex = pagerState.currentPage,
+                    onSelected = { index -> scope.launch { pagerState.animateScrollToPage(index) } },
+                )
+            } else {
             PrimaryTabRow(
                 selectedTabIndex = pagerState.currentPage,
                 modifier = Modifier.fillMaxWidth(),
@@ -1699,6 +1730,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         },
                     )
                 }
+            }
             }
 
             HorizontalPager(
@@ -2189,7 +2221,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             }
 
                             Spacer(Modifier.height(12.dp))
-                            Card(
+                            GlassSettingsCard(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2230,7 +2262,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 DownloadLogsDialog(onDismiss = { showDownloadLogs = false })
                             }
 
-                            Card(
+                            GlassSettingsCard(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2293,7 +2325,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         }
                     }
                     item {
-                        Card(
+                        GlassSettingsCard(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2328,6 +2360,10 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             }
                         }
                     }
+                    // Where models are kept (GitHub build only, see ModelStorage)
+                    if (ModelStorage.isChoiceShown(context)) {
+                        item { ModelStorageSection() }
+                    }
                     // Appearance (theme) section
                     item { AppearanceSection() }
                     // Feature settings section
@@ -2350,7 +2386,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 )
                             }
 
-                            Card(
+                            GlassSettingsCard(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2846,6 +2882,13 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             }
         }
     }
+
+    ModelStorageMoveOverlay(onModelsChanged = {
+        scope.launch {
+            modelRepository.refreshAllModels()
+            upscalerRepository.refreshBaseUrl()
+        }
+    })
 
     BlockingProgressOverlay(visible = isConverting) {
         val byteProgress = extractByteProgress
@@ -3392,6 +3435,19 @@ fun ModelCard(
     modifier: Modifier = Modifier,
     isPinned: Boolean = false,
 ) {
+    if (LocalDreamGlassEnabled.current) {
+        CompactModelCard(
+            model = model,
+            isSelected = isSelected,
+            isSelectionMode = isSelectionMode,
+            isPinned = isPinned,
+            onClick = onClick,
+            onLongClick = onLongClick,
+            modifier = modifier,
+        )
+        return
+    }
+
     val context = LocalContext.current
     val isDisabledInSelection = !model.isDownloaded && isSelectionMode
 
@@ -3423,7 +3479,7 @@ fun ModelCard(
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    ElevatedCard(
+    DreamElevatedCard(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.elevatedCardColors(
             containerColor = backgroundColor,
@@ -4031,7 +4087,7 @@ fun CustomNpuModelDialog(context: Context, onDismiss: () -> Unit, onModelAdded: 
     var modelName by remember { mutableStateOf("") }
     var selectedZipUri by remember { mutableStateOf<Uri?>(null) }
     val isIdReserved = modelName.isNotBlank() &&
-        ModelRepository.isReservedModelId(modelName.replace(" ", ""))
+        ModelRepository.isReservedModelId(modelName.replace(" ", ""), ModelStorage.ignoresCase(context))
 
     val zipPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
@@ -4158,7 +4214,7 @@ fun CustomModelDialog(
     var clipSkip by remember { mutableIntStateOf(1) }
     var selectedLoraFiles by remember { mutableStateOf<List<LoRAFile>>(emptyList()) }
     val isIdReserved = modelName.isNotBlank() &&
-        ModelRepository.isReservedModelId(modelName.replace(" ", ""))
+        ModelRepository.isReservedModelId(modelName.replace(" ", ""), ModelStorage.ignoresCase(context))
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
@@ -4437,7 +4493,7 @@ suspend fun extractNpuModel(
 
         val modelId = modelName.replace(" ", "")
 
-        val modelsDir = File(context.filesDir, "models")
+        val modelsDir = Model.getModelsDir(context)
         if (!modelsDir.exists()) {
             modelsDir.mkdirs()
         }
@@ -4530,7 +4586,7 @@ suspend fun extractNpuModel(
         Log.e("NpuModelExtract", "Extraction failed", e)
 
         val modelId = modelName.replace(" ", "")
-        val modelDir = File(File(context.filesDir, "models"), modelId)
+        val modelDir = File(Model.getModelsDir(context), modelId)
         if (modelDir.exists()) {
             modelDir.deleteRecursively()
         }
@@ -4555,7 +4611,7 @@ fun EmbeddingManagerDialog(
     val scope = rememberCoroutineScope()
 
     fun loadEmbeddings() {
-        val embeddingsDir = File(context.filesDir, "embeddings")
+        val embeddingsDir = ModelStorage.embeddingsDir(context)
         if (!embeddingsDir.exists()) {
             embeddingsDir.mkdirs()
         }
@@ -4765,7 +4821,7 @@ fun EmbeddingManagerDialog(
 
 suspend fun importEmbedding(context: Context, fileUri: Uri, onSuccess: () -> Unit, onError: (String) -> Unit) = withContext(Dispatchers.IO) {
     try {
-        val embeddingsDir = File(context.filesDir, "embeddings")
+        val embeddingsDir = ModelStorage.embeddingsDir(context)
         if (!embeddingsDir.exists()) {
             embeddingsDir.mkdirs()
         }
@@ -4822,7 +4878,7 @@ suspend fun convertCustomModel(
 
         val modelId = modelName.replace(" ", "")
 
-        val modelsDir = File(context.filesDir, "models")
+        val modelsDir = Model.getModelsDir(context)
         if (!modelsDir.exists()) {
             modelsDir.mkdirs()
         }
@@ -5012,7 +5068,7 @@ suspend fun convertCustomModel(
         Log.e("ModelConvert", "Conversion failed", e)
 
         val modelId = modelName.replace(" ", "")
-        val modelDir = File(File(context.filesDir, "models"), modelId)
+        val modelDir = File(Model.getModelsDir(context), modelId)
         if (modelDir.exists()) {
             modelDir.deleteRecursively()
         }
@@ -5156,6 +5212,15 @@ private fun AppearanceSection() {
                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
             ),
         ) {
+            SwitchSettingRow(
+                title = "Liquid glass",
+                description = "Fluid, refractive controls and compact model cards. Switch off for the classic design.",
+                checked = state.liquidGlass,
+                onCheckedChange = { enabled ->
+                    themeController.update { it.copy(liquidGlass = enabled) }
+                },
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
             if (dynamicColorSupported) {
                 SwitchSettingRow(
                     title = stringResource(R.string.dynamic_color),

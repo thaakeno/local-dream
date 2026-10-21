@@ -13,6 +13,8 @@ import io.github.xororz.localdream.R
 import io.github.xororz.localdream.data.DitEngine
 import io.github.xororz.localdream.data.DitResolution
 import io.github.xororz.localdream.data.Model
+import io.github.xororz.localdream.data.ModelStorage
+import io.github.xororz.localdream.data.MossImagePackages
 import io.github.xororz.localdream.data.QwenFamilyStorage
 import java.io.File
 import java.io.IOException
@@ -49,6 +51,7 @@ class BackendService : Service() {
     private var idleStopJob: Job? = null
     private lateinit var runtimeDir: File
     private lateinit var musicRuntimeDir: File
+    private lateinit var mossRuntimeDir: File
 
     @Volatile
     private var runtimeDirReady = false
@@ -68,6 +71,8 @@ class BackendService : Service() {
         private const val MUSIC_FASTRPC_EXECUTABLE_NAME = "libyue2_server_fastrpc.so"
         const val RUNTIME_DIR = "runtime_libs"
         private const val MUSIC_RUNTIME_DIR = "runtime_yue2_htp"
+        private const val MOSS_RUNTIME_DIR = "runtime_moss_htp"
+        private const val MOSS_RUNTIME_VERSION = "moss-leejet-95b309-v79v81"
         private const val MUSIC_RUNTIME_VERSION = "hexagon_dual_37f752_yue2_v7"
         private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
@@ -106,7 +111,8 @@ class BackendService : Service() {
 
         // --type values served by the downloadable DiT engine.
         fun isDitBackend(backendType: String): Boolean = backendType == "zimage" ||
-            backendType == "klein" || backendType == "qwen21"
+            backendType == "klein" || backendType == "qwen21" || backendType == "krea2turbo" ||
+            backendType == MossImagePackages.DIT_KIND
 
         fun isMusicBackend(backendType: String): Boolean = backendType == "yue2"
 
@@ -394,6 +400,11 @@ class BackendService : Service() {
             return
         }
         stopBackend()
+        // Prevent moving shared model files while a backend is starting.
+        if (ModelStorage.unlessMoving { updateState(BackendState.Starting) } == null) {
+            updateState(BackendState.Error(getString(R.string.model_storage_moving_blocked), want.modelId))
+            return
+        }
         if (startBackend(want)) {
             serving = want
             updateServing(want)
@@ -591,6 +602,32 @@ class BackendService : Service() {
                         target.setReadable(true, true)
                         target.setExecutable(true, true)
                     }
+                }
+
+                // The official MOSS ggml engine has a different AP/DSP ABI
+                // from the proven DiT fork. Keep its skels and search path
+                // completely separate, as we already do for YuE2.
+                mossRuntimeDir = File(filesDir, MOSS_RUNTIME_DIR)
+                val mossStamp = File(mossRuntimeDir, ".runtime_version")
+                if (mossRuntimeDir.exists() &&
+                    runCatching { mossStamp.readText() }.getOrNull() != MOSS_RUNTIME_VERSION
+                ) mossRuntimeDir.deleteRecursively()
+                if (!mossRuntimeDir.exists()) mossRuntimeDir.mkdirs()
+                if (MossImagePackages.engineAvailable(this)) {
+                    val update = packageManager.getPackageInfo(packageName, 0).lastUpdateTime
+                    assets.list("mosslibs")?.forEach { assetName ->
+                        val target = File(mossRuntimeDir, assetName)
+                        val assetSize = assets.open("mosslibs/$assetName").use { it.available().toLong() }
+                        if (!target.exists() || target.length() != assetSize ||
+                            target.lastModified() < update) {
+                            assets.open("mosslibs/$assetName").use { input ->
+                                target.outputStream().use { output -> input.copyTo(output) }
+                            }
+                        }
+                        target.setReadable(true, true)
+                        target.setExecutable(true, true)
+                    }
+                    mossStamp.writeText(MOSS_RUNTIME_VERSION)
                 }
 
                 // YuE2 uses a dedicated matched AP/DSP Hexagon runtime. Never
@@ -918,7 +955,12 @@ class BackendService : Service() {
             // native library directory they ship in, not the QNN runtime dir.
             val ditEngineDir = if (isDitBackend(backendType)) DitEngine.dir(this) else null
             if (ditEngineDir != null) {
-                if (!DitEngine.isInstalled(this)) {
+                val installed = if (backendType == MossImagePackages.DIT_KIND) {
+                    MossImagePackages.engineAvailable(this)
+                } else {
+                    DitEngine.isInstalled(this)
+                }
+                if (!installed) {
                     Log.e(TAG, "DiT engine missing at $ditEngineDir")
                     updateState(
                         BackendState.Error(
@@ -1032,8 +1074,11 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (backendType == "sdxl") {
-                // Preserve the proven v141 SDXL HTP burst profile.
-                env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
+                // SDXL must not monopolize the phone's CPU/DDR fabric while
+                // denoising. Keep TURBO as the HTP target but release the fixed
+                // MAX votes, enable DCVS, and disable FastRPC busy-polling.
+                // No changes to CFG, sampler, steps, tensor math or model files.
+                env["LOCALDREAM_QNN_POWER_MODE"] = "efficient"
             }
 
             if (isMusicBackend(backendType)) {
@@ -1156,7 +1201,8 @@ class BackendService : Service() {
                 // defaults would leave the skel unable to resolve the libraries
                 // it links against.
                 val dspPath = listOf(
-                    runtimeDir.absolutePath,
+                    if (backendType == MossImagePackages.DIT_KIND) mossRuntimeDir.absolutePath
+                    else runtimeDir.absolutePath,
                     "/vendor/lib/rfsa/adsp",
                     "/vendor/dsp/cdsp",
                     "/dsp",

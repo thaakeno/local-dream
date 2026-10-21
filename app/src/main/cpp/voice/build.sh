@@ -137,11 +137,9 @@ grep -Fq 'GGML_TYPE_Q2_K, "q2k", 1' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -Fq 'GGML_TYPE_Q2_K, "q2k", 40' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'v81-dsp-gelu-erf-reference' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'v81-hvx-gelu-matmul-chain' "$(pwd)/native/breeze-htp-selftest.cpp"
-grep -q 'BREEZE_HMX_DEPENDENCY_PROBE' "$(pwd)/native/breeze-htp-selftest.cpp"
 # The upstream HMX bias epilogue must not return until verified on-device.
 grep -Fq 'skip v81 HMX MUL_MAT+ADD fusion: parity guard' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -Fq 'if (!ggml_are_same_shape(mm_out, node.dst())) return false;' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'v81-hmx-chain' "$(pwd)/native/HmxDependencyProbe.hpp"
 grep -q 'class DepthParityProbe final' "$(pwd)/native/DepthParityProbe.hpp"
 grep -Fq 'if (sess->n_hmx > 0 && opt_arch >= 81)' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -Fq 'HVX_Vector poly = hvx_vec_splat_f32(1.061405429f);' "$GGML_DIR/src/ggml-hexagon/htp/hvx-erf.h"
@@ -211,25 +209,6 @@ grep -q 'BREEZE_QNN_FIRST_NEW' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'BREEZE_QNN_STEADY_NEW' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'anchor_chars = 200' "$(pwd)/overlay/breeze/src/generation.cpp"
 
-# Full QNN generator v5 keeps the proven batch-1 depth contract while fixing
-# the v4 backbone architecture: linked shared-weight contexts, true batch-1
-# AR1 for CFG=1, smaller prompt buckets, and an explicit legacy toggle.
-grep -q 'BREEZE_QNN_DEPTH_PATH' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
-grep -q 'physical_batch=1' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
-grep -q 'cfg_serial=' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
-grep -q 'profile=adaptive-performance' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
-grep -q 'rpc_poll=0' "$(pwd)/native/breeze-qnn-vocoder.cpp"
-grep -q 'dcvsEnable = 1' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'BREEZE_QNN_BACKBONE_LINKED_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'BREEZE_QNN_BACKBONE_PREFILL_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'BREEZE_QNN_BACKBONE_STEP_B1_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'shared_context=%d' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'prompt_context_released=%d' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'persistent_backbone' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'persistent_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'BREEZE_QNN_CACHE' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'depth.run(m, hiddens, cb0' "$(pwd)/overlay/breeze/src/generation.cpp"
-
 # Guard the NPU-only Breeze v70 cleanup in production builds.
 # Adreno Vulkan depth was slower than Hexagon and must not be linked again.
 if grep -Eq 'GGML_VULKAN ON|breeze-gpu-depth[.]cpp|LOCALDREAM_VULKAN_DEPTH' "$(pwd)/CMakeLists.txt"; then
@@ -241,6 +220,16 @@ if grep -Eq 'GpuDepthEngine|BREEZE_GPU_DEPTH_FUSED' "$(pwd)/overlay/breeze/src/g
     exit 1
 fi
 grep -q 'persistent_legacy_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
+# Production guard: optional QNN vocoder stays; QNN backbone and Depth
+# generator prototypes must never be linked or re-enabled by environment.
+if grep -Eq 'breeze-qnn-(backbone|depth-decoder)[.]cpp' "$(pwd)/CMakeLists.txt"; then
+    echo "Retired Full-QNN Breeze generator sources are still linked" >&2
+    exit 1
+fi
+if grep -Eq 'QnnBackboneRunner|QnnDepthRunner|BREEZE_QNN_DEPTH_TRIAL|BREEZE_DEPTH_QKV_GROUP'     "$(pwd)/overlay/breeze/src/generation.cpp"     "$(pwd)/overlay/breeze/src/depth_decoder.cpp"; then
+    echo "Retired experimental Breeze generator paths returned" >&2
+    exit 1
+fi
 grep -q 'BREEZE_BACKBONE_EMBED_FUSE' "$(pwd)/overlay/breeze/src/generation.cpp"
 
 # Full-clip decode remains available for voice conversion/reference work, but
@@ -300,7 +289,7 @@ extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-refere
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
-generator=legacy-hexagon-fastpath-or-verified-qnn-optin
+generator=legacy-hexagon-fastpath
 gpu_depth=removed-only-htp
 vocoder=qnn-htp-feature64-serialized-or-ggml-fallback-v198
 qnn_vocoder=sm8850-v3-v81,feature64,host-lut-fp32,cached-reference-selftest,left-context25,serialized64x39,eos-first

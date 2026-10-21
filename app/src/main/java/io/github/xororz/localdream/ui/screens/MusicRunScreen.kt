@@ -1,5 +1,7 @@
 package io.github.xororz.localdream.ui.screens
 
+import io.github.xororz.localdream.ui.glass.DreamElevatedCard
+
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -324,7 +326,7 @@ fun MusicRunScreen(
                 )
             }
 
-            ElevatedCard(
+            DreamElevatedCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
@@ -577,7 +579,7 @@ fun MusicRunScreen(
                                 )
                             }
                             if (state.score.isNotBlank()) {
-                                ElevatedCard(
+                                DreamElevatedCard(
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = CardDefaults.elevatedCardColors(
                                         containerColor = MaterialTheme.colorScheme.surfaceContainer,
@@ -757,7 +759,7 @@ private fun NativeRuntimeStartupCard(
         }
     }
 
-    ElevatedCard(
+    DreamElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp),
@@ -961,7 +963,7 @@ private fun MusicPreloadCard(
         }
     }
 
-    ElevatedCard(
+    DreamElevatedCard(
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
@@ -1273,7 +1275,7 @@ private fun MusicProgressCard(
     val context = androidx.compose.ui.platform.LocalContext.current
     val telemetry = rememberMusicDeviceTelemetry(context)
 
-    ElevatedCard(
+    DreamElevatedCard(
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
