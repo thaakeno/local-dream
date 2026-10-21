@@ -31,4 +31,14 @@ cp build/android/lib/arm64-v8a/libmoss_engine.so "$JNI_DIR/"
 # DSP skels are optional source outputs but mandatory for HTP deployment.
 # Reuse the established ditlibs packaging path; never silently replace a
 # working v79/v81 skeleton with an unverified new one.
-echo "Built libmoss_engine.so. Stage matching HTP skels before on-device use."
+# Match the MOSS ggml DSP skels to their own AP library; old DiT skels
+# remain untouched and continue to serve Qwen/Krea/FLUX.
+MOSS_LIBS="$(cd ../.. && pwd)/assets/mosslibs"
+mkdir -p "$MOSS_LIBS"
+for arch in v79 v81; do
+    source_so="$BUILD_DIR/moss-sdcpp/ggml/src/ggml-hexagon/libggml-htp-$arch.so"
+    test -s "$source_so"
+    cp "$source_so" "$MOSS_LIBS/"
+done
+printf '%s\n' "$EXPECTED" > "$MOSS_LIBS/upstream-revision.txt"
+echo "MOSS matching v79/v81 Hexagon skels staged separately."
