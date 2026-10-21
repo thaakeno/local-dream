@@ -274,11 +274,11 @@ class QnnModel : public QnnOwnedRuntime {
     // materially reducing voltage/fabric power and avoiding thermal throttling.
     //
     // LOCALDREAM_QNN_POWER_MODE can override this for profiling:
-    //   efficient (default): TURBO, RPC polling disabled, DCVS enabled
+    //   efficient:         TURBO, RPC polling disabled, DCVS enabled
     //   cool:              NOM_PLUS + DCVS
     //   burst:             MAX clocks + 9999 us polling
     const char *modeEnv = std::getenv("LOCALDREAM_QNN_POWER_MODE");
-    const std::string mode = modeEnv && *modeEnv ? modeEnv : "efficient";
+    const std::string mode = modeEnv && *modeEnv ? modeEnv : "burst";
     const bool burst = mode == "burst";
     const bool cool = mode == "cool" || mode == "balanced";
 
