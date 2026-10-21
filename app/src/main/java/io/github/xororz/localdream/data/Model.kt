@@ -533,6 +533,7 @@ data class Model(
             "klein" -> "KLEIN"
             "qwen21" -> "QWEN_IMAGE_2_1"
             "krea2turbo" -> "KREA_2_TURBO"
+            "moss" -> MossImagePackages.MODEL_MARKER
             else -> ""
         }
 
@@ -718,6 +719,7 @@ class ModelRepository private constructor(private val context: Context) {
                 val kleinFile = File(dir, "KLEIN")
                 val qwenImage21File = File(dir, "QWEN_IMAGE_2_1")
                 val krea2TurboFile = File(dir, "KREA_2_TURBO")
+                val mossFile = File(dir, MossImagePackages.MODEL_MARKER)
 
                 when {
                     zImageFile.exists() && DitEngine.isSupportedDevice() ->
@@ -731,6 +733,9 @@ class ModelRepository private constructor(private val context: Context) {
 
                     krea2TurboFile.exists() && DitEngine.isSupportedDevice() ->
                         customModels.add(createCustomModel(dir, isNpu = true, ditKind = "krea2turbo"))
+
+                    mossFile.exists() && MossImagePackages.engineAvailable(context) ->
+                        customModels.add(createCustomModel(dir, isNpu = true, ditKind = "moss"))
 
                     animaFile.exists() ->
                         customModels.add(createCustomModel(dir, isNpu = true, isAnima = true))
@@ -795,6 +800,10 @@ class ModelRepository private constructor(private val context: Context) {
                 add(createZImageTurboModel())
                 add(createFlux2KleinModel())
                 add(createKrea2TurboModel())
+                if (MossImagePackages.engineAvailable(context)) {
+                    add(createMossImageModel(sft = true))
+                    add(createMossImageModel(sft = false))
+                }
                 add(createQwenImage21Model())
                 add(createQwenImage21GgufViggleTurboModel())
                 add(createQwenImage21Q4ViggleR256Model())
@@ -1084,6 +1093,35 @@ class ModelRepository private constructor(private val context: Context) {
         downloadBytesEstimate = bytes,
         recommendedVariant = recommended,
     )
+
+    private fun createMossImageModel(sft: Boolean): Model {
+        val id = if (sft) "moss_image_sft_q4" else "moss_image_base_q4"
+        val packageFiles = if (sft) MossImagePackages.SFT_Q4 else MossImagePackages.BASE_Q4
+        return Model(
+            id = id,
+            name = if (sft) "MOSS-Image SFT · Q4_K" else "MOSS-Image Base · Q4_K",
+            description = if (sft) {
+                "5B text-to-image diffusion • Qwen3.5-9B • detailed illustrations and text"
+            } else {
+                "5B foundation diffusion • Qwen3.5-9B • flexible styles and future LoRAs"
+            },
+            baseUrl = baseUrl,
+            packageFiles = packageFiles,
+            generationSize = 1024,
+            approximateSize = "9.4GB",
+            isDownloaded = Model.isDitPackageDownloaded(context, id, "moss", packageFiles),
+            codeDefaults = ModelConfig(
+                prompt = "A cinematic portrait with natural lighting, intricate detail",
+                negativePrompt = "",
+                steps = MossImagePackages.STEPS.toFloat(),
+                cfg = MossImagePackages.CFG,
+                scheduler = "euler",
+                denoiseStrength = 1f,
+            ),
+            runOnCpu = false,
+            ditKind = "moss",
+        )
+    }
 
     private fun createKrea2TurboModel(): Model {
         val id = "krea_2_turbo"
@@ -1664,6 +1702,7 @@ class ModelRepository private constructor(private val context: Context) {
             "absoluterealitycpu", "chilloutmixcpu",
             // DiT
             "z_image_turbo", "flux2_klein_4b", "qwen_image_2_1", "krea_2_turbo",
+            "moss_image_sft_q4", "moss_image_base_q4",
             "qwen_image_2_1_fp8", "qwen_image_2_1_viggle_turbo",
             "qwen_image_2_1_viggle_turbo_gguf",
             "qwen_image_2_1_q4_viggle_r256",

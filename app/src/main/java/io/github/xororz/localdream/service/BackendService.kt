@@ -14,6 +14,7 @@ import io.github.xororz.localdream.data.DitEngine
 import io.github.xororz.localdream.data.DitResolution
 import io.github.xororz.localdream.data.Model
 import io.github.xororz.localdream.data.ModelStorage
+import io.github.xororz.localdream.data.MossImagePackages
 import io.github.xororz.localdream.data.QwenFamilyStorage
 import java.io.File
 import java.io.IOException
@@ -107,7 +108,8 @@ class BackendService : Service() {
 
         // --type values served by the downloadable DiT engine.
         fun isDitBackend(backendType: String): Boolean = backendType == "zimage" ||
-            backendType == "klein" || backendType == "qwen21" || backendType == "krea2turbo"
+            backendType == "klein" || backendType == "qwen21" || backendType == "krea2turbo" ||
+            backendType == MossImagePackages.DIT_KIND
 
         fun isMusicBackend(backendType: String): Boolean = backendType == "yue2"
 
@@ -924,7 +926,12 @@ class BackendService : Service() {
             // native library directory they ship in, not the QNN runtime dir.
             val ditEngineDir = if (isDitBackend(backendType)) DitEngine.dir(this) else null
             if (ditEngineDir != null) {
-                if (!DitEngine.isInstalled(this)) {
+                val installed = if (backendType == MossImagePackages.DIT_KIND) {
+                    MossImagePackages.engineAvailable(this)
+                } else {
+                    DitEngine.isInstalled(this)
+                }
+                if (!installed) {
                     Log.e(TAG, "DiT engine missing at $ditEngineDir")
                     updateState(
                         BackendState.Error(
