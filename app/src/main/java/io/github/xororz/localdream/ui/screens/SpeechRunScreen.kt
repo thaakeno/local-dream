@@ -1,5 +1,7 @@
 package io.github.xororz.localdream.ui.screens
 
+import io.github.xororz.localdream.ui.glass.DreamElevatedCard
+
 import android.content.Intent
 import android.widget.Toast
 import androidx.core.content.FileProvider
@@ -1067,7 +1069,7 @@ fun SpeechRunScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            ElevatedCard(
+            DreamElevatedCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
@@ -2888,7 +2890,7 @@ private fun SpeechProgressCard(state: SpeechState.Generating) {
         }
     }
 
-    ElevatedCard(
+    DreamElevatedCard(
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
