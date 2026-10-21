@@ -421,7 +421,10 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
     return std::make_unique<PipelineDit>(
         text_encoder, opts.model_dir, engine_path, dit_path, llm_path,
         llm_vision_path, vae_path, kind, runtime_backend, params_backend,
-        opts.dit_threads, opts.dit_vae_tile_size, !opts.no_img2img);
+        opts.dit_threads, opts.dit_vae_tile_size,
+        !opts.no_img2img &&
+            opts.type != ServerOptions::ModelType::kKrea2Turbo &&
+            opts.type != ServerOptions::ModelType::kMossImage);
   }
 
   // Anima: Qwen "CLIP" (clip.bin, QNN) + split DiT (unet_part1/2.bin) + 16-ch
