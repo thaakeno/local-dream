@@ -537,13 +537,13 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
 void engine_free_image(uint8_t *pixels) { free(pixels); }
 
 bool engine_tokenize(dit_ctx *ctx, const char *text, dit_tokenize_result *result) {
-  if (!ctx || !ctx->sd || !text || !result) return false;
-  sd_tokenize_result_t native{};
-  if (!sd_tokenize_text(ctx->sd, text, &native)) return false;
-  result->count = native.count;
-  result->max_length = native.max_length;
-  result->overflow_offset = native.overflow_offset;
-  return true;
+  // The pinned stable-diffusion.cpp C API does not expose a tokenizer. Keep
+  // this ABI function for compatibility but never fabricate a model token
+  // count; PipelineDit counts via its already-loaded tokenizer.json instead.
+  (void)ctx;
+  (void)text;
+  (void)result;
+  return false;
 }
 
 const char *engine_last_error(const dit_ctx *ctx) {
