@@ -30,8 +30,14 @@ jobs:
             -I app/src/main/cpp/include app/src/test/cpp/QnnNativeScalarTest.cpp \
             -o /tmp/localdream-qnn-scalar-test
           /tmp/localdream-qnn-scalar-test
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools platforms;android-37'
+          packages: 'platform-tools platforms;android-37.0'
+      - name: Alias Android SDK 37.0 for existing compileSdk 37 build
+        run: |
+          test -f "$ANDROID_HOME/platforms/android-37.0/source.properties"
+          if [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37"
+          fi
       - name: Compile Kotlin UI and resources (no Qualcomm SDK required)
         run: ./gradlew :app:compileBasicDebugKotlin --no-daemon --stacktrace
