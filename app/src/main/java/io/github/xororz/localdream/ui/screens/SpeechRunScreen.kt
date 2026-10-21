@@ -53,9 +53,6 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.NavController
 import io.github.xororz.localdream.data.ModelRepository
 import io.github.xororz.localdream.navigation.popBackStackIfResumed
-import io.github.xororz.localdream.service.BreezeDepthDiagnostic
-import io.github.xororz.localdream.service.BreezeHmxDiagnostic
-import io.github.xororz.localdream.service.BreezeQnnGeneratorArtifact
 import io.github.xororz.localdream.service.BreezeQnnVocoderArtifact
 import io.github.xororz.localdream.service.SpeechGenerationService
 import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
@@ -72,8 +69,6 @@ import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -724,62 +719,6 @@ private const val DEFAULT_MAX_NEW_TOKENS = 750
 private fun freshSpeechSeed(): Long =
     ((System.nanoTime() xor System.currentTimeMillis()) and 0x7fffffffL).coerceAtLeast(1L)
 
-private fun copyDepthDiagnostic(context: android.content.Context) {
-    val file = BreezeDepthDiagnostic.logFile(context)
-    if (!file.isFile) return
-    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-        as android.content.ClipboardManager
-    clipboard.setPrimaryClip(
-        android.content.ClipData.newPlainText("Breeze full Depth parity log", file.readText()),
-    )
-    Toast.makeText(context, "Depth log copied", Toast.LENGTH_SHORT).show()
-}
-
-private fun shareDepthDiagnostic(context: android.content.Context) {
-    val file = BreezeDepthDiagnostic.logFile(context)
-    if (!file.isFile) return
-    val uri = FileProvider.getUriForFile(
-        context,
-        context.packageName + ".fileprovider",
-        file,
-    )
-    val send = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        clipData = android.content.ClipData.newRawUri("Breeze full Depth parity", uri)
-    }
-    context.startActivity(Intent.createChooser(send, "Share full Depth test"))
-}
-
-private fun copyHmxDiagnostic(context: android.content.Context) {
-    val file = BreezeHmxDiagnostic.logFile(context)
-    if (!file.isFile) return
-    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-        as android.content.ClipboardManager
-    clipboard.setPrimaryClip(
-        android.content.ClipData.newPlainText("Breeze HMX test log", file.readText()),
-    )
-    Toast.makeText(context, "HMX test log copied", Toast.LENGTH_SHORT).show()
-}
-
-private fun shareHmxDiagnostic(context: android.content.Context) {
-    val file = BreezeHmxDiagnostic.logFile(context)
-    if (!file.isFile) return
-    val uri = FileProvider.getUriForFile(
-        context,
-        context.packageName + ".fileprovider",
-        file,
-    )
-    val send = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        clipData = android.content.ClipData.newRawUri("Breeze HMX diagnostic", uri)
-    }
-    context.startActivity(Intent.createChooser(send, "Share HMX diagnostic"))
-}
-
 private fun shareSpeechFile(context: android.content.Context, file: File) {
     if (!file.isFile) return
     val uri = FileProvider.getUriForFile(
@@ -879,16 +818,6 @@ fun SpeechRunScreen(
     val model = repository.models.firstOrNull { it.id == modelId }
     val speechState by SpeechGenerationService.state.collectAsState()
     val acceleratorState by BreezeQnnVocoderArtifact.status.collectAsState()
-    val generatorState by BreezeQnnGeneratorArtifact.status.collectAsState()
-    var fullQnnGeneratorEnabled by remember {
-        mutableStateOf(BreezeQnnGeneratorArtifact.isEnabled(context))
-    }
-    var hmxDiagnosticRunning by remember { mutableStateOf(false) }
-    var hmxDiagnosticResult by remember { mutableStateOf<String?>(null) }
-    var depthDiagnosticRunning by remember { mutableStateOf(false) }
-    var depthDiagnosticResult by remember { mutableStateOf<String?>(null) }
-    var qkvQualified by remember { mutableStateOf(BreezeDepthDiagnostic.isQualified(context, modelId)) }
-    var qkvEnabled by remember { mutableStateOf(BreezeDepthDiagnostic.isEnabled(context, modelId)) }
     // This screen owns the warm Breeze process. Leaving the generation panel
     // must release the GGUF, QNN contexts and HTP power votes immediately.
     DisposableEffect(modelId) {
@@ -934,7 +863,6 @@ fun SpeechRunScreen(
 
     LaunchedEffect(modelId, model?.isDownloaded) {
         BreezeQnnVocoderArtifact.refresh(context)
-        BreezeQnnGeneratorArtifact.refresh(context)
         if (model?.isDownloaded == true && model.isVoice) {
             val supported = BreezeQnnVocoderArtifact.supportedSoc() != null
             val acceleratorReady = BreezeQnnVocoderArtifact.localFile(context) != null
@@ -1654,7 +1582,7 @@ fun SpeechRunScreen(
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            "Sampling, long-text and experimental engine controls.",
+                            "Sampling and long-text generation controls.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1707,274 +1635,6 @@ fun SpeechRunScreen(
                     ) { it.roundToInt().toString() }
 
 
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Text(
-                                "HMX correctness test · SM8850",
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                "Tests the HMX → ADD → GELU → HMX dependency chain " +
-                                    "without changing the production DSPQueue/HVX engine or CFG.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            OutlinedButton(
-                                enabled = !hmxDiagnosticRunning && !depthDiagnosticRunning &&
-                                    model?.isDownloaded == true &&
-                                    speechState is SpeechState.Ready,
-                                onClick = {
-                                    hmxDiagnosticRunning = true
-                                    hmxDiagnosticResult = "Checking Hexagon matrices..."
-                                    scope.launch {
-                                        try {
-                                            context.startService(
-                                                Intent(context, SpeechGenerationService::class.java)
-                                                    .setAction(SpeechGenerationService.ACTION_STOP),
-                                            )
-                                            // Wait for the service to actually close HTP rather
-                                            // than racing another DSP process with a guessed delay.
-                                            val stopped = withTimeoutOrNull(8_000L) {
-                                                SpeechGenerationService.state.first {
-                                                    it is SpeechState.Idle
-                                                }
-                                            } != null
-                                            if (!stopped) {
-                                                throw IllegalStateException(
-                                                    "Breeze did not release its HTP session."
-                                                )
-                                            }
-                                            val result = withContext(Dispatchers.IO) {
-                                                BreezeHmxDiagnostic.run(context.applicationContext)
-                                            }
-                                            hmxDiagnosticResult = result.message
-                                        } catch (error: Exception) {
-                                            hmxDiagnosticResult = "Probe unavailable: " +
-                                                (error.message ?: error.javaClass.simpleName)
-                                        } finally {
-                                            hmxDiagnosticRunning = false
-                                            SpeechGenerationService.resetForModel(modelId)
-                                            if (model?.isDownloaded == true) {
-                                                context.startForegroundService(
-                                                    Intent(context, SpeechGenerationService::class.java)
-                                                        .setAction(SpeechGenerationService.ACTION_PRELOAD)
-                                                        .putExtra("modelId", modelId),
-                                                )
-                                            }
-                                        }
-                                    }
-                                },
-                            ) {
-                                Text(if (hmxDiagnosticRunning) "Testing HMX..." else "Run HMX test")
-                            }
-                            Text(
-                                "Depth optimization A/B · CFG 3.2",
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                "Tests exact QKV projection grouping on HVX against " +
-                                    "the original 15-step Depth decoder, then checks HMX. " +
-                                    "Five warmed runs per mode, kernel fusion evidence, " +
-                                    "and complete logits parity. Production stays unchanged.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            OutlinedButton(
-                                enabled = !hmxDiagnosticRunning && !depthDiagnosticRunning &&
-                                    model?.isDownloaded == true &&
-                                    speechState is SpeechState.Ready,
-                                onClick = {
-                                    depthDiagnosticRunning = true
-                                    depthDiagnosticResult = "Testing full Depth model; this may take several minutes..."
-                                    scope.launch {
-                                        try {
-                                            context.startService(
-                                                Intent(context, SpeechGenerationService::class.java)
-                                                    .setAction(SpeechGenerationService.ACTION_STOP),
-                                            )
-                                            val stopped = withTimeoutOrNull(8_000L) {
-                                                SpeechGenerationService.state.first {
-                                                    it is SpeechState.Idle
-                                                }
-                                            } != null
-                                            if (!stopped) {
-                                                throw IllegalStateException("Breeze did not release its HTP session.")
-                                            }
-                                            val result = withContext(Dispatchers.IO) {
-                                                BreezeDepthDiagnostic.run(context.applicationContext, modelId)
-                                            }
-                                            depthDiagnosticResult = result.message
-                                            qkvQualified = BreezeDepthDiagnostic.isQualified(context, modelId)
-                                            qkvEnabled = BreezeDepthDiagnostic.isEnabled(context, modelId)
-                                        } catch (error: Exception) {
-                                            depthDiagnosticResult = "Depth test unavailable: " +
-                                                (error.message ?: error.javaClass.simpleName)
-                                        } finally {
-                                            depthDiagnosticRunning = false
-                                            SpeechGenerationService.resetForModel(modelId)
-                                            if (model?.isDownloaded == true) {
-                                                context.startForegroundService(
-                                                    Intent(context, SpeechGenerationService::class.java)
-                                                        .setAction(SpeechGenerationService.ACTION_PRELOAD)
-                                                        .putExtra("modelId", modelId),
-                                                )
-                                            }
-                                        }
-                                    }
-                                },
-                            ) {
-                                Text(if (depthDiagnosticRunning) "Running 15-step test..." else "Run full Depth test")
-                            }
-                            depthDiagnosticResult?.let { diagnostic ->
-                                Text(diagnostic, style = MaterialTheme.typography.bodySmall)
-                                if (!depthDiagnosticRunning && BreezeDepthDiagnostic.logFile(context).isFile) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        OutlinedButton(onClick = { copyDepthDiagnostic(context) }) {
-                                            Text("Copy Depth log")
-                                        }
-                                        OutlinedButton(onClick = { shareDepthDiagnostic(context) }) {
-                                            Text("Share Depth log")
-                                        }
-                                    }
-                                }
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        "QKV grouped Depth fast path (experimental)",
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
-                                    Text(
-                                        if (qkvQualified) {
-                                            "On-device parity, Nx fusion and >=8% median " +
-                                                "Depth speedup verified. Opt in to test actual speech."
-                                        } else {
-                                            "Locked until the Depth A/B test verifies the " +
-                                                "same logits, actual Nx fusion, and a speed gain."
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Switch(
-                                    checked = qkvEnabled,
-                                    enabled = qkvQualified && !depthDiagnosticRunning &&
-                                        !hmxDiagnosticRunning && !fullQnnGeneratorEnabled,
-                                    onCheckedChange = { enabled ->
-                                        BreezeDepthDiagnostic.setEnabled(context, modelId, enabled)
-                                        qkvEnabled = BreezeDepthDiagnostic.isEnabled(context, modelId)
-                                        AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                                        scope.launch {
-                                            context.startService(
-                                                Intent(context, SpeechGenerationService::class.java)
-                                                    .setAction(SpeechGenerationService.ACTION_STOP),
-                                            )
-                                            delay(180)
-                                            SpeechGenerationService.resetForModel(modelId)
-                                            if (model?.isDownloaded == true) {
-                                                context.startForegroundService(
-                                                    Intent(context, SpeechGenerationService::class.java)
-                                                        .setAction(SpeechGenerationService.ACTION_PRELOAD)
-                                                        .putExtra("modelId", modelId),
-                                                )
-                                            }
-                                        }
-                                    },
-                                )
-                            }
-                            hmxDiagnosticResult?.let { diagnostic ->
-                                Text(
-                                    diagnostic,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                if (!hmxDiagnosticRunning && BreezeHmxDiagnostic.logFile(context).isFile) {
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        OutlinedButton(
-                                            onClick = { copyHmxDiagnostic(context) },
-                                        ) {
-                                            Text("Copy test log")
-                                        }
-                                        OutlinedButton(
-                                            onClick = { shareHmxDiagnostic(context) },
-                                        ) {
-                                            Text("Share test log")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "Experimental Full QNN generator",
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    if (fullQnnGeneratorEnabled) {
-                                        "QNN backbone + depth enabled for A/B testing. The QNN waveform decoder is independent."
-                                    } else {
-                                        "Off. The proven GGUF/ggml-Hexagon generator is being used."
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = fullQnnGeneratorEnabled,
-                                enabled = generatorState is BreezeQnnGeneratorArtifact.Status.Ready,
-                                onCheckedChange = { enabled ->
-                                    fullQnnGeneratorEnabled = enabled
-                                    BreezeQnnGeneratorArtifact.setEnabled(context, enabled)
-                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                                    scope.launch {
-                                        context.startService(
-                                            Intent(context, SpeechGenerationService::class.java)
-                                                .setAction(SpeechGenerationService.ACTION_STOP),
-                                        )
-                                        delay(180)
-                                        SpeechGenerationService.resetForModel(modelId)
-                                        if (model?.isDownloaded == true) {
-                                            context.startForegroundService(
-                                                Intent(
-                                                    context,
-                                                    SpeechGenerationService::class.java,
-                                                )
-                                                    .setAction(
-                                                        SpeechGenerationService.ACTION_PRELOAD,
-                                                    )
-                                                    .putExtra("modelId", modelId),
-                                            )
-                                        }
-                                    }
-                                },
-                            )
-                        }
-                    }
                 }
 
                 Button(

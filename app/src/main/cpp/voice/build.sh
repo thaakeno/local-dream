@@ -211,25 +211,6 @@ grep -q 'BREEZE_QNN_FIRST_NEW' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'BREEZE_QNN_STEADY_NEW' "$(pwd)/overlay/breeze/src/generation.cpp"
 grep -q 'anchor_chars = 200' "$(pwd)/overlay/breeze/src/generation.cpp"
 
-# Full QNN generator v5 keeps the proven batch-1 depth contract while fixing
-# the v4 backbone architecture: linked shared-weight contexts, true batch-1
-# AR1 for CFG=1, smaller prompt buckets, and an explicit legacy toggle.
-grep -q 'BREEZE_QNN_DEPTH_PATH' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
-grep -q 'physical_batch=1' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
-grep -q 'cfg_serial=' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
-grep -q 'profile=adaptive-performance' "$(pwd)/native/breeze-qnn-depth-decoder.cpp"
-grep -q 'rpc_poll=0' "$(pwd)/native/breeze-qnn-vocoder.cpp"
-grep -q 'dcvsEnable = 1' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'BREEZE_QNN_BACKBONE_LINKED_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'BREEZE_QNN_BACKBONE_PREFILL_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'BREEZE_QNN_BACKBONE_STEP_B1_PATH' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'shared_context=%d' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'prompt_context_released=%d' "$(pwd)/native/breeze-qnn-backbone.cpp"
-grep -q 'persistent_backbone' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'persistent_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'BREEZE_QNN_CACHE' "$(pwd)/overlay/breeze/src/generation.cpp"
-grep -q 'depth.run(m, hiddens, cb0' "$(pwd)/overlay/breeze/src/generation.cpp"
-
 # Guard the NPU-only Breeze v70 cleanup in production builds.
 # Adreno Vulkan depth was slower than Hexagon and must not be linked again.
 if grep -Eq 'GGML_VULKAN ON|breeze-gpu-depth[.]cpp|LOCALDREAM_VULKAN_DEPTH' "$(pwd)/CMakeLists.txt"; then
@@ -300,7 +281,7 @@ extensions=sin-hvx,col2im1d-htp,col2im-bias-fused,col2im-layout-ocxk-ggml-refere
 v81_visibility=none-v153-scheduler
 v81_execution=hvx-only-no-hmx
 gelu_erf=dsp-libm-reference-v81
-generator=legacy-hexagon-fastpath-or-verified-qnn-optin
+generator=legacy-hexagon-fastpath
 gpu_depth=removed-only-htp
 vocoder=qnn-htp-feature64-serialized-or-ggml-fallback-v198
 qnn_vocoder=sm8850-v3-v81,feature64,host-lut-fp32,cached-reference-selftest,left-context25,serialized64x39,eos-first
