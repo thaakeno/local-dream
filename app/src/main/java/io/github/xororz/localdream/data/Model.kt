@@ -361,6 +361,16 @@ data class Model(
                 "Qwen-Image-2.1-FP8.safetensors|" + QwenFamilyStorage.DIT_FP8,
         ) + QWEN_IMAGE_2_1_COMMON_FILES
 
+        val KREA_2_TURBO_PACKAGE_FILES = listOf(
+            "gguf-org/krea-2-gguf/resolve/main/krea2_turbo-mxfp4_moe.gguf|dit.gguf",
+            "bartowski/Qwen_Qwen3-VL-4B-Instruct-GGUF/resolve/main/" +
+                "Qwen_Qwen3-VL-4B-Instruct-Q4_0.gguf|llm.gguf",
+            "bartowski/Qwen_Qwen3-VL-4B-Instruct-GGUF/resolve/main/" +
+                "mmproj-Qwen_Qwen3-VL-4B-Instruct-f16.gguf|llm_vision.gguf",
+            "Qwen/Qwen3-VL-4B-Instruct/resolve/main/tokenizer.json|tokenizer.json",
+            "Osrivers/wan_2.1_vae.safetensors/resolve/main/wan_2.1_vae.safetensors|vae.safetensors",
+        )
+
         private val VIGGLE_R128 =
             "Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/" +
                 "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors|" +
@@ -522,6 +532,7 @@ data class Model(
             "zimage" -> "ZIMAGE"
             "klein" -> "KLEIN"
             "qwen21" -> "QWEN_IMAGE_2_1"
+            "krea2turbo" -> "KREA_2_TURBO"
             else -> ""
         }
 
@@ -706,6 +717,7 @@ class ModelRepository private constructor(private val context: Context) {
                 val zImageFile = File(dir, "ZIMAGE")
                 val kleinFile = File(dir, "KLEIN")
                 val qwenImage21File = File(dir, "QWEN_IMAGE_2_1")
+                val krea2TurboFile = File(dir, "KREA_2_TURBO")
 
                 when {
                     zImageFile.exists() && DitEngine.isSupportedDevice() ->
@@ -716,6 +728,9 @@ class ModelRepository private constructor(private val context: Context) {
 
                     qwenImage21File.exists() && DitEngine.isSupportedDevice() ->
                         customModels.add(createCustomModel(dir, isNpu = true, ditKind = "qwen21"))
+
+                    krea2TurboFile.exists() && DitEngine.isSupportedDevice() ->
+                        customModels.add(createCustomModel(dir, isNpu = true, ditKind = "krea2turbo"))
 
                     animaFile.exists() ->
                         customModels.add(createCustomModel(dir, isNpu = true, isAnima = true))
@@ -779,6 +794,7 @@ class ModelRepository private constructor(private val context: Context) {
             if (DitEngine.isSupportedDevice()) {
                 add(createZImageTurboModel())
                 add(createFlux2KleinModel())
+                add(createKrea2TurboModel())
                 add(createQwenImage21Model())
                 add(createQwenImage21GgufViggleTurboModel())
                 add(createQwenImage21Q4ViggleR256Model())
@@ -1068,6 +1084,32 @@ class ModelRepository private constructor(private val context: Context) {
         downloadBytesEstimate = bytes,
         recommendedVariant = recommended,
     )
+
+    private fun createKrea2TurboModel(): Model {
+        val id = "krea_2_turbo"
+        return Model(
+            id = id,
+            name = "Krea 2 Turbo",
+            description = "Fast 8-step Krea image generation with the Qwen3-VL text encoder",
+            baseUrl = baseUrl,
+            packageFiles = Model.KREA_2_TURBO_PACKAGE_FILES,
+            generationSize = 1024,
+            approximateSize = "9.6GB",
+            isDownloaded = Model.isDitPackageDownloaded(
+                context, id, "krea2turbo", Model.KREA_2_TURBO_PACKAGE_FILES,
+            ),
+            codeDefaults = ModelConfig(
+                prompt = "a lovely cat wearing black sunglasses, studio photo,",
+                negativePrompt = "",
+                steps = 8f,
+                cfg = 1f,
+                scheduler = "euler",
+                denoiseStrength = 1f,
+            ),
+            runOnCpu = false,
+            ditKind = "krea2turbo",
+        )
+    }
 
     private fun createQwenVariant(
         id: String,
@@ -1621,7 +1663,7 @@ class ModelRepository private constructor(private val context: Context) {
             "anythingv5cpu", "qteamixcpu", "cuteyukimixcpu",
             "absoluterealitycpu", "chilloutmixcpu",
             // DiT
-            "z_image_turbo", "flux2_klein_4b", "qwen_image_2_1",
+            "z_image_turbo", "flux2_klein_4b", "qwen_image_2_1", "krea_2_turbo",
             "qwen_image_2_1_fp8", "qwen_image_2_1_viggle_turbo",
             "qwen_image_2_1_viggle_turbo_gguf",
             "qwen_image_2_1_q4_viggle_r256",
