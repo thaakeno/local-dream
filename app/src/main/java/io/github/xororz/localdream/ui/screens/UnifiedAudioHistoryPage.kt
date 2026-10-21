@@ -30,6 +30,8 @@ import io.github.xororz.localdream.service.MusicHistoryStore
 import io.github.xororz.localdream.service.SpeechHistoryItem
 import io.github.xororz.localdream.service.SpeechHistoryStore
 import io.github.xororz.localdream.ui.components.MusicPlayerCard
+import io.github.xororz.localdream.ui.glass.GlassAudioHistoryHeader
+import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
 import io.github.xororz.localdream.ui.glass.DreamGlassRole
 import io.github.xororz.localdream.ui.glass.DreamGlassSurface
 import kotlinx.coroutines.Dispatchers
@@ -97,6 +99,20 @@ internal fun UnifiedAudioHistoryPage(tab: MediaHistoryTab) {
     else "Breeze TTS recordings, voices and generations"
 
     Column(Modifier.fillMaxSize()) {
+        if (LocalDreamGlassEnabled.current) {
+            GlassAudioHistoryHeader(
+                title = header,
+                description = description,
+                count = allCount,
+                query = query,
+                onQueryChange = { query = it },
+                favorites = favoritesOnly,
+                onFavoritesChange = { favoritesOnly = !favoritesOnly },
+                newest = newestFirst,
+                onSortChange = { newestFirst = !newestFirst },
+                onRefresh = { revision++ },
+            )
+        } else {
         DreamGlassSurface(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
             shape = RoundedCornerShape(28.dp),
@@ -152,6 +168,7 @@ internal fun UnifiedAudioHistoryPage(tab: MediaHistoryTab) {
                     TextButton(onClick = { revision++ }) { Text("Refresh") }
                 }
             }
+        }
         }
         if (refreshing) {
             LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 22.dp))
