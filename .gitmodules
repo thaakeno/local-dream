@@ -35,3 +35,6 @@
 [submodule "app/src/main/cpp/3rdparty/yue2.cpp"]
 	path = app/src/main/cpp/3rdparty/yue2.cpp
 	url = https://github.com/ServeurpersoCom/yue2.cpp.git
+[submodule "app/src/main/cpp/3rdparty/moss-stable-diffusion.cpp"]
+	path = app/src/main/cpp/3rdparty/moss-stable-diffusion.cpp
+	url = https://github.com/leejet/stable-diffusion.cpp.git
