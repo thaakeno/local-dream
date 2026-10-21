@@ -55,15 +55,6 @@ struct GenerationRequest {
   unsigned seed = 0;
   std::string scheduler_type = "dpm";
   bool use_opencl = false;
-  // Strict SDXL mode: UNet/VAE are QNN/HTP and CLIP is forbidden from
-  // executing on MNN/CPU. Existing SDXL packages ship MNN CLIP, so a cache
-  // miss fails loudly instead of silently touching CPU. CFG=1 never needs
-  // negative conditioning, which makes distilled/DMD2 models especially fast.
-  bool npu_only = false;
-  // SDXL A/B reference mode. Both paths use real two-pass CFG; this flag
-  // explicitly selects the old reference path so future optimizations can be
-  // tested without silently changing denoising semantics.
-  bool legacy_exact_cfg = false;
   bool show_diffusion_process = false;
   int show_diffusion_stride = 1;
   int width = 512;
@@ -506,16 +497,6 @@ inline Conditioning Pipeline::encodePrompts(const GenerationRequest &req) {
   if (needs_uncond && neg_hit) QNN_INFO("Prompt cache hit (negative)");
   if (!needs_uncond) QNN_INFO("CFG=1 fast path: negative CLIP skipped");
   if (pos_hit) QNN_INFO("Prompt cache hit (positive)");
-
-  // Current downloadable SDXL packages carry CLIP-L/G as MNN models, not QNN
-  // contexts. NPU-only therefore means exactly what it says: never run those
-  // models on CPU. Prompt conditioning must already be cached. This is strict
-  // and intentional; it must never silently fall back.
-  if (req.npu_only && (!pos_hit || (needs_uncond && !neg_hit))) {
-    throw std::runtime_error(
-        "NPU-only: SDXL CLIP conditioning is not cached for this prompt. "
-        "Turn NPU-only off for one warm-up generation, then enable it again.");
-  }
 
   if (neg_hit && pos_hit) {
     QNN_INFO("CLIP cache hit (all required sides), skipping CLIP inference");
@@ -1169,11 +1150,10 @@ inline GenerationResult Pipeline::generateImpl(
 
     // Real CFG only. The previous one-pass embedding heuristic was fast but
     // changed the denoising trajectory and produced generic/morphed faces.
-    // Keep a named legacy reference mode for same-seed A/B testing. The
-    // optimized mode deliberately uses the identical CFG equation.
+    // The exact CFG equation is the only production path.
     if (sdxl_) {
       QNN_INFO("[SDXL CFG] mode=%s cfg=%.3f steps=%d",
-               req.legacy_exact_cfg ? "legacy-exact" : "exact-optimized",
+               "exact",
                req.cfg, sampling_steps);
     }
 
@@ -1225,7 +1205,7 @@ inline GenerationResult Pipeline::generateImpl(
       if (sdxl_) {
         QNN_INFO("[SDXL CFG] step=%d/%d t=%.1f mode=%s passes=%d",
                  i - start_step + 1, sampling_steps, current_ts,
-                 req.legacy_exact_cfg ? "legacy-exact" : "exact-optimized",
+                 "exact",
                  skip_uncond ? 1 : 2);
       }
 
