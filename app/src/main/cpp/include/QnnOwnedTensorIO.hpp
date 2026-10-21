@@ -163,6 +163,34 @@ public:
             for(size_t i=0;i<n;++i) out[i]=static_cast<_Float16>(src[i]);
             return Result::SUCCESS;
         }
+        // SDXL serializes its timestamp / timestep as INT32 even though
+        // PipelineSdxl supplies the scalar in a float input buffer. The
+        // original owned adapter returned FAILURE before graphExecute here.
+        case QNN_DATATYPE_INT_32: {
+            if(!capacity<int32_t>(b,n)) return Result::FAILURE;
+            auto *out=static_cast<int32_t*>(b.data);
+            for(size_t i=0;i<n;++i) {
+                const double value=std::nearbyint(static_cast<double>(src[i]));
+                if(!std::isfinite(value) ||
+                   value<static_cast<double>(std::numeric_limits<int32_t>::min()) ||
+                   value>static_cast<double>(std::numeric_limits<int32_t>::max()))
+                    return Result::FAILURE;
+                out[i]=static_cast<int32_t>(value);
+            }
+            return Result::SUCCESS;
+        }
+        case QNN_DATATYPE_UINT_32: {
+            if(!capacity<uint32_t>(b,n)) return Result::FAILURE;
+            auto *out=static_cast<uint32_t*>(b.data);
+            for(size_t i=0;i<n;++i) {
+                const double value=std::nearbyint(static_cast<double>(src[i]));
+                if(!std::isfinite(value) || value<0.0 ||
+                   value>static_cast<double>(std::numeric_limits<uint32_t>::max()))
+                    return Result::FAILURE;
+                out[i]=static_cast<uint32_t>(value);
+            }
+            return Result::SUCCESS;
+        }
         case QNN_DATATYPE_UFIXED_POINT_8:
         case QNN_DATATYPE_SFIXED_POINT_8:
         case QNN_DATATYPE_UFIXED_POINT_16:
