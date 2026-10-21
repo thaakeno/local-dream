@@ -73,12 +73,50 @@ jobs:
           path: ${{ runner.temp }}/localdream-ci.jks
           key: localdream-ci-signing-v1
 
-      - name: Require canonical signer
+      # The original v141 keystore was once kept only in a short-lived Actions
+      # cache. Cache eviction must never cause a replacement signing identity.
+      # Supply the SAME original key in a protected repository secret (Base64).
+      # Legacy cache restoration remains available if an old cache still exists.
+      - name: Recover and verify installed-app signing identity
         shell: bash
+        env:
+          CANONICAL_KEYSTORE_BASE64: ${{ secrets.LOCALDREAM_CANONICAL_KEYSTORE_BASE64 }}
+          LEGACY_CACHE_HIT: ${{ steps.signing-key-cache.outputs.cache-hit }}
         run: |
-          set -euxo pipefail
-          test "${{ steps.signing-key-cache.outputs.cache-hit }}" = "true"
-          test -s "$RUNNER_TEMP/localdream-ci.jks"
+          set -euo pipefail
+          umask 077
+          store="$RUNNER_TEMP/localdream-ci.jks"
+          if [ -n "$CANONICAL_KEYSTORE_BASE64" ]; then
+            if ! printf '%s' "$CANONICAL_KEYSTORE_BASE64" | base64 --decode > "$store"; then
+              rm -f "$store"
+              echo "::error::Protected original-keystore secret is not valid Base64."
+              exit 1
+            fi
+            echo "Loaded original signing keystore from protected GitHub secret."
+          elif [ "$LEGACY_CACHE_HIT" = "true" ] && [ -s "$store" ]; then
+            echo "Loaded original signing keystore from legacy Actions cache."
+          else
+            echo "::error::The original signing key is unavailable. Set repository Actions secret LOCALDREAM_CANONICAL_KEYSTORE_BASE64 to the Base64 encoding of the ORIGINAL localdream-ci.jks. Do not generate a new keystore: it cannot update existing installations."
+            exit 1
+          fi
+          if [ ! -s "$store" ]; then
+            echo "::error::Canonical signing keystore is empty."
+            exit 1
+          fi
+          chmod 600 "$store"
+          if ! keytool -list -keystore "$store" -storepass android -alias localdream >/dev/null 2>&1; then
+            echo "::error::Keystore does not contain the expected localdream alias or its original password is incorrect."
+            exit 1
+          fi
+          actual="$(keytool -exportcert -rfc -keystore "$store" -storepass android -alias localdream |
+            openssl x509 -noout -fingerprint -sha256 |
+            sed 's/^.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          expected="bff433493c171fcd31e8159ca19e64d938b8d4afe043a07be91fec0ad23f071b"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Signing certificate mismatch: supplied key cannot update the installed Local Dream APK."
+            exit 1
+          fi
+          echo "Verified original installed-app signing certificate SHA-256."
 
       - name: Download source APK artifact
         env:
@@ -117,3 +155,8 @@ jobs:
           path: LocalDream-Breeze-canonical.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Remove private keystore from runner
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/localdream-ci.jks"
