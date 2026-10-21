@@ -1,6 +1,7 @@
 package io.github.xororz.localdream.ui.screens
 
 import io.github.xororz.localdream.ui.glass.CompactModelCard
+import io.github.xororz.localdream.ui.glass.DreamCreateBubble
 import io.github.xororz.localdream.ui.glass.DreamGlassTabRow
 import io.github.xororz.localdream.ui.glass.DreamElevatedCard
 import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
@@ -1473,6 +1474,23 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     }
 
     Scaffold(
+        floatingActionButton = {
+            if (LocalDreamGlassEnabled.current && !isSelectionMode &&
+                pagerState.currentPage < 2
+            ) {
+                DreamCreateBubble(
+                    onAddModel = {
+                        if (pagerState.currentPage == 0) {
+                            showCustomModelDialog = true
+                        } else {
+                            showCustomNpuModelDialog = true
+                        }
+                    },
+                    onHistory = { navController.navigate(Screen.History.route) },
+                    onSettings = { showSettingsDialog = true },
+                )
+            }
+        },
         topBar = {
             MediumTopAppBar(
                 title = {
