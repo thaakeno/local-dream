@@ -68,29 +68,50 @@ fun LocalDreamTheme(themeState: ThemeState, content: @Composable () -> Unit) {
         else -> themeState.preset.scheme(darkTheme)
     }
 
-    // Graphite/ice glass surfaces; the classic theme remains untouched.
+    // A completely separate graphite-and-porcelain Liquid theme.
+    // Classic mode keeps every existing color and dynamic-color preference.
     val presentationScheme = if (themeState.liquidGlass) {
-        if (darkTheme) {
-            colorScheme.copy(
-                background = Color(0xFF0B1019),
-                surface = Color(0xFF111925),
-                surfaceContainer = Color(0xFF1A2433),
-                surfaceContainerLow = Color(0xFF15202C),
-                surfaceContainerHigh = Color(0xFF253242),
-                primary = Color(0xFF9FC6FF),
-                onPrimary = Color(0xFF102239),
-            )
-        } else {
-            colorScheme.copy(
-                background = Color(0xFFF1F5FB),
-                surface = Color(0xFFFAFBFF),
-                surfaceContainer = Color(0xFFE7EDF7),
-                surfaceContainerLow = Color(0xFFEFF3FA),
-                surfaceContainerHigh = Color(0xFFDDE5F2),
-                primary = Color(0xFF285EA9),
-                onPrimary = Color.White,
-            )
-        }
+        if (darkTheme) colorScheme.copy(
+            background = Color(0xFF09090B),
+            surface = Color(0xFF111113),
+            surfaceContainerLowest = Color(0xFF09090B),
+            surfaceContainerLow = Color(0xFF151518),
+            surfaceContainer = Color(0xFF1A1A1E),
+            surfaceContainerHigh = Color(0xFF202024),
+            surfaceContainerHighest = Color(0xFF29292E),
+            primary = Color(0xFFE8E6E3),
+            onPrimary = Color(0xFF101012),
+            primaryContainer = Color(0xFF343438),
+            onPrimaryContainer = Color(0xFFF5F4F2),
+            secondary = Color(0xFFC8C5C2),
+            secondaryContainer = Color(0xFF2C2C30),
+            tertiary = Color(0xFFD7D3CD),
+            onBackground = Color(0xFFF4F3F1),
+            onSurface = Color(0xFFF4F3F1),
+            onSurfaceVariant = Color(0xFFACAAAE),
+            outline = Color(0xFF747477),
+            outlineVariant = Color(0xFF414145),
+        ) else colorScheme.copy(
+            background = Color(0xFFF7F6F3),
+            surface = Color(0xFFFDFCF9),
+            surfaceContainerLowest = Color.White,
+            surfaceContainerLow = Color(0xFFF1F0EC),
+            surfaceContainer = Color(0xFFE9E8E4),
+            surfaceContainerHigh = Color(0xFFDEDDD8),
+            surfaceContainerHighest = Color(0xFFD2D1CC),
+            primary = Color(0xFF262629),
+            onPrimary = Color.White,
+            primaryContainer = Color(0xFFE1DFDA),
+            onPrimaryContainer = Color(0xFF202023),
+            secondary = Color(0xFF55545A),
+            secondaryContainer = Color(0xFFE6E4DF),
+            tertiary = Color(0xFF66605B),
+            onBackground = Color(0xFF19191B),
+            onSurface = Color(0xFF19191B),
+            onSurfaceVariant = Color(0xFF656368),
+            outline = Color(0xFF96949A),
+            outlineVariant = Color(0xFFCFCDD0),
+        )
     } else colorScheme
 
     MaterialExpressiveTheme(

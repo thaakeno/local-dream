@@ -65,12 +65,12 @@ private data class GlassOptics(
 )
 
 private fun optics(role: DreamGlassRole): GlassOptics = when (role) {
-    DreamGlassRole.CARD -> GlassOptics(8.dp, 14.dp, 9.dp, .49f, .33f, false)
-    DreamGlassRole.CONTROL -> GlassOptics(3.dp, 10.dp, 7.dp, .53f, .33f, false)
-    DreamGlassRole.NAVIGATION -> GlassOptics(9.dp, 21.dp, 16.dp, .56f, .5f, true)
-    DreamGlassRole.SELECTION -> GlassOptics(1.dp, 14.dp, 17.dp, .25f, .5f, true)
-    DreamGlassRole.OVERLAY -> GlassOptics(12.dp, 20.dp, 16.dp, .79f, .33f, true)
-    DreamGlassRole.BUBBLE -> GlassOptics(2.dp, 22.dp, 23.dp, .19f, .5f, true)
+    DreamGlassRole.CARD -> GlassOptics(5.dp, 18.dp, 12.dp, .38f, .5f, false)
+    DreamGlassRole.CONTROL -> GlassOptics(3.dp, 11.dp, 8.dp, .38f, .5f, false)
+    DreamGlassRole.NAVIGATION -> GlassOptics(8.dp, 20.dp, 17.dp, .48f, .5f, true)
+    DreamGlassRole.SELECTION -> GlassOptics(1.dp, 16.dp, 19.dp, .16f, 1f, true)
+    DreamGlassRole.OVERLAY -> GlassOptics(10.dp, 24.dp, 19.dp, .63f, .5f, true)
+    DreamGlassRole.BUBBLE -> GlassOptics(2.dp, 22.dp, 23.dp, .14f, .5f, true)
 }
 
 /**
@@ -92,7 +92,7 @@ fun DreamGlassBackdropLayer(
             Box(
                 Modifier.matchParentSize()
                     .then(if (enabled) Modifier.layerBackdrop(backdrop) else Modifier)
-                    .background(Brush.verticalGradient(listOf(base, surface, base))),
+                    .background(Brush.verticalGradient(listOf(base, surface.copy(alpha = .42f), base))),
             )
             content()
         }
@@ -113,9 +113,9 @@ fun DreamGlassSurface(
     val density = LocalDensity.current
     val o = remember(role) { optics(role) }
     val tint = if (MaterialTheme.colorScheme.background.red < .5f) {
-        Color(0xFF121923).copy(alpha = o.tint)
+        Color(0xFF121214).copy(alpha = o.tint)
     } else {
-        Color(0xFFFAFAFF).copy(alpha = o.tint)
+        Color(0xFFFAFAF7).copy(alpha = o.tint)
     }
     val shapeModifier = if (enabled && backdrop != null) {
         Modifier.drawBackdrop(
@@ -133,8 +133,8 @@ fun DreamGlassSurface(
                     )
                 }
             },
-            highlight = { Highlight.Default },
-            shadow = { Shadow.Default },
+            highlight = { Highlight(width = .7.dp, alpha = .55f) },
+            shadow = { Shadow(radius = 12.dp, alpha = .14f) },
             onDrawSurface = { drawRect(tint) },
             backdropScale = o.resolution,
         )
