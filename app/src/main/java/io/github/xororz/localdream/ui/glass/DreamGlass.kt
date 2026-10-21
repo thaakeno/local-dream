@@ -145,14 +145,19 @@ fun DreamElevatedCard(
     colors: CardColors = CardDefaults.elevatedCardColors(),
     elevation: CardElevation = CardDefaults.elevatedCardElevation(),
     shape: Shape = MaterialTheme.shapes.large,
+    onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     if (!LocalDreamGlassEnabled.current) {
-        ElevatedCard(modifier = modifier, colors = colors, elevation = elevation, shape = shape, content = content)
+        if (onClick != null) {
+            ElevatedCard(onClick = onClick, modifier = modifier, colors = colors, elevation = elevation, shape = shape, content = content)
+        } else {
+            ElevatedCard(modifier = modifier, colors = colors, elevation = elevation, shape = shape, content = content)
+        }
     } else {
         val glassShape = shape as? CornerBasedShape ?: RoundedCornerShape(26.dp)
         DreamGlassSurface(
-            modifier = modifier,
+            modifier = if (onClick != null) modifier.clickable(onClick = onClick) else modifier,
             shape = glassShape,
             role = DreamGlassRole.CARD,
         ) {
