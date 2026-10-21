@@ -20,9 +20,16 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android SDK platform
-        run: sdkmanager --install "platforms;android-37"
+        run: |
+          sdkmanager --install "platforms;android-37"
+          sdkmanager --licenses </dev/null || true
+      - name: Check SDXL integer conversion with UBSan
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=undefined \
+            -I app/src/main/cpp/include app/src/test/cpp/QnnNativeScalarTest.cpp \
+            -o /tmp/localdream-qnn-scalar-test
+          /tmp/localdream-qnn-scalar-test
       - name: Compile Kotlin UI and resources (no Qualcomm SDK required)
         run: ./gradlew :app:compileBasicDebugKotlin --no-daemon --stacktrace
