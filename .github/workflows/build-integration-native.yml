@@ -1,5 +1,6 @@
-# Isolated complete native/Hexagon integration build. Staging artifacts MUST be
-# canonical-resigned before installation; no new installed-app signing key.
+# Complete native/Hexagon integration build with a persistent signing identity.
+# The permanent keystore is supplied ONLY by protected GitHub Actions secrets;
+# no signing keys or credentials are committed to source control.
 name: Local Dream integration Hexagon build
 
 on:
@@ -354,57 +355,102 @@ jobs:
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
 
-      - name: Create disposable staging signer
+      # Permanent installer identity; NEVER generate a replacement when secrets
+      # are present or when supplied key differs from the pinned fingerprint.
+      # Until the private key is explicitly restored in GitHub Actions secrets,
+      # only a clearly named and labelled staging APK is published.
+      - name: Prepare permanent signing identity or staging preview
+        id: identity
         shell: bash
+        env:
+          PERMANENT_KEY_BASE64: ${{ secrets.LOCALDREAM_PERMANENT_KEYSTORE_BASE64 }}
+          PERMANENT_STORE_PASSWORD: ${{ secrets.LOCALDREAM_PERMANENT_STORE_PASSWORD }}
         run: |
           set -euo pipefail
-          # Never share a staging certificate as an updateable app.
-          keytool -genkeypair -keystore "$RUNNER_TEMP/localdream-stage.jks" \
-            -storepass android -keypass android -alias localdream \
-            -keyalg RSA -keysize 2048 -validity 1 \
-            -dname "CN=Local Dream Integration Staging,O=thaakeno,C=DE"
+          umask 077
+          if [ -n "$PERMANENT_KEY_BASE64" ] || [ -n "$PERMANENT_STORE_PASSWORD" ]; then
+            if [ -z "$PERMANENT_KEY_BASE64" ] || [ -z "$PERMANENT_STORE_PASSWORD" ]; then
+              echo "::error::Both permanent signing secrets are required."
+              exit 1
+            fi
+            printf '%s' "$PERMANENT_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/localdream-signing.p12"
+            test -s "$RUNNER_TEMP/localdream-signing.p12"
+            chmod 600 "$RUNNER_TEMP/localdream-signing.p12"
+            keytool -list -keystore "$RUNNER_TEMP/localdream-signing.p12" \
+              -storetype PKCS12 -storepass "$PERMANENT_STORE_PASSWORD" \
+              -alias localdream >/dev/null
+            actual="$(keytool -exportcert -rfc \
+              -keystore "$RUNNER_TEMP/localdream-signing.p12" \
+              -storetype PKCS12 -storepass "$PERMANENT_STORE_PASSWORD" \
+              -alias localdream | openssl x509 -noout -fingerprint -sha256 |
+              sed 's/.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+            expected="e6d1a8635da6a0e77bcfc1a0e478522cbbb08f0a9e1d2043fd954914bd833956"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::Wrong release signing certificate. Refusing to rotate keys."
+              exit 1
+            fi
+            echo "mode=permanent" >> "$GITHUB_OUTPUT"
+            echo "artifact=LocalDream-Glass-Permanent" >> "$GITHUB_OUTPUT"
+            echo "Permanent certificate verified: $actual"
+          else
+            keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/localdream-signing.p12" \
+              -storetype PKCS12 -storepass android -keypass android -alias localdream \
+              -keyalg RSA -keysize 2048 -validity 1 \
+              -dname "CN=Local Dream STAGING ONLY,O=thaakeno,C=DE"
+            echo "mode=staging" >> "$GITHUB_OUTPUT"
+            echo "artifact=LocalDream-Integration-Staging-NOT-UPDATEABLE" >> "$GITHUB_OUTPUT"
+            echo "::warning::Permanent signing secrets unavailable; this is NOT a permanent installable release."
+          fi
+
       - name: Build APK
         shell: bash
-        run: |
-          set -euxo pipefail
-          chmod +x gradlew
-          ./gradlew --no-daemon :app:assembleBasicDebug \
-            -PRELEASE_STORE_FILE="$RUNNER_TEMP/localdream-stage.jks" \
-            -PRELEASE_STORE_PASSWORD=android \
-            -PRELEASE_KEY_ALIAS=localdream \
-            -PRELEASE_KEY_PASSWORD=android
-          find app/build/outputs/apk -type f -name '*.apk' -ls
-
-      - name: Inspect staging APK (not installable over production)
+        env:
+          PERMANENT_STORE_PASSWORD: ${{ secrets.LOCALDREAM_PERMANENT_STORE_PASSWORD }}
+          SIGNING_MODE: ${{ steps.identity.outputs.mode }}
         run: |
           set -euo pipefail
-          test -s app/build/outputs/apk/basic/debug/LocalDream*.apk
-          "$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n1)" \
-            verify --verbose app/build/outputs/apk/basic/debug/*.apk
-      - name: Upload APK
+          chmod +x gradlew
+          if [ "$SIGNING_MODE" = "permanent" ]; then
+            password="$PERMANENT_STORE_PASSWORD"
+          else
+            password="android"
+          fi
+          ./gradlew --no-daemon :app:assembleBasicDebug \
+            -PRELEASE_STORE_FILE="$RUNNER_TEMP/localdream-signing.p12" \
+            -PRELEASE_STORE_PASSWORD="$password" \
+            -PRELEASE_KEY_ALIAS=localdream \
+            -PRELEASE_KEY_PASSWORD="$password"
+          find app/build/outputs/apk -type f -name '*.apk' -ls
+
+      - name: Verify APK signature and permanent identity
+        shell: bash
+        env:
+          SIGNING_MODE: ${{ steps.identity.outputs.mode }}
+        run: |
+          set -euo pipefail
+          apk="$(find app/build/outputs/apk/basic/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -s "$apk"
+          signer="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n1)"
+          "$signer" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-verification.txt"
+          if [ "$SIGNING_MODE" = "permanent" ]; then
+            grep -iq 'e6d1a8635da6a0e77bcfc1a0e478522cbbb08f0a9e1d2043fd954914bd833956' \
+              "$RUNNER_TEMP/apk-verification.txt"
+          fi
+
+      - name: Upload signed APK
         uses: actions/upload-artifact@v6
         with:
-          name: LocalDream-Integration-Staging
+          name: ${{ steps.identity.outputs.artifact }}
           path: app/build/outputs/apk/basic/debug/*.apk
           if-no-files-found: error
           retention-days: 14
 
-      - name: Request existing installed-app canonical signer
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Erase signing keystore from CI runner
+        if: always()
         shell: bash
-        run: |
-          set -euo pipefail
-          # Signing is performed by the existing v141 stable workflow using
-          # its cached original keystore; it validates the installed-app
-          # certificate fingerprint before uploading the resulting APK.
-          jq -n \
-            --arg ref "v141-stable-yue2-full" \
-            --arg run "${GITHUB_RUN_ID}" \
-            '{ref:$ref,inputs:{source_run_id:$run,source_artifact_name:"LocalDream-Integration-Staging",output_artifact_name:"LocalDream-Glass-Canonical"}}' > /tmp/canonical-request.json
-          curl -fL --retry 3 -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/resign-breeze-canonical.yml/dispatches" \
-            -d @/tmp/canonical-request.json
+        run: rm -f "$RUNNER_TEMP/localdream-signing.p12"
+
+
+      # The legacy v141 signer is retained on its own branch for old installs,
+      # but cannot sign this release: its original private key was evicted.
+      # Never auto-dispatch it from the new permanent-identity pipeline.
