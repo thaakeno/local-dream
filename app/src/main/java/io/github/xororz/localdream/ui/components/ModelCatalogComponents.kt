@@ -1,6 +1,8 @@
 package io.github.xororz.localdream.ui.components
 
 import io.github.xororz.localdream.ui.glass.DreamElevatedCard
+import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
+import io.github.xororz.localdream.ui.glass.CompactFamilyCard
 
 import android.content.Intent
 import androidx.compose.animation.AnimatedContent
@@ -467,6 +469,18 @@ fun QwenFamilyCard(
         ?: variants.firstOrNull { it.isDownloaded }
         ?: variants.first()
 
+    if (LocalDreamGlassEnabled.current) {
+        CompactFamilyCard(
+            title = "Qwen Image 2.1",
+            subtitle = "Image generation",
+            variants = variants,
+            onClick = {
+                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                showSheet = true
+            },
+            modifier = modifier,
+        )
+    } else {
     DreamElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
@@ -536,6 +550,7 @@ fun QwenFamilyCard(
                 }
             }
         }
+    }
     }
 
     if (showSheet) {
@@ -799,6 +814,18 @@ fun Yue2FamilyCard(
     val selected = supported.firstOrNull { it.id == selectedId } ?: initial
     val installed = supported.count { it.isDownloaded }
 
+    if (LocalDreamGlassEnabled.current) {
+        CompactFamilyCard(
+            title = "YuE2 3B",
+            subtitle = "Music generation",
+            variants = supported,
+            onClick = {
+                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                showSheet = true
+            },
+            modifier = modifier,
+        )
+    } else {
     DreamElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
@@ -863,6 +890,7 @@ fun Yue2FamilyCard(
                 }
             }
         }
+    }
     }
 
     if (showSheet) {
@@ -1241,6 +1269,18 @@ fun BreezeFamilyCard(
     val selected = sorted.firstOrNull { it.id == selectedId } ?: initial
     val installed = sorted.count { it.isDownloaded }
 
+    if (LocalDreamGlassEnabled.current) {
+        CompactFamilyCard(
+            title = "Breeze TTS 2",
+            subtitle = "Speech generation",
+            variants = sorted,
+            onClick = {
+                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                showSheet = true
+            },
+            modifier = modifier,
+        )
+    } else {
     DreamElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
@@ -1299,6 +1339,7 @@ fun BreezeFamilyCard(
                 }
             }
         }
+    }
     }
 
     if (showSheet) {
