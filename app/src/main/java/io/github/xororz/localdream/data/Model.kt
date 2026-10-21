@@ -88,6 +88,8 @@ val chipsetModelSuffixes = mapOf(
     "SM8850P" to "8gen2",
     "SM8735" to "8gen2",
     "SM8845" to "8gen2",
+    "SM8950" to "8gen2",
+    "SM8975" to "8gen2",
 )
 
 sealed class DownloadResult {
@@ -359,6 +361,13 @@ data class Model(
         val QWEN_IMAGE_2_1_FP8_PACKAGE_FILES = listOf(
             "unsloth/Qwen-Image-2.1-FP8/resolve/main/" +
                 "Qwen-Image-2.1-FP8.safetensors|" + QwenFamilyStorage.DIT_FP8,
+        ) + QWEN_IMAGE_2_1_COMMON_FILES
+
+        // Upstream Qwen Image 2.1 Turbo is a separate distilled transformer,
+        // NOT a Viggle LoRA. Preserve all existing Q4/Q8/FP8 shared-family files.
+        val QWEN_IMAGE_2_1_TURBO_PACKAGE_FILES = listOf(
+            "unsloth/Qwen-Image-2.1-Turbo-FP8/resolve/main/" +
+                "Qwen-Image-2.1-Turbo-FP8.safetensors|dit.safetensors",
         ) + QWEN_IMAGE_2_1_COMMON_FILES
 
         val KREA_2_TURBO_PACKAGE_FILES = listOf(
@@ -800,6 +809,7 @@ class ModelRepository private constructor(private val context: Context) {
                 add(createZImageTurboModel())
                 add(createFlux2KleinModel())
                 add(createKrea2TurboModel())
+                add(createQwenImage21OfficialTurboModel())
                 if (MossImagePackages.engineAvailable(context)) {
                     add(createMossImageModel(sft = true))
                     add(createMossImageModel(sft = false))
@@ -1094,6 +1104,33 @@ class ModelRepository private constructor(private val context: Context) {
         recommendedVariant = recommended,
     )
 
+    /** Official distilled Turbo: same Qwen3-VL pipeline, separate 8-step DiT. */
+    private fun createQwenImage21OfficialTurboModel(): Model {
+        val id = "qwen_image_2_1_turbo"
+        return Model(
+            id = id,
+            name = "Qwen Image 2.1 Turbo",
+            description = "Official FP8 distilled 8-step Qwen Image 2.1 model",
+            baseUrl = baseUrl,
+            packageFiles = Model.QWEN_IMAGE_2_1_TURBO_PACKAGE_FILES,
+            generationSize = 1024,
+            approximateSize = "13.7GB",
+            isDownloaded = Model.isDitPackageDownloaded(
+                context, id, "qwen21", Model.QWEN_IMAGE_2_1_TURBO_PACKAGE_FILES,
+            ),
+            codeDefaults = ModelConfig(
+                prompt = "A beautifully lit cinematic portrait, natural texture and fine detail",
+                negativePrompt = "",
+                steps = 8f,
+                cfg = 1f,
+                scheduler = "euler",
+                denoiseStrength = 1f,
+            ),
+            runOnCpu = false,
+            ditKind = "qwen21",
+        )
+    }
+
     private fun createMossImageModel(sft: Boolean): Model {
         val id = if (sft) "moss_image_sft_q4" else "moss_image_base_q4"
         val packageFiles = if (sft) MossImagePackages.SFT_Q4 else MossImagePackages.BASE_Q4
@@ -1327,7 +1364,7 @@ class ModelRepository private constructor(private val context: Context) {
             adapterBytes = 1_360_000_000L,
         )
 
-    private fun isSdxlCapableSoc(soc: String): Boolean = soc in setOf("SM8750", "SM8750P", "SM8850", "SM8850P", "SM8845", "SM8650")
+    private fun isSdxlCapableSoc(soc: String): Boolean = soc in setOf("SM8750", "SM8750P", "SM8850", "SM8850P", "SM8845", "SM8950", "SM8975", "SM8650")
 
     private fun createCyberRealisticV10Model(): Model {
         val id = "cyber_realistic_v10"
@@ -1702,7 +1739,7 @@ class ModelRepository private constructor(private val context: Context) {
             "absoluterealitycpu", "chilloutmixcpu",
             // DiT
             "z_image_turbo", "flux2_klein_4b", "qwen_image_2_1", "krea_2_turbo",
-            "moss_image_sft_q4", "moss_image_base_q4",
+            "moss_image_sft_q4", "moss_image_base_q4", "qwen_image_2_1_turbo",
             "qwen_image_2_1_fp8", "qwen_image_2_1_viggle_turbo",
             "qwen_image_2_1_viggle_turbo_gguf",
             "qwen_image_2_1_q4_viggle_r256",
