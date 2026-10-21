@@ -3,6 +3,7 @@ package io.github.xororz.localdream.ui.glass
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.*
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -17,6 +18,19 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.platform.LocalContext
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -29,8 +43,60 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun DreamCreateBubble(onAddModel: () -> Unit, onHistory: () -> Unit, onSettings: () -> Unit) {
     var expanded by rememberSaveable { mutableStateOf(false) }
+    var touch by remember { mutableStateOf(Offset.Zero) }
+    var bubbleSize by remember { mutableStateOf(IntSize.Zero) }
+    val context = LocalContext.current
+    val reducedMotion = remember(context) {
+        runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            ) == 0f
+        }.getOrDefault(false)
+    }
+    val liquidEnabled = LocalDreamGlassEnabled.current && !expanded &&
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    val shader = remember(liquidEnabled) {
+        if (liquidEnabled) BubbleGlassShader() else null
+    }
+    val phaseTransition = rememberInfiniteTransition(label = "creation-bubble-surface")
+    val phase by phaseTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 6.28318f,
+        animationSpec = infiniteRepeatable(
+            tween(durationMillis = 12_000, easing = LinearEasing),
+        ),
+        label = "creation-bubble-meniscus",
+    )
     DreamGlassSurface(
-        modifier = Modifier.animateContentSize(spring(dampingRatio = .74f, stiffness = 400f)),
+        modifier = Modifier
+            .onSizeChanged { bubbleSize = it }
+            .pointerInput(liquidEnabled, bubbleSize) {
+                if (liquidEnabled) detectDragGestures(
+                    onDrag = { change, _ ->
+                        change.consume()
+                        touch = Offset(
+                            change.position.x / bubbleSize.width.coerceAtLeast(1) * 2f - 1f,
+                            change.position.y / bubbleSize.height.coerceAtLeast(1) * 2f - 1f,
+                        )
+                    },
+                    onDragEnd = { touch = Offset.Zero },
+                    onDragCancel = { touch = Offset.Zero },
+                )
+            }
+            .graphicsLayer {
+                renderEffect = if (liquidEnabled && shader != null && bubbleSize.width > 0) {
+                    shader.effect(
+                        bubbleSize.width.toFloat(),
+                        bubbleSize.height.toFloat(),
+                        if (reducedMotion) 0f else phase,
+                        touch.x,
+                        touch.y,
+                    )
+                } else null
+            }
+            .animateContentSize(spring(dampingRatio = .74f, stiffness = 400f)),
         shape = RoundedCornerShape(28.dp),
         role = DreamGlassRole.BUBBLE,
     ) {

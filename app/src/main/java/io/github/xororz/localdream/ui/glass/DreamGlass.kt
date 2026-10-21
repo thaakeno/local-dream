@@ -2,8 +2,6 @@ package io.github.xororz.localdream.ui.glass
 
 import android.os.Build
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,7 +16,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -28,6 +25,17 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import android.provider.Settings
+import kotlin.math.roundToInt
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -166,8 +174,9 @@ fun DreamElevatedCard(
 }
 
 /**
- * BitChord-like lifted selection travel, built on the Recall backdrop engine.
- * Uses a damped spring; gesture/reselection retargeting keeps its live velocity.
+ * Recall's velocity-preserving, lifted liquid selection motion, adapted for
+ * Local Dream text tabs. Drag gestures scrub the lens; the spring retargets
+ * from its visible position rather than resetting between selections.
  */
 @Composable
 fun DreamGlassTabRow(
@@ -177,38 +186,97 @@ fun DreamGlassTabRow(
     modifier: Modifier = Modifier,
 ) {
     if (titles.isEmpty()) return
-    val current by animateFloatAsState(
-        targetValue = selectedIndex.coerceIn(0, titles.lastIndex).toFloat(),
-        animationSpec = spring(
-            dampingRatio = .68f,
-            stiffness = Spring.StiffnessMediumLow,
-        ),
-        label = "glass-selection-travel",
-    )
+    val context = LocalContext.current
+    val reducedMotion = remember(context) {
+        runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            ) == 0f
+        }.getOrDefault(false)
+    }
+    val scope = rememberCoroutineScope()
+    val lens = remember(titles.size) { LiquidLensMotion(scope, selectedIndex) }
+    LaunchedEffect(selectedIndex, reducedMotion) {
+        lens.moveTo(selectedIndex.coerceIn(titles.indices), reducedMotion)
+    }
     BoxWithConstraints(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
-            .height(54.dp),
+        modifier = modifier.fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .height(56.dp),
     ) {
         val cell = maxWidth / titles.size
-        DreamGlassSurface(Modifier.fillMaxSize(), RoundedCornerShape(27.dp), DreamGlassRole.NAVIGATION) {}
+        val cellPx = with(LocalDensity.current) { cell.toPx() }
         DreamGlassSurface(
-            Modifier.offset(x = cell * current).width(cell).fillMaxHeight().padding(4.dp),
-            RoundedCornerShape(23.dp),
-            DreamGlassRole.SELECTION,
+            Modifier.fillMaxSize(),
+            RoundedCornerShape(28.dp),
+            DreamGlassRole.NAVIGATION,
         ) {}
-        Row(Modifier.fillMaxSize()) {
-            titles.forEachIndexed { i, label ->
-                Box(
-                    Modifier.width(cell).fillMaxHeight().clickable { onSelected(i) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        label,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (i == selectedIndex) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (i == selectedIndex) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
+        Box(
+            Modifier.fillMaxSize()
+                .padding(4.dp)
+                .selectableGroup()
+                .pointerInput(cellPx, titles.size, reducedMotion) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { lens.beginDrag(reducedMotion) },
+                        onHorizontalDrag = { change, delta ->
+                            change.consume()
+                            lens.dragBy(
+                                delta / cellPx.coerceAtLeast(1f),
+                                titles.lastIndex,
+                                reducedMotion,
+                            )
+                        },
+                        onDragEnd = {
+                            val target = lens.position.roundToInt().coerceIn(titles.indices)
+                            lens.moveTo(target, reducedMotion, fromDrag = true)
+                            if (target != selectedIndex) onSelected(target)
+                        },
+                        onDragCancel = { lens.cancel(selectedIndex, reducedMotion) },
                     )
+                },
+        ) {
+            val pillHeight = 48.dp
+            DreamGlassSurface(
+                modifier = Modifier
+                    .offset(x = (cell - 8.dp) * lens.position)
+                    .width(cell - 8.dp)
+                    .height(pillHeight)
+                    .graphicsLayer {
+                        translationY = -8.dp.toPx() * lens.lift.value
+                        scaleX = 1f + lens.deformation
+                        scaleY = 1f - lens.deformation * .5f
+                        shadowElevation = 9.dp.toPx() * lens.lift.value
+                    },
+                shape = RoundedCornerShape(24.dp),
+                role = DreamGlassRole.SELECTION,
+            ) {}
+            Row(Modifier.fillMaxSize()) {
+                titles.forEachIndexed { index, label ->
+                    Box(
+                        modifier = Modifier.width(cell - 8.dp).fillMaxHeight().selectable(
+                            selected = index == selectedIndex,
+                            role = Role.Tab,
+                            onClick = {
+                                if (index != selectedIndex) {
+                                    lens.moveTo(index, reducedMotion)
+                                    onSelected(index)
+                                }
+                            },
+                        ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = if (index == selectedIndex)
+                                FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (index == selectedIndex)
+                                MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
