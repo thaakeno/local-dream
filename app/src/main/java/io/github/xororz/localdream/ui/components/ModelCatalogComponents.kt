@@ -14,6 +14,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -78,6 +79,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import io.github.xororz.localdream.R
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -97,9 +100,9 @@ private fun StudioBrandMark(kind: String, size: androidx.compose.ui.unit.Dp = 54
         else -> "Q"
     }
     val avatar = when (kind) {
-        "voice" -> "https://github.com/breezeblue-ai.png?size=128"
-        "music" -> "https://github.com/multimodal-art-projection.png?size=128"
-        else -> "https://github.com/QwenLM.png?size=128"
+        "voice" -> R.drawable.ic_model_breeze
+        "music" -> R.drawable.ic_model_yue2
+        else -> R.drawable.ic_model_qwen
     }
     val accent = when (kind) {
         "voice" -> Color(0xFF67C8BD)
@@ -113,10 +116,10 @@ private fun StudioBrandMark(kind: String, size: androidx.compose.ui.unit.Dp = 54
     ) {
         Text(label, style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Black, color = accent)
-        coil.compose.AsyncImage(
-            model = avatar,
+        Image(
+            painter = painterResource(avatar),
             contentDescription = "$label project icon",
-            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            contentScale = androidx.compose.ui.layout.ContentScale.Fit,
             modifier = Modifier.matchParentSize()
                 .padding(6.dp)
                 .clip(RoundedCornerShape(12.dp)),
