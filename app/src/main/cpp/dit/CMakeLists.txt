@@ -30,7 +30,7 @@ if(NOT SDCPP_GIT_RESULT EQUAL 0 OR NOT GGML_GIT_RESULT EQUAL 0)
 endif()
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/stable-diffusion.cpp.patch" SDCPP_PATCH_SHA)
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/ggml.patch" GGML_PATCH_SHA)
-set(SDCPP_STAGE_ID "${SDCPP_SOURCE_REV}-${GGML_SOURCE_REV}-${SDCPP_PATCH_SHA}-${GGML_PATCH_SHA}")
+set(SDCPP_STAGE_ID "isolated-git-v2-${SDCPP_SOURCE_REV}-${GGML_SOURCE_REV}-${SDCPP_PATCH_SHA}-${GGML_PATCH_SHA}")
 set(SDCPP_STAGE_STAMP "${SDCPP_DIR}/.localdream-staged")
 set(SDCPP_OLD_STAGE_ID "")
 if(EXISTS "${SDCPP_STAGE_STAMP}")
@@ -41,30 +41,57 @@ if(NOT "${SDCPP_OLD_STAGE_ID}" STREQUAL "${SDCPP_STAGE_ID}")
     file(COPY "${SDCPP_SOURCE_DIR}/" DESTINATION "${SDCPP_DIR}"
         PATTERN ".git" EXCLUDE PATTERN "build" EXCLUDE
         PATTERN ".venv" EXCLUDE PATTERN "__pycache__" EXCLUDE)
-    # git apply also works outside a Git working tree; neither patch can
-    # write back into the original, pinned SDK or upstream checkout.
+    # IMPORTANT: "git apply" can return SUCCESS while silently SKIPPING every
+    # path if it is run in this untracked copy under the parent's Git checkout.
+    # The v85 patch was skipped this way, leaving only v79/v81 build targets.
+    # Make EACH disposable stage its own Git worktree so path resolution is
+    # local. Pinned dependency submodules remain read-only and untouched.
     function(localdream_stage_patch patch_file work_dir)
+        execute_process(COMMAND git init --quiet
+            WORKING_DIRECTORY "${work_dir}"
+            RESULT_VARIABLE init_result ERROR_VARIABLE patch_error)
+        if(NOT init_result EQUAL 0)
+            message(FATAL_ERROR "Cannot initialize isolated patch stage ${work_dir}: ${patch_error}")
+        endif()
         execute_process(COMMAND git apply --reverse --check "${patch_file}"
             WORKING_DIRECTORY "${work_dir}"
             RESULT_VARIABLE already_applied OUTPUT_QUIET ERROR_QUIET)
         if(NOT already_applied EQUAL 0)
             execute_process(COMMAND git apply --check "${patch_file}"
                 WORKING_DIRECTORY "${work_dir}"
-                RESULT_VARIABLE valid
-                ERROR_VARIABLE patch_error)
+                RESULT_VARIABLE valid ERROR_VARIABLE patch_error)
             if(NOT valid EQUAL 0)
-                message(FATAL_ERROR "${patch_file}: ${patch_error}")
+                message(FATAL_ERROR "Patch preflight failed for ${patch_file}: ${patch_error}")
             endif()
             execute_process(COMMAND git apply "${patch_file}"
                 WORKING_DIRECTORY "${work_dir}"
                 RESULT_VARIABLE applied ERROR_VARIABLE patch_error)
             if(NOT applied EQUAL 0)
-                message(FATAL_ERROR "${patch_file}: ${patch_error}")
+                message(FATAL_ERROR "Patch failed for ${patch_file}: ${patch_error}")
             endif()
+        endif()
+        # A zero exit code isn't enough: confirm a reverse patch is actually
+        # possible in THIS stage, so the patch was applied rather than skipped.
+        execute_process(COMMAND git apply --reverse --check "${patch_file}"
+            WORKING_DIRECTORY "${work_dir}"
+            RESULT_VARIABLE verified ERROR_VARIABLE patch_error)
+        if(NOT verified EQUAL 0)
+            message(FATAL_ERROR "Patch was not applied to ${work_dir}: ${patch_file}: ${patch_error}")
         endif()
     endfunction()
     localdream_stage_patch("${CMAKE_CURRENT_SOURCE_DIR}/stable-diffusion.cpp.patch" "${SDCPP_DIR}")
     localdream_stage_patch("${CMAKE_CURRENT_SOURCE_DIR}/ggml.patch" "${SDCPP_DIR}/ggml")
+    # Explicitly verify the new DSP targets and Qualcomm toolchain adaptation.
+    # These source contracts catch the silent-skip regression during CMake
+    # configure rather than failing after minutes of native compilation.
+    set(GGML_HTP_CONFIG "${SDCPP_DIR}/ggml/src/ggml-hexagon/CMakeLists.txt")
+    file(READ "${GGML_HTP_CONFIG}" GGML_HTP_CONFIG_TEXT)
+    if(NOT GGML_HTP_CONFIG_TEXT MATCHES "build_htp_skel\\(v85\\)")
+        message(FATAL_ERROR "Staged ggml.patch missing v85 target: ${GGML_HTP_CONFIG}")
+    endif()
+    if(NOT GGML_HTP_CONFIG_TEXT MATCHES "toolv21_")
+        message(FATAL_ERROR "Staged ggml.patch missing Hexagon 6.7 toolv21 selection")
+    endif()
     file(WRITE "${SDCPP_STAGE_STAMP}" "${SDCPP_STAGE_ID}")
 endif()
 
@@ -107,7 +134,8 @@ set_target_properties(dit_engine PROPERTIES
 # same package as the engine, so tie them to this target. The Android catalog
 # starts at SM8750 (HTP v79), so older skels would only add APK size.
 foreach(htp_version v79 v81 v85)
-    if(TARGET htp-${htp_version})
-        add_dependencies(dit_engine htp-${htp_version})
+    if(NOT TARGET htp-${htp_version})
+        message(FATAL_ERROR "Missing required Hexagon DSP build target htp-${htp_version}; check staged ggml patch")
     endif()
+    add_dependencies(dit_engine htp-${htp_version})
 endforeach()
