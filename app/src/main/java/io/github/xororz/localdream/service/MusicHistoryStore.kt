@@ -25,6 +25,7 @@ data class MusicHistoryItem(
     val steps: Int,
     val planning: String,
     val modelId: String,
+    val favorite: Boolean = false,
 ) {
     val file: File get() = File(filePath)
 }
@@ -62,6 +63,7 @@ object MusicHistoryStore {
                         steps = o.optInt("steps", 32),
                         planning = o.optString("planning", "full"),
                         modelId = o.optString("modelId"),
+                        favorite = o.optBoolean("favorite", false),
                     )
                     if (item.id.isNotBlank() && item.file.isFile) add(item)
                 }
@@ -84,6 +86,15 @@ object MusicHistoryStore {
         write(context, current.filterNot { it.id == id })
     }
 
+    /** Backwards compatible with older history.json entries lacking favorite. */
+    @Synchronized
+    fun setFavorite(context: Context, id: String, favorite: Boolean): Boolean {
+        val items = load(context)
+        if (items.none { it.id == id }) return false
+        write(context, items.map { if (it.id == id) it.copy(favorite = favorite) else it })
+        return true
+    }
+
     private fun write(context: Context, items: List<MusicHistoryItem>) {
         val arr = JSONArray()
         items.forEach { item ->
@@ -103,6 +114,7 @@ object MusicHistoryStore {
                 put("steps", item.steps)
                 put("planning", item.planning)
                 put("modelId", item.modelId)
+                put("favorite", item.favorite)
             })
         }
         val target = index(context)
