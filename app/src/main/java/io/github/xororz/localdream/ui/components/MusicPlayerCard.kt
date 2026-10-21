@@ -1,6 +1,5 @@
 package io.github.xororz.localdream.ui.components
 
-import io.github.xororz.localdream.ui.glass.DreamElevatedCard
 
 import android.content.Context
 import android.media.MediaPlayer
@@ -31,6 +30,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -168,7 +168,7 @@ fun MusicPlayerCard(
     val leadingPadding = if (compact) 9.dp else 18.dp
     val waveformHeight = if (compact) 40.dp else 76.dp
 
-    DreamElevatedCard(
+    ElevatedCard(
         modifier = modifier.fillMaxWidth(),
         shape = if (compact) MaterialTheme.shapes.large else MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(

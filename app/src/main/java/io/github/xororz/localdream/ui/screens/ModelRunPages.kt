@@ -1,9 +1,5 @@
 package io.github.xororz.localdream.ui.screens
 
-import io.github.xororz.localdream.ui.glass.DreamElevatedCard
-import io.github.xororz.localdream.ui.glass.DreamGlassSurface
-import io.github.xororz.localdream.ui.glass.DreamGlassRole
-import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
 import androidx.compose.foundation.clickable
 
 import android.graphics.Bitmap
@@ -158,7 +154,7 @@ internal fun ModelRunResultPage(
             label = "result_crossfade",
         ) { hasResult ->
             if (!hasResult) {
-                DreamElevatedCard(
+                ElevatedCard(
                     modifier = Modifier.padding(16.dp),
                 ) {
                     Column(
@@ -207,7 +203,7 @@ internal fun ModelRunResultPage(
                     }
                 }
             } else {
-                DreamElevatedCard(
+                ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.large,
                 ) {
@@ -556,15 +552,7 @@ private fun ResultMetaCell(
     modifier: Modifier = Modifier,
     emphasized: Boolean = false,
 ) {
-    if (LocalDreamGlassEnabled.current) {
-        DreamGlassSurface(
-            modifier = modifier.clickable(onClick = onClick),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
-            role = if (emphasized) DreamGlassRole.SELECTION else DreamGlassRole.CARD,
-        ) {
-            ResultMetaText(label = label, value = value, emphasized = emphasized)
-        }
-    } else {
+    
         Surface(
             onClick = onClick,
             modifier = modifier,
@@ -575,7 +563,7 @@ private fun ResultMetaCell(
         ) {
             ResultMetaText(label = label, value = value, emphasized = emphasized)
         }
-    }
+    
 }
 
 @Composable

@@ -1,6 +1,5 @@
 package io.github.xororz.localdream.ui.screens
 
-import io.github.xororz.localdream.ui.glass.DreamElevatedCard
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -2223,7 +2222,7 @@ fun ModelRunScreen(
                 enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
                 exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top),
             ) {
-                DreamElevatedCard(
+                ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.large,
                 ) {
