@@ -24,6 +24,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -33,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -60,6 +63,8 @@ import io.github.xororz.localdream.ui.components.ManageCollectionsDialog
 import io.github.xororz.localdream.ui.components.OverlayIconButton
 import io.github.xororz.localdream.ui.components.ShareParamsFlow
 import io.github.xororz.localdream.ui.components.ZoomableImageOverlay
+import io.github.xororz.localdream.ui.glass.DreamGlassTabRow
+import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
 import io.github.xororz.localdream.utils.saveImage
 import io.github.xororz.localdream.utils.saveImageFromFile
 import kotlinx.coroutines.Dispatchers
@@ -126,6 +131,9 @@ fun HistoryScreen(navController: NavController) {
     var variationTarget by remember { mutableStateOf<HistoryItem?>(null) }
 
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    var mediaTab by rememberSaveable { mutableStateOf(MediaHistoryTab.IMAGES) }
+    val mediaTabs = MediaHistoryTab.entries
+    val mediaTitles = listOf("Images", "Music", "Speech")
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -141,6 +149,7 @@ fun HistoryScreen(navController: NavController) {
                     }
                 },
                 actions = {
+                    if (mediaTab == MediaHistoryTab.IMAGES) {
                     val advanced = historyFilter.hasAdvancedFilters()
                     IconButton(onClick = { showFilterSheet = true }) {
                         Icon(
@@ -153,6 +162,7 @@ fun HistoryScreen(navController: NavController) {
                             },
                         )
                     }
+                    }
                 },
                 scrollBehavior = scrollBehavior,
             )
@@ -163,6 +173,34 @@ fun HistoryScreen(navController: NavController) {
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
+            if (LocalDreamGlassEnabled.current) {
+                DreamGlassTabRow(
+                    titles = mediaTitles,
+                    selectedIndex = mediaTab.ordinal,
+                    onSelected = { index ->
+                        mediaTab = mediaTabs[index]
+                        showFilterSheet = false
+                        isSelectionMode = false
+                        selectedIds.clear()
+                    },
+                )
+            } else {
+                TabRow(selectedTabIndex = mediaTab.ordinal) {
+                    mediaTabs.forEachIndexed { index, kind ->
+                        Tab(
+                            selected = mediaTab == kind,
+                            onClick = {
+                                mediaTab = kind
+                                showFilterSheet = false
+                                isSelectionMode = false
+                                selectedIds.clear()
+                            },
+                            text = { Text(mediaTitles[index]) },
+                        )
+                    }
+                }
+            }
+            if (mediaTab == MediaHistoryTab.IMAGES) {
             ModelRunHistoryPage(
                 historyFilter = historyFilter,
                 currentModelId = null,
@@ -253,10 +291,13 @@ fun HistoryScreen(navController: NavController) {
                 },
                 onBatchDelete = { showBatchDeleteDialog = true },
             )
+            } else {
+                UnifiedAudioHistoryPage(mediaTab)
+            }
         }
     }
 
-    if (showFilterSheet) {
+    if (showFilterSheet && mediaTab == MediaHistoryTab.IMAGES) {
         HistoryFilterSheet(
             initialFilter = historyFilter,
             knownModelIds = knownModelIds,
