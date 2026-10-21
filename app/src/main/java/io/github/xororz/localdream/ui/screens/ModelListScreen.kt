@@ -1,11 +1,5 @@
 package io.github.xororz.localdream.ui.screens
 
-import io.github.xororz.localdream.ui.glass.GlassSettingsCard
-import io.github.xororz.localdream.ui.glass.CompactModelCard
-import io.github.xororz.localdream.ui.glass.DreamCreateBubble
-import io.github.xororz.localdream.ui.glass.DreamGlassTabRow
-import io.github.xororz.localdream.ui.glass.DreamElevatedCard
-import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -1476,21 +1470,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
 
     Scaffold(
         floatingActionButton = {
-            if (LocalDreamGlassEnabled.current && !isSelectionMode &&
-                pagerState.currentPage < 2
-            ) {
-                DreamCreateBubble(
-                    onAddModel = {
-                        if (pagerState.currentPage == 0) {
-                            showCustomModelDialog = true
-                        } else {
-                            showCustomNpuModelDialog = true
-                        }
-                    },
-                    onHistory = { navController.navigate(Screen.History.route) },
-                    onSettings = { showSettingsDialog = true },
-                )
-            }
+
         },
         topBar = {
             MediumTopAppBar(
@@ -1703,13 +1683,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             }
             }
 
-            if (LocalDreamGlassEnabled.current) {
-                DreamGlassTabRow(
-                    titles = tabTitles,
-                    selectedIndex = pagerState.currentPage,
-                    onSelected = { index -> scope.launch { pagerState.animateScrollToPage(index) } },
-                )
-            } else {
+            
             PrimaryTabRow(
                 selectedTabIndex = pagerState.currentPage,
                 modifier = Modifier.fillMaxWidth(),
@@ -1731,7 +1705,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     )
                 }
             }
-            }
+            
 
             HorizontalPager(
                 state = pagerState,
@@ -2221,7 +2195,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             }
 
                             Spacer(Modifier.height(12.dp))
-                            GlassSettingsCard(
+                            Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2262,7 +2236,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 DownloadLogsDialog(onDismiss = { showDownloadLogs = false })
                             }
 
-                            GlassSettingsCard(
+                            Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2325,7 +2299,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         }
                     }
                     item {
-                        GlassSettingsCard(
+                        Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2386,7 +2360,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 )
                             }
 
-                            GlassSettingsCard(
+                            Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -3435,18 +3409,7 @@ fun ModelCard(
     modifier: Modifier = Modifier,
     isPinned: Boolean = false,
 ) {
-    if (LocalDreamGlassEnabled.current) {
-        CompactModelCard(
-            model = model,
-            isSelected = isSelected,
-            isSelectionMode = isSelectionMode,
-            isPinned = isPinned,
-            onClick = onClick,
-            onLongClick = onLongClick,
-            modifier = modifier,
-        )
-        return
-    }
+    
 
     val context = LocalContext.current
     val isDisabledInSelection = !model.isDownloaded && isSelectionMode
@@ -3479,7 +3442,7 @@ fun ModelCard(
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    DreamElevatedCard(
+    ElevatedCard(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.elevatedCardColors(
             containerColor = backgroundColor,
@@ -5212,15 +5175,6 @@ private fun AppearanceSection() {
                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
             ),
         ) {
-            SwitchSettingRow(
-                title = "Liquid glass",
-                description = "Fluid, refractive controls and compact model cards. Switch off for the classic design.",
-                checked = state.liquidGlass,
-                onCheckedChange = { enabled ->
-                    themeController.update { it.copy(liquidGlass = enabled) }
-                },
-            )
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
             if (dynamicColorSupported) {
                 SwitchSettingRow(
                     title = stringResource(R.string.dynamic_color),

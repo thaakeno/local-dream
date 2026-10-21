@@ -1,11 +1,5 @@
 package io.github.xororz.localdream.ui.components
 
-import io.github.xororz.localdream.ui.glass.GlassCatalogControls
-import io.github.xororz.localdream.ui.glass.DreamGlassRole
-import io.github.xororz.localdream.ui.glass.DreamGlassSurface
-import io.github.xororz.localdream.ui.glass.DreamElevatedCard
-import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
-import io.github.xororz.localdream.ui.glass.CompactFamilyCard
 
 import android.content.Intent
 import androidx.compose.animation.AnimatedContent
@@ -168,18 +162,7 @@ fun ModelCatalogControls(
     onSortChange: (CatalogSortMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (LocalDreamGlassEnabled.current) {
-        GlassCatalogControls(
-            query = query,
-            onQueryChange = onQueryChange,
-            filter = filter,
-            onFilterChange = onFilterChange,
-            sort = sort,
-            onSortChange = onSortChange,
-            modifier = modifier,
-        )
-        return
-    }
+    
     var sortMenu by remember { mutableStateOf(false) }
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -251,27 +234,7 @@ private fun AnimatedFamilyHero(
     voice: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    if (LocalDreamGlassEnabled.current) {
-        DreamGlassSurface(
-            modifier = modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(30.dp),
-            role = DreamGlassRole.OVERLAY,
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 25.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text(if (voice) "VOICE STUDIO" else if (music) "MUSIC STUDIO" else "IMAGE STUDIO",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(title, style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold)
-                Text(subtitle, style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-        return
-    }
+    
     val gradient = when {
         voice -> Brush.linearGradient(
             listOf(
@@ -407,42 +370,7 @@ private fun FamilyVariantTile(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    if (LocalDreamGlassEnabled.current) {
-        DreamGlassSurface(
-            modifier = modifier.heightIn(min = 84.dp).combinedClickable(
-                onClick = {
-                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                    onClick()
-                },
-                onLongClick = {
-                    if (installed) {
-                        AppHaptics.perform(context, AppHaptics.Kind.Stage)
-                        onLongClick?.invoke()
-                    }
-                },
-            ),
-            shape = RoundedCornerShape(24.dp),
-            role = if (selected) DreamGlassRole.SELECTION else DreamGlassRole.CARD,
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 18.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Icon(icon, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurface)
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(title, style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Medium)
-                    Text(subtitle, style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
-                }
-                if (installed) Icon(Icons.Default.CheckCircle, "Installed",
-                    Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurface)
-                else if (selected) Text("SELECTED", style = MaterialTheme.typography.labelSmall)
-            }
-        }
-        return
-    }
+    
     Surface(
         modifier = modifier
             .heightIn(min = 106.dp)
@@ -540,19 +468,8 @@ fun QwenFamilyCard(
         ?: variants.firstOrNull { it.isDownloaded }
         ?: variants.first()
 
-    if (LocalDreamGlassEnabled.current) {
-        CompactFamilyCard(
-            title = "Qwen Image 2.1",
-            subtitle = "Image generation",
-            variants = variants,
-            onClick = {
-                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                showSheet = true
-            },
-            modifier = modifier,
-        )
-    } else {
-    DreamElevatedCard(
+    
+    ElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
@@ -622,7 +539,7 @@ fun QwenFamilyCard(
             }
         }
     }
-    }
+    
 
     if (showSheet) {
         QwenVariantSheet(
@@ -679,9 +596,7 @@ private fun QwenVariantSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = if (LocalDreamGlassEnabled.current)
-            MaterialTheme.colorScheme.surface.copy(alpha = .97f)
-            else MaterialTheme.colorScheme.surfaceContainerLow,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp),
     ) {
         Column(
@@ -891,19 +806,8 @@ fun Yue2FamilyCard(
     val selected = supported.firstOrNull { it.id == selectedId } ?: initial
     val installed = supported.count { it.isDownloaded }
 
-    if (LocalDreamGlassEnabled.current) {
-        CompactFamilyCard(
-            title = "YuE2 3B",
-            subtitle = "Music generation",
-            variants = supported,
-            onClick = {
-                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                showSheet = true
-            },
-            modifier = modifier,
-        )
-    } else {
-    DreamElevatedCard(
+    
+    ElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
@@ -968,7 +872,7 @@ fun Yue2FamilyCard(
             }
         }
     }
-    }
+    
 
     if (showSheet) {
         Yue2VariantSheet(
@@ -1015,9 +919,7 @@ private fun Yue2VariantSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = if (LocalDreamGlassEnabled.current)
-            MaterialTheme.colorScheme.surface.copy(alpha = .97f)
-            else MaterialTheme.colorScheme.surfaceContainerLow,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp),
     ) {
         Column(
@@ -1034,7 +936,7 @@ private fun Yue2VariantSheet(
                 music = true,
             )
 
-            sorted.chunked(if (LocalDreamGlassEnabled.current) 1 else 2).forEach { row ->
+            sorted.chunked(2).forEach { row ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1325,19 +1227,8 @@ fun BreezeFamilyCard(
     val selected = sorted.firstOrNull { it.id == selectedId } ?: initial
     val installed = sorted.count { it.isDownloaded }
 
-    if (LocalDreamGlassEnabled.current) {
-        CompactFamilyCard(
-            title = "Breeze TTS 2",
-            subtitle = "Speech generation",
-            variants = sorted,
-            onClick = {
-                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                showSheet = true
-            },
-            modifier = modifier,
-        )
-    } else {
-    DreamElevatedCard(
+    
+    ElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
@@ -1396,14 +1287,12 @@ fun BreezeFamilyCard(
             }
         }
     }
-    }
+    
 
     if (showSheet) {
         ModalBottomSheet(
         onDismissRequest = { showSheet = false },
-        containerColor = if (LocalDreamGlassEnabled.current)
-            MaterialTheme.colorScheme.surface.copy(alpha = .97f)
-            else MaterialTheme.colorScheme.surfaceContainerLow,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp),
     ) {
             Column(
@@ -1427,7 +1316,7 @@ fun BreezeFamilyCard(
                     fontWeight = FontWeight.SemiBold,
                 )
                 sorted.filterNot { "DD" in it.variantPrecision }
-                    .chunked(if (LocalDreamGlassEnabled.current) 1 else 2)
+                    .chunked(2)
                     .forEach { row ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1469,7 +1358,7 @@ fun BreezeFamilyCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 sorted.filter { "DD" in it.variantPrecision }
-                    .chunked(if (LocalDreamGlassEnabled.current) 1 else 2)
+                    .chunked(2)
                     .forEach { row ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
