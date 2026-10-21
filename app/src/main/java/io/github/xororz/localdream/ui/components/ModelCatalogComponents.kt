@@ -75,6 +75,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -85,6 +86,106 @@ import java.io.File
 import io.github.xororz.localdream.utils.AppHaptics
 import java.util.Locale
 import kotlinx.coroutines.launch
+
+
+/** Branded model identities, with the official project organization avatars. */
+@Composable
+private fun StudioBrandMark(kind: String, size: androidx.compose.ui.unit.Dp = 54.dp) {
+    val label = when (kind) {
+        "voice" -> "B"
+        "music" -> "Y"
+        else -> "Q"
+    }
+    val avatar = when (kind) {
+        "voice" -> "https://github.com/breezeblue-ai.png?size=128"
+        "music" -> "https://github.com/multimodal-art-projection.png?size=128"
+        else -> "https://github.com/QwenLM.png?size=128"
+    }
+    val accent = when (kind) {
+        "voice" -> Color(0xFF67C8BD)
+        "music" -> Color(0xFFDA9CC8)
+        else -> Color(0xFFCEADFA)
+    }
+    Box(
+        modifier = Modifier.size(size)
+            .background(accent.copy(alpha = 0.13f), RoundedCornerShape(17.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Black, color = accent)
+        coil.compose.AsyncImage(
+            model = avatar,
+            contentDescription = "$label project icon",
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            modifier = Modifier.matchParentSize()
+                .padding(6.dp)
+                .clip(RoundedCornerShape(12.dp)),
+        )
+    }
+}
+
+@Composable
+private fun StudioFamilyCard(
+    title: String,
+    subtitle: String,
+    kind: String,
+    variants: List<Model>,
+    featured: Model,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val accent = when (kind) {
+        "voice" -> Color(0xFF67C8BD)
+        "music" -> Color(0xFFDA9CC8)
+        else -> Color(0xFFCEADFA)
+    }
+    val installed = variants.count { it.isDownloaded }
+    Surface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .75f)),
+        tonalElevation = 1.dp,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(15.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                StudioBrandMark(kind, 58.dp)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(title, style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold)
+                    Text(subtitle, style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Icon(Icons.Default.Tune, contentDescription = "Choose model",
+                    modifier = Modifier.size(19.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f))
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(shape = RoundedCornerShape(9.dp),
+                    color = accent.copy(alpha = .12f)) {
+                    Text(featured.variantPrecision.ifBlank { "Default" },
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold, color = accent)
+                }
+                Text(if (installed > 0) "$installed installed" else "${variants.size} options",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                Text("Explore", fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.labelLarge)
+                Icon(Icons.Default.PlayArrow, null,
+                    modifier = Modifier.size(17.dp),
+                    tint = MaterialTheme.colorScheme.onSurface)
+            }
+        }
+    }
+}
 
 enum class CatalogSortMode(val label: String) {
     Smart("Smart"),
@@ -228,90 +329,32 @@ private fun gb(bytes: Long): String =
 
 @Composable
 private fun AnimatedFamilyHero(
-    title: String,
-    subtitle: String,
-    music: Boolean,
-    voice: Boolean = false,
-    modifier: Modifier = Modifier,
+    title: String, subtitle: String, music: Boolean,
+    voice: Boolean = false, modifier: Modifier = Modifier,
 ) {
-    
-    val gradient = when {
-        voice -> Brush.linearGradient(
-            listOf(
-                Color(0xFF092D33),
-                Color(0xFF126A73),
-                Color(0xFF2AA9A5),
-            ),
-        )
-        music -> Brush.linearGradient(
-            listOf(
-                Color(0xFF351344),
-                Color(0xFF713069),
-                Color(0xFFB84D81),
-            ),
-        )
-        else -> Brush.linearGradient(
-            listOf(
-                Color(0xFF071D45),
-                Color(0xFF0A4A9F),
-                Color(0xFF2878E8),
-            ),
-        )
+    val kind = if (voice) "voice" else if (music) "music" else "image"
+    val eyebrow = when (kind) {
+        "voice" -> "VOICE ENGINE"
+        "music" -> "MUSIC ENGINE"
+        else -> "IMAGE ENGINE"
     }
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(gradient, MaterialTheme.shapes.extraLarge)
-            .padding(horizontal = 18.dp, vertical = 18.dp),
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-            ) {
-                Surface(
-                    modifier = Modifier.size(54.dp),
-                    shape = MaterialTheme.shapes.large,
-                    color = Color.White.copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
-                ) {
-                    if (voice) {
-                        Icon(
-                            Icons.Default.GraphicEq,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.padding(13.dp),
-                        )
-                    } else if (music) {
-                        AnimatedMusicMark(Modifier.padding(11.dp))
-                    } else {
-                        Icon(
-                            Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.padding(13.dp),
-                        )
-                    }
-                }
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                    )
-                    Text(
-                        subtitle,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.78f),
-                    )
-                }
-
+    Surface(modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Row(Modifier.fillMaxWidth().padding(17.dp),
+            horizontalArrangement = Arrangement.spacedBy(15.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            StudioBrandMark(kind, 60.dp)
+            Column(Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(eyebrow, style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(title, style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-
         }
     }
 }
@@ -370,75 +413,58 @@ private fun FamilyVariantTile(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    
+    val accent = Color(0xFFE1BA85)
+    val shape = RoundedCornerShape(18.dp)
     Surface(
-        modifier = modifier
-            .heightIn(min = 106.dp)
-            .combinedClickable(
-                onClick = {
-                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                    onClick()
-                },
-                onLongClick = {
-                    if (installed) {
-                        AppHaptics.perform(context, AppHaptics.Kind.Stage)
-                        onLongClick?.invoke()
-                    }
-                },
-            ),
-        shape = MaterialTheme.shapes.extraLarge,
-        color = if (selected) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
-        },
-        border = BorderStroke(
-            1.dp,
-            if (selected) {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
-            } else {
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+        modifier = modifier.fillMaxWidth().combinedClickable(
+            onClick = {
+                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                onClick()
+            },
+            onLongClick = {
+                if (installed) {
+                    AppHaptics.perform(context, AppHaptics.Kind.Stage)
+                    onLongClick?.invoke()
+                }
             },
         ),
-        tonalElevation = if (selected) 3.dp else 0.dp,
+        shape = shape,
+        color = if (selected) accent.copy(alpha = .11f)
+            else MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(if (selected) 1.5.dp else 1.dp,
+            if (selected) accent else MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f)),
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                    tint = if (selected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                if (installed) {
-                    Icon(
-                        Icons.Default.CheckCircle,
-                        contentDescription = "Installed",
-                        modifier = Modifier.size(19.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.size(43.dp)
+                .background(if (selected) accent.copy(alpha = .17f)
+                    else MaterialTheme.colorScheme.surfaceContainerHighest,
+                    RoundedCornerShape(13.dp)),
+                contentAlignment = Alignment.Center) {
+                Icon(icon, null, Modifier.size(21.dp),
+                    tint = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-            )
+            Column(Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2)
+            }
+            if (selected) {
+                Icon(Icons.Default.CheckCircle, "Selected",
+                    Modifier.size(23.dp), tint = accent)
+            } else if (installed) {
+                Text("READY", style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Icon(Icons.Default.CloudDownload, "Available to download",
+                    Modifier.size(19.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
@@ -469,77 +495,18 @@ fun QwenFamilyCard(
         ?: variants.first()
 
     
-    ElevatedCard(
+    StudioFamilyCard(
+        title = "Qwen Image 2.1",
+        subtitle = "Image generation · selectable precision",
+        kind = "image",
+        variants = variants,
+        featured = recommended,
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
         },
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
-    ) {
-        Column {
-            AnimatedFamilyHero(
-                title = "Qwen Image 2.1",
-                subtitle = "Image generation",
-                music = false,
-            )
-
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 18.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-            )
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Recommended",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "${recommended.variantPrecision}" +
-                            if (recommended.variantAdapter.isNotEmpty()) {
-                                " + Viggle ${recommended.variantAdapter}"
-                            } else {
-                                " · Base"
-                            },
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-
-                VerticalDivider(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .padding(vertical = 2.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                )
-
-                TextButton(
-                    onClick = {
-                        AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                        showSheet = true
-                    },
-                    modifier = Modifier.padding(start = 8.dp),
-                ) {
-                    Icon(Icons.Default.Tune, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Configure")
-                }
-            }
-        }
-    }
-    
+        modifier = modifier,
+    )
 
     if (showSheet) {
         QwenVariantSheet(
@@ -807,72 +774,18 @@ fun Yue2FamilyCard(
     val installed = supported.count { it.isDownloaded }
 
     
-    ElevatedCard(
+    StudioFamilyCard(
+        title = "YuE2 3B",
+        subtitle = "Full-length music and vocals",
+        kind = "music",
+        variants = supported,
+        featured = selected,
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
         },
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
-    ) {
-        Column {
-            AnimatedFamilyHero(
-                title = "YuE2 3B",
-                subtitle = "Text to music",
-                music = true,
-            )
-
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 18.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-            )
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        if (selected.isDownloaded) "Ready to create" else "Recommended",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "${selected.variantPrecision} · ${selected.variantProfile}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-
-                VerticalDivider(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .padding(vertical = 2.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                )
-
-                TextButton(
-                    onClick = {
-                        AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                        showSheet = true
-                    },
-                    modifier = Modifier.padding(start = 8.dp),
-                ) {
-                    Icon(Icons.Default.Tune, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Configure")
-                }
-            }
-        }
-    }
-    
+        modifier = modifier,
+    )
 
     if (showSheet) {
         Yue2VariantSheet(
@@ -936,7 +849,7 @@ private fun Yue2VariantSheet(
                 music = true,
             )
 
-            sorted.chunked(2).forEach { row ->
+            sorted.chunked(1).forEach { row ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1228,66 +1141,18 @@ fun BreezeFamilyCard(
     val installed = sorted.count { it.isDownloaded }
 
     
-    ElevatedCard(
+    StudioFamilyCard(
+        title = "Breeze TTS 2",
+        subtitle = "Expressive speech and voices",
+        kind = "voice",
+        variants = sorted,
+        featured = selected,
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
         },
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
-    ) {
-        Column {
-            AnimatedFamilyHero(
-                title = "Breeze TTS 2",
-                subtitle = "Text to speech",
-                music = false,
-                voice = true,
-            )
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 18.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        if (selected.isDownloaded) "Ready to speak" else "Recommended",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        selected.variantPrecision + " · " + selected.variantProfile,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-                VerticalDivider(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .padding(vertical = 2.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                )
-                TextButton(
-                    onClick = { showSheet = true },
-                    modifier = Modifier.padding(start = 8.dp),
-                ) {
-                    Icon(Icons.Default.Tune, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Configure")
-                }
-            }
-        }
-    }
-    
+        modifier = modifier,
+    )
 
     if (showSheet) {
         ModalBottomSheet(
@@ -1316,7 +1181,7 @@ fun BreezeFamilyCard(
                     fontWeight = FontWeight.SemiBold,
                 )
                 sorted.filterNot { "DD" in it.variantPrecision }
-                    .chunked(2)
+                    .chunked(1)
                     .forEach { row ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1343,7 +1208,7 @@ fun BreezeFamilyCard(
                                     modifier = Modifier.weight(1f),
                                 )
                             }
-                            if (row.size == 1) Spacer(Modifier.weight(1f))
+
                         }
                     }
 
@@ -1358,7 +1223,7 @@ fun BreezeFamilyCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 sorted.filter { "DD" in it.variantPrecision }
-                    .chunked(2)
+                    .chunked(1)
                     .forEach { row ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1381,7 +1246,7 @@ fun BreezeFamilyCard(
                                     modifier = Modifier.weight(1f),
                                 )
                             }
-                            if (row.size == 1) Spacer(Modifier.weight(1f))
+
                         }
                     }
 
