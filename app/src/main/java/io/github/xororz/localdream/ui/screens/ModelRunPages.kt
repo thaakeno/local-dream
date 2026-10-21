@@ -1,5 +1,11 @@
 package io.github.xororz.localdream.ui.screens
 
+import io.github.xororz.localdream.ui.glass.DreamElevatedCard
+import io.github.xororz.localdream.ui.glass.DreamGlassSurface
+import io.github.xororz.localdream.ui.glass.DreamGlassRole
+import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
+import androidx.compose.foundation.clickable
+
 import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -152,7 +158,7 @@ internal fun ModelRunResultPage(
             label = "result_crossfade",
         ) { hasResult ->
             if (!hasResult) {
-                ElevatedCard(
+                DreamElevatedCard(
                     modifier = Modifier.padding(16.dp),
                 ) {
                     Column(
@@ -201,7 +207,7 @@ internal fun ModelRunResultPage(
                     }
                 }
             } else {
-                ElevatedCard(
+                DreamElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.large,
                 ) {
@@ -550,35 +556,45 @@ private fun ResultMetaCell(
     modifier: Modifier = Modifier,
     emphasized: Boolean = false,
 ) {
-    Surface(
-        onClick = onClick,
-        modifier = modifier,
-        shape = MaterialTheme.shapes.large,
-        color = if (emphasized) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
-        },
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 13.dp, vertical = 11.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+    if (LocalDreamGlassEnabled.current) {
+        DreamGlassSurface(
+            modifier = modifier.clickable(onClick = onClick),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+            role = if (emphasized) DreamGlassRole.SELECTION else DreamGlassRole.CARD,
         ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (emphasized) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-            )
+            ResultMetaText(label = label, value = value, emphasized = emphasized)
         }
+    } else {
+        Surface(
+            onClick = onClick,
+            modifier = modifier,
+            shape = MaterialTheme.shapes.large,
+            color = if (emphasized)
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = .55f)
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            ResultMetaText(label = label, value = value, emphasized = emphasized)
+        }
+    }
+}
+
+@Composable
+private fun ResultMetaText(label: String, value: String, emphasized: Boolean) {
+    Column(
+        modifier = Modifier.padding(horizontal = 13.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (emphasized) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+        )
     }
 }
 
