@@ -74,7 +74,7 @@ class BackendService : Service() {
         private const val MOSS_RUNTIME_DIR = "runtime_moss_htp"
         private const val MOSS_RUNTIME_VERSION = "moss-leejet-95b309-v79v81"
         private const val MUSIC_RUNTIME_VERSION = "hexagon_dual_37f752_yue2_v7"
-        private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
+        private const val RUNTIME_VERSION = "qnn_2_51_0_260929"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
         private const val CHANNEL_ID = "backend_service_channel"
@@ -545,10 +545,13 @@ class BackendService : Service() {
 
             try {
                 val qnnlibsAssets = assets.list("qnnlibs")
+                // Refresh same-size Qualcomm binaries after an APK upgrade.
+                val apkUpdateTime = packageManager.getPackageInfo(packageName, 0).lastUpdateTime
                 qnnlibsAssets?.forEach { fileName ->
                     val targetLib = File(runtimeDir, fileName)
 
                     val needsCopy = !targetLib.exists() ||
+                        targetLib.lastModified() < apkUpdateTime ||
                         run {
                             val assetInputStream = assets.open("qnnlibs/$fileName")
                             val assetSize = assetInputStream.use { it.available().toLong() }
