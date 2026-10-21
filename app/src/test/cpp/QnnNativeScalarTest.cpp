@@ -1,5 +1,5 @@
 // Compile independently of Qualcomm SDK:
-//   c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=undefined -I app/src/main/cpp/include \
+//   c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=undefined -I app/src/main/cpp/include
 //       app/src/test/cpp/QnnNativeScalarTest.cpp -o /tmp/qnn_scalar_test && /tmp/qnn_scalar_test
 #include "QnnNativeScalar.hpp"
 #include <cassert>
