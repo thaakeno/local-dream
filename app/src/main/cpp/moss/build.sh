@@ -4,6 +4,8 @@ set -euo pipefail
 : "${ANDROID_NDK_ROOT:?set ANDROID_NDK_ROOT}"
 : "${HEXAGON_SDK_ROOT:?set HEXAGON_SDK_ROOT}"
 cd "$(dirname "$0")"
+# Identical Ninja directory for build and DSP skel staging.
+BUILD_DIR=build/android
 UPSTREAM="../3rdparty/moss-stable-diffusion.cpp"
 EXPECTED=95b3090664d019fcf8fa032a44d1d4793ba244b8
 ACTUAL="$(git -C "$UPSTREAM" rev-parse HEAD)"

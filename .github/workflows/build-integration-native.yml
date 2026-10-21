@@ -232,6 +232,21 @@ jobs:
           rustup target list --installed --toolchain 1.88.0
           test -f /data/android-ndk-r28/build/cmake/android.toolchain.cmake
 
+          # Preserve the known-good October 13 v0.7 Snapdragon toolchain,
+          # QAIRT setup and canonical APK signer. Only the disposable Docker
+          # checkout needs safe.directory entries for its mounted Git owner.
+          # Never set safe.directory='*' or alter the runner/global repo.
+          for worktree in \
+            /workspace \
+            /workspace/app/src/main/cpp/3rdparty/stable-diffusion.cpp \
+            /workspace/app/src/main/cpp/3rdparty/stable-diffusion.cpp/ggml \
+            /workspace/app/src/main/cpp/3rdparty/moss-stable-diffusion.cpp \
+            /workspace/app/src/main/cpp/3rdparty/moss-stable-diffusion.cpp/ggml; do
+            test -d "$worktree"
+            git config --global --add safe.directory "$worktree"
+            git -C "$worktree" rev-parse --verify HEAD
+          done
+
           cd /workspace/app/src/main/cpp
           # Mandatory cold native build for all changed backends and both DiT ABIs.
           bash voice/build.sh
