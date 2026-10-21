@@ -1,5 +1,6 @@
 package io.github.xororz.localdream.ui.screens
 
+import io.github.xororz.localdream.ui.glass.GlassSettingsCard
 import io.github.xororz.localdream.ui.glass.CompactModelCard
 import io.github.xororz.localdream.ui.glass.DreamCreateBubble
 import io.github.xororz.localdream.ui.glass.DreamGlassTabRow
@@ -2220,7 +2221,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             }
 
                             Spacer(Modifier.height(12.dp))
-                            Card(
+                            GlassSettingsCard(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2261,7 +2262,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 DownloadLogsDialog(onDismiss = { showDownloadLogs = false })
                             }
 
-                            Card(
+                            GlassSettingsCard(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2324,7 +2325,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         }
                     }
                     item {
-                        Card(
+                        GlassSettingsCard(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2385,7 +2386,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 )
                             }
 
-                            Card(
+                            GlassSettingsCard(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
