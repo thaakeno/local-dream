@@ -1,6 +1,7 @@
 #pragma once
 // Local Dream-owned, patch-free tensor adapter. Qualcomm's SDK allocation
 // helpers are reused unchanged; conversions and validation live in our code.
+#include "QnnNativeScalar.hpp"
 #include <IOTensor.hpp>
 #include <QnnSampleAppUtils.hpp>
 #include <cstdlib>
@@ -169,26 +170,15 @@ public:
         case QNN_DATATYPE_INT_32: {
             if(!capacity<int32_t>(b,n)) return Result::FAILURE;
             auto *out=static_cast<int32_t*>(b.data);
-            for(size_t i=0;i<n;++i) {
-                const double value=std::nearbyint(static_cast<double>(src[i]));
-                if(!std::isfinite(value) ||
-                   value<static_cast<double>(std::numeric_limits<int32_t>::min()) ||
-                   value>static_cast<double>(std::numeric_limits<int32_t>::max()))
-                    return Result::FAILURE;
-                out[i]=static_cast<int32_t>(value);
-            }
+            for(size_t i=0;i<n;++i)
+                if(!finite_round_to_integer(src[i],out[i])) return Result::FAILURE;
             return Result::SUCCESS;
         }
         case QNN_DATATYPE_UINT_32: {
             if(!capacity<uint32_t>(b,n)) return Result::FAILURE;
             auto *out=static_cast<uint32_t*>(b.data);
-            for(size_t i=0;i<n;++i) {
-                const double value=std::nearbyint(static_cast<double>(src[i]));
-                if(!std::isfinite(value) || value<0.0 ||
-                   value>static_cast<double>(std::numeric_limits<uint32_t>::max()))
-                    return Result::FAILURE;
-                out[i]=static_cast<uint32_t>(value);
-            }
+            for(size_t i=0;i<n;++i)
+                if(!finite_round_to_integer(src[i],out[i])) return Result::FAILURE;
             return Result::SUCCESS;
         }
         case QNN_DATATYPE_UFIXED_POINT_8:
