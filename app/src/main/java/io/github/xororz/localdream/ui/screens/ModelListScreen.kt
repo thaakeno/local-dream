@@ -1,5 +1,9 @@
 package io.github.xororz.localdream.ui.screens
 
+import io.github.xororz.localdream.ui.glass.DreamGlassTabRow
+import io.github.xororz.localdream.ui.glass.DreamElevatedCard
+import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
+
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
@@ -1679,6 +1683,13 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             }
             }
 
+            if (LocalDreamGlassEnabled.current) {
+                DreamGlassTabRow(
+                    titles = tabTitles,
+                    selectedIndex = pagerState.currentPage,
+                    onSelected = { index -> scope.launch { pagerState.animateScrollToPage(index) } },
+                )
+            } else {
             PrimaryTabRow(
                 selectedTabIndex = pagerState.currentPage,
                 modifier = Modifier.fillMaxWidth(),
@@ -1699,6 +1710,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         },
                     )
                 }
+            }
             }
 
             HorizontalPager(
@@ -3423,7 +3435,7 @@ fun ModelCard(
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    ElevatedCard(
+    DreamElevatedCard(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.elevatedCardColors(
             containerColor = backgroundColor,
@@ -5156,6 +5168,15 @@ private fun AppearanceSection() {
                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
             ),
         ) {
+            SwitchSettingRow(
+                title = "Liquid glass",
+                description = "Fluid, refractive controls and compact model cards. Switch off for the classic design.",
+                checked = state.liquidGlass,
+                onCheckedChange = { enabled ->
+                    themeController.update { it.copy(liquidGlass = enabled) }
+                },
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
             if (dynamicColorSupported) {
                 SwitchSettingRow(
                     title = stringResource(R.string.dynamic_color),

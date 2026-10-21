@@ -4,6 +4,7 @@ import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -67,8 +68,33 @@ fun LocalDreamTheme(themeState: ThemeState, content: @Composable () -> Unit) {
         else -> themeState.preset.scheme(darkTheme)
     }
 
+    // Graphite/ice glass surfaces; the classic theme remains untouched.
+    val presentationScheme = if (themeState.liquidGlass) {
+        if (darkTheme) {
+            colorScheme.copy(
+                background = Color(0xFF0B1019),
+                surface = Color(0xFF111925),
+                surfaceContainer = Color(0xFF1A2433),
+                surfaceContainerLow = Color(0xFF15202C),
+                surfaceContainerHigh = Color(0xFF253242),
+                primary = Color(0xFF9FC6FF),
+                onPrimary = Color(0xFF102239),
+            )
+        } else {
+            colorScheme.copy(
+                background = Color(0xFFF1F5FB),
+                surface = Color(0xFFFAFBFF),
+                surfaceContainer = Color(0xFFE7EDF7),
+                surfaceContainerLow = Color(0xFFEFF3FA),
+                surfaceContainerHigh = Color(0xFFDDE5F2),
+                primary = Color(0xFF285EA9),
+                onPrimary = Color.White,
+            )
+        }
+    } else colorScheme
+
     MaterialExpressiveTheme(
-        colorScheme = colorScheme,
+        colorScheme = presentationScheme,
         typography = Typography,
         shapes = Shapes,
         motionScheme = MotionScheme.expressive(),

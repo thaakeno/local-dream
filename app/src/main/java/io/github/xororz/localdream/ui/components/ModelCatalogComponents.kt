@@ -1,5 +1,7 @@
 package io.github.xororz.localdream.ui.components
 
+import io.github.xororz.localdream.ui.glass.DreamElevatedCard
+
 import android.content.Intent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -465,7 +467,7 @@ fun QwenFamilyCard(
         ?: variants.firstOrNull { it.isDownloaded }
         ?: variants.first()
 
-    ElevatedCard(
+    DreamElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
@@ -797,7 +799,7 @@ fun Yue2FamilyCard(
     val selected = supported.firstOrNull { it.id == selectedId } ?: initial
     val installed = supported.count { it.isDownloaded }
 
-    ElevatedCard(
+    DreamElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
@@ -1239,7 +1241,7 @@ fun BreezeFamilyCard(
     val selected = sorted.firstOrNull { it.id == selectedId } ?: initial
     val installed = sorted.count { it.isDownloaded }
 
-    ElevatedCard(
+    DreamElevatedCard(
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
