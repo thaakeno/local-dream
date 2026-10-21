@@ -30,11 +30,8 @@ jobs:
             -I app/src/main/cpp/include app/src/test/cpp/QnnNativeScalarTest.cpp \
             -o /tmp/localdream-qnn-scalar-test
           /tmp/localdream-qnn-scalar-test
-      - name: Install Android SDK platform
-        run: |
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
-          test -x "$SDKMANAGER"
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" --install "platforms;android-37"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-37'
       - name: Compile Kotlin UI and resources (no Qualcomm SDK required)
         run: ./gradlew :app:compileBasicDebugKotlin --no-daemon --stacktrace
