@@ -1074,8 +1074,11 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (backendType == "sdxl") {
-                // Preserve the proven v141 SDXL HTP burst profile.
-                env["LOCALDREAM_QNN_POWER_MODE"] = "burst"
+                // SDXL must not monopolize the phone's CPU/DDR fabric while
+                // denoising. Keep TURBO as the HTP target but release the fixed
+                // MAX votes, enable DCVS, and disable FastRPC busy-polling.
+                // No changes to CFG, sampler, steps, tensor math or model files.
+                env["LOCALDREAM_QNN_POWER_MODE"] = "efficient"
             }
 
             if (isMusicBackend(backendType)) {
