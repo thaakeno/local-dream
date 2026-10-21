@@ -415,7 +415,7 @@ jobs:
           key: localdream-ci-signing-v1
 
       - name: Create CI signing key once
-        if: steps.signing-key-cache.outputs.cache-hit != 'true'
+        if: steps.signing-key-cache.outputs.cache-hit != 'true' && github.ref_name != 'v141-stable-yue2-full'
         shell: bash
         run: |
           set -euxo pipefail
@@ -430,11 +430,49 @@ jobs:
             -dname "CN=Local Dream Qwen FP8 CI,O=thaakeno,C=DE"
 
       - name: Save persistent CI signing key
-        if: steps.signing-key-cache.outputs.cache-hit != 'true'
+        if: steps.signing-key-cache.outputs.cache-hit != 'true' && github.ref_name != 'v141-stable-yue2-full'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/localdream-ci.jks
           key: localdream-ci-signing-v1
+
+      # Never mint a replacement certificate for the stable installed-app
+      # branch. A new key is not update-compatible with existing installations.
+      - name: Restore original canonical signer on stable build
+        if: github.ref_name == 'v141-stable-yue2-full'
+        shell: bash
+        env:
+          CANONICAL_KEYSTORE_BASE64: ${{ secrets.LOCALDREAM_CANONICAL_KEYSTORE_BASE64 }}
+          LEGACY_CACHE_HIT: ${{ steps.signing-key-cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          umask 077
+          store="$RUNNER_TEMP/localdream-ci.jks"
+          if [ -n "$CANONICAL_KEYSTORE_BASE64" ]; then
+            if ! printf '%s' "$CANONICAL_KEYSTORE_BASE64" | base64 --decode > "$store"; then
+              rm -f "$store"
+              echo "::error::Invalid Base64 original-keystore secret"
+              exit 1
+            fi
+          elif [ "$LEGACY_CACHE_HIT" != "true" ] || [ ! -s "$store" ]; then
+            echo "::error::Original signing key unavailable. Restore LOCALDREAM_CANONICAL_KEYSTORE_BASE64; never mint a new certificate for stable APK updates."
+            exit 1
+          fi
+          test -s "$store"
+          chmod 600 "$store"
+          if ! keytool -list -keystore "$store" -storepass android -alias localdream >/dev/null 2>&1; then
+            echo "::error::Original keystore alias/password verification failed."
+            exit 1
+          fi
+          actual="$(keytool -exportcert -rfc -keystore "$store" -storepass android -alias localdream |
+            openssl x509 -noout -fingerprint -sha256 |
+            sed 's/^.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          expected="bff433493c171fcd31e8159ca19e64d938b8d4afe043a07be91fec0ad23f071b"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Keystore certificate differs from installed Local Dream certificate."
+            exit 1
+          fi
+          echo "Original canonical signing certificate verified."
 
       - name: Build APK
         shell: bash
