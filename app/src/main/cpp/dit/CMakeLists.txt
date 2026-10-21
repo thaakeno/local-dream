@@ -10,31 +10,63 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(SDCPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/stable-diffusion.cpp")
-
-# Local fixes that have not landed in the pinned upstream revisions. A patch
-# that already reverse-applies is left alone, so reconfiguring is idempotent.
-function(apply_local_patch patch_file work_dir)
-    execute_process(
-        COMMAND git apply --reverse --check "${patch_file}"
-        WORKING_DIRECTORY "${work_dir}"
-        RESULT_VARIABLE already_applied
-        OUTPUT_QUIET ERROR_QUIET
-    )
-    if(NOT already_applied EQUAL 0)
-        execute_process(
-            COMMAND git apply "${patch_file}"
+# Source-of-truth is a pinned, READ-ONLY git submodule. Prior revisions
+# ran git apply against it during CMake configure, dirtying its checkout.
+# Copy its already-initialized sources into this build directory, stamp the
+# patch inputs, and patch only that disposable copy.
+set(SDCPP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/stable-diffusion.cpp")
+set(SDCPP_DIR "${CMAKE_CURRENT_BINARY_DIR}/staged-stable-diffusion.cpp")
+if(NOT EXISTS "${SDCPP_SOURCE_DIR}/ggml/CMakeLists.txt")
+    message(FATAL_ERROR "Initialize stable-diffusion.cpp/ggml recursively first")
+endif()
+execute_process(COMMAND git -C "${SDCPP_SOURCE_DIR}" rev-parse HEAD
+    OUTPUT_VARIABLE SDCPP_SOURCE_REV OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE SDCPP_GIT_RESULT)
+execute_process(COMMAND git -C "${SDCPP_SOURCE_DIR}/ggml" rev-parse HEAD
+    OUTPUT_VARIABLE GGML_SOURCE_REV OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE GGML_GIT_RESULT)
+if(NOT SDCPP_GIT_RESULT EQUAL 0 OR NOT GGML_GIT_RESULT EQUAL 0)
+    message(FATAL_ERROR "Both pinned diffusion and ggml submodules need valid git HEADs")
+endif()
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/stable-diffusion.cpp.patch" SDCPP_PATCH_SHA)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/ggml.patch" GGML_PATCH_SHA)
+set(SDCPP_STAGE_ID "${SDCPP_SOURCE_REV}-${GGML_SOURCE_REV}-${SDCPP_PATCH_SHA}-${GGML_PATCH_SHA}")
+set(SDCPP_STAGE_STAMP "${SDCPP_DIR}/.localdream-staged")
+set(SDCPP_OLD_STAGE_ID "")
+if(EXISTS "${SDCPP_STAGE_STAMP}")
+    file(READ "${SDCPP_STAGE_STAMP}" SDCPP_OLD_STAGE_ID)
+endif()
+if(NOT "${SDCPP_OLD_STAGE_ID}" STREQUAL "${SDCPP_STAGE_ID}")
+    file(REMOVE_RECURSE "${SDCPP_DIR}")
+    file(COPY "${SDCPP_SOURCE_DIR}/" DESTINATION "${SDCPP_DIR}"
+        PATTERN ".git" EXCLUDE PATTERN "build" EXCLUDE
+        PATTERN ".venv" EXCLUDE PATTERN "__pycache__" EXCLUDE)
+    # git apply also works outside a Git working tree; neither patch can
+    # write back into the original, pinned SDK or upstream checkout.
+    function(localdream_stage_patch patch_file work_dir)
+        execute_process(COMMAND git apply --reverse --check "${patch_file}"
             WORKING_DIRECTORY "${work_dir}"
-            RESULT_VARIABLE patch_result
-            ERROR_VARIABLE patch_error
-        )
-        if(NOT patch_result EQUAL 0)
-            message(FATAL_ERROR "${patch_file}: ${patch_error}")
+            RESULT_VARIABLE already_applied OUTPUT_QUIET ERROR_QUIET)
+        if(NOT already_applied EQUAL 0)
+            execute_process(COMMAND git apply --check "${patch_file}"
+                WORKING_DIRECTORY "${work_dir}"
+                RESULT_VARIABLE valid
+                ERROR_VARIABLE patch_error)
+            if(NOT valid EQUAL 0)
+                message(FATAL_ERROR "${patch_file}: ${patch_error}")
+            endif()
+            execute_process(COMMAND git apply "${patch_file}"
+                WORKING_DIRECTORY "${work_dir}"
+                RESULT_VARIABLE applied ERROR_VARIABLE patch_error)
+            if(NOT applied EQUAL 0)
+                message(FATAL_ERROR "${patch_file}: ${patch_error}")
+            endif()
         endif()
-    endif()
-endfunction()
-apply_local_patch("${CMAKE_CURRENT_SOURCE_DIR}/stable-diffusion.cpp.patch" "${SDCPP_DIR}")
-apply_local_patch("${CMAKE_CURRENT_SOURCE_DIR}/ggml.patch" "${SDCPP_DIR}/ggml")
+    endfunction()
+    localdream_stage_patch("${CMAKE_CURRENT_SOURCE_DIR}/stable-diffusion.cpp.patch" "${SDCPP_DIR}")
+    localdream_stage_patch("${CMAKE_CURRENT_SOURCE_DIR}/ggml.patch" "${SDCPP_DIR}/ggml")
+    file(WRITE "${SDCPP_STAGE_STAMP}" "${SDCPP_STAGE_ID}")
+endif()
 
 set(GGML_HEXAGON ON CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
