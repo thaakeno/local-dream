@@ -27,13 +27,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.drawRect
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.ColumnScope
 import io.github.xororz.localdream.ui.glass.backdrop.Backdrop
-import io.github.xororz.localdream.ui.glass.backdrop.backdrops.LayerBackdrop
 import io.github.xororz.localdream.ui.glass.backdrop.backdrops.layerBackdrop
 import io.github.xororz.localdream.ui.glass.backdrop.backdrops.rememberLayerBackdrop
 import io.github.xororz.localdream.ui.glass.backdrop.drawBackdrop

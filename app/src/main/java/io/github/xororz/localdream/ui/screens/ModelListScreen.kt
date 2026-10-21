@@ -1,5 +1,6 @@
 package io.github.xororz.localdream.ui.screens
 
+import io.github.xororz.localdream.ui.glass.CompactModelCard
 import io.github.xororz.localdream.ui.glass.DreamGlassTabRow
 import io.github.xororz.localdream.ui.glass.DreamElevatedCard
 import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
@@ -3415,6 +3416,19 @@ fun ModelCard(
     modifier: Modifier = Modifier,
     isPinned: Boolean = false,
 ) {
+    if (LocalDreamGlassEnabled.current) {
+        CompactModelCard(
+            model = model,
+            isSelected = isSelected,
+            isSelectionMode = isSelectionMode,
+            isPinned = isPinned,
+            onClick = onClick,
+            onLongClick = onLongClick,
+            modifier = modifier,
+        )
+        return
+    }
+
     val context = LocalContext.current
     val isDisabledInSelection = !model.isDownloaded && isSelectionMode
 
