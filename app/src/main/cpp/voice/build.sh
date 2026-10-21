@@ -137,11 +137,9 @@ grep -Fq 'GGML_TYPE_Q2_K, "q2k", 1' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -Fq 'GGML_TYPE_Q2_K, "q2k", 40' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'v81-dsp-gelu-erf-reference' "$(pwd)/native/breeze-htp-selftest.cpp"
 grep -q 'v81-hvx-gelu-matmul-chain' "$(pwd)/native/breeze-htp-selftest.cpp"
-grep -q 'BREEZE_HMX_DEPENDENCY_PROBE' "$(pwd)/native/breeze-htp-selftest.cpp"
 # The upstream HMX bias epilogue must not return until verified on-device.
 grep -Fq 'skip v81 HMX MUL_MAT+ADD fusion: parity guard' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -Fq 'if (!ggml_are_same_shape(mm_out, node.dst())) return false;' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
-grep -q 'v81-hmx-chain' "$(pwd)/native/HmxDependencyProbe.hpp"
 grep -q 'class DepthParityProbe final' "$(pwd)/native/DepthParityProbe.hpp"
 grep -Fq 'if (sess->n_hmx > 0 && opt_arch >= 81)' "$GGML_DIR/src/ggml-hexagon/ggml-hexagon.cpp"
 grep -Fq 'HVX_Vector poly = hvx_vec_splat_f32(1.061405429f);' "$GGML_DIR/src/ggml-hexagon/htp/hvx-erf.h"
@@ -222,6 +220,16 @@ if grep -Eq 'GpuDepthEngine|BREEZE_GPU_DEPTH_FUSED' "$(pwd)/overlay/breeze/src/g
     exit 1
 fi
 grep -q 'persistent_legacy_depth' "$(pwd)/overlay/breeze/src/generation.cpp"
+# Production guard: optional QNN vocoder stays; QNN backbone and Depth
+# generator prototypes must never be linked or re-enabled by environment.
+if grep -Eq 'breeze-qnn-(backbone|depth-decoder)[.]cpp' "$(pwd)/CMakeLists.txt"; then
+    echo "Retired Full-QNN Breeze generator sources are still linked" >&2
+    exit 1
+fi
+if grep -Eq 'QnnBackboneRunner|QnnDepthRunner|BREEZE_QNN_DEPTH_TRIAL|BREEZE_DEPTH_QKV_GROUP'     "$(pwd)/overlay/breeze/src/generation.cpp"     "$(pwd)/overlay/breeze/src/depth_decoder.cpp"; then
+    echo "Retired experimental Breeze generator paths returned" >&2
+    exit 1
+fi
 grep -q 'BREEZE_BACKBONE_EMBED_FUSE' "$(pwd)/overlay/breeze/src/generation.cpp"
 
 # Full-clip decode remains available for voice conversion/reference work, but

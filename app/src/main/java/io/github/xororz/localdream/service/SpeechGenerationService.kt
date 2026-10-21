@@ -317,8 +317,7 @@ class SpeechGenerationService : Service() {
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
                 env["LOCALDREAM_QNN_POWER_MODE"] = "high_performance"
             }
-            // Explicitly disable stale grouped-QKV user preferences.
-            env["BREEZE_DEPTH_QKV_GROUP"] = "0"
+            // The retired grouped-QKV generator path no longer exists.
             // Isolated per-codebook timings are intentionally opt-in so logging
             // does not affect actual throughput. Fused experimental graph is
             // never activated in production after the SM8850 DSPQueue failure.

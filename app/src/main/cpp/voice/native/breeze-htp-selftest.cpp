@@ -1,5 +1,4 @@
 #include "breeze/common.h"
-#include "HmxDependencyProbe.hpp"
 #include "DepthParityProbe.hpp"
 
 #include <algorithm>
@@ -574,13 +573,6 @@ int main(int argc, char ** argv) {
         test_v81_direct_residual_add(be);
         test_v81_dsp_gelu_erf_reference(be);
         test_v81_hvx_gelu_matmul_chain(be);
-        const char * hmx_probe = std::getenv("BREEZE_HMX_DEPENDENCY_PROBE");
-        if (hmx_probe && hmx_probe[0] == '1') {
-            // Only opt-in test builds run the HMX chain. The normal startup
-            // path never turns HMX on or changes CFG/sampling.
-            HmxDependencyProbe probe;
-            probe.run(be);
-        }
         be.free();
         std::fprintf(stderr, "[BREEZE_SELFTEST] all-ok\n");
         return 0;
