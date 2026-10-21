@@ -620,7 +620,7 @@ private fun RenameModelDialog(
     // models are created. Validate against that derived id.
     val newId = name.replace(" ", "")
     val isBlank = newId.isEmpty()
-    val isReserved = ModelRepository.isReservedModelId(newId)
+    val isReserved = ModelRepository.isReservedModelId(newId, ModelStorage.ignoresCase(LocalContext.current))
     val isTaken = newId in existingIds
     val errorText = when {
         isReserved -> stringResource(R.string.custom_model_id_reserved)
@@ -2340,6 +2340,10 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             }
                         }
                     }
+                    // Where models are kept (GitHub build only, see ModelStorage)
+                    if (ModelStorage.isChoiceShown(context)) {
+                        item { ModelStorageSection() }
+                    }
                     // Appearance (theme) section
                     item { AppearanceSection() }
                     // Feature settings section
@@ -2858,6 +2862,13 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             }
         }
     }
+
+    ModelStorageMoveOverlay(onModelsChanged = {
+        scope.launch {
+            modelRepository.refreshAllModels()
+            upscalerRepository.refreshBaseUrl()
+        }
+    })
 
     BlockingProgressOverlay(visible = isConverting) {
         val byteProgress = extractByteProgress
@@ -4043,7 +4054,7 @@ fun CustomNpuModelDialog(context: Context, onDismiss: () -> Unit, onModelAdded: 
     var modelName by remember { mutableStateOf("") }
     var selectedZipUri by remember { mutableStateOf<Uri?>(null) }
     val isIdReserved = modelName.isNotBlank() &&
-        ModelRepository.isReservedModelId(modelName.replace(" ", ""))
+        ModelRepository.isReservedModelId(modelName.replace(" ", ""), ModelStorage.ignoresCase(context))
 
     val zipPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
@@ -4170,7 +4181,7 @@ fun CustomModelDialog(
     var clipSkip by remember { mutableIntStateOf(1) }
     var selectedLoraFiles by remember { mutableStateOf<List<LoRAFile>>(emptyList()) }
     val isIdReserved = modelName.isNotBlank() &&
-        ModelRepository.isReservedModelId(modelName.replace(" ", ""))
+        ModelRepository.isReservedModelId(modelName.replace(" ", ""), ModelStorage.ignoresCase(context))
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
@@ -4449,7 +4460,7 @@ suspend fun extractNpuModel(
 
         val modelId = modelName.replace(" ", "")
 
-        val modelsDir = File(context.filesDir, "models")
+        val modelsDir = Model.getModelsDir(context)
         if (!modelsDir.exists()) {
             modelsDir.mkdirs()
         }
@@ -4542,7 +4553,7 @@ suspend fun extractNpuModel(
         Log.e("NpuModelExtract", "Extraction failed", e)
 
         val modelId = modelName.replace(" ", "")
-        val modelDir = File(File(context.filesDir, "models"), modelId)
+        val modelDir = File(Model.getModelsDir(context), modelId)
         if (modelDir.exists()) {
             modelDir.deleteRecursively()
         }
@@ -4567,7 +4578,7 @@ fun EmbeddingManagerDialog(
     val scope = rememberCoroutineScope()
 
     fun loadEmbeddings() {
-        val embeddingsDir = File(context.filesDir, "embeddings")
+        val embeddingsDir = ModelStorage.embeddingsDir(context)
         if (!embeddingsDir.exists()) {
             embeddingsDir.mkdirs()
         }
@@ -4777,7 +4788,7 @@ fun EmbeddingManagerDialog(
 
 suspend fun importEmbedding(context: Context, fileUri: Uri, onSuccess: () -> Unit, onError: (String) -> Unit) = withContext(Dispatchers.IO) {
     try {
-        val embeddingsDir = File(context.filesDir, "embeddings")
+        val embeddingsDir = ModelStorage.embeddingsDir(context)
         if (!embeddingsDir.exists()) {
             embeddingsDir.mkdirs()
         }
@@ -4834,7 +4845,7 @@ suspend fun convertCustomModel(
 
         val modelId = modelName.replace(" ", "")
 
-        val modelsDir = File(context.filesDir, "models")
+        val modelsDir = Model.getModelsDir(context)
         if (!modelsDir.exists()) {
             modelsDir.mkdirs()
         }
@@ -5024,7 +5035,7 @@ suspend fun convertCustomModel(
         Log.e("ModelConvert", "Conversion failed", e)
 
         val modelId = modelName.replace(" ", "")
-        val modelDir = File(File(context.filesDir, "models"), modelId)
+        val modelDir = File(Model.getModelsDir(context), modelId)
         if (modelDir.exists()) {
             modelDir.deleteRecursively()
         }

@@ -15,6 +15,7 @@ import io.github.xororz.localdream.BuildConfig
 import io.github.xororz.localdream.R
 import io.github.xororz.localdream.data.GenerationPreferences
 import io.github.xororz.localdream.data.Model
+import io.github.xororz.localdream.data.ModelStorage
 import io.github.xororz.localdream.utils.DownloadDiagnostics
 import io.github.xororz.localdream.utils.Http
 import java.io.File
@@ -294,7 +295,7 @@ class ModelDownloadService : Service() {
                     return@launch
                 }
 
-                val tempDir = File(filesDir, "temp_downloads").apply { mkdirs() }
+                val tempDir = ModelStorage.tempDownloadsDir(this@ModelDownloadService)
 
                 if (request.modelType == TYPE_MULTI_FILE) {
                     val xetSetting = GenerationPreferences(this@ModelDownloadService)
@@ -509,7 +510,7 @@ class ModelDownloadService : Service() {
         } else {
             discardPartialFiles(request.modelType, request.modelId, request.installDir)
             if (request.modelType != TYPE_MULTI_FILE) {
-                File(filesDir, "temp_downloads/${request.modelId}.part").delete()
+                File(ModelStorage.tempDownloadsDir(this), "${request.modelId}.part").delete()
             }
             _downloadState.value = DownloadState.Idle
             activeRequest = null
@@ -1402,7 +1403,7 @@ class ModelDownloadService : Service() {
         } else if (request != null) {
             discardPartialFiles(request.modelType, request.modelId, request.installDir)
             if (request.modelType != TYPE_MULTI_FILE) {
-                File(filesDir, "temp_downloads/${request.modelId}.part").delete()
+                File(ModelStorage.tempDownloadsDir(this), "${request.modelId}.part").delete()
             }
             _downloadState.value = DownloadState.Idle
             activeRequest = null
@@ -1429,9 +1430,7 @@ class ModelDownloadService : Service() {
             ?.forEach { it.delete() }
     }
 
-    private fun getModelsDir(): File = File(filesDir, "models").apply {
-        if (!exists()) mkdirs()
-    }
+    private fun getModelsDir(): File = ModelStorage.modelsDir(this)
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(

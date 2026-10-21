@@ -277,7 +277,7 @@ data class Model(
 
             newId == id -> return@withContext RenameResult.Success
 
-            ModelRepository.isReservedModelId(newId) ->
+            ModelRepository.isReservedModelId(newId, ModelStorage.ignoresCase(context)) ->
                 return@withContext RenameResult.Error(RenameResult.Reason.Reserved)
         }
 
@@ -309,8 +309,6 @@ data class Model(
     }
 
     companion object {
-        private const val MODELS_DIR = "models"
-
         // Where each part of a DiT package comes from, and the name the
         // native side expects on disk (see PipelineDit). The weights are
         // pulled from the repositories that publish them rather than rehosted:
@@ -474,9 +472,7 @@ data class Model(
             return null
         }
 
-        fun getModelsDir(context: Context): File = File(context.filesDir, MODELS_DIR).apply {
-            if (!exists()) mkdirs()
-        }
+        fun getModelsDir(context: Context): File = ModelStorage.modelsDir(context)
 
         fun isModelDownloaded(context: Context, modelId: String, isCustom: Boolean = false): Boolean {
             if (isCustom) {
@@ -1638,7 +1634,9 @@ class ModelRepository private constructor(private val context: Context) {
             "breeze_tts2_q8_dd4", "breeze_tts2_q8_dd2", "breeze_tts2_q4_dd2",
         )
 
-        fun isReservedModelId(id: String): Boolean = id in RESERVED_MODEL_IDS
+        fun isReservedModelId(id: String, ignoreCase: Boolean = false): Boolean = if (ignoreCase) {
+            RESERVED_MODEL_IDS.any { it.equals(id, ignoreCase = true) }
+        } else id in RESERVED_MODEL_IDS
 
         @SuppressLint("StaticFieldLeak")
         @Volatile
