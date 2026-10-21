@@ -1,5 +1,6 @@
 package io.github.xororz.localdream.ui.components
 
+import io.github.xororz.localdream.ui.glass.GlassCatalogControls
 import io.github.xororz.localdream.ui.glass.DreamGlassRole
 import io.github.xororz.localdream.ui.glass.DreamGlassSurface
 import io.github.xororz.localdream.ui.glass.DreamElevatedCard
@@ -167,6 +168,18 @@ fun ModelCatalogControls(
     onSortChange: (CatalogSortMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    if (LocalDreamGlassEnabled.current) {
+        GlassCatalogControls(
+            query = query,
+            onQueryChange = onQueryChange,
+            filter = filter,
+            onFilterChange = onFilterChange,
+            sort = sort,
+            onSortChange = onSortChange,
+            modifier = modifier,
+        )
+        return
+    }
     var sortMenu by remember { mutableStateOf(false) }
     Column(
         modifier = modifier.fillMaxWidth(),
