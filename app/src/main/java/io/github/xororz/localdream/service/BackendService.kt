@@ -86,6 +86,7 @@ class BackendService : Service() {
         // (single-threaded, no cross-instance start/stop race). Affects only
         // reuse/latency, never correctness: a slower re-entry just starts fresh.
         private const val IDLE_GRACE_MS = 1500L
+        private const val SDXL_WARM_GRACE_MS = 30_000L
         private const val MAX_BACKEND_ERROR_CHARS = 700
 
         // Four minutes at YuE2's 25 semantic frames/s is 6000 frames. 8192
@@ -359,7 +360,8 @@ class BackendService : Service() {
         desired = null
         idleStopJob?.cancel()
         idleStopJob = serviceScope.launch {
-            delay(IDLE_GRACE_MS)
+            // Keep warm CLIP/UNET/VAE contexts for quick SDXL re-entry without MAX clocks.
+            delay(if (serving?.backendType == "sdxl") SDXL_WARM_GRACE_MS else IDLE_GRACE_MS)
             // A re-entry during the delay normally cancels us. The startId guard
             // closes the remaining edge where a new command's onStartCommand
             // raced in just as the grace fired: stopSelfResult() refuses to stop

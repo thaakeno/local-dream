@@ -359,8 +359,8 @@ jobs:
       # Permanent installer identity; NEVER generate a replacement when secrets
       # are present or when supplied key differs from the pinned fingerprint.
       # Until the private key is explicitly restored in GitHub Actions secrets,
-      # only a clearly named and labelled staging APK is published.
-      - name: Prepare permanent signing identity or staging preview
+      # the workflow fails closed rather than publishing another staging APK.
+      - name: Restore and verify ORIGINAL permanent signing identity
         id: identity
         shell: bash
         env:
@@ -394,13 +394,9 @@ jobs:
             echo "artifact=LocalDream-Classic-Permanent" >> "$GITHUB_OUTPUT"
             echo "Permanent certificate verified: $actual"
           else
-            keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/localdream-signing.p12" \
-              -storetype PKCS12 -storepass android -keypass android -alias localdream \
-              -keyalg RSA -keysize 2048 -validity 1 \
-              -dname "CN=Local Dream STAGING ONLY,O=thaakeno,C=DE"
-            echo "mode=staging" >> "$GITHUB_OUTPUT"
-            echo "artifact=LocalDream-Integration-Staging-NOT-UPDATEABLE" >> "$GITHUB_OUTPUT"
-            echo "::warning::Permanent signing secrets unavailable; this is NOT a permanent installable release."
+            echo "::error::Permanent signer unavailable. Refusing to create another staging key or non-updateable APK."
+            echo "::error::Restore the SAME original .p12 in GitHub Actions secrets."
+            exit 1
           fi
 
       - name: Build APK
@@ -411,11 +407,8 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x gradlew
-          if [ "$SIGNING_MODE" = "permanent" ]; then
-            password="$PERMANENT_STORE_PASSWORD"
-          else
-            password="android"
-          fi
+          test "$SIGNING_MODE" = "permanent"
+          password="$PERMANENT_STORE_PASSWORD"
           ./gradlew --no-daemon :app:assembleBasicDebug \
             -PRELEASE_STORE_FILE="$RUNNER_TEMP/localdream-signing.p12" \
             -PRELEASE_STORE_PASSWORD="$password" \
