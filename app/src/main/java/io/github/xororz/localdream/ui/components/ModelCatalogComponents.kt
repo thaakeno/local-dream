@@ -1246,7 +1246,7 @@ fun BreezeFamilyCard(
                     ) {
                         Icon(Icons.Default.CheckCircle, null,
                             modifier = Modifier.size(23.dp),
-                            tint = Color(0xFFE1BA85))
+                            tint = MaterialTheme.colorScheme.primary)
                         Column(Modifier.weight(1f),
                             verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text("Selected · ${current.variantPrecision}",
