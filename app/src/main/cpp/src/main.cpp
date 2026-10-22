@@ -896,7 +896,7 @@ void mossCrashSignal(int sig, siginfo_t *info, void *opaque) {
         mossCrashAppendHex(line, n, reinterpret_cast<uintptr_t>(
             info ? info->si_addr : nullptr));
     }
-    line[n++] = '\\n';
+    line[n++] = '\n';
     (void) write(STDERR_FILENO, line, n);
     // SA_RESETHAND resets our handler; re-raise to preserve normal tombstones.
     raise(sig);
