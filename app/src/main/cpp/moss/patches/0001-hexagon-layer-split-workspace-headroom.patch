@@ -20,7 +20,7 @@ diff --git a/src/core/layer_split_partition.cpp b/src/core/layer_split_partition
          for (size_t i = 0; i < backends.size(); i++) {
              ggml_backend_dev_t dev = ggml_backend_get_device(backends[i]);
              size_t free_bytes = 0, total_bytes = 0;
-@@ -92,6 +104,16 @@ namespace sd {
+@@ -92,7 +104,17 @@ namespace sd {
                                                                            i,
                                                                            primary_backend_vram_limit);
              if (limit_bytes > 0) {
@@ -38,3 +38,4 @@ diff --git a/src/core/layer_split_partition.cpp b/src/core/layer_split_partition
 +                }
              }
          }
+         return capacities;
