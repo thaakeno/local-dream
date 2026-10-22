@@ -1076,6 +1076,18 @@ class BackendService : Service() {
             env["LD_LIBRARY_PATH"] = systemLibPathsStr
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
+            if (backendType == MossImagePackages.DIT_KIND) {
+                // A single MOSS request loads ~8 GB of weights; do not pin
+                // maximum power / disable DVCS. Avoid DSPQueue oversubmission
+                // while the diffusion graph uses the v81 Hexagon backend.
+                env["GGML_HEXAGON_POWER_MODE"] = "balanced"
+                env["GGML_HEXAGON_OPBATCH"] = "64"
+                env["GGML_HEXAGON_OPQUEUE"] = "8"
+                env["GGML_HEXAGON_OPPOLL"] = "0"
+                env["GGML_HEXAGON_DEVICES"] = "HTP0"
+                BackendDiagnostics.append(this, "MOSS_STABILITY",
+                    "mode=hybrid text_encoder=CPU-disk diffusion=HTP0 vae=CPU-disk power=balanced opbatch=64 opqueue=8")
+            }
             if (backendType == "sdxl") {
                 // SDXL must not monopolize the phone's CPU/DDR fabric while
                 // denoising. Keep TURBO as the HTP target but release the fixed

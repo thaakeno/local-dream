@@ -30,12 +30,18 @@ struct ActiveSession {
     void *user = nullptr;
     bool cancelled = false;
     bool started = false;
+    int expected_sampling_steps = 0;
 } active;
 
 void on_log(sd_log_level_t level, const char* message, void*) {
     if (logger) logger(static_cast<int>(level), message ? message : "", logger_user);
 }
 void on_progress(int step, int total, float elapsed, void*) {
+    // stable-diffusion.cpp uses this single callback for BOTH lazy tensor uploads
+    // and real sampler steps. The model may upload 378 tensors before executing
+    // Qwen3.5. Never claim 378/378 diffusion steps.
+    if (step < 1 || total != active.expected_sampling_steps || step > total)
+        return;
     if (active.phase && !active.started) {
         active.started = true;
         active.phase(DIT_PHASE_DENOISING, active.user);
@@ -112,7 +118,8 @@ bool generate(dit_ctx* ctx, const dit_gen_params* req,
         return false;
     }
     std::lock_guard<std::mutex> hold(generation_mutex);
-    active = {ctx, progress, phase, preview, user, false, false};
+    active = {ctx, progress, phase, preview, user, false, false,
+              std::max(1, req->steps)};
     sd_img_gen_params_t params;
     sd_img_gen_params_init(&params);
     params.prompt = req->prompt ? req->prompt : "";

@@ -410,14 +410,26 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
     const char *htp_mode_env = std::getenv("LOCAL_DREAM_HTP_MODE");
     const bool qwen_dual_htp =
         htp_mode_env != nullptr && std::string(htp_mode_env) == "dual";
+    // Qwen3.5-9B is ~5.1GB on the HTP0 encoder alone; SM8850 v81 has a
+    // ~3.3GB per-session address window. The observed SIGSEGV happened at
+    // qwen3.5 executing segment 1/1, before the first sampler step.
+    // Keep the ~3.2GB image DiT on HTP and stream the text encoder from CPU
+    // until the v81 shared-buffer mapping and graph execution are validated.
+    // This is an explicit conservative hybrid path, NOT a verified NPU
+    // encoder. Avoid oversubscribing the HTP0 context with the VAE too.
+    const bool moss = opts.type == ServerOptions::ModelType::kMossImage;
     const std::string runtime_backend =
         qwen
             ? (qwen_dual_htp
                    ? "diffusion=HTP0:0&HTP0:1,te=HTP0:0&HTP0:1,vae=HTP0:0"
                    : "diffusion=HTP0:0,te=HTP0:0,vae=HTP0:0")
-            : opts.dit_backend;
+            : moss ? "diffusion=HTP0,te=CPU,vae=CPU" : opts.dit_backend;
     const std::string params_backend =
-        qwen ? "te=disk,vae=disk" : opts.dit_params_backend;
+        qwen ? "te=disk,vae=disk" : moss ? "te=disk,vae=disk" : opts.dit_params_backend;
+    if (moss) {
+        QNN_INFO("[MOSS_STABILITY] text_encoder=CPU(disk) diffusion=HTP0 vae=CPU(disk) "
+                 "reason=SM8850-Qwen3.5-HTP-graph-crash; no burst; not NPU-only");
+    }
     return std::make_unique<PipelineDit>(
         text_encoder, opts.model_dir, engine_path, dit_path, llm_path,
         llm_vision_path, vae_path, kind, runtime_backend, params_backend,
