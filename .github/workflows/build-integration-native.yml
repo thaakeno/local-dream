@@ -42,7 +42,7 @@ jobs:
           submodules: false
           fetch-depth: 1
 
-      - name: Fail fast if original permanent signer is unavailable
+      - name: Fail fast if saved permanent signer is unavailable
         shell: bash
         env:
           PERMANENT_KEY_BASE64: ${{ secrets.LOCALDREAM_PERMANENT_KEYSTORE_BASE64 }}
@@ -51,7 +51,7 @@ jobs:
           set -euo pipefail
           if [ -z "$PERMANENT_KEY_BASE64" ] || [ -z "$PERMANENT_STORE_PASSWORD" ]; then
             echo "::error::No original signing identity configured. Refusing a non-updateable build."
-            echo "::error::Recover the existing Local Dream .p12 and configure both GitHub Actions secrets."
+            echo "::error::Restore the saved Local Dream .p12 and configure both GitHub Actions secrets."
             exit 1
           fi
 
@@ -369,11 +369,12 @@ jobs:
             app/src/main/assets/licenses/qnn-${{ env.QNN_VERSION }}
           key: ${{ steps.native-key.outputs.key }}
 
+      # thaakeno authorized the saved local signing identity on 2026-10-22.
       # Permanent installer identity; NEVER generate a replacement when secrets
       # are present or when supplied key differs from the pinned fingerprint.
       # Until the private key is explicitly restored in GitHub Actions secrets,
       # the workflow fails closed rather than publishing another staging APK.
-      - name: Restore and verify ORIGINAL permanent signing identity
+      - name: Restore and verify saved permanent signing identity
         id: identity
         shell: bash
         env:
@@ -398,7 +399,7 @@ jobs:
               -storetype PKCS12 -storepass "$PERMANENT_STORE_PASSWORD" \
               -alias localdream | openssl x509 -noout -fingerprint -sha256 |
               sed 's/.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
-            expected="e6d1a8635da6a0e77bcfc1a0e478522cbbb08f0a9e1d2043fd954914bd833956"
+            expected="c6d2c4a1e73e78237147f183fc3810b11c1ddce1c3d28e0dc4d56aa9af133f2e"
             if [ "$actual" != "$expected" ]; then
               echo "::error::Wrong release signing certificate. Refusing to rotate keys."
               exit 1
@@ -408,7 +409,7 @@ jobs:
             echo "Permanent certificate verified: $actual"
           else
             echo "::error::Permanent signer unavailable. Refusing to create another staging key or non-updateable APK."
-            echo "::error::Restore the SAME original .p12 in GitHub Actions secrets."
+            echo "::error::Restore the SAME saved .p12 in GitHub Actions secrets."
             exit 1
           fi
 
@@ -440,7 +441,7 @@ jobs:
           signer="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x | sort -V | tail -n1)"
           "$signer" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-verification.txt"
           if [ "$SIGNING_MODE" = "permanent" ]; then
-            grep -iq 'e6d1a8635da6a0e77bcfc1a0e478522cbbb08f0a9e1d2043fd954914bd833956' \
+            grep -iq 'c6d2c4a1e73e78237147f183fc3810b11c1ddce1c3d28e0dc4d56aa9af133f2e' \
               "$RUNNER_TEMP/apk-verification.txt"
           fi
 
