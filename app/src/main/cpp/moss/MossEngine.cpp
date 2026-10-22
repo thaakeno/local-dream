@@ -87,7 +87,9 @@ dit_ctx *create(const dit_ctx_params* req) {
     p.diffusion_flash_attn = req->flash_attn;
     p.vae_conv_direct = req->vae_conv_direct;
     p.enable_mmap = true;
-    p.auto_fit = true;
+    // Never silently move unsupported/oversized MOSS inference to CPU.
+    // A genuine NPU mapping failure must surface rather than downgrade.
+    p.auto_fit = false;
     if (req->backend && req->backend[0]) p.backend = req->backend;
     if (req->params_backend && req->params_backend[0]) p.params_backend = req->params_backend;
     ctx->model = new_sd_ctx(&p);

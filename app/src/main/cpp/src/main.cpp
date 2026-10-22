@@ -410,25 +410,32 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
     const char *htp_mode_env = std::getenv("LOCAL_DREAM_HTP_MODE");
     const bool qwen_dual_htp =
         htp_mode_env != nullptr && std::string(htp_mode_env) == "dual";
-    // Qwen3.5-9B is ~5.1GB on the HTP0 encoder alone; SM8850 v81 has a
-    // ~3.3GB per-session address window. The observed SIGSEGV happened at
-    // qwen3.5 executing segment 1/1, before the first sampler step.
-    // Keep the ~3.2GB image DiT on HTP and stream the text encoder from CPU
-    // until the v81 shared-buffer mapping and graph execution are validated.
-    // This is an explicit conservative hybrid path, NOT a verified NPU
-    // encoder. Avoid oversubscribing the HTP0 context with the VAE too.
+    // On SM8850, a single v81 HTP session exposes ~3.35 GiB of virtual
+    // buffer mappings. MOSS text weights are ~4.61 GiB and the diffusion
+    // model becomes ~4.59 GiB with the active DMD LoRA. Single-session
+    // conditioning and denoising both crashed (at different graph phases).
+    //
+    // Use TWO virtual sessions of the *same physical Hexagon* as separate
+    // GGML backend devices. Upstream stable-diffusion.cpp accepts '&' in
+    // the runtime backend spec and partitions each module across devices.
+    // Params "disk" stages GGUF weights into these HTP sessions lazily;
+    // it does NOT execute transformer or decoder inference on CPU.
     const bool moss = opts.type == ServerOptions::ModelType::kMossImage;
+    const std::string moss_htp = "HTP0:0&HTP0:1";
     const std::string runtime_backend =
         qwen
             ? (qwen_dual_htp
                    ? "diffusion=HTP0:0&HTP0:1,te=HTP0:0&HTP0:1,vae=HTP0:0"
                    : "diffusion=HTP0:0,te=HTP0:0,vae=HTP0:0")
-            : moss ? "diffusion=HTP0,te=CPU,vae=CPU" : opts.dit_backend;
+            : moss ? "diffusion=" + moss_htp + ",te=" + moss_htp +
+                     ",vae=" + moss_htp : opts.dit_backend;
     const std::string params_backend =
         qwen ? "te=disk,vae=disk" : moss ? "te=disk,vae=disk" : opts.dit_params_backend;
     if (moss) {
-        QNN_INFO("[MOSS_STABILITY] text_encoder=CPU(disk) diffusion=HTP0 vae=CPU(disk) "
-                 "reason=SM8850-Qwen3.5-HTP-graph-crash; no burst; not NPU-only");
+        QNN_INFO("[MOSS_NPU] strict_backend=HTP0:0&HTP0:1 "
+                 "text_encoder=HTP-dual diffusion=HTP-dual vae=HTP-dual "
+                 "te_params=disk vae_params=disk cpu_inference_fallback=disabled "
+                 "reason=SM8850-v81-per-session-address-window");
     }
     return std::make_unique<PipelineDit>(
         text_encoder, opts.model_dir, engine_path, dit_path, llm_path,

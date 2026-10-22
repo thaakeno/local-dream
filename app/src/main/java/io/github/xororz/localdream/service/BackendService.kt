@@ -1077,16 +1077,23 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (backendType == MossImagePackages.DIT_KIND) {
-                // A single MOSS request loads ~8 GB of weights; do not pin
-                // maximum power / disable DVCS. Avoid DSPQueue oversubmission
-                // while the diffusion graph uses the v81 Hexagon backend.
+                // Separate *virtual* FastRPC mapping windows on one physical
+                // Hexagon. This avoids packing both the 4.6 GiB text model
+                // and the 4.59 GiB LoRA-augmented DiT into a 3.35 GiB window.
+                // Do not use a CPU/GPU inference fallback or maximum-power pin.
+                env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
                 env["GGML_HEXAGON_POWER_MODE"] = "balanced"
-                env["GGML_HEXAGON_OPBATCH"] = "64"
-                env["GGML_HEXAGON_OPQUEUE"] = "8"
+                env["GGML_HEXAGON_NHMX"] = "0"
+                env["GGML_HEXAGON_NHVX"] = "0"
+                env["GGML_HEXAGON_OPBATCH"] = "32"
+                env["GGML_HEXAGON_OPQUEUE"] = "4"
                 env["GGML_HEXAGON_OPPOLL"] = "0"
-                env["GGML_HEXAGON_DEVICES"] = "HTP0"
-                BackendDiagnostics.append(this, "MOSS_STABILITY",
-                    "mode=hybrid text_encoder=CPU-disk diffusion=HTP0 vae=CPU-disk power=balanced opbatch=64 opqueue=8")
+                env["GGML_HEXAGON_OPFUSION"] = "0"
+                BackendDiagnostics.append(this, "MOSS_NPU",
+                    "inference=HTP-only device_sessions=HTP0:0,HTP0:1 " +
+                    "te=HTP-dual diffusion=HTP-dual vae=HTP-dual " +
+                    "param_staging=disk power=balanced opbatch=32 opqueue=4 " +
+                    "fusion=off cpu_inference_fallback=disabled")
             }
             if (backendType == "sdxl") {
                 // SDXL must not monopolize the phone's CPU/DDR fabric while
