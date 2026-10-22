@@ -1,4 +1,4 @@
-name: Publish alpha.68 direct APK
+name: Publish alpha.69 direct APK
 on:
   push:
     branches:
@@ -16,7 +16,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: LocalDream-Classic-Permanent
-          run-id: 39815614646
+          run-id: 39833454763
           github-token: ${{ github.token }}
           path: apk
       - name: Validate APK identity and publish prerelease as raw APK
@@ -26,19 +26,19 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          apk="apk/LocalDream_armv8a_3.0.0-alpha.68.apk"
+          apk="apk/LocalDream_armv8a_3.0.0-alpha.69.apk"
           test -s "$apk"
           magic="$(head -c 2 "$apk" | od -An -tx1 | tr -d ' \n')"
           test "$magic" = "504b"
           sha256sum "$apk"
-          tag="v3.0.0-alpha.68"
-          target="310105c6b5716e9cf4160d410b4d2e00b7aeb91e"
+          tag="v3.0.0-alpha.69"
+          target="da159ea9fb1ab33d45bbc569449e579768470c21"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$apk" --clobber
           else
             gh release create "$tag" "$apk" \
-              --target "$target" --title "Local Dream 3.0.0-alpha.68 (223)" \
-              --notes "Permanently signed alpha.68 APK from verified GitHub Actions run 39815614646. Breeze cloned voice library and experimental MOSS Turbo. Device inference and performance remain experimental. Keep app data backed up." \
+              --target "$target" --title "Local Dream 3.0.0-alpha.69 (224)" \
+              --notes "Permanently signed alpha.69 APK from verified GitHub Actions run 39833454763. Breeze Studio UI and voice management, structured Breeze diagnostics, and MOSS variant size labels. MOSS Turbo still needs an on-device crash fix; device inference and performance remain experimental. Keep app data backed up." \
               --prerelease
           fi
           echo "Direct file: https://github.com/$GH_REPO/releases/download/$tag/$(basename "$apk")"
