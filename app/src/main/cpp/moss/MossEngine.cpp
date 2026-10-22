@@ -2,6 +2,7 @@
 #include "DitEngine.h"
 #include "stable-diffusion.h"
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
