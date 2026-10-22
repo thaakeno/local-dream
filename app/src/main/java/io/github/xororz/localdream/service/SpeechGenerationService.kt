@@ -273,6 +273,7 @@ class SpeechGenerationService : Service() {
                 "--chunk-first", "8",
                 "--chunk-max", "32",
                 "--split-chars", "600",
+                "--voices-dir", BreezeVoiceLibrary.directory(this).absolutePath,
                 "--verbose",
             )
 
@@ -437,6 +438,7 @@ class SpeechGenerationService : Service() {
         val modelId = intent.getStringExtra("modelId").orEmpty()
         val text = intent.getStringExtra("text")?.trim().orEmpty()
         val instruction = intent.getStringExtra("instruction")?.trim().orEmpty()
+        val voiceId = intent.getStringExtra("voiceId")?.trim().orEmpty()
         if (modelId.isBlank() || text.isBlank()) {
             fail("Enter text to speak.", modelId.ifBlank { null })
             return
@@ -494,6 +496,10 @@ class SpeechGenerationService : Service() {
 
                 val payload = JSONObject().apply {
                     put("model", "breeze-tts-2")
+                    if (voiceId.isNotBlank()) {
+                        require(voiceId.matches(Regex("[A-Za-z0-9_-]{1,100}")))
+                        put("voice", voiceId)
+                    }
                     put("input", text)
                     put(
                         "instructions",
