@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -65,6 +66,7 @@ fun MusicPlayerCard(
     onShare: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
     onReproduce: (() -> Unit)? = null,
+    onClone: (() -> Unit)? = null,
     onUse: (() -> Unit)? = null,
     favorite: Boolean = false,
     onFavoriteToggle: (() -> Unit)? = null,
@@ -393,48 +395,42 @@ fun MusicPlayerCard(
             }
 
             if (compact) {
+                // Keep playback primary. Secondary actions are compact accessible icons,
+                // not multiple equal-weight buttons that wrap on narrow phones.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     if (onUse != null) {
-                        OutlinedButton(
-                            onClick = onUse,
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 6.dp),
-                        ) {
-                            Text("Use")
+                        TextButton(onClick = onUse, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                            Text("Use", maxLines = 1)
                         }
                     }
                     if (onReproduce != null) {
-                        Button(
-                            onClick = onReproduce,
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 6.dp),
-                        ) {
-                            Icon(Icons.Default.Replay, contentDescription = null)
-                            Spacer(Modifier.width(4.dp))
-                            Text("Reproduce")
+                        IconButton(onClick = onReproduce, modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Default.Replay, contentDescription = "Regenerate speech with original settings")
+                        }
+                    }
+                    if (onClone != null) {
+                        IconButton(onClick = onClone, modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Clone voice from recording")
                         }
                     }
                     if (onSave != null) {
                         IconButton(onClick = onSave, modifier = Modifier.size(40.dp)) {
-                            Icon(Icons.Default.Download, contentDescription = "Save")
+                            Icon(Icons.Default.Download, contentDescription = "Save audio")
                         }
                     }
                     if (onShare != null) {
                         IconButton(onClick = onShare, modifier = Modifier.size(40.dp)) {
-                            Icon(Icons.Default.Share, contentDescription = "Share")
+                            Icon(Icons.Default.Share, contentDescription = "Share audio")
                         }
                     }
                     if (onDelete != null) {
                         IconButton(onClick = onDelete, modifier = Modifier.size(40.dp)) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = "Delete",
-                                tint = MaterialTheme.colorScheme.error,
-                            )
+                            Icon(Icons.Default.Delete, contentDescription = "Delete recording",
+                                tint = MaterialTheme.colorScheme.error)
                         }
                     }
                 }
@@ -442,18 +438,19 @@ fun MusicPlayerCard(
                 if (onReproduce != null || onUse != null) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         if (onUse != null) {
-                            OutlinedButton(onClick = onUse, modifier = Modifier.weight(1f)) {
-                                Text("Use settings")
-                            }
+                            TextButton(onClick = onUse) { Text("Use settings") }
                         }
                         if (onReproduce != null) {
-                            Button(onClick = onReproduce, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.Default.Replay, contentDescription = null)
-                                Spacer(Modifier.width(6.dp))
-                                Text("Reproduce")
+                            OutlinedButton(onClick = onReproduce,
+                                contentPadding = PaddingValues(horizontal = 13.dp, vertical = 7.dp)) {
+                                Icon(Icons.Default.Replay, contentDescription = null,
+                                    modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("Regenerate", maxLines = 1)
                             }
                         }
                     }
