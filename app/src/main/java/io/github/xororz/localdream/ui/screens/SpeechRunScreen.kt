@@ -1271,8 +1271,7 @@ fun SpeechRunScreen(
                     subtitle = "Seed " + complete.seed + " · " +
                         String.format(Locale.US, "%.1f s generation", complete.elapsedMillis / 1000f),
                     metadataLine = if (
-                        acceleratorState is BreezeQnnVocoderArtifact.Status.Ready ||
-                        acceleratorState is BreezeQnnVocoderArtifact.Status.UpgradeAvailable
+                        acceleratorState is BreezeQnnVocoderArtifact.Status.Ready
                     ) {
                         "On-device · Accelerated waveform"
                     } else {
@@ -1331,11 +1330,7 @@ fun SpeechRunScreen(
             },
             title = {
                 Text(
-                    if (accelerator is BreezeQnnVocoderArtifact.Status.UpgradeAvailable) {
-                        "Faster waveform decoder"
-                    } else {
-                        "Waveform decoder"
-                    },
+                    "Restore fast QNN vocoder v3",
                 )
             },
             text = {
@@ -1343,13 +1338,9 @@ fun SpeechRunScreen(
                     val soc = BreezeQnnVocoderArtifact.supportedSoc().orEmpty()
                     Text(
                         if (accelerator is BreezeQnnVocoderArtifact.Status.UpgradeAvailable) {
-                            "Your current v3 accelerator still works. Update to v4 to add native " +
-                                "8/32/64-frame QNN graphs, so short first/tail chunks no longer " +
-                                "pay for a full 64-frame graph."
+                            "The legacy Hexagon generator needs the proven v3 vocoder; v4 remains installed separately."
                         } else {
-                            "Download the optimized waveform decoder. It is shared by every " +
-                                "Breeze Q4/Q6/Q8/F16/DD model on this phone and keeps waveform " +
-                                "synthesis on the NPU."
+                            "Install the validated SM8850 v3 QNN waveform decoder (~348 MiB) for fast, faithful speech. Your existing v4 download is preserved, but v4 cannot safely coexist with this generator."
                         },
                     )
                     when (accelerator) {
