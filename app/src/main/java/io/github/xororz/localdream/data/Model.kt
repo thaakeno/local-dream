@@ -1171,7 +1171,7 @@ class ModelRepository private constructor(private val context: Context) {
             approximateSize = if (turbo) "10.6GB" else "9.4GB",
             isDownloaded = Model.isDitPackageDownloaded(context, id, "moss", packageFiles),
             codeDefaults = ModelConfig(
-                prompt = "A cinematic portrait with natural lighting, intricate detail",
+                prompt = MossPromptPresets.options.first().prompt,
                 negativePrompt = "",
                 steps = if (turbo) 8f else MossImagePackages.STEPS.toFloat(),
                 cfg = if (turbo) 1f else MossImagePackages.CFG,

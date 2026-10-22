@@ -95,6 +95,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -147,6 +149,7 @@ import io.github.xororz.localdream.data.GenerationPreferences
 import io.github.xororz.localdream.data.HistoryFilter
 import io.github.xororz.localdream.data.HistoryItem
 import io.github.xororz.localdream.data.HistoryManager
+import io.github.xororz.localdream.data.MossPromptPresets
 import io.github.xororz.localdream.data.ModelRepository
 import io.github.xororz.localdream.data.ModelStorage
 import io.github.xororz.localdream.data.PatchScanner
@@ -2455,6 +2458,50 @@ fun ModelRunScreen(
                             }
                         }
 
+                        if (model?.ditKind == "moss") {
+                            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(17.dp))
+                                    Spacer(Modifier.width(7.dp))
+                                    Text("Scene starters",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.weight(1f))
+                                    Text("Tap to use",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Row(
+                                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    MossPromptPresets.options.forEach { preset ->
+                                        OutlinedButton(
+                                            onClick = {
+                                                promptField.replaceText(preset.prompt)
+                                                negativePromptField.replaceText("")
+                                                saveAllFields()
+                                            },
+                                            shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+                                        ) {
+                                            Text("${preset.title} · ${preset.category}",
+                                                maxLines = 1,
+                                                style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
+                                Text("Describe a subject, its setting, and believable lighting. Turbo uses 8 steps with CFG 1; negative prompts have no meaningful guidance effect at CFG 1.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+
                         ControlledPromptTagTextField(
                             controller = promptField,
                             autocompleteAvailable = tagAutocompleteAvailable,
@@ -2469,6 +2516,7 @@ fun ModelRunScreen(
                             },
                         )
 
+                        if (model?.ditKind != "moss" || !model.id.contains("turbo")) {
                         ControlledPromptTagTextField(
                             controller = negativePromptField,
                             autocompleteAvailable = tagAutocompleteAvailable,
@@ -2482,6 +2530,7 @@ fun ModelRunScreen(
                                 )
                             },
                         )
+                        }
 
                         Button(
                             onClick = {
