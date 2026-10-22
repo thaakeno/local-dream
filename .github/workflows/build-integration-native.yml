@@ -42,6 +42,19 @@ jobs:
           submodules: false
           fetch-depth: 1
 
+      - name: Fail fast if original permanent signer is unavailable
+        shell: bash
+        env:
+          PERMANENT_KEY_BASE64: ${{ secrets.LOCALDREAM_PERMANENT_KEYSTORE_BASE64 }}
+          PERMANENT_STORE_PASSWORD: ${{ secrets.LOCALDREAM_PERMANENT_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PERMANENT_KEY_BASE64" ] || [ -z "$PERMANENT_STORE_PASSWORD" ]; then
+            echo "::error::No original signing identity configured. Refusing a non-updateable build."
+            echo "::error::Recover the existing Local Dream .p12 and configure both GitHub Actions secrets."
+            exit 1
+          fi
+
       - name: Initialize required submodules
         shell: bash
         run: |
