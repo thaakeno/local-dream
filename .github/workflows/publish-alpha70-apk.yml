@@ -1,0 +1,48 @@
+name: Publish alpha.70 direct APK
+on:
+  push:
+    branches:
+      - fix/sdxl-efficient-classic-catalog-20261022
+    paths:
+      - .github/workflows/publish-alpha70-apk.yml
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified permanently signed alpha.70 build
+        uses: actions/download-artifact@v4
+        with:
+          name: LocalDream-Classic-Permanent
+          run-id: 39843287737
+          github-token: ${{ github.token }}
+          path: apk
+      - name: Verify package and publish raw APK
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          apk_src="$(find apk -type f -name '*.apk' -print -quit)"
+          test -n "$apk_src"
+          test -s "$apk_src"
+          target="LocalDream_armv8a_3.0.0-alpha.70.apk"
+          cp "$apk_src" "$target"
+          magic="$(head -c 2 "$target" | od -An -tx1 | tr -d ' \n')"
+          test "$magic" = "504b"
+          unzip -p "$target" assets/mosslibs/upstream-revision.txt | head -c 45 || true
+          sha256sum "$target"
+          tag="v3.0.0-alpha.70"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$target" --clobber
+          else
+            gh release create "$tag" "$target" \
+              --target b68a388e4606fe4386b3838464af1c4d4e538bc0 \
+              --title "Local Dream 3.0.0-alpha.70 (225)" \
+              --notes "Permanently signed APK from verified CI run 39843287737. Includes MOSS stability workaround and real sampling progress, curated presets, and multilingual Breeze microphone reference recording with 30-second audio import. MOSS runtime correction still requires a successful SM8850 device test." \
+              --prerelease
+          fi
+          echo "Published https://github.com/$GH_REPO/releases/download/$tag/$target"
