@@ -1104,12 +1104,12 @@ fun SpeechRunScreen(
                         }
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "Design a voice",
+                                if (selectedVoice != null) "Speak with " + selectedVoice.name else "Design a voice",
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                "Text plus voice direction. Voice cloning is intentionally disabled for now.",
+                                if (selectedVoice != null) "Use your locally cloned reference voice and customize its direction." else "Write text and design a voice through natural instructions.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1454,14 +1454,15 @@ fun SpeechRunScreen(
                                     cloneBusy = false
                                 }
                             },
-                            enabled = !cloneBusy && speechState is SpeechState.Ready &&
+                            enabled = !cloneBusy && (speechState is SpeechState.Ready ||
+                                speechState is SpeechState.Complete) &&
                                 referenceAudio != null && cloneName.isNotBlank() &&
                                 cloneTranscript.isNotBlank(),
                             modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                         ) {
                             Text(if (cloneBusy) "Encoding reference on device…" else "Save cloned voice")
                         }
-                        if (speechState !is SpeechState.Ready) {
+                        if (speechState !is SpeechState.Ready && speechState !is SpeechState.Complete) {
                             Text("The Breeze engine must be ready before encoding a voice.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2140,6 +2141,7 @@ fun SpeechRunScreen(
                                                 },
                                                 onUse = {
                                                     text = item.text
+                                                    selectedVoiceId = item.voiceId
                                                     instruction = item.instruction
                                                     seed = item.seed
                                                     seedLocked = true
@@ -2158,6 +2160,7 @@ fun SpeechRunScreen(
                                                 },
                                                 onReproduce = {
                                                     text = item.text
+                                                    selectedVoiceId = item.voiceId
                                                     instruction = item.instruction
                                                     seed = item.seed
                                                     seedLocked = true
@@ -2186,6 +2189,7 @@ fun SpeechRunScreen(
                                                         repetition = item.repetition,
                                                         splitChars = item.splitChars,
                                                         maxNewTokens = item.maxNewTokens,
+                                                        voiceId = item.voiceId,
                                                     )
                                                 },
                                                 onSave = {
@@ -2226,7 +2230,7 @@ fun SpeechRunScreen(
                                                 onClick = {
                                                     referenceAudio = Uri.fromFile(file)
                                                     cloneName = "Voice from history"
-                                                    cloneDescription = ""
+                                                    cloneDescription = item.instruction
                                                     cloneTranscript = item.text
                                                     cloneInstruction = item.instruction
                                                     cloneError = null
