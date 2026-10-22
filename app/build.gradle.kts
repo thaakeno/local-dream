@@ -43,8 +43,8 @@ android {
         minSdk = 28
 //        minSdk = 31
         targetSdk = 36
-        versionCode = 222
-        versionName = "3.0.0-alpha.67"
+        versionCode = 223
+        versionName = "3.0.0-alpha.68"
 
         buildConfigField("String", "GIT_SHA", buildConfigString(buildGitSha))
         buildConfigField("String", "GIT_BRANCH", buildConfigString(buildGitBranch))
