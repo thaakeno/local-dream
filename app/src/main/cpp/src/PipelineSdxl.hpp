@@ -52,10 +52,16 @@ class PipelineSdxl : public PipelineQnn {
       QNN_ERROR("Failed create QNN UNET model.");
       return false;
     }
-    vae_decoder_ = qnn_runtime::createModel(vae_decoder_path_, "vae_decoder");
-    if (!vae_decoder_) {
-      QNN_ERROR("Failed create QNN VAE Decoder model.");
-      return false;
+    if (getenv("LOCALDREAM_SDXL_SPILL_FILL_PROBE")) {
+      vae_decoder_ = qnn_runtime::createModel(vae_decoder_path_, "vae_decoder");
+      if (!vae_decoder_) {
+        QNN_ERROR("Failed create QNN VAE Decoder model for spill-fill probe");
+        return false;
+      }
+    } else {
+      // The VAE is only needed at final decode or for previews. Keep the
+      // UNet initialization on the critical path, create VAE on demand.
+      QNN_INFO("[SDXL startup] VAE decoder deferred until first decode");
     }
     if (vae_encoder_path_.empty()) {
       QNN_INFO("img2img disabled: VAE encoder not available");
@@ -66,7 +72,7 @@ class PipelineSdxl : public PipelineQnn {
       if (!vae_encoder_) QNN_WARN("Failed create QNN VAE Enc model.");
     } else {
       QNN_INFO(
-          "SDXL fast mode: VAE encoder is lazy; UNET + decoder stay resident");
+          "SDXL fast mode: VAE encoder and decoder are lazy; UNET stays resident");
     }
 
     // Probe mode: getProperty(MAX_SPILLFILL_BUFFER_SIZE) returns 0 on this HTP
@@ -117,10 +123,9 @@ class PipelineSdxl : public PipelineQnn {
     if (sf_bytes) group_head = unet_->getContextHandle();
     logSpillFill("UNET", unet_);
 
-    if (sf_bytes) vae_decoder_->setSpillFillGroup(sf_bytes, group_head);
-    if (qnn_runtime::initializeApp("VAEDecoder", vae_decoder_) != EXIT_SUCCESS)
-      return false;
-    logSpillFill("VAEDecoder", vae_decoder_);
+    // The VAE decoder will use createVaeModel() when first needed.
+    // It joins the configured spill/fill group using the live UNet context.
+    QNN_INFO("[SDXL startup] UNET ready; VAE and CLIP initialized lazily");
 
     return true;
   }
