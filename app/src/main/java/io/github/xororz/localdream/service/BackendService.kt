@@ -173,6 +173,11 @@ class BackendService : Service() {
                 // reference-image failure will still be returned by /generate.
                 "no vision weights detected, vision disabled" in lower -> return null
 
+                // Preserve the native MOSS signal PC/LR and fault pointer.
+                // These identify graph scheduler crashes when Android tombstones
+                // are inaccessible from the ordinary app sandbox.
+                "[moss_native_crash]" in lower -> trimmed
+
                 // FastRPC/DSPQueue transport failures abort the process and are
                 // the useful root cause; surface these ahead of the resulting
                 // HTTP EOF seen by the Android client.
