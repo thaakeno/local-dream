@@ -6,7 +6,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # A second stable-diffusion.cpp version is intentionally linked to a DIFFERENT
 # shared object. No in-place patching, no overriding the working Qwen/SDXL engine.
-set(MOSS_SDCPP "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/moss-stable-diffusion.cpp")
+set(MOSS_SDCPP "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/moss-stable-diffusion.cpp" CACHE PATH "Pinned staged MOSS upstream source")
 if(NOT EXISTS "${MOSS_SDCPP}/include/stable-diffusion.h")
     message(FATAL_ERROR "Initialize the pinned MOSS git submodule recursively")
 endif()

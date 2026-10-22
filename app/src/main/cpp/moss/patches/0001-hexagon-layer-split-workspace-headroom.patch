@@ -1,0 +1,40 @@
+diff --git a/src/core/layer_split_partition.cpp b/src/core/layer_split_partition.cpp
+--- a/src/core/layer_split_partition.cpp
++++ b/src/core/layer_split_partition.cpp
+@@ -78,6 +78,18 @@ namespace sd {
+                                                                          size_t primary_backend_vram_limit) {
+         std::vector<int64_t> capacities(backends.size(), std::numeric_limits<int64_t>::max() / 4);
+         constexpr int64_t compute_headroom_bytes = 2ll * 1024 * 1024 * 1024;
++        // MOSS on Hexagon: the upstream packer currently treats max-vram as a
++        // weight-only packing target, while runtime capacity also includes the
++        // scheduler/graph workspace. With HTP0:0/HTP0:1 at 2.60 GiB each this
++        // placed 2580 MiB of Qwen weights on HTP0:0, then required 2856 MiB at
++        // execution and failed before the first token. Reserve workspace ONLY
++        // when distributing an explicitly budgeted model over HTP sessions;
++        // keep the actual max-vram runtime checks completely unchanged.
++        constexpr int64_t htp_workspace_reserve_bytes = 320ll * 1024 * 1024;
++        const bool hexagon_layer_split = backends.size() > 1 &&
++            std::all_of(backends.begin(), backends.end(), [](ggml_backend_t b) {
++                return layer_split_backend_device_display_name(b).rfind("HTP", 0) == 0;
++            });
+         for (size_t i = 0; i < backends.size(); i++) {
+             ggml_backend_dev_t dev = ggml_backend_get_device(backends[i]);
+             size_t free_bytes = 0, total_bytes = 0;
+@@ -92,6 +104,16 @@ namespace sd {
+                                                                           i,
+                                                                           primary_backend_vram_limit);
+             if (limit_bytes > 0) {
+-                capacities[i] = std::min<int64_t>(capacities[i], (int64_t)limit_bytes);
++                const int64_t limit = static_cast<int64_t>(limit_bytes);
++                const int64_t weight_limit = hexagon_layer_split
++                    ? std::max<int64_t>(0, limit - htp_workspace_reserve_bytes)
++                    : limit;
++                capacities[i] = std::min<int64_t>(capacities[i], weight_limit);
++                if (hexagon_layer_split) {
++                    LOG_INFO("MOSS HTP split planner: %s weights budget %.1f MiB, "
++                             "runtime budget %.1f MiB, workspace reserve 320 MiB",
++                             layer_split_backend_device_display_name(backends[i]).c_str(),
++                             weight_limit / (1024.0 * 1024.0), limit / (1024.0 * 1024.0));
++                }
+             }
+         }
