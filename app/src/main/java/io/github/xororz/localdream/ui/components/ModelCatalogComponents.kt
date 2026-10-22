@@ -103,9 +103,10 @@ private fun StudioBrandMark(kind: String, modifier: Modifier = Modifier) {
     val capsule = RoundedCornerShape(16.dp)
     Box(
         modifier = modifier
-            .then(if (kind == "image") Modifier.size(width = 90.dp, height = 60.dp)
+            .then(if (kind == "image") Modifier.size(width = 158.dp, height = 43.dp)
                 else Modifier.size(60.dp))
-            .background(Color.White.copy(alpha = 0.09f), capsule),
+            .then(if (kind == "image") Modifier else
+                Modifier.background(Color.White.copy(alpha = .09f), capsule)),
         contentAlignment = Alignment.Center,
     ) {
         Image(
@@ -116,7 +117,9 @@ private fun StudioBrandMark(kind: String, modifier: Modifier = Modifier) {
                 else -> "Qwen Image official logo"
             },
             contentScale = androidx.compose.ui.layout.ContentScale.Fit,
-            modifier = Modifier.fillMaxSize().padding(if (kind == "image") 3.dp else 9.dp),
+            modifier = Modifier.fillMaxSize().padding(if (kind == "image") 1.dp else 9.dp),
+            colorFilter = if (kind == "image")
+                androidx.compose.ui.graphics.ColorFilter.tint(Color.White) else null,
         )
     }
 }
@@ -156,14 +159,29 @@ private fun StudioGradientHeader(
         ),
     )
     Box(modifier = modifier.fillMaxWidth().background(brush).padding(18.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(13.dp)) {
-            StudioBrandMark(kind)
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text(title, style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold, color = Color.White, maxLines = 2)
+        if (kind == "image") {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("IMAGE ENGINE", style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold, color = Color.White.copy(alpha = .78f),
+                        modifier = Modifier.weight(1f))
+                    StudioBrandMark(kind)
+                }
+                Text(title, style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold, color = Color.White)
                 Text(subtitle, style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = .82f), maxLines = 2)
+                    color = Color.White.copy(alpha = .83f))
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(13.dp)) {
+                StudioBrandMark(kind)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(title, style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold, color = Color.White, maxLines = 2)
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = .83f), maxLines = 2)
+                }
             }
         }
     }
