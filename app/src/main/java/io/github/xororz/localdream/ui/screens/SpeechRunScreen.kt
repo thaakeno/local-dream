@@ -2,6 +2,9 @@ package io.github.xororz.localdream.ui.screens
 
 
 import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.compose.foundation.background
@@ -58,6 +61,8 @@ import io.github.xororz.localdream.service.SpeechGenerationService
 import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
 import io.github.xororz.localdream.service.SpeechHistoryItem
 import io.github.xororz.localdream.service.SpeechHistoryStore
+import io.github.xororz.localdream.service.BreezeVoiceLibrary
+import io.github.xororz.localdream.service.BreezeVoiceProfile
 import io.github.xororz.localdream.ui.components.MusicPlayerCard
 import io.github.xororz.localdream.ui.components.SmoothIndeterminateLinearWavyProgressIndicator
 import io.github.xororz.localdream.ui.components.SmoothLinearWavyProgressIndicator
@@ -748,6 +753,7 @@ private fun startSpeechGeneration(
     repetition: Float,
     splitChars: Int,
     maxNewTokens: Int,
+    voiceId: String = "",
 ) {
     context.startForegroundService(
         Intent(context, SpeechGenerationService::class.java)
@@ -762,7 +768,8 @@ private fun startSpeechGeneration(
             .putExtra("topP", topP)
             .putExtra("repetition", repetition)
             .putExtra("splitChars", splitChars)
-            .putExtra("maxNewTokens", maxNewTokens),
+            .putExtra("maxNewTokens", maxNewTokens)
+            .putExtra("voiceId", voiceId),
     )
 }
 
@@ -860,6 +867,23 @@ fun SpeechRunScreen(
     var historyAcceleratedOnly by rememberSaveable { mutableStateOf(false) }
     var historyModelIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showHistoryFilters by remember { mutableStateOf(false) }
+    var activeVoiceTab by rememberSaveable { mutableIntStateOf(0) }
+    var selectedVoiceId by rememberSaveable { mutableStateOf("") }
+    var voices by remember { mutableStateOf<List<BreezeVoiceProfile>>(emptyList()) }
+    var referenceAudio by remember { mutableStateOf<Uri?>(null) }
+    var cloneName by rememberSaveable { mutableStateOf("") }
+    var cloneDescription by rememberSaveable { mutableStateOf("") }
+    var cloneTranscript by rememberSaveable { mutableStateOf("") }
+    var cloneInstruction by rememberSaveable { mutableStateOf("") }
+    var cloneBusy by remember { mutableStateOf(false) }
+    var cloneError by remember { mutableStateOf<String?>(null) }
+    val audioPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { referenceAudio = it }
+    LaunchedEffect(modelId) {
+        voices = withContext(Dispatchers.IO) { BreezeVoiceLibrary.load(context) }
+    }
+    val selectedVoice = voices.firstOrNull { it.id == selectedVoiceId }
 
     LaunchedEffect(modelId, model?.isDownloaded) {
         BreezeQnnVocoderArtifact.refresh(context)
@@ -952,7 +976,7 @@ fun SpeechRunScreen(
             MediumTopAppBar(
                 title = {
                     Column {
-                        Text("Breeze TTS 2 · Text to speech")
+                        Text("Breeze TTS 2")
                         Text(
                             statusText,
                             style = MaterialTheme.typography.bodySmall,
@@ -997,6 +1021,59 @@ fun SpeechRunScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                listOf("Speech", "Clone", "My voices", "History").forEachIndexed { i, name ->
+                    FilterChip(
+                        selected = activeVoiceTab == i,
+                        onClick = {
+                            if (i == 3) {
+                                showHistory = true
+                                scope.launch {
+                                    history = withContext(Dispatchers.IO) {
+                                        SpeechHistoryStore.load(context)
+                                    }
+                                }
+                            } else activeVoiceTab = i
+                        },
+                        label = { Text(name, maxLines = 1) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            if (activeVoiceTab == 0) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp)) {
+                    Text("VOICE SOURCE", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Bold)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        item {
+                            FilterChip(selected = selectedVoice == null,
+                                onClick = { selectedVoiceId = "" },
+                                label = { Text("Design new") })
+                        }
+                        items(voices, key = { it.id }) { profile ->
+                            FilterChip(selected = selectedVoiceId == profile.id,
+                                onClick = {
+                                    selectedVoiceId = profile.id
+                                    instruction = profile.instruction
+                                },
+                                label = { Text(profile.name) },
+                                leadingIcon = if (selectedVoiceId == profile.id) {
+                                    { Icon(Icons.Default.CheckCircle, contentDescription = null,
+                                        modifier = Modifier.size(17.dp)) }
+                                } else null)
+                        }
+                    }
+                    if (selectedVoice != null) {
+                        Text("Cloned reference: ${selectedVoice.name} · ${selectedVoice.description}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             ElevatedCard(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1249,7 +1326,7 @@ fun SpeechRunScreen(
                                 startSpeechGeneration(
                                     context, modelId, text, instruction, generationSeed,
                                     cfg, temperature, topK, topP, repetition,
-                                    splitChars, maxNewTokens,
+                                    splitChars, maxNewTokens, selectedVoiceId,
                                 )
                             },
                             enabled = !busy && text.isNotBlank() && model?.isDownloaded == true,
@@ -1286,7 +1363,7 @@ fun SpeechRunScreen(
                         startSpeechGeneration(
                             context, modelId, complete.text, complete.instruction,
                             complete.seed, cfg, temperature, topK, topP,
-                            repetition, splitChars, maxNewTokens,
+                            repetition, splitChars, maxNewTokens, selectedVoiceId,
                         )
                     },
                     onSave = {
@@ -1310,6 +1387,146 @@ fun SpeechRunScreen(
             }
 
             Spacer(Modifier.height(4.dp))
+            } else if (activeVoiceTab == 1) {
+                ElevatedCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    shape = RoundedCornerShape(26.dp),
+                    colors = CardDefaults.elevatedCardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+                    Column(Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(15.dp)) {
+                        Text("Clone a voice", style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold)
+                        Text("Use a clean WAV and its exact spoken transcript. The reference is encoded into a local Breeze voice profile—no cloud upload.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        OutlinedButton(onClick = {
+                            audioPicker.launch(arrayOf("audio/wav", "audio/x-wav", "audio/*"))
+                        }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.GraphicEq, contentDescription = null)
+                            Spacer(Modifier.width(9.dp))
+                            Text(if (referenceAudio == null) "Choose reference WAV" else "Change reference")
+                        }
+                        if (referenceAudio != null) {
+                            Text(referenceAudio.toString().substringAfterLast('/').take(75),
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        OutlinedTextField(value = cloneName, onValueChange = { cloneName = it.take(64) },
+                            label = { Text("Voice name") }, singleLine = true,
+                            modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = cloneDescription,
+                            onValueChange = { cloneDescription = it.take(800) },
+                            label = { Text("Style description") },
+                            placeholder = { Text("Warm, mature, soft-spoken, cinematic…") },
+                            minLines = 2, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = cloneTranscript,
+                            onValueChange = { cloneTranscript = it.take(6000) },
+                            label = { Text("Exact reference transcript") },
+                            minLines = 3, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = cloneInstruction,
+                            onValueChange = { cloneInstruction = it.take(1200) },
+                            label = { Text("Default voice direction") },
+                            minLines = 2, modifier = Modifier.fillMaxWidth())
+                        Text("Only clone voices you own or have permission to reproduce.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (cloneError != null) Text(cloneError.orEmpty(),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall)
+                        Button(
+                            onClick = {
+                                val audio = referenceAudio ?: return@Button
+                                cloneBusy = true
+                                cloneError = null
+                                scope.launch {
+                                    runCatching {
+                                        BreezeVoiceLibrary.register(context, audio,
+                                            cloneName, cloneDescription,
+                                            cloneTranscript, cloneInstruction)
+                                    }.onSuccess { profile ->
+                                        voices = withContext(Dispatchers.IO) {
+                                            BreezeVoiceLibrary.load(context)
+                                        }
+                                        selectedVoiceId = profile.id
+                                        instruction = profile.instruction
+                                        activeVoiceTab = 2
+                                    }.onFailure { cloneError = it.message ?: "Could not clone voice" }
+                                    cloneBusy = false
+                                }
+                            },
+                            enabled = !cloneBusy && speechState is SpeechState.Ready &&
+                                referenceAudio != null && cloneName.isNotBlank() &&
+                                cloneTranscript.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                        ) {
+                            Text(if (cloneBusy) "Encoding reference on device…" else "Save cloned voice")
+                        }
+                        if (speechState !is SpeechState.Ready) {
+                            Text("The Breeze engine must be ready before encoding a voice.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            } else if (activeVoiceTab == 2) {
+                Column(Modifier.padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("My voices", style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold)
+                    Text("Saved locally. Reuse the original voice identity with any Breeze speech prompt.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (voices.isEmpty()) {
+                        Text("No voices saved. Clone one from a WAV or your history.")
+                    }
+                    voices.forEach { profile ->
+                        ElevatedCard(shape = RoundedCornerShape(20.dp),
+                            colors = CardDefaults.elevatedCardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+                            Column(Modifier.fillMaxWidth().padding(18.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(profile.name,
+                                            style = MaterialTheme.typography.titleLarge,
+                                            fontWeight = FontWeight.SemiBold)
+                                        Text(profile.description.ifBlank { "Saved Breeze voice" },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    if (profile.id == selectedVoiceId) {
+                                        Icon(Icons.Default.CheckCircle, "Selected",
+                                            tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                                if (profile.instruction.isNotBlank()) {
+                                    Text(profile.instruction,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick = {
+                                        selectedVoiceId = profile.id
+                                        instruction = profile.instruction
+                                        activeVoiceTab = 0
+                                    }, modifier = Modifier.weight(1f)) { Text("Use voice") }
+                                    OutlinedButton(onClick = {
+                                        scope.launch {
+                                            runCatching {
+                                                BreezeVoiceLibrary.delete(context, profile.id)
+                                            }.onFailure { cloneError = it.message }
+                                            voices = withContext(Dispatchers.IO) {
+                                                BreezeVoiceLibrary.load(context)
+                                            }
+                                            if (selectedVoiceId == profile.id) selectedVoiceId = ""
+                                        }
+                                    }) { Text("Delete") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2005,6 +2222,21 @@ fun SpeechRunScreen(
                                                 },
                                                 compact = true,
                                             )
+                                            OutlinedButton(
+                                                onClick = {
+                                                    referenceAudio = Uri.fromFile(file)
+                                                    cloneName = "Voice from history"
+                                                    cloneDescription = ""
+                                                    cloneTranscript = item.text
+                                                    cloneInstruction = item.instruction
+                                                    cloneError = null
+                                                    showHistory = false
+                                                    activeVoiceTab = 1
+                                                },
+                                                modifier = Modifier.fillMaxWidth(),
+                                            ) {
+                                                Text("Clone this voice · Save to My voices")
+                                            }
                                         }
                                     }
                                 }

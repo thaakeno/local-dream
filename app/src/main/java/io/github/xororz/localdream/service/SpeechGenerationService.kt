@@ -617,6 +617,7 @@ class SpeechGenerationService : Service() {
                     splitChars = splitChars,
                     maxNewTokens = maxNewTokens,
                     accelerated = usingQnnVocoder,
+                    voiceId = voiceId,
                 )
                 _state.value = SpeechState.Complete(
                     output,
