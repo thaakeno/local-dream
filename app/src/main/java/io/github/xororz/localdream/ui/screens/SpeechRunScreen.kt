@@ -1736,10 +1736,22 @@ fun SpeechRunScreen(
                                 if (referenceAudio == null) "Import WAV, MP3 or M4A" else "Replace imported audio")
                         }
                         if (referenceAudio != null) {
-                            Text(preparedAudioNote ?: "Reference audio ready",
-                                color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.bodySmall)
-                            Text("Imported files use the first 30 seconds. If trimmed, enter the exact transcript of that excerpt—not the entire file.",
+                            Row(verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (importedFile?.isFile == true) {
+                                    VoiceReferencePreview(importedFile)
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Text(preparedAudioNote ?: "Reference audio ready",
+                                        color = MaterialTheme.colorScheme.primary,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold)
+                                    Text("Listen before cloning",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                            Text("If the file was longer than 30 seconds, the first 30 seconds were kept. Make sure your transcript below matches that exact excerpt.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
