@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - integration/2026-10-glass-moss-upstream
+      - fix/sdxl-efficient-classic-catalog-20261022
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
