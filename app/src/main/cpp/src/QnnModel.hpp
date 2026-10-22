@@ -667,6 +667,53 @@ class QnnModel : public QnnOwnedRuntime {
     return StatusCode::SUCCESS;
   }
 
+  // Runs an SDXL text-encoder HTP context generated with the exact Local Dream
+  // embedding-IO contract. Token-ID-based CLIP contexts are NOT compatible.
+  // CLIP-L: [1,77,768] -> [1,77,768]
+  // CLIP-G: [1,77,1280] -> [1,77,1280] hidden + [1,77,1280] pooled.
+  StatusCode executeSdxlClipGraphs(
+      const float *embedded, size_t input_elems,
+      float *hidden, size_t hidden_elems,
+      float *pooled, size_t pooled_capacity, size_t *pooled_written) {
+    if (pooled_written) *pooled_written = 0;
+    if (!m_graphsInfo || m_graphsCount != 1 || !ensureIoTensors())
+      return StatusCode::FAILURE;
+    auto &graph = (*m_graphsInfo)[0];
+    if (graph.numInputTensors != 1 ||
+        graph.numOutputTensors != (pooled ? 2u : 1u) ||
+        tensorElems(inputs[0]) != input_elems ||
+        tensorElems(outputs[0]) != hidden_elems) {
+      QNN_ERROR("[NPU CLIP] incompatible graph input/output shapes; "
+                "expected Local Dream embedding-IO CLIP context");
+      return StatusCode::FAILURE;
+    }
+    const auto *input_name = QNN_TENSOR_GET_NAME(inputs[0]);
+    if (!input_name || std::strcmp(input_name, "input_embedding") != 0) {
+      QNN_ERROR("[NPU CLIP] expected input_embedding graph tensor, not token IDs");
+      return StatusCode::FAILURE;
+    }
+    if (pooled) {
+      const size_t n = tensorElems(outputs[1]);
+      if ((n != 1280 && n != 77 * 1280) || n > pooled_capacity) {
+        QNN_ERROR("[NPU CLIP] incompatible pooled_output dimensions");
+        return StatusCode::FAILURE;
+      }
+      if (pooled_written) *pooled_written = n;
+    }
+    if (m_ioTensor.copyFromFloatToNative(
+            const_cast<float *>(embedded), &inputs[0]) !=
+        qnn::tools::iotensor::StatusCode::SUCCESS ||
+        !runGraph(graph, "SDXL NPU CLIP") ||
+        m_ioTensor.convertToFloatInto(hidden, &outputs[0]) !=
+        qnn::tools::iotensor::StatusCode::SUCCESS)
+      return StatusCode::FAILURE;
+    if (pooled &&
+        m_ioTensor.convertToFloatInto(pooled, &outputs[1]) !=
+            qnn::tools::iotensor::StatusCode::SUCCESS)
+      return StatusCode::FAILURE;
+    return StatusCode::SUCCESS;
+  }
+
   StatusCode executeVaeEncoderGraphsSDXL(float *pixel_values, float *mean,
                                          float *std) {
     auto returnStatus = StatusCode::SUCCESS;
