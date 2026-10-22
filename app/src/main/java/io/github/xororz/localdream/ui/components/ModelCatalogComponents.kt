@@ -1255,63 +1255,30 @@ fun BreezeFamilyCard(
 
                 val current = sorted.firstOrNull { it.id == selectedId } ?: selected
                 Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    Row(
+                        Modifier.fillMaxWidth().padding(15.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "Breeze TTS 2 · " + current.variantPrecision,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    current.variantProfile,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            if (current.isDownloaded) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    contentDescription = "Installed",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
+                        Icon(Icons.Default.CheckCircle, null,
+                            modifier = Modifier.size(23.dp),
+                            tint = Color(0xFFE1BA85))
+                        Column(Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text("Selected · ${current.variantPrecision}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold)
+                            Text(current.variantProfile,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text(
-                            when (current.variantPrecision) {
-                                "Q8_0" ->
-                                    "Recommended. Near-lossless against F16 while keeping the full depth decoder at Q8."
-                                "Q6_K" ->
-                                    "Balanced memory and quality with the full depth decoder preserved."
-                                "Q4_K" ->
-                                    "Smallest normal model. Good mobile footprint without the experimental depth quant."
-                                "F16" ->
-                                    "Reference-quality model with the highest memory requirement."
-                                else ->
-                                    "Experimental depth-quantized build intended for faster short utterances."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text(
-                                "Download",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                current.approximateSize,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                        }
+                        Text(current.approximateSize,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold)
                     }
                 }
 
@@ -1320,26 +1287,22 @@ fun BreezeFamilyCard(
                         showSheet = false
                         if (current.isDownloaded) onOpen(current) else onDownload(current)
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.large,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFE1BA85),
+                        contentColor = Color(0xFF181817),
+                    ),
                 ) {
                     Icon(
-                        if (current.isDownloaded) {
-                            Icons.Default.GraphicEq
-                        } else {
-                            Icons.Default.CloudDownload
-                        },
-                        contentDescription = null,
+                        if (current.isDownloaded) Icons.Default.PlayArrow
+                        else Icons.Default.CloudDownload,
+                        null,
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (current.isDownloaded) {
-                            "Open text to speech"
-                        } else {
-                            "Download " + current.variantPrecision + " · " +
-                                current.approximateSize
-                        },
-                    )
+                    Spacer(Modifier.width(9.dp))
+                    Text(if (current.isDownloaded) "Open selected voice model"
+                        else "Download selected model",
+                        fontWeight = FontWeight.SemiBold)
                 }
             }
         }
