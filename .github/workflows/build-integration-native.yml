@@ -391,7 +391,7 @@ jobs:
               exit 1
             fi
             echo "mode=permanent" >> "$GITHUB_OUTPUT"
-            echo "artifact=LocalDream-Glass-Permanent" >> "$GITHUB_OUTPUT"
+            echo "artifact=LocalDream-Classic-Permanent" >> "$GITHUB_OUTPUT"
             echo "Permanent certificate verified: $actual"
           else
             keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/localdream-signing.p12" \
