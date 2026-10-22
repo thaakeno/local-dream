@@ -212,6 +212,7 @@ private fun StudioFamilyCard(
                 ) {
                     Text(
                         if (officialQwenTurbo) "Standard + Turbo"
+                        else if (kind == "moss") "Base + SFT"
                         else featured.variantPrecision.ifBlank { "Models" },
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -220,7 +221,9 @@ private fun StudioFamilyCard(
                     )
                 }
                 Text(
-                    if (installed > 0) "$installed installed" else "${variants.size} options",
+                    if (kind == "moss") {
+                        "${variants.size} variants · ≈9.4–10.6 GB"
+                    } else if (installed > 0) "$installed installed" else "${variants.size} options",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -295,6 +298,10 @@ fun MossFamilyCard(
                             }
                             Text(model.description, style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("≈ ${model.approximateSize.replace("GB", " GB")} total download",
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary)
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(if (turbo) "8 steps · CFG 1 · experimental adapter"
                                     else "50 steps · CFG 3 · reference quality",
