@@ -198,6 +198,13 @@ static bool generate_chunk(BreezeModel & m, MimiCodec & codec, const GenRequest 
 
     const std::vector<int> & ref_codes = ref.codes;
     const int ref_T = ref.n_frames;
+    const char * padded_attention = std::getenv("BREEZE_HTP_PAD_ATTN");
+    std::fprintf(stderr,
+        "[BREEZE_ATTENTION] reference_frames=%d mode=%s "
+        "ref_codes_cached=%d voice_identity=unchanged\n",
+        ref_T,
+        padded_attention && padded_attention[0] == '1' ? "htp-softmax-aligned32" : "legacy",
+        has_ref ? 1 : 0);
 
     auto t0 = clock_now();
     int total_c = 0, total_u = 0;

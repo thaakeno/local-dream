@@ -323,6 +323,9 @@ class SpeechGenerationService : Service() {
                 "GGML_HEXAGON_OPPOLL" to "0",
                 "GGML_HEXAGON_OPBATCH" to "1280",
                 "GGML_HEXAGON_OPQUEUE" to "32",
+                // Keep every reference and KV token. Only zero-mask the
+                // unfilled KV tail so HTP softmax can use 32-lane HVX kernels.
+                "BREEZE_HTP_PAD_ATTN" to "1",
             )
             if (usingQnnRuntime) {
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
