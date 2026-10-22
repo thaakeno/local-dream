@@ -8,7 +8,7 @@ import io.github.xororz.localdream.ui.theme.ThemePreset
 enum class DarkModePreference { SYSTEM, LIGHT, DARK }
 
 data class ThemeState(
-    val dynamicColor: Boolean = true,
+    val dynamicColor: Boolean = false,
     val preset: ThemePreset = ThemePreset.TANGERINE,
     val darkMode: DarkModePreference = DarkModePreference.SYSTEM,
 )
@@ -18,7 +18,7 @@ class ThemePreferences(context: Context) {
 
     fun read(): ThemeState {
         val supportsDynamic = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-        val dynamic = supportsDynamic && prefs.getBoolean(KEY_DYNAMIC, supportsDynamic)
+        val dynamic = supportsDynamic && prefs.getBoolean(KEY_DYNAMIC, false)
         val preset = prefs.getString(KEY_PRESET, null)
             ?.let { name -> runCatching { ThemePreset.valueOf(name) }.getOrNull() }
             ?: ThemePreset.TANGERINE

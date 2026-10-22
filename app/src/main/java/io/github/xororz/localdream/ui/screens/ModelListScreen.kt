@@ -1469,9 +1469,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     }
 
     Scaffold(
-        floatingActionButton = {
-
-        },
         topBar = {
             MediumTopAppBar(
                 title = {
