@@ -1,7 +1,11 @@
 package io.github.xororz.localdream.ui.screens
 
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.SystemClock
+import androidx.core.content.ContextCompat
 import android.media.MediaPlayer
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,6 +39,9 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Lock
@@ -70,6 +77,7 @@ import io.github.xororz.localdream.service.SpeechGenerationService
 import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
 import io.github.xororz.localdream.service.SpeechHistoryItem
 import io.github.xororz.localdream.service.SpeechHistoryStore
+import io.github.xororz.localdream.service.BreezeReferenceRecorder
 import io.github.xororz.localdream.service.BreezeVoiceLibrary
 import io.github.xororz.localdream.service.BreezeVoiceProfile
 import io.github.xororz.localdream.ui.components.MusicPlayerCard
@@ -892,6 +900,56 @@ fun SpeechRunScreen(
     var cloneInstruction by rememberSaveable { mutableStateOf("") }
     var cloneBusy by remember { mutableStateOf(false) }
     var cloneError by remember { mutableStateOf<String?>(null) }
+    val referenceRecorder = remember(context) { BreezeReferenceRecorder(context) }
+    var micRecording by remember { mutableStateOf(false) }
+    var micElapsedMs by remember { mutableLongStateOf(0L) }
+    var micLevel by remember { mutableIntStateOf(0) }
+    var micFile by remember { mutableStateOf<File?>(null) }
+    val englishSample = remember {
+        "Hello, this is a sample of my natural speaking voice. I am sitting in a quiet room, talking at my normal pace. The weather outside is pleasant today, and I hope this recording captures how I sound in everyday conversation."
+    }
+    val chineseSample = remember {
+        "你好，这是我平常说话的声音。我现在在一个安静的房间里，用自然的语速读这段话。今天感觉很轻松，希望这段录音可以清楚地记录我的声音。"
+    }
+    var recorderLanguage by rememberSaveable { mutableStateOf("English") }
+    val sampleToRead = if (recorderLanguage == "Mandarin") chineseSample else englishSample
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { permitted ->
+        if (permitted) {
+            runCatching {
+                micFile?.delete()
+                micFile = null
+                referenceAudio = null
+                referenceRecorder.start()
+                micElapsedMs = 0L
+                micRecording = true
+                cloneError = null
+                cloneTranscript = sampleToRead
+            }.onFailure { cloneError = it.message ?: "Microphone unavailable" }
+        } else cloneError = "Microphone access is required to record a voice"
+    }
+    DisposableEffect(referenceRecorder) {
+        onDispose { referenceRecorder.discard() }
+    }
+    LaunchedEffect(micRecording) {
+        while (micRecording) {
+            micElapsedMs = referenceRecorder.elapsedMs
+            micLevel = referenceRecorder.peak.get()
+            if (micElapsedMs >= BreezeReferenceRecorder.MAX_SECONDS * 1000L) {
+                micRecording = false
+                runCatching { withContext(Dispatchers.IO) { referenceRecorder.stop() } }
+                    .onSuccess { file ->
+                        micFile = file
+                        referenceAudio = Uri.fromFile(file)
+                    }
+                    .onFailure { cloneError = it.message ?: "Recording could not be saved" }
+                break
+            }
+            delay(100)
+        }
+    }
+
     val audioPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { referenceAudio = it }
@@ -1464,9 +1522,117 @@ fun SpeechRunScreen(
                         verticalArrangement = Arrangement.spacedBy(15.dp)) {
                         Text("Clone a voice", style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold)
-                        Text("Use a clean WAV and its exact spoken transcript. The reference is encoded into a local Breeze voice profile—no cloud upload.",
+                        Text("Record your own voice or import a reference WAV. The recording and cloned profile stay on this device.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            shape = RoundedCornerShape(22.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp,
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f))
+                        ) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        shape = RoundedCornerShape(14.dp)) {
+                                        Icon(Icons.Default.Mic, null,
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.padding(10.dp).size(24.dp))
+                                    }
+                                    Column(Modifier.weight(1f)) {
+                                        Text("Record a voice", fontWeight = FontWeight.SemiBold,
+                                            style = MaterialTheme.typography.titleMedium)
+                                        Text("10–20 seconds recommended · 3–30 seconds allowed",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    listOf("English", "Mandarin").forEach { language ->
+                                        FilterChip(
+                                            selected = recorderLanguage == language,
+                                            onClick = {
+                                                if (!micRecording) recorderLanguage = language
+                                            }, enabled = !micRecording,
+                                            label = { Text(language) })
+                                    }
+                                }
+                                Text("Read this naturally in a quiet room",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary)
+                                Text(sampleToRead, style = MaterialTheme.typography.bodyMedium)
+                                LinearProgressIndicator(
+                                    progress = { (micElapsedMs / 30000f).coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = MaterialTheme.colorScheme.primary)
+                                Row(verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                                    val secs = micElapsedMs / 1000
+                                    Text(String.format(Locale.US, "%02d:%02d", secs / 60, secs % 60),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold)
+                                    if (micRecording) {
+                                        Text("● REC · ${(micLevel * 100 / 32768).coerceIn(0, 100)}%",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary)
+                                    } else if (micFile?.isFile == true) {
+                                        VoiceReferencePreview(micFile)
+                                        Text("Ready to clone", style = MaterialTheme.typography.labelMedium,
+                                            modifier = Modifier.weight(1f))
+                                    } else Spacer(Modifier.weight(1f))
+                                    Button(
+                                        onClick = {
+                                            if (micRecording) {
+                                                micRecording = false
+                                                scope.launch {
+                                                    runCatching {
+                                                        withContext(Dispatchers.IO) {
+                                                            referenceRecorder.stop()
+                                                        }
+                                                    }.onSuccess { file ->
+                                                        micFile = file
+                                                        referenceAudio = Uri.fromFile(file)
+                                                        if (cloneName.isBlank()) cloneName = "My voice"
+                                                    }.onFailure { cloneError = it.message ?: "Recording failed" }
+                                                }
+                                            } else {
+                                                val allowed = ContextCompat.checkSelfPermission(context,
+                                                    Manifest.permission.RECORD_AUDIO) ==
+                                                    PackageManager.PERMISSION_GRANTED
+                                                if (allowed) {
+                                                    runCatching {
+                                                        micFile?.delete()
+                                                        micFile = null
+                                                        referenceAudio = null
+                                                        referenceRecorder.start()
+                                                        micElapsedMs = 0L
+                                                        micRecording = true
+                                                        cloneError = null
+                                                        cloneTranscript = sampleToRead
+                                                    }.onFailure { cloneError = it.message ?: "Microphone unavailable" }
+                                                } else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                                            }
+                                        },
+                                        enabled = !cloneBusy,
+                                    ) {
+                                        Icon(if (micRecording) Icons.Default.Stop else
+                                            Icons.Default.Mic, contentDescription = null,
+                                            modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(7.dp))
+                                        Text(if (micRecording) "Stop" else if (micFile != null) "Retake" else "Record")
+                                    }
+                                }
+                                Text("Use your own voice or a speaker who explicitly consented. The transcript below must match what you actually said.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        Text("OR IMPORT A RECORDING", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+
                         OutlinedButton(onClick = {
                             audioPicker.launch(arrayOf("audio/wav", "audio/x-wav", "audio/*"))
                         }, modifier = Modifier.fillMaxWidth()) {
@@ -1522,7 +1688,7 @@ fun SpeechRunScreen(
                                     cloneBusy = false
                                 }
                             },
-                            enabled = !cloneBusy && (speechState is SpeechState.Ready ||
+                            enabled = !micRecording && !cloneBusy && (speechState is SpeechState.Ready ||
                                 speechState is SpeechState.Complete) &&
                                 referenceAudio != null && cloneName.isNotBlank() &&
                                 cloneTranscript.isNotBlank(),
