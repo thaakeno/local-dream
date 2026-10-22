@@ -92,6 +92,26 @@ dit_ctx *create(const dit_ctx_params* req) {
     p.auto_fit = false;
     if (req->backend && req->backend[0]) p.backend = req->backend;
     if (req->params_backend && req->params_backend[0]) p.params_backend = req->params_backend;
+    // SM8850 HTP v81 uses separate virtual FastRPC sessions, but the GGML
+    // backend's get_memory() reports a synthetic constant rather than the
+    // ~3.35GB op-batch mapping capacity. Without an explicit max-vram budget,
+    // upstream layer_split_partition.cpp allocates ALL 34/43 segments to
+    // HTP0:0 and crashes on the oversized ~4.6GB Qwen/DiT graphs.
+    //
+    // Both 2.60 GiB budgets give ~5.20 GiB aggregate managed weights. This
+    // forces graph-cut placement across HTP0:0 and HTP0:1 while retaining
+    // ~0.55 GiB per-session NPU mapping headroom for compute/transfers.
+    // The two virtual sessions still run on the same physical NPU; CPU
+    // fallback remains disabled. Never apply this device-specific budget to
+    // single-backend or non-Hexagon callers.
+    constexpr const char *kMossHtpV81Budgets = "HTP0:0=2.60,HTP0:1=2.60";
+    if (req->backend && std::strstr(req->backend, "HTP0:0&HTP0:1")) {
+        p.max_vram = kMossHtpV81Budgets;
+        std::fprintf(stderr,
+            "[MOSS_PARTITION] max_vram=%s runtime=%s "
+            "note=managed-weight-budget,not-physical-memory-cap\n",
+            kMossHtpV81Budgets, req->backend);
+    }
     ctx->model = new_sd_ctx(&p);
     if (!ctx->model) {
         creation_error = "MOSS upstream new_sd_ctx failed; check tokenizer, weights and backend";

@@ -291,12 +291,12 @@ class SpeechGenerationService : Service() {
             ).joinToString(";")
 
             val env = mutableMapOf(
-                // Still use the proven HVX-only generator and QNN v3 vocoder,
-                // but bound DSPQueue in-flight work. The previous huge
-                // opbatch=1280/opqueue=32 configuration can leave the v81
-                // FastRPC queue with unconsumed responses after a large
-                // NPU workload. 64/8 is already used by YuE2 on this SoC.
-                // This does not offload even one inference op to CPU.
+                // Restore v153's device-proven 1280-op / 32-outstanding packet
+                // throughput. The 64/8 reduction was an unmeasured stability
+                // experiment and should not become a permanent performance
+                // regression. The native ggml-Hexagon overlay now handles
+                // transient AEE_EINTERRUPTED (0x2e) with bounded retries.
+                // Generator stays HVX-only on HTP; QNN v3 vocoder stays on HTP.
                 "LD_LIBRARY_PATH" to listOf(
                     nativeDir,
                     runtimeDir.absolutePath,
@@ -321,8 +321,8 @@ class SpeechGenerationService : Service() {
                 // This removes the response sleep/wake path used by the
                 // autoregressive one-frame generator.
                 "GGML_HEXAGON_OPPOLL" to "0",
-                "GGML_HEXAGON_OPBATCH" to "64",
-                "GGML_HEXAGON_OPQUEUE" to "8",
+                "GGML_HEXAGON_OPBATCH" to "1280",
+                "GGML_HEXAGON_OPQUEUE" to "32",
             )
             if (usingQnnRuntime) {
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
@@ -378,7 +378,7 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue " +
-                    "queue=v202-opbatch64x8-oppoll0 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
+                    "queue=v202-opbatch1280x32-oppoll0 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
                     "generator_mode=legacy-hexagon generator=ggml-hexagon " +
@@ -1049,7 +1049,7 @@ class SpeechGenerationService : Service() {
                 .find(line)?.groupValues?.getOrNull(1)
             BackendDiagnostics.append(this, "BREEZE_DSPQUEUE",
                 "event=transport_failure code=" + (nativeCode ?: "unknown") +
-                " generator=HTP-HVX qnn_vocoder=HTP opbatch=64 opqueue=8 " +
+                " generator=HTP-HVX qnn_vocoder=HTP opbatch=1280 opqueue=32 " +
                 "session_recovery=required cpu_fallback=disabled")
             lastNativeFailure = "Hexagon DSPQueue failure" +
                 (nativeCode?.let { " ($it)" } ?: "") +

@@ -1096,7 +1096,8 @@ class BackendService : Service() {
                 env["GGML_HEXAGON_OPFUSION"] = "0"
                 BackendDiagnostics.append(this, "MOSS_NPU",
                     "inference=HTP-only device_sessions=HTP0:0,HTP0:1 " +
-                    "te=HTP-dual diffusion=HTP-dual vae=HTP-dual " +
+                    "te=HTP-dual diffusion=HTP-dual vae=HTP0:0 " +
+                    "max_vram=HTP0:0=2.60GiB,HTP0:1=2.60GiB " +
                     "param_staging=disk power=balanced opbatch=32 opqueue=4 " +
                     "fusion=off cpu_inference_fallback=disabled")
             }
