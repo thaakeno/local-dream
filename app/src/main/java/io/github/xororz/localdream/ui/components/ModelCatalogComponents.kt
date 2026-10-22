@@ -105,7 +105,10 @@ private fun StudioBrandMark(kind: String, modifier: Modifier = Modifier) {
             .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(18.dp)),
         contentAlignment = Alignment.Center,
     ) {
-        Image(
+        if (kind == "moss") {
+            Icon(Icons.Default.AutoAwesome, contentDescription = "MOSS Image",
+                tint = Color.White, modifier = Modifier.size(31.dp))
+        } else Image(
             painter = painterResource(icon),
             contentDescription = when (kind) {
                 "voice" -> "BreezeBlue logo"
@@ -125,6 +128,7 @@ private data class StudioColors(val start: Color, val middle: Color, val end: Co
 private fun studioColors(kind: String): StudioColors = when (kind) {
     "voice" -> StudioColors(Color(0xFF083C49), Color(0xFF126C7A), Color(0xFF176E87))
     "music" -> StudioColors(Color(0xFF321243), Color(0xFF6B2E78), Color(0xFF86477E))
+    "moss" -> StudioColors(Color(0xFF241555), Color(0xFF533895), Color(0xFF8459AD))
     else -> StudioColors(Color(0xFF111D54), Color(0xFF1D4799), Color(0xFF593B9C))
 }
 
@@ -226,6 +230,89 @@ private fun StudioFamilyCard(
                 Icon(Icons.Default.Tune, contentDescription = "Configure",
                     modifier = Modifier.size(19.dp),
                     tint = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MossFamilyCard(
+    variants: List<Model>,
+    onOpen: (Model) -> Unit,
+    onDownload: (Model) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var showSheet by remember { mutableStateOf(false) }
+    if (variants.isEmpty()) return
+    val featured = variants.firstOrNull { it.id == "moss_image_sft_q4" } ?: variants.first()
+    StudioFamilyCard(
+        title = "MOSS-Image",
+        subtitle = "Base · SFT · 8-step community Turbo",
+        kind = "moss",
+        variants = variants,
+        featured = featured,
+        onClick = { showSheet = true },
+        modifier = modifier,
+    )
+    if (showSheet) {
+        ModalBottomSheet(onDismissRequest = { showSheet = false }) {
+            Column(
+                modifier = Modifier.fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 30.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                StudioGradientHeader(
+                    kind = "moss",
+                    title = "MOSS-Image",
+                    subtitle = "Choose the full 50-step model or experimental 8-step DMD",
+                    modifier = Modifier.clip(RoundedCornerShape(20.dp)),
+                )
+                Text("CHOOSE AN ENGINE", style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                variants.forEach { model ->
+                    val turbo = model.id.contains("turbo")
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        border = BorderStroke(1.dp,
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f)),
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(15.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(if (turbo) Icons.Default.Bolt else Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(22.dp),
+                                    tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(9.dp))
+                                Text(model.name, fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.weight(1f))
+                            }
+                            Text(model.description, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(if (turbo) "8 steps · CFG 1 · experimental adapter"
+                                    else "50 steps · CFG 3 · reference quality",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Button(onClick = {
+                                    showSheet = false
+                                    if (model.isDownloaded) onOpen(model)
+                                    else onDownload(model)
+                                }) { Text(if (model.isDownloaded) "Open" else "Download") }
+                            }
+                        }
+                    }
+                }
+                Text("Experimental 8-step Turbo uses lodestones' DMD LoRA. This native path still requires an on-device compatibility and quality test; 4-step data-space DMD is not supported.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

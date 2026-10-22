@@ -14,6 +14,7 @@ struct dit_ctx {
     sd_ctx_t *model = nullptr;
     std::string error;
     int preview_interval = 0;
+    std::string turbo_lora_path;
 };
 
 namespace {
@@ -65,6 +66,9 @@ dit_ctx *create(const dit_ctx_params* req) {
         return nullptr;
     }
     auto *ctx = new dit_ctx();
+    const auto adapter = folder.parent_path() / "moss_turbo_lora.safetensors";
+    if (std::filesystem::is_regular_file(adapter))
+        ctx->turbo_lora_path = adapter.string();
     sd_ctx_params_t p;
     sd_ctx_params_init(&p);
     const std::string token_path = tokenizer.string();
@@ -112,6 +116,15 @@ bool generate(dit_ctx* ctx, const dit_gen_params* req,
     sd_img_gen_params_t params;
     sd_img_gen_params_init(&params);
     params.prompt = req->prompt ? req->prompt : "";
+    // Stock Euler sampler + LoRA is the published 8-step recommendation.
+    // No hidden 4-step data-space algorithm, and never modify Base/SFT.
+    sd_lora_t turbo_lora{};
+    if (!ctx->turbo_lora_path.empty()) {
+        turbo_lora.path = ctx->turbo_lora_path.c_str();
+        turbo_lora.multiplier = 1.0f;
+        params.loras = &turbo_lora;
+        params.lora_count = 1;
+    }
     params.negative_prompt = req->negative_prompt ? req->negative_prompt : "";
     params.width = req->width;
     params.height = req->height;

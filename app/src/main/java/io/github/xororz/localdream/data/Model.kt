@@ -811,8 +811,10 @@ class ModelRepository private constructor(private val context: Context) {
                 add(createKrea2TurboModel())
                 add(createQwenImage21OfficialTurboModel())
                 if (MossImagePackages.engineAvailable(context)) {
-                    add(createMossImageModel(sft = true))
-                    add(createMossImageModel(sft = false))
+                    add(createMossImageModel(sft = true, turbo = false))
+                    add(createMossImageModel(sft = false, turbo = false))
+                    add(createMossImageModel(sft = true, turbo = true))
+                    add(createMossImageModel(sft = false, turbo = true))
                 }
                 add(createQwenImage21Model())
                 add(createQwenImage21GgufViggleTurboModel())
@@ -1137,32 +1139,48 @@ class ModelRepository private constructor(private val context: Context) {
         )
     }
 
-    private fun createMossImageModel(sft: Boolean): Model {
-        val id = if (sft) "moss_image_sft_q4" else "moss_image_base_q4"
-        val packageFiles = if (sft) MossImagePackages.SFT_Q4 else MossImagePackages.BASE_Q4
+    private fun createMossImageModel(sft: Boolean, turbo: Boolean): Model {
+        val id = when {
+            sft && turbo -> "moss_image_sft_turbo_q4"
+            sft -> "moss_image_sft_q4"
+            turbo -> "moss_image_base_turbo_q4"
+            else -> "moss_image_base_q4"
+        }
+        val packageFiles = when {
+            sft && turbo -> MossImagePackages.SFT_TURBO_Q4
+            sft -> MossImagePackages.SFT_Q4
+            turbo -> MossImagePackages.BASE_TURBO_Q4
+            else -> MossImagePackages.BASE_Q4
+        }
         return Model(
             id = id,
-            name = if (sft) "MOSS-Image SFT · Q4_K" else "MOSS-Image Base · Q4_K",
-            description = if (sft) {
-                "5B text-to-image diffusion • Qwen3.5-9B • detailed illustrations and text"
-            } else {
-                "5B foundation diffusion • Qwen3.5-9B • flexible styles and future LoRAs"
+            name = when {
+                sft && turbo -> "MOSS-Image SFT · 8-step Turbo"
+                sft -> "MOSS-Image SFT · Q4_K"
+                turbo -> "MOSS-Image Base · 8-step Turbo"
+                else -> "MOSS-Image Base · Q4_K"
+            },
+            description = when {
+                turbo -> "Experimental DMD LoRA • 8-step Euler • CFG 1 • community model"
+                sft -> "5B text-to-image diffusion • Qwen3.5-9B • detailed illustrations and text"
+                else -> "5B foundation diffusion • Qwen3.5-9B • flexible styles"
             },
             baseUrl = baseUrl,
             packageFiles = packageFiles,
             generationSize = 1024,
-            approximateSize = "9.4GB",
+            approximateSize = if (turbo) "10.6GB" else "9.4GB",
             isDownloaded = Model.isDitPackageDownloaded(context, id, "moss", packageFiles),
             codeDefaults = ModelConfig(
                 prompt = "A cinematic portrait with natural lighting, intricate detail",
                 negativePrompt = "",
-                steps = MossImagePackages.STEPS.toFloat(),
-                cfg = MossImagePackages.CFG,
+                steps = if (turbo) 8f else MossImagePackages.STEPS.toFloat(),
+                cfg = if (turbo) 1f else MossImagePackages.CFG,
                 scheduler = "euler",
                 denoiseStrength = 1f,
             ),
             runOnCpu = false,
             ditKind = "moss",
+            catalogFamily = "moss",
         )
     }
 
@@ -1745,7 +1763,7 @@ class ModelRepository private constructor(private val context: Context) {
             "absoluterealitycpu", "chilloutmixcpu",
             // DiT
             "z_image_turbo", "flux2_klein_4b", "qwen_image_2_1", "krea_2_turbo",
-            "moss_image_sft_q4", "moss_image_base_q4", "qwen_image_2_1_turbo",
+            "moss_image_sft_q4", "moss_image_base_q4", "moss_image_sft_turbo_q4", "moss_image_base_turbo_q4", "qwen_image_2_1_turbo",
             "qwen_image_2_1_fp8", "qwen_image_2_1_viggle_turbo",
             "qwen_image_2_1_viggle_turbo_gguf",
             "qwen_image_2_1_q4_viggle_r256",

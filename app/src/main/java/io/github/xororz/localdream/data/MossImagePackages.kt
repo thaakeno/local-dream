@@ -29,6 +29,15 @@ object MossImagePackages {
         "leejet/MOSS-Image-Base-GGUF/resolve/main/MOSS-Image-Base-Q4_K.gguf|dit.gguf",
     ) + common
 
+    // Community 8-step adapters; separate packages, never silently enabled.
+    // The 4-step data-space DMD sampler is NOT supported by the stock engine.
+    val SFT_TURBO_Q4 = SFT_Q4 + listOf(
+        "lodestones/MOSS-Image-SFT-8-steps-dmd/resolve/main/lora.safetensors|moss_turbo_lora.safetensors",
+    )
+    val BASE_TURBO_Q4 = BASE_Q4 + listOf(
+        "lodestones/MOSS-Image-Base-8-steps-dmd/resolve/main/lora.safetensors|moss_turbo_lora.safetensors",
+    )
+
     // MOSS's reference quality recipe. Accelerated community LoRAs need
     // separate fidelity verification and must not silently replace Base/SFT.
     const val STEPS = 50

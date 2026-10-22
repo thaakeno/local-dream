@@ -96,6 +96,7 @@ import io.github.xororz.localdream.ui.components.CatalogFilterMode
 import io.github.xororz.localdream.ui.components.CatalogSortMode
 import io.github.xororz.localdream.ui.components.ModelCatalogControls
 import io.github.xororz.localdream.ui.components.BreezeFamilyCard
+import io.github.xororz.localdream.ui.components.MossFamilyCard
 import io.github.xororz.localdream.ui.components.QwenFamilyCard
 import io.github.xororz.localdream.ui.components.Yue2FamilyCard
 import io.github.xororz.localdream.ui.components.filterAndSortCatalog
@@ -1724,15 +1725,22 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 } else {
                     emptyList()
                 }
+                val mossVariants = if (page == 1 && !remoteActive) {
+                    rawModels.filter { it.catalogFamily == "moss" }
+                } else {
+                    emptyList()
+                }
                 val standalone = if (
                     qwenVariants.isNotEmpty() ||
                     yue2Variants.isNotEmpty() ||
-                    breezeVariants.isNotEmpty()
+                    breezeVariants.isNotEmpty() ||
+                    mossVariants.isNotEmpty()
                 ) {
                     rawModels.filter {
                         it.catalogFamily != "qwen21" &&
                             it.catalogFamily != "yue2" &&
-                            it.catalogFamily != "breeze2"
+                            it.catalogFamily != "breeze2" &&
+                            it.catalogFamily != "moss"
                     }
                 } else {
                     rawModels
@@ -1761,6 +1769,16 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         CatalogFilterMode.All, CatalogFilterMode.Music -> true
                         CatalogFilterMode.Installed -> yue2Variants.any { it.isDownloaded }
                         CatalogFilterMode.Dit, CatalogFilterMode.Voice,
+                        CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
+                    }
+                val mossNeedle = catalogQuery.trim().lowercase(Locale.US)
+                val mossVisible = mossVariants.isNotEmpty() &&
+                    (mossNeedle.isBlank() ||
+                        "moss moss-image sft base turbo 8 steps dmd diffusion".contains(mossNeedle)) &&
+                    when (catalogFilter) {
+                        CatalogFilterMode.All, CatalogFilterMode.Dit -> true
+                        CatalogFilterMode.Installed -> mossVariants.any { it.isDownloaded }
+                        CatalogFilterMode.Music, CatalogFilterMode.Voice,
                         CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
                     }
                 val breezeNeedle = catalogQuery.trim().lowercase(Locale.US)
@@ -1885,6 +1903,23 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         }
                     }
 
+                    if (mossVisible) {
+                        item(key = "moss-family") {
+                            MossFamilyCard(
+                                variants = mossVariants,
+                                onOpen = { model ->
+                                    navController.navigate(Screen.ModelRun.createRoute(model.id))
+                                },
+                                onDownload = { model -> showDownloadConfirm = model },
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = tween(Motion.DurationMedium),
+                                    fadeOutSpec = tween(Motion.DurationMedium),
+                                    placementSpec = Motion.springExpressiveSpatial(),
+                                ),
+                            )
+                        }
+                    }
+
                     items(
                         items = models,
                         key = { model -> model.id },
@@ -1958,6 +1993,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         !qwenVisible &&
                         !yue2Visible &&
                         !breezeVisible &&
+                        !mossVisible &&
                         modelRepository.isLoaded
                     ) {
                         item {
