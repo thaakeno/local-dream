@@ -67,6 +67,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.NavController
@@ -78,6 +79,7 @@ import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
 import io.github.xororz.localdream.service.SpeechHistoryItem
 import io.github.xororz.localdream.service.SpeechHistoryStore
 import io.github.xororz.localdream.data.BreezeVoiceScripts
+import io.github.xororz.localdream.service.BreezeAudioImporter
 import io.github.xororz.localdream.service.BreezeReferenceRecorder
 import io.github.xororz.localdream.service.BreezeVoiceLibrary
 import io.github.xororz.localdream.service.BreezeVoiceProfile
@@ -906,6 +908,12 @@ fun SpeechRunScreen(
     var micElapsedMs by remember { mutableLongStateOf(0L) }
     var micLevel by remember { mutableIntStateOf(0) }
     var micFile by remember { mutableStateOf<File?>(null) }
+    var importedFile by remember { mutableStateOf<File?>(null) }
+    var preparedAudioNote by remember { mutableStateOf<String?>(null) }
+    var importingAudio by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) {
+        onDispose { importedFile?.delete() }
+    }
     var recorderLanguage by rememberSaveable { mutableStateOf("en") }
     var recorderScript by rememberSaveable {
         mutableStateOf(BreezeVoiceScripts.find("en").text)
@@ -937,13 +945,19 @@ fun SpeechRunScreen(
             micElapsedMs = referenceRecorder.elapsedMs
             micLevel = referenceRecorder.peak.get()
             if (micElapsedMs >= BreezeReferenceRecorder.MAX_SECONDS * 1000L) {
+                // State transition cancels this LaunchedEffect. Finish recording
+                // in a separate scope so the WAV is always finalized.
                 micRecording = false
-                runCatching { withContext(Dispatchers.IO) { referenceRecorder.stop() } }
-                    .onSuccess { file ->
+                scope.launch {
+                    runCatching {
+                        withContext(Dispatchers.IO) { referenceRecorder.stop() }
+                    }.onSuccess { file ->
                         micFile = file
                         referenceAudio = Uri.fromFile(file)
-                    }
-                    .onFailure { cloneError = it.message ?: "Recording could not be saved" }
+                        preparedAudioNote = "Recorded 30 seconds · 24 kHz WAV"
+                        if (cloneName.isBlank()) cloneName = "My voice"
+                    }.onFailure { cloneError = it.message ?: "Recording could not be saved" }
+                }
                 break
             }
             delay(100)
@@ -952,7 +966,31 @@ fun SpeechRunScreen(
 
     val audioPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
-    ) { referenceAudio = it }
+    ) { selected ->
+        if (selected != null) {
+            importingAudio = true
+            cloneError = null
+            scope.launch {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        BreezeAudioImporter.prepare(context, selected)
+                    }
+                }.onSuccess { prepared ->
+                    importedFile?.delete()
+                    importedFile = prepared.wav
+                    referenceAudio = Uri.fromFile(prepared.wav)
+                    micFile = null
+                    preparedAudioNote =
+                        String.format(Locale.US, "%.1fs · 24 kHz WAV%s",
+                            prepared.seconds,
+                            if (prepared.trimmed) " · first 30s kept" else "")
+                }.onFailure {
+                    cloneError = it.message ?: "Unable to import this audio file"
+                }
+                importingAudio = false
+            }
+        }
+    }
     LaunchedEffect(modelId) {
         voices = withContext(Dispatchers.IO) { BreezeVoiceLibrary.load(context) }
     }
@@ -1649,6 +1687,8 @@ fun SpeechRunScreen(
                                                         micFile = file
                                                         referenceAudio = Uri.fromFile(file)
                                                         if (cloneName.isBlank()) cloneName = "My voice"
+                                                        preparedAudioNote = String.format(Locale.US,
+                                                            "%.1fs · recorded locally", micElapsedMs / 1000f)
                                                     }.onFailure { cloneError = it.message ?: "Recording failed" }
                                                 }
                                             } else {
@@ -1662,6 +1702,7 @@ fun SpeechRunScreen(
                                                         referenceAudio = null
                                                         referenceRecorder.start()
                                                         micElapsedMs = 0L
+                                                        preparedAudioNote = null
                                                         micRecording = true
                                                         cloneError = null
                                                         cloneTranscript = sampleToRead
@@ -1687,16 +1728,20 @@ fun SpeechRunScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                         OutlinedButton(onClick = {
-                            audioPicker.launch(arrayOf("audio/wav", "audio/x-wav", "audio/*"))
+                            if (!micRecording) audioPicker.launch(arrayOf("audio/*"))
                         }, modifier = Modifier.fillMaxWidth()) {
                             Icon(Icons.Default.GraphicEq, contentDescription = null)
                             Spacer(Modifier.width(9.dp))
-                            Text(if (referenceAudio == null) "Choose reference WAV" else "Change reference")
+                            Text(if (importingAudio) "Preparing audio…" else
+                                if (referenceAudio == null) "Import WAV, MP3 or M4A" else "Replace imported audio")
                         }
                         if (referenceAudio != null) {
-                            Text(referenceAudio.toString().substringAfterLast('/').take(75),
+                            Text(preparedAudioNote ?: "Reference audio ready",
                                 color = MaterialTheme.colorScheme.primary,
                                 style = MaterialTheme.typography.bodySmall)
+                            Text("Imported files use the first 30 seconds. If trimmed, enter the exact transcript of that excerpt—not the entire file.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         OutlinedTextField(value = cloneName, onValueChange = { cloneName = it.take(64) },
                             label = { Text("Voice name") }, singleLine = true,
@@ -1741,7 +1786,7 @@ fun SpeechRunScreen(
                                     cloneBusy = false
                                 }
                             },
-                            enabled = !micRecording && !cloneBusy && (speechState is SpeechState.Ready ||
+                            enabled = !importingAudio && !micRecording && !cloneBusy && (speechState is SpeechState.Ready ||
                                 speechState is SpeechState.Complete) &&
                                 referenceAudio != null && cloneName.isNotBlank() &&
                                 cloneTranscript.isNotBlank(),
