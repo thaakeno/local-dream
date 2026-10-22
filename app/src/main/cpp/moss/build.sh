@@ -25,8 +25,12 @@ PATCH_FILE="$(pwd)/patches/0001-hexagon-layer-split-workspace-headroom.patch"
 rm -rf "$STAGED_SOURCE"
 mkdir -p "$STAGED_SOURCE"
 git -C "$UPSTREAM" archive "$EXPECTED" | tar -x -C "$STAGED_SOURCE"
+# Git archive may emit an empty directory for the ggml gitlink; remove it
+# before copying, otherwise cp could create ggml/ggml and break CMake.
+rm -rf "$STAGED_SOURCE/ggml"
 cp -a "$UPSTREAM/ggml" "$STAGED_SOURCE/ggml"
 rm -f "$STAGED_SOURCE/ggml/.git"
+test -f "$STAGED_SOURCE/ggml/CMakeLists.txt"
 (
     cd "$STAGED_SOURCE"
     patch --batch --forward --fuzz=0 -p1 < "$PATCH_FILE"
