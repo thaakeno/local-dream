@@ -291,9 +291,12 @@ class SpeechGenerationService : Service() {
             ).joinToString(";")
 
             val env = mutableMapOf(
-                // Match the device-proven v153 process environment exactly.
-                // The backend defaults are already opbatch=1280, opqueue=32,
-                // oppoll=0 and opfusion=1.
+                // Still use the proven HVX-only generator and QNN v3 vocoder,
+                // but bound DSPQueue in-flight work. The previous huge
+                // opbatch=1280/opqueue=32 configuration can leave the v81
+                // FastRPC queue with unconsumed responses after a large
+                // NPU workload. 64/8 is already used by YuE2 on this SoC.
+                // This does not offload even one inference op to CPU.
                 "LD_LIBRARY_PATH" to listOf(
                     nativeDir,
                     runtimeDir.absolutePath,
@@ -318,6 +321,8 @@ class SpeechGenerationService : Service() {
                 // This removes the response sleep/wake path used by the
                 // autoregressive one-frame generator.
                 "GGML_HEXAGON_OPPOLL" to "0",
+                "GGML_HEXAGON_OPBATCH" to "64",
+                "GGML_HEXAGON_OPQUEUE" to "8",
             )
             if (usingQnnRuntime) {
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
@@ -373,7 +378,7 @@ class SpeechGenerationService : Service() {
                 this,
                 "BREEZE_ENV",
                 "backend=HTP0:0 transport=DSPQueue " +
-                    "queue=v202-opbatch1280x32-oppoll0 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
+                    "queue=v202-opbatch64x8-oppoll0 opfusion=1 hmx=0 execution=hvx-only-v81 gelu_erf=dsp-libm-reference-v81 " +
                     "getrows=exact-v153 dcache=upstream-pr29977-64b modelmap=ordinary-delayed+quant-repack " +
                     "codebooks=ordinary-htp-mirror quantweights=repack-upload-any-map visibility=none-v153-scheduler " +
                     "generator_mode=legacy-hexagon generator=ggml-hexagon " +
@@ -1042,9 +1047,15 @@ class SpeechGenerationService : Service() {
         if (line.contains("dspqueue_read failed", ignoreCase = true)) {
             val nativeCode = Regex("dspqueue_read failed:\\s*(0x[0-9a-fA-F]+)")
                 .find(line)?.groupValues?.getOrNull(1)
+            BackendDiagnostics.append(this, "BREEZE_DSPQUEUE",
+                "event=transport_failure code=" + (nativeCode ?: "unknown") +
+                " generator=HTP-HVX qnn_vocoder=HTP opbatch=64 opqueue=8 " +
+                "session_recovery=required cpu_fallback=disabled")
             lastNativeFailure = "Hexagon DSPQueue failure" +
                 (nativeCode?.let { " ($it)" } ?: "") +
-                ". The native accelerator stopped; see the complete backend log."
+                ". The NPU session failed. The voice was saved; restart the " +
+                "speech engine. If it fails again after a MOSS crash, reboot " +
+                "the phone to reset the Qualcomm DSP session."
         } else if (line.contains("GGML_ABORT", ignoreCase = true) && lastNativeFailure == null) {
             lastNativeFailure = "Hexagon native abort; see the complete backend log."
         }
