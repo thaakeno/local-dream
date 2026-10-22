@@ -419,6 +419,9 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
     // model becomes ~4.59 GiB with the active DMD LoRA. Single-session
     // conditioning and denoising both crashed (at different graph phases).
     //
+    // Explicit GGML memory budgets (see MossEngine.cpp) are required: the
+    // upstream Hexagon get_memory() returns a synthetic constant, so it
+    // otherwise puts every segment onto the first virtual session.
     // Use TWO virtual sessions of the *same physical Hexagon* as separate
     // GGML backend devices. Upstream stable-diffusion.cpp accepts '&' in
     // the runtime backend spec and partitions each module across devices.
@@ -432,12 +435,12 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
                    ? "diffusion=HTP0:0&HTP0:1,te=HTP0:0&HTP0:1,vae=HTP0:0"
                    : "diffusion=HTP0:0,te=HTP0:0,vae=HTP0:0")
             : moss ? "diffusion=" + moss_htp + ",te=" + moss_htp +
-                     ",vae=" + moss_htp : opts.dit_backend;
+                     ",vae=HTP0:0" : opts.dit_backend;
     const std::string params_backend =
         qwen ? "te=disk,vae=disk" : moss ? "te=disk,vae=disk" : opts.dit_params_backend;
     if (moss) {
         QNN_INFO("[MOSS_NPU] strict_backend=HTP0:0&HTP0:1 "
-                 "text_encoder=HTP-dual diffusion=HTP-dual vae=HTP-dual "
+                 "text_encoder=HTP-dual diffusion=HTP-dual vae=HTP0:0 "
                  "te_params=disk vae_params=disk cpu_inference_fallback=disabled "
                  "reason=SM8850-v81-per-session-address-window");
     }
