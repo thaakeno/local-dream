@@ -91,39 +91,81 @@ import java.util.Locale
 import kotlinx.coroutines.launch
 
 
-/** Branded model identities, with the official project organization avatars. */
+
+/** Locally bundled, actual project marks. No network or glass shaders. */
 @Composable
-private fun StudioBrandMark(kind: String, size: androidx.compose.ui.unit.Dp = 54.dp) {
-    val label = when (kind) {
-        "voice" -> "B"
-        "music" -> "Y"
-        else -> "Q"
-    }
-    val avatar = when (kind) {
+private fun StudioBrandMark(kind: String, modifier: Modifier = Modifier) {
+    val logo = when (kind) {
         "voice" -> R.drawable.ic_model_breeze
         "music" -> R.drawable.ic_model_yue2
         else -> R.drawable.ic_model_qwen_transparent
     }
-    val accent = when (kind) {
-        "voice" -> Color(0xFF67C8BD)
-        "music" -> Color(0xFFDA9CC8)
-        else -> Color(0xFFCEADFA)
-    }
+    val capsule = RoundedCornerShape(16.dp)
     Box(
-        modifier = Modifier.size(size)
-            .background(accent.copy(alpha = 0.13f), RoundedCornerShape(17.dp)),
+        modifier = modifier
+            .then(if (kind == "image") Modifier.size(width = 90.dp, height = 60.dp)
+                else Modifier.size(60.dp))
+            .background(Color.White.copy(alpha = 0.09f), capsule),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Black, color = accent)
         Image(
-            painter = painterResource(avatar),
-            contentDescription = "$label project icon",
+            painter = painterResource(logo),
+            contentDescription = when (kind) {
+                "voice" -> "BreezeBlue logo"
+                "music" -> "YuE logo"
+                else -> "Qwen Image official logo"
+            },
             contentScale = androidx.compose.ui.layout.ContentScale.Fit,
-            modifier = Modifier.matchParentSize()
-                .padding(6.dp)
-                .clip(RoundedCornerShape(12.dp)),
+            modifier = Modifier.fillMaxSize().padding(if (kind == "image") 3.dp else 9.dp),
         )
+    }
+}
+
+private data class StudioColors(val start: Color, val middle: Color, val end: Color)
+
+private fun studioColors(kind: String): StudioColors = when (kind) {
+    "voice" -> StudioColors(Color(0xFF083C49), Color(0xFF126C7A), Color(0xFF176E87))
+    "music" -> StudioColors(Color(0xFF321243), Color(0xFF6B2E78), Color(0xFF86477E))
+    else -> StudioColors(Color(0xFF111D54), Color(0xFF1D4799), Color(0xFF593B9C))
+}
+
+@Composable
+private fun StudioGradientHeader(
+    kind: String,
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier,
+) {
+    val colors = studioColors(kind)
+    val transition = rememberInfiniteTransition(label = "family-gradient-$kind")
+    val flow by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(12000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "family-glow-$kind",
+    )
+    // Slow, low-amplitude color movement: no blur, RenderEffect or offscreen layers.
+    val brush = Brush.linearGradient(
+        listOf(
+            androidx.compose.ui.graphics.lerp(colors.start, colors.middle, flow * 0.13f),
+            androidx.compose.ui.graphics.lerp(colors.middle, colors.end, flow * 0.20f),
+            androidx.compose.ui.graphics.lerp(colors.end, colors.middle, flow * 0.11f),
+        ),
+    )
+    Box(modifier = modifier.fillMaxWidth().background(brush).padding(18.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(13.dp)) {
+            StudioBrandMark(kind)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(title, style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold, color = Color.White, maxLines = 2)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = .82f), maxLines = 2)
+            }
+        }
     }
 }
 
@@ -137,54 +179,48 @@ private fun StudioFamilyCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val accent = when (kind) {
-        "voice" -> Color(0xFF67C8BD)
-        "music" -> Color(0xFFDA9CC8)
-        else -> Color(0xFFCEADFA)
-    }
     val installed = variants.count { it.isDownloaded }
+    val officialQwenTurbo = kind == "image" &&
+        variants.any { it.id == "qwen_image_2_1_turbo" }
     Surface(
         onClick = onClick,
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(25.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .75f)),
-        tonalElevation = 1.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .55f)),
     ) {
-        Column(Modifier.fillMaxWidth().padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(15.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                StudioBrandMark(kind, 58.dp)
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(title, style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold)
-                    Text(subtitle, style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Icon(Icons.Default.Tune, contentDescription = "Choose model",
-                    modifier = Modifier.size(19.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f))
-            Row(verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Surface(shape = RoundedCornerShape(9.dp),
-                    color = accent.copy(alpha = .12f)) {
-                    Text(featured.variantPrecision.ifBlank { "Default" },
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+        Column {
+            StudioGradientHeader(kind, title, subtitle)
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 15.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(9.dp),
+                ) {
+                    Text(
+                        if (officialQwenTurbo) "Standard + Turbo"
+                        else featured.variantPrecision.ifBlank { "Models" },
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        fontWeight = FontWeight.SemiBold,
                         style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold, color = accent)
+                    )
                 }
-                Text(if (installed > 0) "$installed installed" else "${variants.size} options",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (installed > 0) "$installed installed" else "${variants.size} options",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Spacer(Modifier.weight(1f))
                 Text("Explore", fontWeight = FontWeight.SemiBold,
-                    style = MaterialTheme.typography.labelLarge)
-                Icon(Icons.Default.PlayArrow, null,
-                    modifier = Modifier.size(17.dp),
-                    tint = MaterialTheme.colorScheme.onSurface)
+                    style = MaterialTheme.typography.labelMedium)
+                Icon(Icons.Default.Tune, contentDescription = "Configure",
+                    modifier = Modifier.size(19.dp),
+                    tint = MaterialTheme.colorScheme.primary)
             }
         }
     }
@@ -336,29 +372,10 @@ private fun AnimatedFamilyHero(
     voice: Boolean = false, modifier: Modifier = Modifier,
 ) {
     val kind = if (voice) "voice" else if (music) "music" else "image"
-    val eyebrow = when (kind) {
-        "voice" -> "VOICE ENGINE"
-        "music" -> "MUSIC ENGINE"
-        else -> "IMAGE ENGINE"
-    }
     Surface(modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-        Row(Modifier.fillMaxWidth().padding(17.dp),
-            horizontalArrangement = Arrangement.spacedBy(15.dp),
-            verticalAlignment = Alignment.CenterVertically) {
-            StudioBrandMark(kind, 60.dp)
-            Column(Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(eyebrow, style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(title, style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold)
-                Text(subtitle, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
+        color = MaterialTheme.colorScheme.surfaceContainer) {
+        StudioGradientHeader(kind, title, subtitle)
     }
 }
 
