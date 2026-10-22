@@ -77,6 +77,7 @@ import io.github.xororz.localdream.service.SpeechGenerationService
 import io.github.xororz.localdream.service.SpeechGenerationService.SpeechState
 import io.github.xororz.localdream.service.SpeechHistoryItem
 import io.github.xororz.localdream.service.SpeechHistoryStore
+import io.github.xororz.localdream.data.BreezeVoiceScripts
 import io.github.xororz.localdream.service.BreezeReferenceRecorder
 import io.github.xororz.localdream.service.BreezeVoiceLibrary
 import io.github.xororz.localdream.service.BreezeVoiceProfile
@@ -905,14 +906,13 @@ fun SpeechRunScreen(
     var micElapsedMs by remember { mutableLongStateOf(0L) }
     var micLevel by remember { mutableIntStateOf(0) }
     var micFile by remember { mutableStateOf<File?>(null) }
-    val englishSample = remember {
-        "Hello, this is a sample of my natural speaking voice. I am sitting in a quiet room, talking at my normal pace. The weather outside is pleasant today, and I hope this recording captures how I sound in everyday conversation."
+    var recorderLanguage by rememberSaveable { mutableStateOf("en") }
+    var recorderScript by rememberSaveable {
+        mutableStateOf(BreezeVoiceScripts.find("en").text)
     }
-    val chineseSample = remember {
-        "你好，这是我平常说话的声音。我现在在一个安静的房间里，用自然的语速读这段话。今天感觉很轻松，希望这段录音可以清楚地记录我的声音。"
-    }
-    var recorderLanguage by rememberSaveable { mutableStateOf("English") }
-    val sampleToRead = if (recorderLanguage == "Mandarin") chineseSample else englishSample
+    var showScriptLanguages by remember { mutableStateOf(false) }
+    var editRecorderScript by remember { mutableStateOf(false) }
+    val sampleToRead = recorderScript.trim()
     val micPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { permitted ->
@@ -1550,20 +1550,73 @@ fun SpeechRunScreen(
                                             style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    listOf("English", "Mandarin").forEach { language ->
-                                        FilterChip(
-                                            selected = recorderLanguage == language,
-                                            onClick = {
-                                                if (!micRecording) recorderLanguage = language
-                                            }, enabled = !micRecording,
-                                            label = { Text(language) })
+                                Row(verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("Recording language",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        modifier = Modifier.weight(1f),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Box {
+                                        OutlinedButton(
+                                            enabled = !micRecording,
+                                            onClick = { showScriptLanguages = true },
+                                        ) {
+                                            Text(BreezeVoiceScripts.find(recorderLanguage).language)
+                                            Spacer(Modifier.width(6.dp))
+                                            Icon(Icons.Default.ChevronRight, null,
+                                                modifier = Modifier.size(16.dp))
+                                        }
+                                        DropdownMenu(expanded = showScriptLanguages,
+                                            onDismissRequest = { showScriptLanguages = false }) {
+                                            BreezeVoiceScripts.options.forEach { option ->
+                                                DropdownMenuItem(
+                                                    text = { Text(option.language) },
+                                                    onClick = {
+                                                        recorderLanguage = option.code
+                                                        recorderScript = option.text
+                                                        showScriptLanguages = false
+                                                        cloneTranscript = option.text
+                                                        editRecorderScript = false
+                                                    })
+                                            }
+                                        }
                                     }
                                 }
-                                Text("Read this naturally in a quiet room",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary)
-                                Text(sampleToRead, style = MaterialTheme.typography.bodyMedium)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("READ ALOUD", style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.weight(1f),
+                                        color = MaterialTheme.colorScheme.primary)
+                                    TextButton(
+                                        onClick = { editRecorderScript = !editRecorderScript },
+                                        enabled = !micRecording,
+                                    ) {
+                                        Text(if (editRecorderScript) "Done editing" else "Edit script")
+                                    }
+                                }
+                                Surface(shape = RoundedCornerShape(17.dp),
+                                    color = MaterialTheme.colorScheme.surface) {
+                                    if (editRecorderScript) {
+                                        OutlinedTextField(
+                                            value = recorderScript,
+                                            onValueChange = {
+                                                recorderScript = it.take(1200)
+                                                cloneTranscript = recorderScript.trim()
+                                            }, enabled = !micRecording,
+                                            label = { Text("Exact words to record") },
+                                            minLines = 4, maxLines = 9,
+                                            modifier = Modifier.fillMaxWidth())
+                                    } else {
+                                        Text(sampleToRead,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            modifier = Modifier.padding(16.dp),
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            lineHeight = 25.sp)
+                                    }
+                                }
+                                Text("Speak naturally and finish the entire passage. If you skip or change words, correct the transcript below before saving.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 LinearProgressIndicator(
                                     progress = { (micElapsedMs / 30000f).coerceIn(0f, 1f) },
                                     modifier = Modifier.fillMaxWidth(),
