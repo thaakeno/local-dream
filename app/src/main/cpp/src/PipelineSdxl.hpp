@@ -4,6 +4,8 @@
 #include <MNN/Interpreter.hpp>
 #include <cstdint>
 #include <fstream>
+#include <future>
+#include <chrono>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
@@ -41,27 +43,31 @@ class PipelineSdxl : public PipelineQnn {
       return true;
     }
 
-    // CLIP is only used on a prompt-cache miss. Never initialize both
-    // 77-token MNN sessions on the cold-start critical path. If compatible
-    // QNN text contexts are installed they will run on HTP instead.
-    QNN_INFO("[SDXL startup] CLIP deferred until prompt encoding; "
-             "UNET/VAE cold start no longer waits for text encoder sessions.");
+    // Restore the known-good v141 behavior: all normal-generation stages
+    // must be ready BEFORE the first request, not deferred into the timer.
+    // CPU MNN CLIP and HTP UNet have independent backends, so initialize
+    // them concurrently to reduce real wall-clock cold-start latency.
+    // Never keep the service alive after exit or raise HTP clocks to MAX.
+    const auto startup_begin = std::chrono::steady_clock::now();
+    const bool probe = std::getenv("LOCALDREAM_SDXL_SPILL_FILL_PROBE") != nullptr;
+    std::future<void> clip_init;
+    if (!probe && !npuClipContextsAvailable()) {
+      clip_init = std::async(std::launch::async, [this]() {
+        loadClipsIfNeeded();
+      });
+    }
 
     unet_ = qnn_runtime::createModel(unet_path_, "unet");
     if (!unet_) {
       QNN_ERROR("Failed create QNN UNET model.");
       return false;
     }
-    if (getenv("LOCALDREAM_SDXL_SPILL_FILL_PROBE")) {
-      vae_decoder_ = qnn_runtime::createModel(vae_decoder_path_, "vae_decoder");
-      if (!vae_decoder_) {
-        QNN_ERROR("Failed create QNN VAE Decoder model for spill-fill probe");
-        return false;
-      }
-    } else {
-      // The VAE is only needed at final decode or for previews. Keep the
-      // UNet initialization on the critical path, create VAE on demand.
-      QNN_INFO("[SDXL startup] VAE decoder deferred until first decode");
+    // Always construct the decoder during initialization. Deferring this
+    // stage silently added ~1-2s to the first generation and preview.
+    vae_decoder_ = qnn_runtime::createModel(vae_decoder_path_, "vae_decoder");
+    if (!vae_decoder_) {
+      QNN_ERROR("Failed create QNN VAE Decoder model");
+      return false;
     }
     if (vae_encoder_path_.empty()) {
       QNN_INFO("img2img disabled: VAE encoder not available");
@@ -72,7 +78,7 @@ class PipelineSdxl : public PipelineQnn {
       if (!vae_encoder_) QNN_WARN("Failed create QNN VAE Enc model.");
     } else {
       QNN_INFO(
-          "SDXL fast mode: VAE encoder and decoder are lazy; UNET stays resident");
+          "SDXL fast mode: VAE encoder lazy; UNET and decoder ready at startup");
     }
 
     // Probe mode: getProperty(MAX_SPILLFILL_BUFFER_SIZE) returns 0 on this HTP
@@ -123,9 +129,27 @@ class PipelineSdxl : public PipelineQnn {
     if (sf_bytes) group_head = unet_->getContextHandle();
     logSpillFill("UNET", unet_);
 
-    // The VAE decoder will use createVaeModel() when first needed.
-    // It joins the configured spill/fill group using the live UNet context.
-    QNN_INFO("[SDXL startup] UNET ready; VAE and CLIP initialized lazily");
+    // VAE joins the UNet spill/fill group when a measured shared size is set.
+    // Otherwise both contexts retain independent QNN allocations.
+    if (sf_bytes) vae_decoder_->setSpillFillGroup(sf_bytes, group_head);
+    if (qnn_runtime::initializeApp("VAEDecoder", vae_decoder_) != EXIT_SUCCESS)
+      return false;
+    logSpillFill("VAEDecoder", vae_decoder_);
+
+    if (clip_init.valid()) {
+      try {
+        clip_init.get();
+      } catch (const std::exception &e) {
+        QNN_ERROR("[SDXL startup] CLIP init failed: %s", e.what());
+        return false;
+      }
+    }
+    const auto total_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - startup_begin).count();
+    QNN_INFO("[SDXL startup] READY clip=%s unet=HTP vae=HTP total=%.1fms "
+             "power=unchanged service_keepalive=off",
+             npuClipContextsAvailable() ? "QNN-on-first-prompt" : "CPU-MNN",
+             total_ms);
 
     return true;
   }
