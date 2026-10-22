@@ -43,6 +43,11 @@ class SpeechGenerationService : Service() {
     @Volatile private var nativeDecodedFrames: Int = 0
     @Volatile private var nativeGeneratedFrames: Int = 0
     @Volatile private var nativeVocoderMsPerFrame: Float = 0f
+    @Volatile private var profileBackboneMs: Float = 0f
+    @Volatile private var profileDepthMs: Float = 0f
+    @Volatile private var profileVocoderMs: Double = 0.0
+    @Volatile private var profileVocoderFlushes: Int = 0
+    @Volatile private var profileModelFrames: Int = 0
     @Volatile private var usingQnnVocoder: Boolean = false
     @Volatile private var nativeGenerationDone: Boolean = false
     @Volatile private var nativeSegmentCount: Int = 1
@@ -487,6 +492,16 @@ class SpeechGenerationService : Service() {
                 nativeCodecOverallProgress = 0f
                 nativeVocoderOverallProgress = 0f
                 nativeVocoderMsPerFrame = if (usingQnnVocoder) 50f else 0f
+                profileBackboneMs = 0f
+                profileDepthMs = 0f
+                profileVocoderMs = 0.0
+                profileVocoderFlushes = 0
+                profileModelFrames = 0
+                BackendDiagnostics.append(this@SpeechGenerationService, "BREEZE_RUN",
+                    "event=begin model=" + modelId + " voice=" + voiceId.ifBlank { "design" } +
+                    " text_chars=" + text.length + " direction_chars=" + instruction.length +
+                    " cfg=" + cfg + " seed=" + seed +
+                    " vocoder=" + if (usingQnnVocoder) "qnn-htp-v3" else "ggml-fallback")
                 _state.value = SpeechState.Generating(
                     modelId = modelId,
                     detail = "Starting speech generation",
@@ -600,6 +615,18 @@ class SpeechGenerationService : Service() {
                 val elapsed = System.currentTimeMillis() - started
                 val audioDurationMillis =
                     (pcmBytes / 2L * 1000L / sampleRate.toLong()).coerceAtLeast(0L)
+                val rtf = if (elapsed > 0) audioDurationMillis.toDouble() / elapsed else 0.0
+                BackendDiagnostics.append(this@SpeechGenerationService, "BREEZE_RUN",
+                    "event=complete model=" + modelId + " voice=" + voiceId.ifBlank { "design" } +
+                    " elapsed_ms=" + elapsed + " audio_ms=" + audioDurationMillis +
+                    " rtf=" + String.format(Locale.US, "%.3f", rtf) +
+                    " generated_frames=" + profileModelFrames +
+                    " backbone_ms_per_frame=" + profileBackboneMs +
+                    " depth_ms_per_frame=" + profileDepthMs +
+                    " vocoder_ms=" + String.format(Locale.US, "%.1f", profileVocoderMs) +
+                    " vocoder_flushes=" + profileVocoderFlushes +
+                    " pcm_bytes=" + pcmBytes + " sample_rate=" + sampleRate +
+                    " vocoder=" + if (usingQnnVocoder) "qnn-htp-v3" else "ggml-fallback")
                 val item = SpeechHistoryStore.add(
                     context = this@SpeechGenerationService,
                     file = output,
@@ -629,8 +656,14 @@ class SpeechGenerationService : Service() {
                     item.id,
                 )
             } catch (e: CancellationException) {
+                BackendDiagnostics.append(this@SpeechGenerationService, "BREEZE_RUN",
+                    "event=cancelled model=" + modelId + " voice=" + voiceId.ifBlank { "design" })
                 _state.value = SpeechState.Idle
             } catch (e: Exception) {
+                BackendDiagnostics.append(this@SpeechGenerationService, "BREEZE_RUN",
+                    "event=failed model=" + modelId + " voice=" + voiceId.ifBlank { "design" } +
+                    " error_type=" + e.javaClass.simpleName +
+                    " native_failure=" + (lastNativeFailure != null))
                 if (activeCall?.isCanceled() == true) {
                     _state.value = SpeechState.Idle
                 } else if ((_state.value as? SpeechState.Error)?.modelId != modelId) {
@@ -996,6 +1029,15 @@ class SpeechGenerationService : Service() {
 
         // Preserve the entire native record, including DSP stack traces.
         BackendDiagnostics.append(this, "BREEZE_NATIVE", line)
+        // Structured session counters, without copying text, transcript or PCM.
+        if (line.contains("[BREEZE_AUDIO]")) {
+            Regex("frames=([0-9]+)").find(line)?.groupValues?.getOrNull(1)
+                ?.toIntOrNull()?.let { profileModelFrames = it }
+            Regex("vocoder_ms=([0-9.]+)").find(line)?.groupValues?.getOrNull(1)
+                ?.toDoubleOrNull()?.let { profileVocoderMs = it }
+            Regex("flushes=([0-9]+)").find(line)?.groupValues?.getOrNull(1)
+                ?.toIntOrNull()?.let { profileVocoderFlushes = it }
+        }
 
         if (line.contains("dspqueue_read failed", ignoreCase = true)) {
             val nativeCode = Regex("dspqueue_read failed:\\s*(0x[0-9a-fA-F]+)")
@@ -1159,6 +1201,8 @@ class SpeechGenerationService : Service() {
         }
 
         nativeStageRegex.find(line)?.let { match ->
+            profileDepthMs = match.groupValues[3].toFloatOrNull() ?: profileDepthMs
+            profileBackboneMs = match.groupValues[4].toFloatOrNull() ?: profileBackboneMs
             val frames = match.groupValues[1].toIntOrNull() ?: return
             val nativeTotalFrames = match.groupValues[2].toIntOrNull()
                 ?: (nativeCompletedFrames + frames)
