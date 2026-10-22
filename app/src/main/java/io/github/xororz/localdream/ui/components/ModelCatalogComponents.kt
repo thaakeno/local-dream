@@ -556,209 +556,172 @@ private fun QwenVariantSheet(
     onOpen: (Model) -> Unit,
     onDownload: (Model) -> Unit,
 ) {
-    val initial = variants.firstOrNull { it.recommendedVariant }
-        ?: variants.firstOrNull { it.isDownloaded }
-        ?: variants.first()
-    var precision by remember { mutableStateOf(initial.variantPrecision) }
-    var adapter by remember { mutableStateOf(initial.variantAdapter) }
-
-    val precisions = listOf("Q4_0", "Q8_0", "FP8")
-    val adapters = listOf("", "r128", "r256")
-    val selected = variants.firstOrNull {
+    val official = variants.firstOrNull { it.id == "qwen_image_2_1_turbo" }
+    val baseVariants = variants.filterNot { it.id == "qwen_image_2_1_turbo" }
+    val initial = baseVariants.firstOrNull { it.recommendedVariant }
+        ?: baseVariants.firstOrNull { it.isDownloaded } ?: baseVariants.firstOrNull()
+    if (initial == null && official == null) return
+    var useOfficial by remember { mutableStateOf(initial == null) }
+    var precision by remember { mutableStateOf(initial?.variantPrecision ?: "Q8_0") }
+    var adapter by remember { mutableStateOf(initial?.variantAdapter ?: "") }
+    val base = baseVariants.firstOrNull {
         it.variantPrecision == precision && it.variantAdapter == adapter
-    } ?: variants.first()
-
-    fun precisionReady(p: String): Boolean =
-        variants.any {
-            it.variantPrecision == p &&
-                it.variantAdapter.isEmpty() &&
-                it.isDownloaded
-        }
-
-    fun adapterReady(a: String): Boolean =
-        a.isEmpty() || variants.any { it.variantAdapter == a && it.isDownloaded }
-
-    val baseReady = precisionReady(precision)
-    val turboReady = adapterReady(adapter)
+    } ?: initial
+    val current = (if (useOfficial) official else base) ?: initial ?: official ?: return
+    val isReady = current.isDownloaded
+    fun precisionReady(p: String): Boolean = baseVariants.any {
+        it.variantPrecision == p && it.variantAdapter.isBlank() && it.isDownloaded
+    }
+    fun adapterReady(a: String): Boolean = a.isBlank() || baseVariants.any {
+        it.variantAdapter == a && it.isDownloaded
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp)
-                .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            AnimatedFamilyHero(
-                title = "Qwen Image 2.1",
-                subtitle = "Choose quality and optional Viggle LoRA",
-                music = false,
-            )
-
-            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                Text(
-                    "Transformer",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    precisions.forEach { p ->
-                        FamilyVariantTile(
-                            selected = precision == p,
-                            installed = precisionReady(p),
-                            title = p,
-                            subtitle = when (p) {
-                                "Q4_0" -> "4.20 GB · compact"
-                                "Q8_0" -> "7.69 GB · quality"
-                                else -> "7.12 GB · FP8"
-                            },
-                            icon = when (p) {
-                                "Q4_0" -> Icons.Default.SdStorage
-                                "Q8_0" -> Icons.Default.Memory
-                                else -> Icons.Default.Bolt
-                            },
-                            onClick = { precision = p },
-                            onLongClick = if (precisionReady(p)) {
-                                { onDeletePrecision(p) }
-                            } else {
-                                null
-                            },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "Turbo adapter",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        "shared across all precisions",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    adapters.forEach { a ->
-                        FamilyVariantTile(
-                            selected = adapter == a,
-                            installed = a.isNotEmpty() && adapterReady(a),
-                            title = when (a) {
-                                "r128" -> "r128"
-                                "r256" -> "r256"
-                                else -> "Base"
-                            },
-                            subtitle = when (a) {
-                                "r128" -> "680 MB · 6-pass"
-                                "r256" -> "1.36 GB · 6-pass"
-                                else -> "20 steps · no extra file"
-                            },
-                            icon = if (a.isEmpty()) Icons.Default.PlayArrow else Icons.Default.Speed,
-                            onClick = { adapter = a },
-                            onLongClick = if (a.isNotEmpty() && adapterReady(a)) {
-                                { onDeleteAdapter(a) }
-                            } else {
-                                null
-                            },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            }
-
-            AnimatedContent(
-                targetState = selected.id,
-                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
-                label = "qwenVariantDetails",
+        Column(Modifier.fillMaxWidth().fillMaxHeight(.92f)) {
+            Column(
+                Modifier.weight(1f).verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(19.dp),
             ) {
-                Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(11.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "$precision" +
-                                        if (adapter.isBlank()) " · Base" else " + Viggle $adapter",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    if (adapter.isBlank()) {
-                                        "Standard Qwen Image 2.1 runtime"
-                                    } else {
-                                        "Viggle LoRA enabled"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            if (baseReady && turboReady) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
+                AnimatedFamilyHero(
+                    "Qwen Image 2.1",
+                    "Standard and Official Turbo are different transformers",
+                    music = false,
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Model architecture", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold)
+                    if (initial != null) {
+                        FamilyVariantTile(
+                            selected = !useOfficial,
+                            installed = baseVariants.any { it.isDownloaded },
+                            title = "Qwen Image 2.1 · Standard",
+                            subtitle = "Choose Q4 / Q8 / FP8; optionally add a Viggle LoRA",
+                            icon = Icons.Default.AutoAwesome,
+                            onClick = { useOfficial = false },
+                        )
+                    }
+                    if (official != null) {
+                        FamilyVariantTile(
+                            selected = useOfficial,
+                            installed = official.isDownloaded,
+                            title = "Qwen Image 2.1 Turbo · FP8",
+                            subtitle = "Official distilled model · 8 steps · 13.7 GB · no LoRA",
+                            icon = Icons.Default.Bolt,
+                            onClick = { useOfficial = true },
+                        )
+                    }
+                }
+                if (!useOfficial && initial != null) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Standard precision", style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold)
+                        listOf("Q4_0", "Q8_0", "FP8").forEach { p ->
+                            FamilyVariantTile(
+                                selected = precision == p,
+                                installed = precisionReady(p),
+                                title = p,
+                                subtitle = when (p) {
+                                    "Q4_0" -> "Smaller GGUF · 4.20 GB"
+                                    "Q8_0" -> "High quality GGUF · 7.69 GB"
+                                    else -> "FP8 transformer · 7.12 GB"
+                                },
+                                icon = if (p == "Q4_0") Icons.Default.SdStorage else Icons.Default.Memory,
+                                onClick = { precision = p },
+                                onLongClick = if (precisionReady(p)) {
+                                    { onDeletePrecision(p) }
+                                } else null,
+                            )
                         }
-
-                        Text(
-                            "Common encoder/VAE files and Viggle LoRAs are stored once. Switching Q4/Q8/FP8 reuses them automatically.",
-                            style = MaterialTheme.typography.bodySmall,
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Optional Viggle LoRA", style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold)
+                        Text("For Standard only. This is NOT Qwen Image 2.1 Turbo.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            "Full stack from zero: ${selected.approximateSize}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                            style = MaterialTheme.typography.bodySmall)
+                        listOf("", "r128", "r256").forEach { choice ->
+                            FamilyVariantTile(
+                                selected = adapter == choice,
+                                installed = choice.isNotBlank() && adapterReady(choice),
+                                title = if (choice.isBlank()) "None · standard model"
+                                    else "Viggle $choice",
+                                subtitle = when (choice) {
+                                    "r128" -> "6-step LoRA · 680 MB"
+                                    "r256" -> "6-step LoRA · 1.36 GB"
+                                    else -> "No extra adapter · 20 steps"
+                                },
+                                icon = if (choice.isBlank()) Icons.Default.AutoAwesome
+                                    else Icons.Default.Speed,
+                                onClick = { adapter = choice },
+                                onLongClick = if (choice.isNotBlank() && adapterReady(choice)) {
+                                    { onDeleteAdapter(choice) }
+                                } else null,
+                            )
+                        }
+                    }
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(17.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .42f),
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Actual Turbo model", style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold)
+                            Text("Separate distilled FP8 DiT. Default 8-step inference, CFG 1. Installs independently and does not load Viggle adapters.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = RoundedCornerShape(18.dp),
+                ) {
+                    Row(Modifier.fillMaxWidth().padding(15.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(if (isReady) Icons.Default.CheckCircle else Icons.Default.CloudDownload,
+                            null, tint = MaterialTheme.colorScheme.primary)
+                        Column(Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(if (useOfficial) "Official Turbo FP8"
+                                else "$precision" + if (adapter.isEmpty()) " · Standard"
+                                else " + Viggle $adapter",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold)
+                            Text(if (isReady) "Installed" else "Download required",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(current.approximateSize,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
             }
-
-            Button(
-                onClick = {
-                    if (baseReady && turboReady) onOpen(selected) else onDownload(selected)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.large,
-            ) {
-                Icon(
-                    if (baseReady && turboReady) Icons.Default.PlayArrow else Icons.Default.CloudDownload,
-                    contentDescription = null,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    when {
-                        baseReady && turboReady ->
-                            "Use $precision" + if (adapter.isBlank()) "" else " + $adapter"
-                        !baseReady && turboReady ->
-                            "Download $precision transformer"
-                        baseReady && !turboReady ->
-                            "Download Viggle $adapter only"
-                        else -> "Download missing assets"
-                    },
-                )
+            Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, tonalElevation = 4.dp) {
+                Button(
+                    onClick = { if (isReady) onOpen(current) else onDownload(current) },
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .heightIn(min = 54.dp),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Icon(if (isReady) Icons.Default.PlayArrow else Icons.Default.CloudDownload,
+                        contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isReady) "Use selected model"
+                        else if (useOfficial) "Download Official Turbo"
+                        else "Download selected files",
+                        fontWeight = FontWeight.SemiBold)
+                }
             }
         }
     }
