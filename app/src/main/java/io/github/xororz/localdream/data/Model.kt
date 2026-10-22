@@ -1128,6 +1128,12 @@ class ModelRepository private constructor(private val context: Context) {
             ),
             runOnCpu = false,
             ditKind = "qwen21",
+            // Separate transformer & install folder, never the Viggle LoRA.
+            catalogFamily = "qwen21",
+            variantPrecision = "FP8 Turbo",
+            variantFormat = "FP8",
+            variantProfile = "Official distilled transformer · 8 steps",
+            recommendedVariant = false,
         )
     }
 

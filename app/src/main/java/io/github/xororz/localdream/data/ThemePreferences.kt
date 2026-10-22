@@ -9,7 +9,7 @@ enum class DarkModePreference { SYSTEM, LIGHT, DARK }
 
 data class ThemeState(
     val dynamicColor: Boolean = false,
-    val preset: ThemePreset = ThemePreset.TANGERINE,
+    val preset: ThemePreset = ThemePreset.OCEAN,
     val darkMode: DarkModePreference = DarkModePreference.SYSTEM,
 )
 
@@ -21,7 +21,7 @@ class ThemePreferences(context: Context) {
         val dynamic = supportsDynamic && prefs.getBoolean(KEY_DYNAMIC, false)
         val preset = prefs.getString(KEY_PRESET, null)
             ?.let { name -> runCatching { ThemePreset.valueOf(name) }.getOrNull() }
-            ?: ThemePreset.TANGERINE
+            ?: ThemePreset.OCEAN
         val darkMode = prefs.getString(KEY_DARK_MODE, null)
             ?.let { name -> runCatching { DarkModePreference.valueOf(name) }.getOrNull() }
             ?: DarkModePreference.SYSTEM

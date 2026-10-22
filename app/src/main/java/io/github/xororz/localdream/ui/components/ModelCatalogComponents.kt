@@ -102,7 +102,7 @@ private fun StudioBrandMark(kind: String, size: androidx.compose.ui.unit.Dp = 54
     val avatar = when (kind) {
         "voice" -> R.drawable.ic_model_breeze
         "music" -> R.drawable.ic_model_yue2
-        else -> R.drawable.ic_model_qwen
+        else -> R.drawable.ic_model_qwen_transparent
     }
     val accent = when (kind) {
         "voice" -> Color(0xFF67C8BD)
@@ -416,7 +416,7 @@ private fun FamilyVariantTile(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val accent = Color(0xFFE1BA85)
+    val accent = MaterialTheme.colorScheme.primary
     val shape = RoundedCornerShape(18.dp)
     Surface(
         modifier = modifier.fillMaxWidth().combinedClickable(
@@ -1290,8 +1290,8 @@ fun BreezeFamilyCard(
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFE1BA85),
-                        contentColor = Color(0xFF181817),
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
                     ),
                 ) {
                     Icon(
