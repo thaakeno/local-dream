@@ -179,6 +179,10 @@ data class Model(
                         scheduler = if (id.contains("turbo", ignoreCase = true))
                             "euler|simple" else "euler|sgm_uniform",
                     )
+                isDit && resolved.scheduler != "euler" ->
+                    // Z-Image, Klein, Krea and Qwen use native Euler; SDXL
+                    // Karras/DPM selections are not implemented by these engines.
+                    resolved.copy(scheduler = "euler")
                 else -> resolved
             }
         }
