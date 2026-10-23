@@ -1457,6 +1457,7 @@ fun ModelRunScreen(
         generationStep = 0
         generationTotalSteps = 0
         generationPhase = "queued"
+        lastMossCompletedHapticStep = 0
         currentBatchIndex = 0
         generationStartTime = null
         Toast.makeText(
@@ -1650,6 +1651,7 @@ fun ModelRunScreen(
                 progress = state.progress
                 generationStep = state.step
                 generationTotalSteps = state.totalSteps
+                val priorPhase = generationPhase
                 generationPhase = state.phase
                 if (model?.ditKind == "moss") {
                     // The MOSS native layer progress is a completed-layer
@@ -1671,6 +1673,16 @@ fun ModelRunScreen(
                             AppHaptics.perform(context, AppHaptics.Kind.Progress)
                         }
                         lastMossCompletedHapticStep = completed
+                    } else if (state.phase == "decoding" &&
+                        priorPhase.startsWith("moss_sampling_layers:")) {
+                        // The last 43/43 progress event can be coalesced by
+                        // Compose with the decode transition. The native
+                        // decode stage proves the final sampler step finished.
+                        val finalStep = priorPhase.split(':').getOrNull(2)?.toIntOrNull()
+                        if (finalStep != null && finalStep > lastMossCompletedHapticStep) {
+                            AppHaptics.perform(context, AppHaptics.Kind.Progress)
+                            lastMossCompletedHapticStep = finalStep
+                        }
                     }
                     // Encoder segments, tensor loads, layers and VAE decode
                     // are deliberately silent; the completion sound is separate.
@@ -3119,16 +3131,14 @@ fun ModelRunScreen(
                                     text = model?.name ?: "Running Model",
                                     fontWeight = FontWeight.Normal,
                                     maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 )
                                 Text(
                                     text = model?.description ?: "",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 )
                             }
                         }

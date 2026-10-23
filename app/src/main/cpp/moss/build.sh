@@ -38,7 +38,7 @@ test -f "$STAGED_SOURCE/ggml/CMakeLists.txt"
 # inside the staged MOSS tree. 028 adds MOSS/Qwen3.5 to happyyzy's pinned
 # DiT source; 035 builds MOSS attention from ggml's existing fused QKNORM_ROPE.
 # Fuzz disabled; malformed or outdated patches fail the build.
-for name in 028-nightmare-moss-image.sdcpp.patch 035-nightmare-moss-fused-rope.sdcpp.patch; do
+for name in 028-nightmare-moss-image.sdcpp.patch 035-nightmare-moss-fused-rope.sdcpp.patch 036-moss-fast-tensor-loader-poll.patch; do
     echo "Applying MOSS-only upstream patch $name"
     patch --batch --forward --fuzz=0 -d "$STAGED_SOURCE" -p1 < "patches/$name"
 done

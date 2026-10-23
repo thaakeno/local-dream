@@ -335,3 +335,29 @@ A committed source change and successful CI/native build cannot prove
 a real-device speedup. The device log reports the exact MOSS budget;
 validate same-seed identical GGUF 1024² runs in both modes,
 alternating test order with thermals controlled, then compare medians.
+
+## Alpha.82 (237) — eliminate idle tensor-loader sleeps
+
+The SM8850 1024² log exposed recurrent `loading 8/378 tensors` operations
+taking exactly ~0.20 s, despite reporting only ~0.01–0.02 s to copy to
+HTP. The pinned happyyzy source `src/model_loader.cpp` explicitly sleeps
+**200 milliseconds** in its worker-supervisor loop when the batch contains
+more than four tensors. During 1024², layers 21–42 reload repeatedly across
+all eight sampler passes; the sleep is overhead unrelated to model math.
+
+The isolated MOSS staged-engine source receives
+`036-moss-fast-tensor-loader-poll.patch`: 200 ms supervisory polling becomes
+5 ms. Worker completion is still joined before any tensor can be used,
+and all tensor reads/copies, weights, algorithms, scheduler, resolution,
+denoising steps, seed and NPU architecture are unchanged. The patch never
+touches other engines or the pristine shared upstream gitlink.
+
+This is a *testable speed optimization*, not a measured speed guarantee:
+the theoretical avoidable waiting can be tens of seconds over a high-res
+eight-step run, but actual end-to-end improvement and DSP stability still
+require same-seed comparison on SM8850.
+
+The final MOSS sampling-pass vibration is also delivered at the transition
+to VAE decode when the last graph-completion state was conflated by Compose.
+A cancelled run resets its sampling-haptic counter. The model title and
+description now use text ellipsis rather than an off-screen scroll viewport.

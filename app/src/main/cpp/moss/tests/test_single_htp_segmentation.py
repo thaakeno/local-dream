@@ -54,6 +54,10 @@ assert 'UPSTREAM="../3rdparty/stable-diffusion.cpp"' in build_script
 assert 'EXPECTED=a63954dc794f6daade32c407da1a9c4bc2d73cf0' in build_script
 assert 'BUILD_DIR=build/android-moss-fused-rope' in build_script
 assert '035-nightmare-moss-fused-rope.sdcpp.patch' in build_script
+assert '036-moss-fast-tensor-loader-poll.patch' in build_script
+staged_loader = (stage / "src/model_loader.cpp").read_text()
+assert 'std::this_thread::sleep_for(std::chrono::milliseconds(5));' in staged_loader
+assert 'milliseconds(total_tensors_to_process <= 4 ? 10 : 200)' not in staged_loader
 assert '028-nightmare-moss-image.sdcpp.patch' in build_script
 moss_model = (stage / "src/model/diffusion/moss_image.hpp").read_text()
 assert 'class MOSSQKNorm' in moss_model
@@ -111,3 +115,10 @@ assert 'completed > lastMossCompletedHapticStep' in screen
 assert 'MossPerformanceDialog' in settings
 assert 'Progress pulses' in settings
 print("MOSS once-per-sampler-step haptics and opt-in compatibility switch: PASS")
+
+# MOSS-only poll no longer imposes 200ms of idle time per tensor group.
+# Vibration is based on completed Euler passes, including final decode.
+assert 'priorPhase.startsWith("moss_sampling_layers:")' in screen
+assert 'lastMossCompletedHapticStep = finalStep' in screen
+assert 'TextOverflow.Ellipsis' in screen
+print("MOSS low-latency tensor streaming and final-step haptic: PASS")
