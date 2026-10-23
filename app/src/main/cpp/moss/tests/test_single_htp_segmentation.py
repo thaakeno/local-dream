@@ -54,7 +54,7 @@ assert 'UPSTREAM="../3rdparty/stable-diffusion.cpp"' in build_script
 assert 'EXPECTED=a63954dc794f6daade32c407da1a9c4bc2d73cf0' in build_script
 assert 'BUILD_DIR=build/android-moss-fused-rope' in build_script
 assert '035-nightmare-moss-fused-rope.sdcpp.patch' in build_script
-assert '037-moss-rope-dispatch-audit.patch' in build_script
+assert '035-nightmare-moss-fused-rope.sdcpp.patch' in build_script
 assert '[MOSS_ROPE_DISPATCH] candidate=fused' in (stage / "src/model/diffusion/moss_image.hpp").read_text()
 assert '[MOSS_ROPE_DISPATCH] fallback=' in (stage / "src/model/diffusion/moss_image.hpp").read_text()
 assert 'moss_htp_profile.flag' in moss_service

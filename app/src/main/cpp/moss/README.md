@@ -365,7 +365,7 @@ description now use text ellipsis rather than an off-screen scroll viewport.
 ## MOSS kernel-dispatch audit (October 23, 2026)
 
 A source-level fused RoPE flag is NOT proof that the specialized HTP op runs.
-The separate 037 staged-source patch emits exactly one `[MOSS_ROPE_DISPATCH]`
+The MOSS-only diagnostic additions within staged patch 035 emit exactly one `[MOSS_ROPE_DISPATCH]`
 line per encountered path: `candidate=fused`, `fallback=layout` or
 `fallback=unsupported`. These are **graph-building observations**:
 `candidate=fused` means that the NPU backend *accepted* the fused graph

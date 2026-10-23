@@ -70,12 +70,14 @@ new file mode 100644
 index 0000000..9bfe9c3
 --- /dev/null
 +++ b/src/model/diffusion/moss_image.hpp
-@@ -0,0 +1,275 @@
+@@ -0,0 +1,277 @@
 +#ifndef __SD_MODEL_DIFFUSION_MOSS_IMAGE_HPP__
 +#define __SD_MODEL_DIFFUSION_MOSS_IMAGE_HPP__
 +
 +#include <algorithm>
++#include <atomic>
 +#include <cinttypes>
++#include <cstdio>
 +
 +#include "model/common/ggml_block.hpp"
 +#include "model/common/rope.hpp"
