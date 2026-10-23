@@ -86,7 +86,10 @@ ui_settings = (moss.parent.parent / "java/io/github/xororz/localdream/ui/screens
 assert 'Noise schedule' in ui_settings and 'Sampler' in ui_settings
 assert 'onSchedulerChange("euler|$id")' in ui_settings
 assert 'Native FlowMatch' in ui_settings
-assert 'Simple is recommended for 8-step Turbo' in ui_settings
+assert 'Recommended: Simple · 8 steps' in ui_settings
+assert 'AppHaptics.Kind.Interaction' in ui_settings
+assert 'AppHaptics.Kind.Progress' in ui_settings
+assert 'FilterChip' not in ui_settings
 assert '[MOSS_BENCH]' in bridge
 assert 'setenv("SD_QWEN35_TOKENIZER"' in bridge
 assert 'p.tokenizer =' not in bridge
