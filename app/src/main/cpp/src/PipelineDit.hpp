@@ -60,6 +60,17 @@ class PipelineDit : public Pipeline {
       QNN_ERROR("engine entry point missing: %s", dlerror());
       return false;
     }
+    // Emit an ASLR base address for symbolizing native MOSS crashes. The
+    // crash signal handler already writes raw PC/LR, but without the loaded
+    // module base those addresses cannot be mapped to source.
+    if (kind_ == DIT_MODEL_MOSS_IMAGE) {
+      Dl_info module_info{};
+      if (dladdr(reinterpret_cast<void *>(get_api), &module_info) != 0) {
+        QNN_INFO("[MOSS_NATIVE_MAP] lib=%s base=%p api=%p",
+                 module_info.dli_fname ? module_info.dli_fname : "unknown",
+                 module_info.dli_fbase, reinterpret_cast<void *>(get_api));
+      }
+    }
     api_ = get_api(DIT_ENGINE_ABI_VERSION);
     if (!api_) {
       QNN_ERROR("engine ABI mismatch; core wants v%d", DIT_ENGINE_ABI_VERSION);

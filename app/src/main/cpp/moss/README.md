@@ -75,3 +75,21 @@ Qwen conditioning, full DiT partition, each diffusion step, VAE decoding,
 output image, and absence of `AEE_` / FastRPC errors. If allocation still
 fails, collect the **native** MOSS graph-cut failure line and per-HTP memory
 details; do not blindly increase beyond the FastRPC mapping window.
+
+## Alpha.74 (229): SIGSEGV triage, not an unverified memory increase
+The alpha.73 on-device log confirms Qwen conditioning succeeds in ~16.7 s,
+then MOSS DiT raises a native SIGSEGV (code 139), fault address
+`0x3eb3e60d3fb6d580`, after printing HTP split capacity information.
+This is a **memory access violation**, not proof of insufficient NPU memory;
+we do not increase the 2.75 GiB cap again. Upstream's graph-cut partitioner
+has multiple distinct stages (param segmentation, placement, weight manager)
+between the budget messages and execution. It is unsafe to guess which failed.
+
+The staged pinned source now emits `[MOSS_SPLIT_TRACE]` breadcrumbs for these
+stages and rejects a total partition weight requirement above the two NPU
+weight capacities as a normal error, rather than running an impossible
+placement. The MOSS server records `[MOSS_NATIVE_MAP] base=...` after the
+engine loads, so a subsequent fatal PC can be expressed as a module offset
+(`pc - base`) for symbolication. Original repo and all other engines remain
+untouched; original CI workflows and signing key remain unchanged. There is
+**no claim that this alone resolves the SIGSEGV** without the next device log.
