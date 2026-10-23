@@ -22,7 +22,7 @@ index 9bfe9c3..b374ea1 100644
 +            if (ctx->backend == nullptr || x->ne[3] != 1 || x->type != GGML_TYPE_F32) {
 +                static std::atomic<bool> logged_layout{false};
 +                if (!logged_layout.exchange(true, std::memory_order_relaxed)) {
-+                    std::fprintf(stderr, "[MOSS_ROPE_DISPATCH] fallback=layout backend=%d n3=%lld type=%d\\n",
++                    std::fprintf(stderr, "[MOSS_ROPE_DISPATCH] fallback=layout backend=%d n3=%lld type=%d\n",
 +                                 ctx->backend != nullptr, static_cast<long long>(x->ne[3]), static_cast<int>(x->type));
 +                }
 +                return nullptr;
@@ -45,14 +45,14 @@ index 9bfe9c3..b374ea1 100644
 +            if (!ggml_backend_supports_op(ctx->backend, out)) {
 +                static std::atomic<bool> logged_unsupported{false};
 +                if (!logged_unsupported.exchange(true, std::memory_order_relaxed)) {
-+                    std::fprintf(stderr, "[MOSS_ROPE_DISPATCH] fallback=unsupported head_dim=%lld tokens=%lld\\n",
++                    std::fprintf(stderr, "[MOSS_ROPE_DISPATCH] fallback=unsupported head_dim=%lld tokens=%lld\n",
 +                                 static_cast<long long>(xi->ne[0]), static_cast<long long>(xi->ne[2]));
 +                }
 +                return nullptr;
 +            }
 +            static std::atomic<bool> logged_candidate{false};
 +            if (!logged_candidate.exchange(true, std::memory_order_relaxed)) {
-+                std::fprintf(stderr, "[MOSS_ROPE_DISPATCH] candidate=fused head_dim=%lld tokens=%lld\\n",
++                std::fprintf(stderr, "[MOSS_ROPE_DISPATCH] candidate=fused head_dim=%lld tokens=%lld\n",
 +                             static_cast<long long>(xi->ne[0]), static_cast<long long>(xi->ne[2]));
 +            }
 +            return out;
@@ -74,7 +74,7 @@ index 9bfe9c3..b374ea1 100644
      struct TextBlock : public GGMLBlock {
          MOSSImageConfig config;
  
-@@ -74,8 +188,8 @@ namespace MOSSImage {
+@@ -74,8 +139,8 @@ namespace MOSSImage {
              : config(config) {
              blocks["norm1"]    = std::make_shared<RMSNorm>(config.dim, 1e-6f);
              blocks["norm2"]    = std::make_shared<RMSNorm>(config.dim, 1e-6f);
@@ -85,7 +85,7 @@ index 9bfe9c3..b374ea1 100644
              blocks["qkv"]      = std::make_shared<Linear>(config.dim, config.dim * 3, true);
              blocks["proj"]     = std::make_shared<Linear>(config.dim, config.dim, true);
              blocks["ffn_up"]   = std::make_shared<Linear>(config.dim, config.ffn_dim, true);
-@@ -92,10 +206,8 @@ namespace MOSSImage {
+@@ -92,10 +157,8 @@ namespace MOSSImage {
              auto split  = [&](int i) {
                  return ggml_reshape_4d(c, ggml_ext_slice(c, qkv, 0, i * config.dim, (i + 1) * config.dim), config.head_dim, config.dim / config.head_dim, x->ne[1], x->ne[2]);
              };
@@ -98,7 +98,7 @@ index 9bfe9c3..b374ea1 100644
              y      = linear("proj", y);
              x      = ggml_add(c, x, y);
              y      = norm("norm2", x);
-@@ -112,8 +222,8 @@ namespace MOSSImage {
+@@ -112,8 +175,8 @@ namespace MOSSImage {
              : config(config) {
              blocks["norm1"]            = std::make_shared<RMSNorm>(config.dim, 1e-6f);
              blocks["norm2"]            = std::make_shared<RMSNorm>(config.dim, 1e-6f);
@@ -109,7 +109,7 @@ index 9bfe9c3..b374ea1 100644
              if (config.split_qkv) {
                  blocks["proj.q"] = std::make_shared<Linear>(config.dim, config.dim, false);
                  blocks["proj.k"] = std::make_shared<Linear>(config.dim, config.dim, false);
-@@ -142,10 +252,8 @@ namespace MOSSImage {
+@@ -142,10 +205,8 @@ namespace MOSSImage {
                  }
                  return heads(ggml_ext_slice(c, qkv, 0, i * config.dim, (i + 1) * config.dim));
              };
