@@ -31,28 +31,98 @@ struct ActiveSession {
     dit_preview_cb preview = nullptr;
     void *user = nullptr;
     bool cancelled = false;
-    bool started = false;
     int expected_sampling_steps = 0;
+    int text_segments = 0;
+    int last_text_reported = -1;
+    int moss_segments = 0;
+    int last_moss_segment = 0;
+    int moss_pass = 1;
+    int last_moss_reported = -1;
+    bool encoding_prompt = false;
+    bool diffusion_started = false;
+    bool decoding_started = false;
 } active;
 
-void on_log(sd_log_level_t level, const char* message, void*) {
-    if (logger) logger(static_cast<int>(level), message ? message : "", logger_user);
-}
-void on_progress(int step, int total, float elapsed, void*) {
-    // stable-diffusion.cpp uses this single callback for BOTH lazy tensor uploads
-    // and real sampler steps. The model may upload 378 tensors before executing
-    // Qwen3.5. Never claim 378/378 diffusion steps.
-    if (step < 1 || total != active.expected_sampling_steps || step > total)
-        return;
-    if (active.phase && !active.started) {
-        active.started = true;
-        active.phase(DIT_PHASE_DENOISING, active.user);
-    }
-    if (active.progress && !active.progress(DIT_PROGRESS_SAMPLING, step, total, elapsed, active.user)) {
+// ggml's progress callback is also invoked for auxiliary operations. The
+// old bridge confused those values with real sampler steps (8/8 before MOSS
+// even finished pass 1). Graph-cut runner logs are the authoritative source:
+// entering segment N confirms N-1 segments completed. Report a monotonic,
+// conservative stage-local fraction, never speculative image completion.
+void emit_graph_progress(int completed, int total) {
+    if (!active.progress || active.cancelled || total <= 0) return;
+    if (!active.progress(DIT_PROGRESS_MODEL_LOADING,
+                         std::clamp(completed, 0, total), total, 0.f,
+                         active.user)) {
         active.cancelled = true;
         if (active.context && active.context->model)
             sd_cancel_generation(active.context->model, SD_CANCEL_ALL);
     }
+}
+void on_log(sd_log_level_t level, const char* message, void*) {
+    if (logger) logger(static_cast<int>(level), message ? message : "", logger_user);
+    if (!message || !active.context || active.cancelled) return;
+    int n = 0;
+    int total = 0;
+    // The pinned ggml engine logs the real NPU graph segment execution.
+    // Qwen variants name their runner qwen3/qwen3.5; do not depend on
+    // fabricated progress estimates or tensor upload denominators.
+    const char *segment = std::strstr(message, " executing segment ");
+    if (segment && std::sscanf(segment, " executing segment %d/%d", &n, &total) == 2 &&
+        n >= 1 && total > 0 && n <= total && total <= 256) {
+        if (std::strstr(message, "MOSS-Image")) {
+            if (!active.diffusion_started) {
+                active.diffusion_started = true;
+                active.encoding_prompt = false;
+                if (active.phase) active.phase(DIT_PHASE_DENOISING, active.user);
+            }
+            active.moss_segments = total;
+            if (n == 1 && active.last_moss_segment > 1)
+                ++active.moss_pass;
+            active.last_moss_segment = n;
+            const int all = total * active.expected_sampling_steps;
+            const int finished = std::min(all,
+                (active.moss_pass - 1) * total + n - 1);
+            if (finished > active.last_moss_reported) {
+                active.last_moss_reported = finished;
+                emit_graph_progress(finished, all);
+            }
+        } else if (!active.diffusion_started &&
+                   (std::strstr(message, "qwen3") ||
+                    std::strstr(message, "Qwen3"))) {
+            if (!active.encoding_prompt) {
+                active.encoding_prompt = true;
+                if (active.phase) active.phase(DIT_PHASE_ENCODING_PROMPT, active.user);
+            }
+            active.text_segments = total;
+            if (n - 1 > active.last_text_reported) {
+                active.last_text_reported = n - 1;
+                emit_graph_progress(n - 1, total);
+            }
+        }
+        return;
+    }
+    if (!active.diffusion_started &&
+        std::strstr(message, "get_learned_condition completed") &&
+        active.encoding_prompt) {
+        emit_graph_progress(active.text_segments, active.text_segments);
+        active.encoding_prompt = false;
+    } else if (active.diffusion_started &&
+               std::strstr(message, "sampling completed")) {
+        const int all = active.moss_segments * active.expected_sampling_steps;
+        emit_graph_progress(all, all);
+        active.decoding_started = true;
+        if (active.phase) active.phase(DIT_PHASE_DECODING, active.user);
+    } else if (active.diffusion_started && !active.decoding_started &&
+               std::strstr(message, "decoding ") &&
+               std::strstr(message, " latents")) {
+        active.decoding_started = true;
+        if (active.phase) active.phase(DIT_PHASE_DECODING, active.user);
+    }
+}
+void on_progress(int, int, float, void*) {
+    // Never use upstream's untyped callback to advance MOSS sampling. In the
+    // user's alpha.79 log, it reported 8/8 while graph execution continued.
+    // The on_log graph-segment observer provides real progress instead.
 }
 void on_preview(int step, int count, sd_image_t* images, bool, void*) {
     if (!active.preview || count < 1 || !images || !images[0].data) return;
@@ -151,8 +221,13 @@ bool generate(dit_ctx* ctx, const dit_gen_params* req,
         return false;
     }
     std::lock_guard<std::mutex> hold(generation_mutex);
-    active = {ctx, progress, phase, preview, user, false, false,
-              std::max(1, req->steps)};
+    active = {};
+    active.context = ctx;
+    active.progress = progress;
+    active.phase = phase;
+    active.preview = preview;
+    active.user = user;
+    active.expected_sampling_steps = std::max(1, req->steps);
     sd_img_gen_params_t params;
     sd_img_gen_params_init(&params);
     params.prompt = req->prompt ? req->prompt : "";

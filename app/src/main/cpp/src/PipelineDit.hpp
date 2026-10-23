@@ -269,6 +269,7 @@ class PipelineDit : public Pipeline {
                         0, 0, 0, false,
                         native_edit && params.init_image_rgb == nullptr,
                         pre_sample_steps};
+    callbacks.moss = kind_ == DIT_MODEL_MOSS_IMAGE;
     const auto start = std::chrono::high_resolution_clock::now();
 
     uint8_t *out_pixels = nullptr;
@@ -414,6 +415,9 @@ class PipelineDit : public Pipeline {
     bool sampling_started = false;
     bool full_sampling_schedule = false;
     int pre_sample_steps = 0;
+    // Strictly scoped to the standalone MOSS engine; other DiTs unchanged.
+    bool moss = false;
+    dit_generation_phase moss_phase = DIT_PHASE_PREPARING;
   };
 
   static std::vector<uint8_t> planarFloatToRgb(const std::vector<float> &planar,
@@ -496,6 +500,7 @@ class PipelineDit : public Pipeline {
   static void forwardPhase(dit_generation_phase phase, void *user_data) {
     auto *cb = static_cast<Callbacks *>(user_data);
     if (!cb || !cb->phase) return;
+    if (cb->moss) cb->moss_phase = phase;
     const char *name = "preparing";
     switch (phase) {
       case DIT_PHASE_ENCODING_INPUT: name = "encoding_input"; break;
@@ -524,8 +529,21 @@ class PipelineDit : public Pipeline {
         // Lazy weight residency can dominate the wait before the first sample.
         // Surface the real tensor counter as stage-local progress without
         // touching sampler steps.
-        (*cb->phase)("loading_model", std::clamp(step, 0, total_steps),
-                     total_steps);
+        std::string stage = "loading_model";
+        if (cb->moss) {
+          if (cb->moss_phase == DIT_PHASE_ENCODING_PROMPT) {
+            stage = "encoding_prompt";
+          } else if (cb->moss_phase == DIT_PHASE_DENOISING &&
+                     cb->req->steps > 0 &&
+                     total_steps % cb->req->steps == 0) {
+            // Wire format gives the UI the real NPU layers/pass without
+            // hardcoding the current 43-layer segmentation or a fake ETA.
+            stage = "moss_sampling_layers:" +
+                    std::to_string(total_steps / cb->req->steps) + ":" +
+                    std::to_string(cb->req->steps);
+          }
+        }
+        (*cb->phase)(stage, std::clamp(step, 0, total_steps), total_steps);
         return true;
       }
 

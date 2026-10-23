@@ -80,3 +80,19 @@ assert 'source.length() != expected' in downloader
 assert 'File(donorDir, MossImagePackages.MODEL_MARKER).isFile' in downloader
 assert '[MOSS_TURBO] merged DMD checkpoint; no runtime LoRA' in engine
 print("MOSS pre-merged Turbo catalog and common-runtime file hard links: PASS")
+
+# The user reported 8/8 appearing before a single MOSS graph pass finished.
+# For this engine only, progress must come from real Qwen and DiT segments.
+moss_src = (moss / "MossEngine.cpp").read_text()
+core_src = (moss.parent / "src/PipelineDit.hpp").read_text()
+ui_src = (moss.parent.parent / "java/io/github/xororz/localdream/ui/screens/GenerationProgressCard.kt").read_text()
+assert 'void on_progress(int, int, float, void*)' in moss_src
+assert 'on_log(sd_log_level_t level, const char* message, void*)' in moss_src
+assert 'std::strstr(message, " executing segment ")' in moss_src
+assert '(active.moss_pass - 1) * total + n - 1' in moss_src
+assert 'sampling completed' in moss_src and 'DIT_PHASE_DECODING' in moss_src
+assert 'callbacks.moss = kind_ == DIT_MODEL_MOSS_IMAGE' in core_src
+assert 'moss_sampling_layers:' in core_src
+assert 'moss_sampling_layers:' in ui_src
+assert 'Step $shownStep/$steps' in ui_src
+print("MOSS real graph progress, phased decoding, and UI regression: PASS")

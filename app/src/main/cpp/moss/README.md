@@ -274,3 +274,26 @@ chip, NOT yet achieved or confirmed on SM8850. No user-facing 5× claim.
 
 Other engines, shared runtime, model downloads, signing, package ID and
 existing GitHub workflows remain unchanged.
+
+## Alpha.80 (235): real MOSS progress (2026-10-23)
+
+The native untyped sd progress callback was reporting 8/8 before the actual
+8 diffusion passes had finished; both runtime-LoRA and merged Q4_0 exhibited
+this. The user's merged Turbo log shows 43 graph segments, repeated passes,
+and an explicit UI-initiated cancellation, NOT a completed decode.
+
+MOSS alone now observes confirmed `qwen3* executing segment N/T` and
+`MOSS-Image executing segment N/T` host graph-cut log events. Entering
+segment N means N-1 finished. Each repeat from 43 to 1 increments the
+actual diffusion pass, and the UI shows current pass/total and current
+completed layers/pass without inventing a time remaining estimate. Qwen
+encoding gets its own layer progress. Native 'sampling completed' marks
+transition to the indeterminate VAE decode stage. Native success still
+requires a valid image; SSE complete is emitted only after RGB output is
+returned and encoded. The previous callback now deliberately ignores
+untyped step counters. No user toggle or changes to other model engines.
+
+This prevents incorrect 8/8 UI; it does not assert that MOSS is faster or
+guarantee completion on the SM8850. Host logs are currently the only
+available supported source of per-segment truth without introducing a new
+ABI callback into third-party native code.
