@@ -227,7 +227,15 @@ class PipelineDit : public Pipeline {
     params.cfg_scale = req.cfg;
     params.guidance = kDistilledGuidance;
     params.seed = static_cast<int64_t>(req.seed);
-    params.sample_method = "euler";
+    // Only MOSS accepts sampler|noise-schedule; this is carried in the
+    // existing string so the stable DitEngine ABI and other DiT engines stay
+    // unchanged. Older stored "euler" values map to the Turbo Simple default.
+    const std::string moss_sampling = kind_ == DIT_MODEL_MOSS_IMAGE
+        ? (req.scheduler_type.rfind("euler|", 0) == 0
+            ? req.scheduler_type : std::string("euler|simple"))
+        : std::string();
+    params.sample_method = kind_ == DIT_MODEL_MOSS_IMAGE
+        ? moss_sampling.c_str() : "euler";
     params.denoise_strength = req.denoise_strength;
     if ((!native_edit || edit_from_base) && !init_rgb.empty()) {
       params.init_image_rgb = init_rgb.data();

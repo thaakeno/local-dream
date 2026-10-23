@@ -1520,7 +1520,22 @@ fun ModelRunScreen(
             useOpenCL = prefs.useOpenCL
             htpMode = prefs.htpMode
             batchCounts = prefs.batchCounts
-            scheduler = if (isFirstRun) defaults.scheduler else prefs.scheduler
+            scheduler = if (model.ditKind == "moss") {
+                val restored = if (isFirstRun) defaults.scheduler else prefs.scheduler
+                // Old builds displayed "Euler" yet always used Discrete in
+                // native code. Migrate those misleading saved values to the
+                // model's actually supported published schedule.
+                if (restored.startsWith("euler|") &&
+                    restored.substringAfter('|') in
+                    setOf("simple", "sgm_uniform", "discrete", "karras")
+                ) restored else defaults.scheduler
+            } else if (model.isDit || model.isAnima) {
+                // Native DiT / FlowMatch engines do not honor the old
+                // SD1.5/SDXL-style DPM / Karras choices.
+                defaults.scheduler
+            } else {
+                if (isFirstRun) defaults.scheduler else prefs.scheduler
+            }
             // Without img2img the backend has no VAE encoder, so a stored
             // non-1:1 ratio would silently fall back to 1024x1024 anyway.
             aspectRatio = if (useImg2img) prefs.aspectRatio else "1:1"
@@ -2389,6 +2404,11 @@ fun ModelRunScreen(
                                     cfg = cfg,
                                     useOpenCL = useOpenCL,
                                     isQwen21 = model?.ditKind == "qwen21" && !isRemote,
+                                    ditKind = model?.ditKind.orEmpty(),
+                                    isAnima = model?.isAnima == true,
+                                    mossIsTurbo = model?.ditKind == "moss" &&
+                                        (model.id.contains("turbo", ignoreCase = true) ||
+                                            model.id.contains("merged", ignoreCase = true)),
                                     htpMode = htpMode,
                                     batchCounts = batchCounts,
                                     denoiseStrength = denoiseStrength,

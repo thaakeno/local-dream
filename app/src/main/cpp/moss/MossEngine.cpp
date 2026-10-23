@@ -262,11 +262,34 @@ bool generate(dit_ctx* ctx, const dit_gen_params* req,
     params.batch_count = 1;
     params.sample_params.sample_steps = std::max(1, req->steps);
     params.sample_params.guidance.txt_cfg = std::isfinite(req->cfg_scale) && req->cfg_scale > 0 ? req->cfg_scale : 3.f;
-    params.sample_params.scheduler = DISCRETE_SCHEDULER;
+    // "euler|simple" encodes sampler + noise schedule in the existing ABI
+    // field. No ABI change; all other DiT engines retain their own behavior.
+    const std::string sampling_spec = req->sample_method && req->sample_method[0]
+        ? req->sample_method : "euler|simple";
+    const auto separator = sampling_spec.find('|');
+    const std::string sampler_name = sampling_spec.substr(0, separator);
+    const std::string schedule_name = separator == std::string::npos
+        ? "simple" : sampling_spec.substr(separator + 1);
+    if (sampler_name != "euler") {
+        ctx->error = "Unsupported MOSS sampler: " + sampler_name;
+        return false;
+    }
+    if (schedule_name == "simple") {
+        params.sample_params.scheduler = SIMPLE_SCHEDULER;
+    } else if (schedule_name == "sgm_uniform") {
+        params.sample_params.scheduler = SGM_UNIFORM_SCHEDULER;
+    } else if (schedule_name == "discrete") {
+        params.sample_params.scheduler = DISCRETE_SCHEDULER;
+    } else if (schedule_name == "karras") {
+        params.sample_params.scheduler = KARRAS_SCHEDULER;
+    } else {
+        ctx->error = "Unsupported MOSS noise schedule: " + schedule_name;
+        return false;
+    }
     params.sample_params.flow_shift = 5.f;
-    params.sample_params.sample_method = req->sample_method && req->sample_method[0]
-        ? str_to_sample_method(req->sample_method)
-        : EULER_SAMPLE_METHOD;
+    params.sample_params.sample_method = EULER_SAMPLE_METHOD;
+    std::fprintf(stderr, "[MOSS_SAMPLING] sampler=euler schedule=%s shift=5 steps=%d\n",
+                 schedule_name.c_str(), params.sample_params.sample_steps);
     if (req->vae_tile_size > 0) {
         params.vae_tiling_params.enabled = true;
         params.vae_tiling_params.tile_size_x = req->vae_tile_size;
