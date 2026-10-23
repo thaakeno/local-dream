@@ -145,3 +145,11 @@ assert 'priorPhase.startsWith("moss_sampling_layers:")' in screen
 assert 'lastMossCompletedHapticStep = finalStep' in screen
 assert 'TextOverflow.Ellipsis' in screen
 print("MOSS low-latency tensor streaming and final-step haptic: PASS")
+
+# All new precision paths are opt-in and use existing model directory contracts.
+moss_package_source = (moss.parent.parent / "java/io/github/xororz/localdream/data/MossImagePackages.kt").read_text()
+assert 'TURBO_NPU_Q8_ID' in moss_package_source
+assert 'moss_image_sft-Q4_0.gguf|dit.gguf' in moss_package_source
+assert 'Qwen3.5-9B-Q8_0.gguf|llm.gguf' in moss_package_source
+assert 'lora.safetensors|moss_turbo_lora.safetensors' in moss_package_source
+assert 'cpu_graph_islands=possible' in moss_service

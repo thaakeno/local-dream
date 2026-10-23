@@ -830,6 +830,7 @@ class ModelRepository private constructor(private val context: Context) {
                 if (MossImagePackages.engineAvailable(context)) {
                     add(createMossMergedTurboModel(fast = true))
                     add(createMossMergedTurboModel(fast = false))
+                    add(createMossNpuQ8TurboModel())
                     add(createMossImageModel(sft = true, turbo = false))
                     add(createMossImageModel(sft = false, turbo = false))
                     add(createMossImageModel(sft = true, turbo = true))
@@ -1169,7 +1170,7 @@ class ModelRepository private constructor(private val context: Context) {
             name = if (fast) "MOSS-Image Turbo · Q4_0 (Fast)"
                 else "MOSS-Image Turbo · Q4_K_M (Quality)",
             description = if (fast)
-                "8-step merged DMD GGUF · no runtime LoRA · fastest MOSS option"
+                "Experimental merged DMD · Q4_0 can reduce subtle adapter corrections"
             else
                 "8-step merged DMD GGUF · finer Q4_K_M quantization · experimental on NPU",
             baseUrl = baseUrl,
@@ -1190,11 +1191,41 @@ class ModelRepository private constructor(private val context: Context) {
             catalogFamily = "moss",
             variantPrecision = if (fast) "Q4_0" else "Q4_K_M",
             variantFormat = "GGUF",
-            variantProfile = if (fast) "Pre-merged 8-step DMD · fastest"
-                else "Pre-merged 8-step DMD · quality focus",
+            variantProfile = if (fast) "Fast merged DMD · artifact risk"
+                else "Finer quantization · still experimental",
             recommendedVariant = fast,
         )
     }
+
+    /** Optional: HTP-supported Q4_0 DiT + Q8_0 text encoder + unmerged DMD. */
+    private fun createMossNpuQ8TurboModel(): Model = Model(
+        id = MossImagePackages.TURBO_NPU_Q8_ID,
+        name = "MOSS Turbo · HTP Q8 Encoder (Experimental)",
+        description = "Unmerged FP32 DMD LoRA · Q4_0 diffusion · Q8_0 Qwen3.5 (~14 GB)",
+        baseUrl = baseUrl,
+        packageFiles = MossImagePackages.SFT_TURBO_NPU_Q8,
+        generationSize = 1024,
+        approximateSize = "14GB",
+        isDownloaded = Model.isDitPackageDownloaded(
+            context, MossImagePackages.TURBO_NPU_Q8_ID,
+            "moss", MossImagePackages.SFT_TURBO_NPU_Q8,
+        ),
+        codeDefaults = ModelConfig(
+            prompt = MossPromptPresets.options.first().prompt,
+            negativePrompt = "",
+            steps = 8f,
+            cfg = 1f,
+            scheduler = "euler|simple",
+            denoiseStrength = 1f,
+        ),
+        runOnCpu = false,
+        ditKind = "moss",
+        catalogFamily = "moss",
+        variantPrecision = "Q4_0 DiT + Q8_0 TE",
+        variantFormat = "GGUF + LoRA",
+        variantProfile = "Unmerged FP32 DMD · NPU-eligible weights · unverified",
+        recommendedVariant = false,
+    )
 
     private fun createMossImageModel(sft: Boolean, turbo: Boolean): Model {
         val id = when {

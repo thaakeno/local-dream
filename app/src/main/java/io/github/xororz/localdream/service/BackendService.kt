@@ -1136,6 +1136,14 @@ class BackendService : Service() {
                     "profile=" + if (fastResidency) "fast" else "compatibility")
                 BackendDiagnostics.append(this, "MOSS_MEMORY",
                     "budget=$mossBudget resolution=${width}x${height} device=${Build.SOC_MODEL}")
+                // Pinned HTP MUL_MAT lacks Q4_K/Q5_K/Q6_K kernels. Existing
+                // Qwen3.5-K encoders can execute CPU graph islands even when
+                // the initial requested backend is HTP0:0.
+                BackendDiagnostics.append(this, "MOSS_ENCODER",
+                    if (config.modelId == MossImagePackages.TURBO_NPU_Q8_ID)
+                        "Q8_0 text encoder supports HTP matmul; device parity/perf unverified"
+                    else
+                        "Q4_K/Q5_K/Q6_K encoder uses CPU matmul islands; long prompt cost")
                 // Do not override HMX, OPFUSION, OPBATCH or OPQUEUE.
                 // Legacy dual-device crash experiments disabled HMX (NHMX=0)
                 // and op fusion (OPFUSION=0), which prevents the NPU from
@@ -1145,11 +1153,11 @@ class BackendService : Service() {
                 // Allow the driver to choose whether an individual tensor
                 // is actually HMX-eligible, otherwise it falls back to HVX.
                 BackendDiagnostics.append(this, "MOSS_NPU",
-                    "inference=HTP-only compute_session=HTP0:0 " +
+                    "requested_compute=HTP0:0 compute_session=HTP0:0 " +
                     "te=HTP-single-segmented diffusion=HTP-single-segmented vae=HTP0:0 " +
                     "max_vram=$mossBudget params_backend=all=disk " +
                     "hmx=auto fusion=auto opbatch=upstream opqueue=upstream " +
-                    "power=upstream-default cpu_inference_fallback=disabled")
+                    "power=upstream-default cpu_graph_islands=possible")
             }
             if (backendType == "sdxl") {
                 // SDXL must not monopolize the phone's CPU/DDR fabric while

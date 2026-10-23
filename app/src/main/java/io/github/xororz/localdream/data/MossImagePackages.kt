@@ -26,6 +26,16 @@ object MossImagePackages {
     // are shared safely by the downloader when already installed.
     const val MERGED_TURBO_FAST_ID = "moss_image_sft_turbo_merged_q4_0"
     const val MERGED_TURBO_QUALITY_ID = "moss_image_sft_turbo_merged_q4_k_m"
+    // Opt-in experimental native HTP matmul path. Keep the FP32 DMD adapter
+    // separate; this package does not alter existing installed checkpoints.
+    const val TURBO_NPU_Q8_ID = "moss_image_sft_turbo_npu_q8"
+    val SFT_TURBO_NPU_Q8 = listOf(
+        "molbal/MOSS-Image-GGUF/resolve/main/moss_image_sft-Q4_0.gguf|dit.gguf",
+        "unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q8_0.gguf|llm.gguf",
+        "Comfy-Org/MOSS-Image/resolve/main/vae/flux2-vae.safetensors|vae.safetensors",
+        "OpenMOSS-Team/MOSS-Image-Base/resolve/main/tokenizer/tokenizer.json|tokenizer.json",
+        "lodestones/MOSS-Image-SFT-8-steps-dmd/resolve/main/lora.safetensors|moss_turbo_lora.safetensors",
+    )
 
     val MERGED_TURBO_FAST_Q4_0 = listOf(
         "molbal/MOSS-Image-GGUF/resolve/main/moss_image_sft_turbo-Q4_0.gguf|dit.gguf",
@@ -39,7 +49,7 @@ object MossImagePackages {
     val KNOWN_MODEL_IDS = listOf(
         "moss_image_sft_q4", "moss_image_base_q4",
         "moss_image_sft_turbo_q4", "moss_image_base_turbo_q4",
-        MERGED_TURBO_FAST_ID, MERGED_TURBO_QUALITY_ID,
+        MERGED_TURBO_FAST_ID, MERGED_TURBO_QUALITY_ID, TURBO_NPU_Q8_ID,
     )
 
     val SFT_Q4 = listOf(
