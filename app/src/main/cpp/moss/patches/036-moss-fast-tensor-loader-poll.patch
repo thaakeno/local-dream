@@ -1,17 +1,11 @@
 diff --git a/src/model_loader.cpp b/src/model_loader.cpp
 --- a/src/model_loader.cpp
 +++ b/src/model_loader.cpp
-@@ -1253,8 +1253,12 @@
-                                       static_cast<int>(total_tensors_to_process),
-                                       bytes_processed.load(),
-                                       elapsed_seconds);
+@@ -1256,3 +1256,7 @@
              }
 -            std::this_thread::sleep_for(std::chrono::milliseconds(total_tensors_to_process <= 4 ? 10 : 200));
-+            // MOSS-only: this is a supervisory poll, not a required
-+            // disk/HTP transfer delay. At 1024px, waiting 200ms after
-+            // each eight-tensor load cost several seconds per sampler pass.
-+            // Worker threads still join below before tensors are used.
++            // MOSS-only: this supervisory poll must not impose up to 200ms
++            // of idle time on each small segmented NPU tensor load.
++            // Workers are still joined before their tensors are consumed.
 +            std::this_thread::sleep_for(std::chrono::milliseconds(5));
          }
- 
-         for (auto& w : workers) {
