@@ -2407,8 +2407,8 @@ fun ModelRunScreen(
                                     ditKind = model?.ditKind.orEmpty(),
                                     isAnima = model?.isAnima == true,
                                     mossIsTurbo = model?.ditKind == "moss" &&
-                                        (model.id.contains("turbo", ignoreCase = true) ||
-                                            model.id.contains("merged", ignoreCase = true)),
+                                        (model?.id?.contains("turbo", ignoreCase = true) == true ||
+                                            model?.id?.contains("merged", ignoreCase = true) == true),
                                     htpMode = htpMode,
                                     batchCounts = batchCounts,
                                     denoiseStrength = denoiseStrength,

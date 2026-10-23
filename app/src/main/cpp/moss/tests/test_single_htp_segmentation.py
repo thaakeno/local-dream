@@ -73,6 +73,20 @@ assert 'if (!ggml_backend_supports_op(ctx->backend, out))' in moss_model
 assert 'GGML_OP_QKNORM_ROPE' in (stage / "ggml/include/ggml.h").read_text()
 assert 'GGML_OP_QKNORM_ROPE' in hexagon
 assert 'std::getenv("NM_MOSS_COMPOSED_ROPE")' in bridge
+assert 'params.sample_params.scheduler = SIMPLE_SCHEDULER' in bridge
+assert 'params.sample_params.scheduler = SGM_UNIFORM_SCHEDULER' in bridge
+assert 'params.sample_params.scheduler = DISCRETE_SCHEDULER' in bridge
+assert 'params.sample_params.scheduler = KARRAS_SCHEDULER' in bridge
+dit_bridge = (moss.parent / "src/PipelineDit.hpp").read_text()
+assert 'const std::string moss_sampling = kind_ == DIT_MODEL_MOSS_IMAGE' in dit_bridge
+assert 'params.sample_method = kind_ == DIT_MODEL_MOSS_IMAGE' in dit_bridge
+model_source = (moss.parent.parent / "java/io/github/xororz/localdream/data/Model.kt").read_text()
+assert 'euler|simple' in model_source and 'euler|sgm_uniform' in model_source
+ui_settings = (moss.parent.parent / "java/io/github/xororz/localdream/ui/screens/AdvancedSettingsDialog.kt").read_text()
+assert 'Noise schedule' in ui_settings and 'Sampler' in ui_settings
+assert 'onSchedulerChange("euler|$id")' in ui_settings
+assert 'Native FlowMatch' in ui_settings
+assert 'Simple is recommended for 8-step Turbo' in ui_settings
 assert '[MOSS_BENCH]' in bridge
 assert 'setenv("SD_QWEN35_TOKENIZER"' in bridge
 assert 'p.tokenizer =' not in bridge

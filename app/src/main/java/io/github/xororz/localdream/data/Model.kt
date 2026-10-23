@@ -168,7 +168,20 @@ data class Model(
 
     // Per-field priority: code defaults > config.json > global defaults.
     val defaults: GenerationDefaults
-        get() = codeDefaults.withFallback(configDefaults).resolve()
+        get() {
+            val resolved = codeDefaults.withFallback(configDefaults).resolve()
+            // Custom imported models may lack per-model defaults.
+            return when {
+                isAnima && resolved.scheduler !in setOf("euler", "euler_a") ->
+                    resolved.copy(scheduler = "euler")
+                ditKind == "moss" && !resolved.scheduler.startsWith("euler|") ->
+                    resolved.copy(
+                        scheduler = if (id.contains("turbo", ignoreCase = true))
+                            "euler|simple" else "euler|sgm_uniform",
+                    )
+                else -> resolved
+            }
+        }
 
     // SDXL and Anima both render on a fixed 1024 canvas and reach non-1:1
     // outputs via aspect-ratio inpaint padding; the run screen treats them

@@ -4,6 +4,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -54,7 +55,7 @@ import kotlin.math.roundToInt
  * state mutation is routed back through callbacks so the screen keeps ownership
  * of parameter state and persistence.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun AdvancedSettingsDialog(
     isSdxl: Boolean,
@@ -153,6 +154,17 @@ internal fun AdvancedSettingsDialog(
                     "Canvas",
                     style = MaterialTheme.typography.titleSmall,
                 )
+                if (!isDit && !(isSdxl && useImg2img) &&
+                    (isSdxl || runOnCpu || availableResolutions.isEmpty())
+                ) {
+                    Text(
+                        if (isSdxl || isAnima) "Fixed 1024 × 1024 canvas"
+                        else if (runOnCpu) "Custom image size is under Output & runtime"
+                        else "Canvas size is set by the model package",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 // On SDXL the aspect ratio is inpaint-based padding, so it
                 // needs the VAE encoder that --no_img2img skips. DiT models get
                 // width and height directly instead.
