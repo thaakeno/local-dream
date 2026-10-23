@@ -74,8 +74,16 @@ dit_ctx *create(const dit_ctx_params* req) {
     }
     auto *ctx = new dit_ctx();
     const auto adapter = folder.parent_path() / "moss_turbo_lora.safetensors";
-    if (std::filesystem::is_regular_file(adapter))
+    // The new GGUF files already contain DMD weights. Never double-apply
+    // a stale LoRA copied into their model folder by a user or migration.
+    const auto model_id = folder.parent_path().filename().string();
+    const bool merged_turbo = model_id == "moss_image_sft_turbo_merged_q4_0" ||
+                              model_id == "moss_image_sft_turbo_merged_q4_k_m";
+    if (merged_turbo) {
+        std::fprintf(stderr, "[MOSS_TURBO] merged DMD checkpoint; no runtime LoRA\n");
+    } else if (std::filesystem::is_regular_file(adapter)) {
         ctx->turbo_lora_path = adapter.string();
+    }
     sd_ctx_params_t p;
     sd_ctx_params_init(&p);
     const std::string token_path = tokenizer.string();

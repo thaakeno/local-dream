@@ -21,6 +21,27 @@ object MossImagePackages {
         "OpenMOSS-Team/MOSS-Image-Base/resolve/main/tokenizer/tokenizer.json|tokenizer.json",
     )
 
+    // The 8-step DMD adapter is already merged into these molbal GGUFs.
+    // Download one checkpoint per model. Common encoder/VAE/tokenizer files
+    // are shared safely by the downloader when already installed.
+    const val MERGED_TURBO_FAST_ID = "moss_image_sft_turbo_merged_q4_0"
+    const val MERGED_TURBO_QUALITY_ID = "moss_image_sft_turbo_merged_q4_k_m"
+
+    val MERGED_TURBO_FAST_Q4_0 = listOf(
+        "molbal/MOSS-Image-GGUF/resolve/main/moss_image_sft_turbo-Q4_0.gguf|dit.gguf",
+    ) + common
+
+    val MERGED_TURBO_QUALITY_Q4_K_M = listOf(
+        "molbal/MOSS-Image-GGUF/resolve/main/moss_image_sft_turbo-Q4_K_M.gguf|dit.gguf",
+    ) + common
+
+    val SHARED_RUNTIME_FILES = setOf("llm.gguf", "vae.safetensors", "tokenizer.json")
+    val KNOWN_MODEL_IDS = listOf(
+        "moss_image_sft_q4", "moss_image_base_q4",
+        "moss_image_sft_turbo_q4", "moss_image_base_turbo_q4",
+        MERGED_TURBO_FAST_ID, MERGED_TURBO_QUALITY_ID,
+    )
+
     val SFT_Q4 = listOf(
         "leejet/MOSS-Image-SFT-GGUF/resolve/main/MOSS-Image-SFT-Q4_K.gguf|dit.gguf",
     ) + common
