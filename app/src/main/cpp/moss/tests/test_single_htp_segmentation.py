@@ -56,7 +56,7 @@ assert 'ggml_qknorm_rope' in moss_model
 assert 'NM_MOSS_COMPOSED_ROPE' in moss_model
 assert 'if (!ggml_backend_supports_op(ctx->backend, out))' in moss_model
 assert 'GGML_OP_QKNORM_ROPE' in (stage / "ggml/include/ggml.h").read_text()
-assert 'ggml_qknorm_rope' in hexagon
+assert 'GGML_OP_QKNORM_ROPE' in hexagon
 assert 'std::getenv("NM_MOSS_COMPOSED_ROPE")' in bridge
 assert '[MOSS_BENCH]' in bridge
 assert 'setenv("SD_QWEN35_TOKENIZER"' in bridge
