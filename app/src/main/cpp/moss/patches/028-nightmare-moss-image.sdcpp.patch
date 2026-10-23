@@ -39,10 +39,9 @@ diff --git a/src/model.h b/src/model.h
 index 96050ce..054df00 100644
 --- a/src/model.h
 +++ b/src/model.h
-@@ -60,6 +60,7 @@ enum SDVersion {
+@@ -60,5 +60,6 @@ enum SDVersion {
      VERSION_MAGE_FLOW,
      VERSION_ESRGAN,
-     VERSION_IRIS,
 +    VERSION_MOSS_IMAGE,
      VERSION_COUNT,
  };
@@ -57,12 +56,11 @@ index 96050ce..054df00 100644
          return true;
      }
      return false;
-@@ -298,7 +300,8 @@ static inline bool sd_version_is_dit(SDVersion version) {
+@@ -298,6 +300,7 @@ static inline bool sd_version_is_dit(SDVersion version) {
          sd_version_is_sefi_image(version) ||
          sd_version_is_krea2(version) ||
-         sd_version_is_mage_flow(version) ||
--        version == VERSION_IRIS) {
-+        version == VERSION_IRIS ||
+-        sd_version_is_mage_flow(version)) {
++        sd_version_is_mage_flow(version) ||
 +        version == VERSION_MOSS_IMAGE) {
          return true;
      }
@@ -695,20 +693,18 @@ diff --git a/src/pipeline/diffusion_engine.cpp b/src/pipeline/diffusion_engine.c
 index f15ec4c..ff4bba0 100644
 --- a/src/pipeline/diffusion_engine.cpp
 +++ b/src/pipeline/diffusion_engine.cpp
-@@ -99,6 +99,7 @@ const char* model_version_to_str[] = {
+@@ -99,5 +99,6 @@ const char* model_version_to_str[] = {
      "Mage Flow",
      "ESRGAN",
-     "Iris-3B",
 +    "MOSS-Image",
  };
  
  static_assert(VERSION_COUNT == sizeof(model_version_to_str) / sizeof(model_version_to_str[0]),
-@@ -1263,9 +1264,10 @@ bool StableDiffusionGGML::build_denoiser() {
+@@ -1263,8 +1264,9 @@ bool StableDiffusionGGML::build_denoiser() {
                     sd_version_is_boogu_image(version) ||
                     sd_version_is_pid(version) ||
-                    sd_version_is_ideogram4(version) ||
--                   version == VERSION_IRIS) {
-+                   version == VERSION_IRIS ||
+-                   sd_version_is_ideogram4(version)) {
++                   sd_version_is_ideogram4(version) ||
 +                   version == VERSION_MOSS_IMAGE) {
              pred_type = FLOW_PRED;
 -            if (sd_version_is_wan(version)) {
@@ -751,16 +747,14 @@ index bfe73b0..c6301cb 100644
  #include "model/diffusion/pid.hpp"
  #include "model/diffusion/qwen_image.hpp"
  #include "model/diffusion/qwen_image_2_1.hpp"
-@@ -374,6 +375,11 @@ namespace sd::model_builders {
-                                                                tensor_storage_map, version, "", false, weight_manager);
-             result.diffusion   = std::make_shared<Iris::IrisRunner>(ctx.backends.runtime_backend(SDBackendModule::DIFFUSION),
-                                                                   tensor_storage_map, "model.diffusion_model", weight_manager);
+@@ -369,3 +369,8 @@ namespace sd::model_builders {
+-        } else {  // SD1.x SD2.x SDXL
 +        } else if (version == VERSION_MOSS_IMAGE) {
 +            result.conditioner = std::make_shared<LLMEmbedder>(ctx.backends.runtime_backend(SDBackendModule::TE),
 +                                                               tensor_storage_map, version, "", false, weight_manager);
 +            result.diffusion   = std::make_shared<MOSSImage::MOSSImageRunner>(ctx.backends.runtime_backend(SDBackendModule::DIFFUSION),
 +                                                                            tensor_storage_map, "model.diffusion_model", weight_manager);
-         } else {  // SD1.x SD2.x SDXL
++        } else {  // SD1.x SD2.x SDXL
              std::map<std::string, std::string> embbeding_map;
              for (uint32_t i = 0; i < sd_ctx_params->embedding_count; i++) {
 diff --git a/src/tokenizers/qwen35_tokenizer.cpp b/src/tokenizers/qwen35_tokenizer.cpp
