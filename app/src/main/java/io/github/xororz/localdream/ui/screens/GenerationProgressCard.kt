@@ -7,6 +7,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -114,6 +119,38 @@ internal fun GenerationProgressCard(
                     totalSteps > 0 &&
                         (phase == "denoising" || phase == "loading_model" ||
                             phase == "encoding_prompt" || phase.startsWith("moss_sampling_layers:"))
+                if (phase.startsWith("moss_sampling_layers:")) {
+                    val parts = phase.split(":")
+                    val layerCount = parts.getOrNull(1)?.toIntOrNull()
+                    val stepCount = parts.getOrNull(2)?.toIntOrNull()
+                    if (layerCount != null && layerCount > 0 &&
+                        stepCount != null && stepCount in 1..50 &&
+                        totalSteps == layerCount * stepCount
+                    ) {
+                        val completed = (step.coerceIn(0, totalSteps) / layerCount)
+                            .coerceIn(0, stepCount)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            repeat(stepCount) { index ->
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(5.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            when {
+                                                index < completed -> MaterialTheme.colorScheme.primary
+                                                index == completed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                                else -> MaterialTheme.colorScheme.surfaceVariant
+                                            },
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                }
                 if (determinate) {
                     SmoothLinearWavyProgressIndicator(
                         progress = progress,

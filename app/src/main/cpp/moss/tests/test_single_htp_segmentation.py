@@ -18,8 +18,13 @@ assert 'moss ? "diffusion=HTP0:0,te=HTP0:0,vae=HTP0:0"' in main
 assert 'moss ? "all=disk"' in main
 assert 'const std::string moss_htp = "HTP0:0&HTP0:1"' not in main
 assert 'kMossSingleHtpBudget = "HTP0:0=2.60"' in bridge
+assert 'NM_MOSS_MAX_VRAM' in bridge
+assert 'HTP0:0=2.84' in bridge and 'HTP0:0=2.88' in bridge
+assert 'if (!ctx->model && budget != kMossSingleHtpBudget)' in bridge
 assert 'std::strcmp(req->params_backend, "all=disk")' in bridge
-assert 'max_vram=HTP0:0=2.60GiB params_backend=all=disk' in svc
+assert '"max_vram=$mossBudget params_backend=all=disk "' in svc
+assert 'moss_fast_residency' in svc
+assert 'NM_MOSS_MAX_VRAM' in svc
 # Scope accelerator checks to MOSS only. Other backends (notably YuE2)
 # intentionally supply their own NHMX/fusion/batch/queue values, and must
 # NEVER be mutated just to satisfy a MOSS regression.
@@ -96,3 +101,13 @@ assert 'moss_sampling_layers:' in core_src
 assert 'moss_sampling_layers:' in ui_src
 assert 'Step $shownStep/$steps' in ui_src
 print("MOSS real graph progress, phased decoding, and UI regression: PASS")
+
+# Haptic updates MUST never fire per MOSS segment/encoder/decoder callback.
+screen = (moss.parent.parent / "java/io/github/xororz/localdream/ui/screens/ModelRunScreen.kt").read_text()
+settings = (moss.parent.parent / "java/io/github/xororz/localdream/ui/screens/ModelListScreen.kt").read_text()
+assert 'lastMossCompletedHapticStep' in screen
+assert 'val completed = (state.step.coerceAtLeast(0) / layersPerStep)' in screen
+assert 'completed > lastMossCompletedHapticStep' in screen
+assert 'MossPerformanceDialog' in settings
+assert 'Progress pulses' in settings
+print("MOSS once-per-sampler-step haptics and opt-in compatibility switch: PASS")

@@ -1098,6 +1098,31 @@ class BackendService : Service() {
                 BackendDiagnostics.append(this, "MOSS_ROPE",
                     if (composedRopeFlag.isFile) "benchmark=composed"
                     else "benchmark=fused-with-capability-fallback")
+                // The v81 Snapdragon SM8850 has a roughly 3.08 GiB DSP
+                // mapping window. Alpha.80 forced 2.60 GiB regardless of
+                // resolution, evicting weights after MOSS layer 20 on every
+                // pass. A modest headroom-preserving increase can reduce those
+                // redundant uploads. Never use both HTP virtual sessions.
+                // The Settings compatibility switch restores the exact known
+                // good 2.60 GiB budget on the next backend restart.
+                val isV81Sm8850 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    Build.SOC_MODEL.contains("SM8850", ignoreCase = true)
+                val fastResidency = isV81Sm8850 &&
+                    preferences.getBoolean("moss_fast_residency", true)
+                val mossBudget = if (!fastResidency) {
+                    "HTP0:0=2.60"
+                } else if (width.toLong() * height.toLong() <= 512L * 512L) {
+                    "HTP0:0=2.88"
+                } else {
+                    // At 1024² graph activations alone peak around 678 MB.
+                    // Retain at least ~240 MiB HTP virtual-address headroom.
+                    "HTP0:0=2.84"
+                }
+                env["NM_MOSS_MAX_VRAM"] = mossBudget
+                BackendDiagnostics.append(this, "MOSS_MEMORY",
+                    "profile=" + if (fastResidency) "fast" else "compatibility")
+                BackendDiagnostics.append(this, "MOSS_MEMORY",
+                    "budget=$mossBudget resolution=${width}x${height} device=${Build.SOC_MODEL}")
                 // Do not override HMX, OPFUSION, OPBATCH or OPQUEUE.
                 // Legacy dual-device crash experiments disabled HMX (NHMX=0)
                 // and op fusion (OPFUSION=0), which prevents the NPU from
@@ -1109,7 +1134,7 @@ class BackendService : Service() {
                 BackendDiagnostics.append(this, "MOSS_NPU",
                     "inference=HTP-only compute_session=HTP0:0 " +
                     "te=HTP-single-segmented diffusion=HTP-single-segmented vae=HTP0:0 " +
-                    "max_vram=HTP0:0=2.60GiB params_backend=all=disk " +
+                    "max_vram=$mossBudget params_backend=all=disk " +
                     "hmx=auto fusion=auto opbatch=upstream opqueue=upstream " +
                     "power=upstream-default cpu_inference_fallback=disabled")
             }

@@ -412,6 +412,9 @@ fun ModelRunScreen(
     var generationTotalSteps by remember { mutableIntStateOf(0) }
     var generationPhase by remember { mutableStateOf("preparing") }
     var lastImageProgressHapticKey by remember { mutableStateOf<String?>(null) }
+    // MOSS is 43 NPU segments PER sampler step. Haptic pulses belong to
+    // completed sampler passes, not to every native graph-layer update.
+    var lastMossCompletedHapticStep by remember { mutableIntStateOf(0) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isCheckingBackend by remember { mutableStateOf(true) }
 
@@ -1648,19 +1651,45 @@ fun ModelRunScreen(
                 generationStep = state.step
                 generationTotalSteps = state.totalSteps
                 generationPhase = state.phase
-                val hapticKey =
-                    state.phase + ":" + state.step + ":" + (state.progress * 1000f).toInt()
-                if (state.progress > 0f && hapticKey != lastImageProgressHapticKey) {
-                    AppHaptics.perform(context, AppHaptics.Kind.Progress)
-                    lastImageProgressHapticKey = hapticKey
-                } else if (state.progress <= 0f) {
-                    lastImageProgressHapticKey = null
+                if (model?.ditKind == "moss") {
+                    // The MOSS native layer progress is a completed-layer
+                    // counter across N passes. Only vibrate at N*layers.
+                    val parts = state.phase
+                        .takeIf { it.startsWith("moss_sampling_layers:") }
+                        ?.split(':')
+                    val layersPerStep = parts?.getOrNull(1)?.toIntOrNull()
+                    val scheduledSteps = parts?.getOrNull(2)?.toIntOrNull()
+                    if (layersPerStep != null && layersPerStep > 0 &&
+                        scheduledSteps != null && scheduledSteps > 0 &&
+                        state.totalSteps == layersPerStep * scheduledSteps
+                    ) {
+                        val completed = (state.step.coerceAtLeast(0) / layersPerStep)
+                            .coerceAtMost(scheduledSteps)
+                        if (completed > lastMossCompletedHapticStep) {
+                            // Exactly one notification for the newly completed
+                            // Euler step, even when progress emits multiple times.
+                            AppHaptics.perform(context, AppHaptics.Kind.Progress)
+                        }
+                        lastMossCompletedHapticStep = completed
+                    }
+                    // Encoder segments, tensor loads, layers and VAE decode
+                    // are deliberately silent; the completion sound is separate.
+                } else {
+                    val hapticKey =
+                        state.phase + ":" + state.step + ":" + (state.progress * 1000f).toInt()
+                    if (state.progress > 0f && hapticKey != lastImageProgressHapticKey) {
+                        AppHaptics.perform(context, AppHaptics.Kind.Progress)
+                        lastImageProgressHapticKey = hapticKey
+                    } else if (state.progress <= 0f) {
+                        lastImageProgressHapticKey = null
+                    }
                 }
                 isRunning = true
                 state.intermediateImage?.let { intermediateBitmap = it }
             }
 
             is GenerationState.Complete -> {
+                lastMossCompletedHapticStep = 0
                 lastImageProgressHapticKey = null
                 intermediateBitmap = null
                 withContext(Dispatchers.Main) {

@@ -181,8 +181,18 @@ dit_ctx *create(const dit_ctx_params* req) {
     if (req->params_backend && req->params_backend[0]) p.params_backend = req->params_backend;
     // Budgeted single-backend segments stream both Qwen and DiT weights
     // from disk; the two-session layer split previously disabled segmentation.
-    // 2.60 GiB is a managed runner budget, not physical DSP memory capacity.
+    // The managed budget includes compute buffers and retained layer weights;
+    // it is NOT physical RAM or a promise about NPU map limits.
+    // Only accept application-owned, prevalidated profiles. Never accept an
+    // arbitrary budget from an untrusted environment or another model engine.
     constexpr const char *kMossSingleHtpBudget = "HTP0:0=2.60";
+    const char* budget = kMossSingleHtpBudget;
+    const char* requested_budget = std::getenv("NM_MOSS_MAX_VRAM");
+    if (requested_budget &&
+        (std::strcmp(requested_budget, "HTP0:0=2.84") == 0 ||
+         std::strcmp(requested_budget, "HTP0:0=2.88") == 0)) {
+        budget = requested_budget;
+    }
     if (!req->backend || std::strstr(req->backend, "HTP0:0&") ||
         !std::strstr(req->backend, "diffusion=HTP0:0,te=HTP0:0,vae=HTP0:0") ||
         !req->params_backend || std::strcmp(req->params_backend, "all=disk") != 0) {
@@ -190,10 +200,15 @@ dit_ctx *create(const dit_ctx_params* req) {
         delete ctx;
         return nullptr;
     }
-    p.max_vram = kMossSingleHtpBudget;
+    p.max_vram = budget;
     std::fprintf(stderr, "[MOSS_SEGMENTED] max_vram=%s runtime=%s params=%s\n",
-                 kMossSingleHtpBudget, req->backend, req->params_backend);
+                 budget, req->backend, req->params_backend);
     ctx->model = new_sd_ctx(&p);
+    if (!ctx->model && budget != kMossSingleHtpBudget) {
+        std::fprintf(stderr, "[MOSS_MEMORY] fast residency init failed; retrying 2.60GiB compatibility\n");
+        p.max_vram = kMossSingleHtpBudget;
+        ctx->model = new_sd_ctx(&p);
+    }
     if (!ctx->model) {
         creation_error = "MOSS upstream new_sd_ctx failed; check tokenizer, weights and backend";
         delete ctx;

@@ -297,3 +297,41 @@ This prevents incorrect 8/8 UI; it does not assert that MOSS is faster or
 guarantee completion on the SM8850. Host logs are currently the only
 available supported source of per-segment truth without introducing a new
 ABI callback into third-party native code.
+
+## Alpha.81 (236) — MOSS v81 weight residency and per-step haptics
+
+Alpha.80 on POCO F8 Ultra / SM8850, merged Turbo Q4_0, 8 Euler steps:
+1024² native generation 162.164 s, of which 143.47 s sampling;
+512² 72.789 s, of which 56.42 s sampling. At 1024² the first
+20/43 transformer segments used already-resident parameters (~5.7 s),
+but later segments repeatedly loaded 8 GGUF tensors (~0.20 s per
+upload), costing nearly half of each ~17 s denoising pass. MOSS's
+native compute buffer peak was 677.56 MB at 1024² and 183.97 MB at 512².
+
+For SM8850 only, the MOSS backend can now use a headroom-constrained
+budget of HTP0:0=2.84 GiB at 1024² (2.88 GiB at 512²) instead of
+always capping to 2.60 GiB; more transformer weights can remain
+resident between sampler passes. Values are exact allowlisted per
+MOSS bridge and NEVER affect other backends. Only one physical/virtual
+HTP is used for compute; no dual-session split, no CPU fallback.
+These are planned/estimated gains, NOT yet confirmed on hardware.
+The per-device default for other chips remains 2.60 GiB.
+
+Settings → MOSS NPU performance → Faster weight residency toggles
+the SM8850 profile. Turn it off for the previously tested 2.60 GiB
+profile and restart MOSS. If a fast-budget context fails to initialize,
+the native bridge retries with compatibility budget; unsafe inference
+SIGSEGVs cannot be recovered automatically. No quantization changes,
+resolution reduction, step-skipping, output interpolation, or other
+quality-altering shortcuts.
+
+For MOSS, the Android haptic pulse now fires when the number of
+COMPLETED sampler passes increments, not on individual native graph
+segments, Qwen encoder segments, or VAE decoding. The stage-specific
+generation card additionally renders a small 8-part step meter.
+The master haptics and progress-pulse settings still work normally.
+
+A committed source change and successful CI/native build cannot prove
+a real-device speedup. The device log reports the exact MOSS budget;
+validate same-seed identical GGUF 1024² runs in both modes,
+alternating test order with thermals controlled, then compare medians.

@@ -229,6 +229,46 @@ private fun DownloadLogsDialog(onDismiss: () -> Unit) {
     )
 }
 
+
+@Composable
+private fun MossPerformanceDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE) }
+    var faster by remember { mutableStateOf(prefs.getBoolean("moss_fast_residency", true)) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("MOSS NPU performance") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text(
+                    "On Snapdragon 8 Elite Gen 5, fast mode can retain more MOSS weights " +
+                        "on the NPU instead of reloading them after layer 20. " +
+                        "Model weights, sampler and image quality remain unchanged. " +
+                        "Actual speed and stability need on-device testing.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                HapticToggleRow(
+                    title = "Faster weight residency",
+                    subtitle = "Off: tested 2.60 GiB compatibility mode. " +
+                        "On: 2.84 GiB at 1024², 2.88 GiB at 512² on SM8850 only.",
+                    checked = faster,
+                    onCheckedChange = {
+                        faster = it
+                        prefs.edit().putBoolean("moss_fast_residency", it).apply()
+                    },
+                )
+                Text(
+                    "Restart the MOSS backend after changing this setting. " +
+                        "If an NPU allocation or graph fails, turn fast mode off.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
 @Composable
 private fun HapticsSettingsDialog(
     onDismiss: () -> Unit,
@@ -727,6 +767,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var showCleanTempDialog by remember { mutableStateOf(false) }
     var showBackendLogsDialog by remember { mutableStateOf(false) }
     var showHapticsDialog by remember { mutableStateOf(false) }
+    var showMossPerformanceDialog by remember { mutableStateOf(false) }
     var tempScanBytes by remember { mutableLongStateOf(0L) }
     var showEmbeddingManagerDialog by remember { mutableStateOf(false) }
     var showCustomModelDialog by remember { mutableStateOf(false) }
@@ -1056,6 +1097,11 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     if (showHapticsDialog) {
         HapticsSettingsDialog(
             onDismiss = { showHapticsDialog = false },
+        )
+    }
+    if (showMossPerformanceDialog) {
+        MossPerformanceDialog(
+            onDismiss = { showMossPerformanceDialog = false },
         )
     }
 
@@ -2861,6 +2907,15 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                     }
                                 }
                             },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+
+                    item {
+                        SettingNavCard(
+                            icon = Icons.Default.Memory,
+                            label = "MOSS NPU performance",
+                            onClick = { showMossPerformanceDialog = true },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
