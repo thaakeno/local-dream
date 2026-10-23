@@ -3,8 +3,6 @@ package io.github.xororz.localdream.ui.screens
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -22,9 +20,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
@@ -38,16 +33,17 @@ import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.xororz.localdream.R
 import io.github.xororz.localdream.data.Resolution
+import io.github.xororz.localdream.utils.AppHaptics
 import kotlin.math.roundToInt
 
 /**
@@ -55,7 +51,7 @@ import kotlin.math.roundToInt
  * state mutation is routed back through callbacks so the screen keeps ownership
  * of parameter state and persistence.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun AdvancedSettingsDialog(
     isSdxl: Boolean,
@@ -101,6 +97,9 @@ internal fun AdvancedSettingsDialog(
     onReset: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val context = LocalContext.current
+    fun clickHaptic() = AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+    fun sliderHaptic() = AppHaptics.perform(context, AppHaptics.Kind.Progress)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -128,43 +127,12 @@ internal fun AdvancedSettingsDialog(
         },
         text = {
             Column(
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
                     .padding(vertical = 4.dp),
             ) {
-                // One sampler is not one scheduler. Explain the active model
-                // implementation rather than exposing incompatible knobs.
-                Text(
-                    text = when {
-                        ditKind == "moss" && mossIsTurbo ->
-                            "MOSS Turbo · 8-step distilled image generation"
-                        ditKind == "moss" -> "MOSS-Image · full-step flow matching"
-                        ditKind == "qwen21" -> "Qwen Image 2.1 · native FlowMatch"
-                        isDit -> "Diffusion Transformer · model-native sampling"
-                        isAnima -> "Anima · native flow matching"
-                        isSdxl -> "SDXL · diffusion sampling"
-                        else -> "Stable Diffusion · diffusion sampling"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    "Canvas",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                if (!isDit && !(isSdxl && useImg2img) &&
-                    (isSdxl || runOnCpu || availableResolutions.isEmpty())
-                ) {
-                    Text(
-                        if (isSdxl || isAnima) "Fixed 1024 × 1024 canvas"
-                        else if (runOnCpu) "Custom image size is under Output & runtime"
-                        else "Canvas size is set by the model package",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
                 // On SDXL the aspect ratio is inpaint-based padding, so it
                 // needs the VAE encoder that --no_img2img skips. DiT models get
                 // width and height directly instead.
@@ -231,8 +199,12 @@ internal fun AdvancedSettingsDialog(
                         )
                         Slider(
                             value = currentWidth.toFloat(),
-                            onValueChange = onDitWidthChange,
+                            onValueChange = { value ->
+                                if ((value / 64).roundToInt() != (currentWidth / 64)) sliderHaptic()
+                                onDitWidthChange(value)
+                            },
                             valueRange = DIT_MIN_SIZE.toFloat()..DIT_MAX_SIZE.toFloat(),
+                            steps = DIT_SIZE_STEPS,
                             enabled = !isRunning,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -243,8 +215,12 @@ internal fun AdvancedSettingsDialog(
                         )
                         Slider(
                             value = currentHeight.toFloat(),
-                            onValueChange = onDitHeightChange,
+                            onValueChange = { value ->
+                                if ((value / 64).roundToInt() != (currentHeight / 64)) sliderHaptic()
+                                onDitHeightChange(value)
+                            },
                             valueRange = DIT_MIN_SIZE.toFloat()..DIT_MAX_SIZE.toFloat(),
+                            steps = DIT_SIZE_STEPS,
                             enabled = !isRunning,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -289,151 +265,189 @@ internal fun AdvancedSettingsDialog(
                     }
                 }
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Text("Sampling", style = MaterialTheme.typography.titleSmall)
-                Surface(
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    tonalElevation = 2.dp,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        when {
-                            ditKind == "moss" -> {
-                                val activeSchedule = scheduler.substringAfter('|', "simple")
-                                val options = listOf(
-                                    "simple" to "Simple",
-                                    "sgm_uniform" to "SGM Uniform",
-                                    "discrete" to "Normal",
-                                    "karras" to "Karras",
-                                )
-                                Text("Sampler", style = MaterialTheme.typography.labelLarge)
-                                Text(
-                                    "Euler · Flow matching",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                Text("Noise schedule", style = MaterialTheme.typography.labelLarge)
-                                FlowRow(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(0.dp),
-                                ) {
-                                    options.forEach { (id, label) ->
-                                        FilterChip(
-                                            selected = activeSchedule == id,
-                                            onClick = { onSchedulerChange("euler|$id") },
-                                            enabled = !isRunning,
-                                            label = { Text(label) },
-                                        )
-                                    }
+                    if (ditKind == "moss") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Sampler", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
+                            Text("Euler", style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary)
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Noise schedule", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
+                            Text(
+                                when (scheduler.substringAfter('|', "simple")) {
+                                    "sgm_uniform" -> "SGM Uniform"
+                                    "discrete" -> "Normal"
+                                    "karras" -> "Karras"
+                                    else -> "Simple"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        val scheduleOptions = listOf(
+                            "simple" to "Simple",
+                            "sgm_uniform" to "SGM Uniform",
+                            "discrete" to "Normal",
+                            "karras" to "Karras",
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(
+                                ButtonGroupDefaults.ConnectedSpaceBetween,
+                            ),
+                        ) {
+                            scheduleOptions.forEachIndexed { index, (id, label) ->
+                                val shapes = when (index) {
+                                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                                    scheduleOptions.lastIndex ->
+                                        ButtonGroupDefaults.connectedTrailingButtonShapes()
+                                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
                                 }
-                                Text(
-                                    if (mossIsTurbo) {
-                                        "Simple is recommended for 8-step Turbo. Shift 5 · CFG 1. The other schedules are for A/B testing."
-                                    } else {
-                                        "SGM Uniform is recommended for full-step MOSS SFT/Base. Euler · shift 5."
+                                ToggleButton(
+                                    checked = scheduler == "euler|$id",
+                                    onCheckedChange = { checked ->
+                                        if (checked && !isRunning) {
+                                            clickHaptic()
+                                            onSchedulerChange("euler|$id")
+                                        }
                                     },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                    shapes = shapes,
+                                    enabled = !isRunning,
+                                ) { Text(label) }
                             }
-                            isDit -> {
-                                Text("Sampler", style = MaterialTheme.typography.labelLarge)
-                                Text("Euler", style = MaterialTheme.typography.bodyMedium)
-                                Text("Noise schedule", style = MaterialTheme.typography.labelLarge)
-                                Text(
-                                    if (ditKind == "qwen21") {
-                                        "Native FlowMatch · model-controlled sigma schedule"
-                                    } else {
-                                        "Model-native · automatically managed by the engine"
-                                    },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                Text(
-                                    if (ditKind == "qwen21") {
-                                        "Qwen Turbo variants can use a published fixed sigma sequence. Karras or SDXL samplers would not be applied by this engine."
-                                    } else {
-                                        "This model controls its sampling schedule. Unused SDXL sampler choices are intentionally hidden."
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            isAnima -> {
-                                Text("Sampler", style = MaterialTheme.typography.labelLarge)
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    listOf("euler" to "Euler", "euler_a" to "Euler A").forEach { (id, label) ->
-                                        FilterChip(
-                                            selected = scheduler == id,
-                                            onClick = { onSchedulerChange(id) },
-                                            enabled = !isRunning,
-                                            label = { Text(label) },
-                                        )
-                                    }
-                                }
-                                Text(
-                                    "Native FlowMatch · shift 3. Euler A adds ancestral noise.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            else -> {
-                                val baseId = scheduler.removeSuffix("_karras")
-                                val karras = scheduler.endsWith("_karras")
-                                val canKarras = baseId != "lcm"
-                                val samplers = listOf(
-                                    "dpm" to "DPM++ 2M",
-                                    "dpm_sde" to "DPM++ 2M SDE",
-                                    "euler" to "Euler",
-                                    "euler_a" to "Euler A",
-                                    "lcm" to "LCM",
-                                )
-                                Text("Sampler", style = MaterialTheme.typography.labelLarge)
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    samplers.forEach { (id, label) ->
-                                        FilterChip(
-                                            selected = baseId == id,
-                                            onClick = {
-                                                onSchedulerChange(
-                                                    if (karras && id != "lcm") "${id}_karras" else id,
-                                                )
-                                            },
-                                            enabled = !isRunning,
-                                            label = { Text(label) },
-                                        )
-                                    }
-                                }
-                                Text("Noise schedule", style = MaterialTheme.typography.labelLarge)
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    FilterChip(
-                                        selected = !karras || !canKarras,
-                                        onClick = { onSchedulerChange(baseId) },
+                        }
+                        Text(
+                            if (mossIsTurbo) "Recommended: Simple · 8 steps · CFG 1 · shift 5"
+                            else "Recommended: SGM Uniform · 50 steps · CFG 3 · shift 5",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (isDit) {
+                        Row(modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text("Sampler", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
+                            Text("Euler", color = MaterialTheme.colorScheme.primary)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text("Noise schedule", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
+                            Text(
+                                if (ditKind == "qwen21") "Native FlowMatch"
+                                else "Model-managed",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else if (isAnima) {
+                        Text("Sampler", style = MaterialTheme.typography.bodyMedium)
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(
+                                ButtonGroupDefaults.ConnectedSpaceBetween,
+                            ),
+                        ) {
+                            listOf("euler" to "Euler", "euler_a" to "Euler A")
+                                .forEachIndexed { index, (id, label) ->
+                                    ToggleButton(
+                                        checked = scheduler == id,
+                                        onCheckedChange = { checked ->
+                                            if (checked && !isRunning) {
+                                                clickHaptic()
+                                                onSchedulerChange(id)
+                                            }
+                                        },
+                                        shapes = if (index == 0)
+                                            ButtonGroupDefaults.connectedLeadingButtonShapes()
+                                        else ButtonGroupDefaults.connectedTrailingButtonShapes(),
                                         enabled = !isRunning,
-                                        label = { Text("Normal") },
-                                    )
-                                    FilterChip(
-                                        selected = karras && canKarras,
-                                        onClick = { onSchedulerChange("${baseId}_karras") },
-                                        enabled = !isRunning && canKarras,
-                                        label = { Text("Karras") },
-                                    )
+                                    ) { Text(label) }
                                 }
-                                Text(
-                                    if (baseId == "lcm") {
-                                        "LCM handles its own noise schedule; Karras is not supported."
-                                    } else {
-                                        "These samplers and Normal/Karras schedules are implemented in the SD1.5/SDXL engine."
+                        }
+                        Text("Native FlowMatch · shift 3",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        // SD1.5 and SDXL implement these samplers and Normal/Karras.
+                        val baseId = scheduler.removeSuffix("_karras")
+                        val karras = scheduler.endsWith("_karras")
+                        val karrasSupported = baseId != "lcm"
+                        val baseOptions = listOf(
+                            "dpm" to "DPM++ 2M",
+                            "dpm_sde" to "DPM++ 2M SDE",
+                            "euler_a" to "Euler A",
+                            "euler" to "Euler",
+                            "lcm" to "LCM",
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Sampler", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
+                            Text("Karras", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(end = 8.dp)
+                                    .alpha(if (karrasSupported) 1f else 0.4f))
+                            CompositionLocalProvider(
+                                LocalMinimumInteractiveComponentSize provides Dp.Unspecified,
+                            ) {
+                                Switch(
+                                    checked = karras && karrasSupported,
+                                    enabled = karrasSupported && !isRunning,
+                                    onCheckedChange = { enable ->
+                                        clickHaptic()
+                                        onSchedulerChange(if (enable) "${baseId}_karras" else baseId)
                                     },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.scale(0.8f),
                                 )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(
+                                ButtonGroupDefaults.ConnectedSpaceBetween,
+                            ),
+                        ) {
+                            baseOptions.forEachIndexed { index, (id, label) ->
+                                val shapes = when (index) {
+                                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                                    baseOptions.lastIndex ->
+                                        ButtonGroupDefaults.connectedTrailingButtonShapes()
+                                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                                }
+                                ToggleButton(
+                                    checked = baseId == id,
+                                    onCheckedChange = { checked ->
+                                        if (checked && !isRunning) {
+                                            clickHaptic()
+                                            onSchedulerChange(
+                                                if (karras && id != "lcm") "${id}_karras" else id,
+                                            )
+                                        }
+                                    },
+                                    shapes = shapes,
+                                    enabled = !isRunning,
+                                ) { Text(label) }
                             }
                         }
                     }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Text("Guidance & steps", style = MaterialTheme.typography.titleSmall)
 
                 Column {
                     Text(
@@ -442,8 +456,12 @@ internal fun AdvancedSettingsDialog(
                     )
                     Slider(
                         value = steps,
-                        onValueChange = { onStepsChange(it.roundToInt().toFloat()) },
+                        onValueChange = { value ->
+                            if (value.roundToInt() != steps.roundToInt()) sliderHaptic()
+                            onStepsChange(value)
+                        },
                         valueRange = 1f..50f,
+                        steps = 48,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -455,13 +473,15 @@ internal fun AdvancedSettingsDialog(
                     )
                     Slider(
                         value = cfg,
-                        onValueChange = { onCfgChange((it * 10f).roundToInt() / 10f) },
+                        onValueChange = { value ->
+                            if ((value * 2).roundToInt() != (cfg * 2).roundToInt()) sliderHaptic()
+                            onCfgChange(value)
+                        },
                         valueRange = 1f..30f,
+                        steps = 57,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Text("Output & runtime", style = MaterialTheme.typography.titleSmall)
                 // The free 128-512 slider belongs to SD1.5 CPU. SDXL MNN also runs
                 // on CPU/GPU but renders on the fixed 1024 canvas like every other
                 // SDXL package, so it must not be offered a range it cannot use.
@@ -478,8 +498,12 @@ internal fun AdvancedSettingsDialog(
                         )
                         Slider(
                             value = currentWidth.toFloat(),
-                            onValueChange = onSizeChange,
+                            onValueChange = { value ->
+                                if ((value / 64).roundToInt() != (currentWidth / 64)) sliderHaptic()
+                                onSizeChange(value)
+                            },
                             valueRange = 128f..512f,
+                            steps = 5,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -575,27 +599,34 @@ internal fun AdvancedSettingsDialog(
                     )
                     Slider(
                         value = batchCounts.toFloat(),
-                        onValueChange = onBatchCountsChange,
+                        onValueChange = { value ->
+                            if (value.roundToInt() != batchCounts) sliderHaptic()
+                            onBatchCountsChange(value)
+                        },
                         valueRange = 1f..10f,
+                        steps = 8,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
                 if (useImg2img) {
                     Column {
                         Text(
-                            "[img2img]Denoise Strength: %.2f".format(denoiseStrength),
+                            "Denoise Strength: %.2f".format(denoiseStrength),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Slider(
                             value = denoiseStrength,
-                            onValueChange = onDenoiseStrengthChange,
+                            onValueChange = { value ->
+                                if ((value * 20).roundToInt() !=
+                                    (denoiseStrength * 20).roundToInt()) sliderHaptic()
+                                onDenoiseStrengthChange(value)
+                            },
                             valueRange = 0f..1f,
+                            steps = 99,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Text("Seed", style = MaterialTheme.typography.titleSmall)
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -650,7 +681,7 @@ internal fun AdvancedSettingsDialog(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 TextButton(
-                    onClick = onReset,
+                    onClick = { clickHaptic(); onReset() },
                     colors = ButtonDefaults.textButtonColors(
                         contentColor = MaterialTheme.colorScheme.error,
                     ),
@@ -665,7 +696,7 @@ internal fun AdvancedSettingsDialog(
                     Text(stringResource(R.string.reset))
                 }
 
-                TextButton(onClick = onDismiss) {
+                TextButton(onClick = { clickHaptic(); onDismiss() }) {
                     Text(stringResource(R.string.confirm))
                 }
             }
