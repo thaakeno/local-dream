@@ -153,3 +153,6 @@ assert 'moss_image_sft-Q4_0.gguf|dit.gguf' in moss_package_source
 assert 'Qwen3.5-9B-Q8_0.gguf|llm.gguf' in moss_package_source
 assert 'lora.safetensors|moss_turbo_lora.safetensors' in moss_package_source
 assert 'cpu_graph_islands=possible' in moss_service
+assert 'model_id == "moss_image_sft_turbo_npu_q8"' in bridge
+assert 'MOSS Turbo requires separate FP32 DMD LoRA; adapter file missing' in bridge
+assert '[MOSS_TURBO] separate DMD adapter active (not merged)' in bridge
