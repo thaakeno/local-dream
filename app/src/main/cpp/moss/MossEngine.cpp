@@ -179,8 +179,8 @@ bool generate(dit_ctx* ctx, const dit_gen_params* req,
         : EULER_SAMPLE_METHOD;
     if (req->vae_tile_size > 0) {
         params.vae_tiling_params.enabled = true;
-        params.vae_tiling_params.tile_size_w = req->vae_tile_size;
-        params.vae_tiling_params.tile_size_h = req->vae_tile_size;
+        params.vae_tiling_params.tile_size_x = req->vae_tile_size;
+        params.vae_tiling_params.tile_size_y = req->vae_tile_size;
         params.vae_tiling_params.target_overlap = req->vae_tile_overlap;
     }
     if (phase) phase(DIT_PHASE_PREPARING, user);
