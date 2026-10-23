@@ -1099,6 +1099,18 @@ class BackendService : Service() {
                 BackendDiagnostics.append(this, "MOSS_ROPE",
                     if (composedRopeFlag.isFile) "benchmark=composed"
                     else "benchmark=fused-with-capability-fallback")
+                // Developer-only on-device per-op NPU timings. Absent by default:
+                // profiling changes performance, so never use its timings as baseline.
+                // Strictly scoped to this MOSS child process, not SDXL/Breeze/YuE.
+                val mossHtpProfile = File(filesDir, "moss_htp_profile.flag").isFile
+                if (mossHtpProfile) {
+                    env["GGML_HEXAGON_PROFILE"] = "1"
+                } else {
+                    env.remove("GGML_HEXAGON_PROFILE")
+                }
+                BackendDiagnostics.append(this, "MOSS_PROFILE",
+                    if (mossHtpProfile) "enabled=1 per-op NPU profiler (slow diagnostic run)"
+                    else "enabled=0 baseline unchanged")
                 // The v81 Snapdragon SM8850 has a roughly 3.08 GiB DSP
                 // mapping window. Alpha.80 forced 2.60 GiB regardless of
                 // resolution, evicting weights after MOSS layer 20 on every

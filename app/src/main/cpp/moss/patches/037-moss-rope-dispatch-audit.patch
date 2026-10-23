@@ -1,0 +1,45 @@
+diff --git a/src/model/diffusion/moss_image.hpp b/src/model/diffusion/moss_image.hpp
+--- a/src/model/diffusion/moss_image.hpp
++++ b/src/model/diffusion/moss_image.hpp
+@@ -1,7 +1,9 @@
+ #ifndef __SD_MODEL_DIFFUSION_MOSS_IMAGE_HPP__
+ #define __SD_MODEL_DIFFUSION_MOSS_IMAGE_HPP__
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cinttypes>
++#include <cstdio>
+ 
+ #include "model/common/ggml_block.hpp"
+@@ -76,6 +78,12 @@
+         ggml_tensor* forward_rope(GGMLRunnerContext* ctx, ggml_tensor* x, ggml_tensor* pe) {
+             static const bool composed = getenv("NM_MOSS_COMPOSED_ROPE") != nullptr;
+-            if (composed || ctx->backend == nullptr || x->ne[3] != 1 || x->type != GGML_TYPE_F32) {
++            if (composed) return nullptr;
++            if (ctx->backend == nullptr || x->ne[3] != 1 || x->type != GGML_TYPE_F32) {
++                static std::atomic<bool> logged_layout{false};
++                if (!logged_layout.exchange(true, std::memory_order_relaxed)) {
++                    std::fprintf(stderr, "[MOSS_ROPE_DISPATCH] fallback=layout backend=%d n3=%lld type=%d\n",
++                                 ctx->backend != nullptr, static_cast<long long>(x->ne[3]), static_cast<int>(x->type));
++                }
+                 return nullptr;
+             }
+             ggml_tensor* w = params["weight"];
+@@ -100,5 +108,17 @@
+             ggml_tensor* out = ggml_qknorm_rope(ctx->ggml_ctx, xi, wi, pe, eps);  // [d, L, H]
+             if (!ggml_backend_supports_op(ctx->backend, out)) {
++                static std::atomic<bool> logged_unsupported{false};
++                if (!logged_unsupported.exchange(true, std::memory_order_relaxed)) {
++                    std::fprintf(stderr, "[MOSS_ROPE_DISPATCH] fallback=unsupported head_dim=%lld tokens=%lld\n",
++                                 static_cast<long long>(xi->ne[0]), static_cast<long long>(xi->ne[2]));
++                }
+                 return nullptr;
+             }
++            // Accepted by Hexagon supports_op; DSP execution still requires
++            // the optional per-op profile for hardware-path confirmation.
++            static std::atomic<bool> logged_candidate{false};
++            if (!logged_candidate.exchange(true, std::memory_order_relaxed)) {
++                std::fprintf(stderr, "[MOSS_ROPE_DISPATCH] candidate=fused head_dim=%lld tokens=%lld\n",
++                             static_cast<long long>(xi->ne[0]), static_cast<long long>(xi->ne[2]));
++            }
+             return out;

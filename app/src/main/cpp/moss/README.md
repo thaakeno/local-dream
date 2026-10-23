@@ -361,3 +361,28 @@ The final MOSS sampling-pass vibration is also delivered at the transition
 to VAE decode when the last graph-completion state was conflated by Compose.
 A cancelled run resets its sampling-haptic counter. The model title and
 description now use text ellipsis rather than an off-screen scroll viewport.
+
+## MOSS kernel-dispatch audit (October 23, 2026)
+
+A source-level fused RoPE flag is NOT proof that the specialized HTP op runs.
+The separate 037 staged-source patch emits exactly one `[MOSS_ROPE_DISPATCH]`
+line per encountered path: `candidate=fused`, `fallback=layout` or
+`fallback=unsupported`. These are **graph-building observations**:
+`candidate=fused` means that the NPU backend *accepted* the fused graph
+operator, not that hardware execution has been benchmarked or that no other
+model block falls back. In particular, seeing both `candidate` and
+`fallback` means at least two paths occur in the same model session.
+
+For hardware-operator timing, a developer can create the private
+`files/moss_htp_profile.flag` marker before starting the MOSS backend.
+The MOSS-only child process then sets `GGML_HEXAGON_PROFILE=1`, which enables
+the pinned ggml Hexagon backend's per-op timing. Restart the backend to
+enable/disable. **Do not use profiled run times as speed benchmarks**; tracing
+overhead can be significant. With marker absent, no Hexagon configuration
+or sampling math changes. Compare fixed seed/prompt, 8 steps, same Turbo GGUF,
+and controlled thermals on physical SM8850 for speed/quality verification.
+
+This patch intentionally does not modify HMX kernels, ggml weight layouts,
+segment partitioning, tensors, sampler, power mode, signing workflow or any
+other model engine. New upstream NEON repacking work remains unported because
+it needs quantization-parity, DSP ABI, and sustained NPU benchmarking first.
