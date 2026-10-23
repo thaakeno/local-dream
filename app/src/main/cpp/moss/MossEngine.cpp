@@ -150,10 +150,19 @@ dit_ctx *create(const dit_ctx_params* req) {
     const auto model_id = folder.parent_path().filename().string();
     const bool merged_turbo = model_id == "moss_image_sft_turbo_merged_q4_0" ||
                               model_id == "moss_image_sft_turbo_merged_q4_k_m";
+    const bool expects_unmerged_adapter =
+        model_id == "moss_image_sft_turbo_q4" ||
+        model_id == "moss_image_base_turbo_q4" ||
+        model_id == "moss_image_sft_turbo_npu_q8";
     if (merged_turbo) {
         std::fprintf(stderr, "[MOSS_TURBO] merged DMD checkpoint; no runtime LoRA\n");
     } else if (std::filesystem::is_regular_file(adapter)) {
         ctx->turbo_lora_path = adapter.string();
+        std::fprintf(stderr, "[MOSS_TURBO] separate DMD adapter active (not merged)\n");
+    } else if (expects_unmerged_adapter) {
+        creation_error = "MOSS Turbo requires separate FP32 DMD LoRA; adapter file missing";
+        delete ctx;
+        return nullptr;
     }
     sd_ctx_params_t p;
     sd_ctx_params_init(&p);
