@@ -122,3 +122,38 @@ app signing, or GitHub workflows.
 The staged source test verifies the exact pinned source receives the
 guard before its unsafe `clone_buffer` call. There is no on-device
 8-step success claim until alpha.75 is tested on SM8850.
+
+## Alpha.76 (231) — upstream single-HTP segmented architecture, October 23
+
+Research: Nightmare Mobile, a public Local Dream-based app, reports actual
+MOSS-Image SFT generation on Snapdragon 8 Elite in ~50s at 512×512, and a
+merged Turbo GGUF variant in ~40s. The reference launches its default DiT
+backend on ONE HTP session and stages weights from disk when a managed
+memory limit is applied. Source: github.com/AbrahamPaulJ/nightmare-mobile.
+Its fused positional-encoding fast path is a further optimisation, not used
+in our baseline verification.
+
+The exact pinned stable-diffusion.cpp GGMLRunner enables segmented execution
+only if `!is_multi_device()`. Previous MOSS forced dual virtual sessions,
+which *disabled* this path and caused crashes in Hexagon buffer lifetime
+handling during cross-session tensor transfers. It also used
+`te=disk,vae=disk`, leaving diffusion weight residency unbounded.
+Increasing the budget or bypassing a single async copy did not fix it.
+
+The MOSS runtime now chooses ONLY HTP0:0 for text encoding, diffusion and
+VAE, with `all=disk` parameter streaming and a 2.60 GiB per-runner managed
+budget to segment large graphs. Device *registration* still enumerates
+HTP0:0 and HTP0:1 because restricting it to one previously failed
+initialization; unused HTP0:1 is not selected as a compute backend.
+Inference remains NPU-only. No changes to Breeze, SDXL or Qwen Image.
+
+Legacy dual-device partition/cross-copy patches are **no longer applied**.
+A pristine staged copy of the exact pinned upstream and its ggml submodule
+builds with a NEW native CMake directory, preventing stale dual-device build
+objects from getting repackaged. Regression assertions verify single-device
+runtime/backend, all=disk, a managed budget, upstream segmentation support
+and absence of old custom ggml changes.
+
+The original GitHub branch, CI, package identity and permanent signer are
+unchanged. Full 8-step generation and speed remain UNVERIFIED on SM8850
+until on-device confirmation.

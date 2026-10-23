@@ -5,7 +5,7 @@ set -euo pipefail
 : "${HEXAGON_SDK_ROOT:?set HEXAGON_SDK_ROOT}"
 cd "$(dirname "$0")"
 # Identical Ninja directory for build and DSP skel staging.
-BUILD_DIR=build/android-moss-headroom
+BUILD_DIR=build/android-moss-single-htp
 UPSTREAM="../3rdparty/moss-stable-diffusion.cpp"
 EXPECTED=95b3090664d019fcf8fa032a44d1d4793ba244b8
 ACTUAL="$(git -C "$UPSTREAM" rev-parse HEAD)"
@@ -19,9 +19,9 @@ test -f "$UPSTREAM/ggml/CMakeLists.txt" || {
 }
 # Use an immutable archive of the exact pinned upstream revision. Never alter
 # the checked-out upstream submodule, shared DiT fork, or either ggml source.
-# Only MOSS's independent CMake target links the patched staged copy.
+# Stage the UNMODIFIED pinned upstream and its nested ggml for MOSS only.
+# Do NOT apply the experimental dual-device partition or copy patches.
 STAGED_SOURCE="$(pwd)/build/moss-sdcpp-staged"
-PATCH_FILE="$(pwd)/patches/0001-hexagon-layer-split-workspace-headroom.patch"
 rm -rf "$STAGED_SOURCE"
 mkdir -p "$STAGED_SOURCE"
 git -C "$UPSTREAM" archive "$EXPECTED" | tar -x -C "$STAGED_SOURCE"
@@ -31,13 +31,7 @@ rm -rf "$STAGED_SOURCE/ggml"
 cp -a "$UPSTREAM/ggml" "$STAGED_SOURCE/ggml"
 rm -f "$STAGED_SOURCE/ggml/.git"
 test -f "$STAGED_SOURCE/ggml/CMakeLists.txt"
-(
-    cd "$STAGED_SOURCE"
-    patch --batch --forward --fuzz=0 -p1 < "$PATCH_FILE"
-)
-python3 tests/instrument_moss_split.py "$STAGED_SOURCE"
-python3 tests/fix_htp_virtual_copy.py "$STAGED_SOURCE"
-python3 tests/test_htp_partition.py "$STAGED_SOURCE/src/core/layer_split_partition.cpp"
+python3 tests/test_single_htp_segmentation.py "$STAGED_SOURCE"
 test -z "$(git -C "$UPSTREAM" status --porcelain --untracked-files=no)" || {
     echo "Pinned MOSS upstream checkout changed unexpectedly" >&2
     exit 1
