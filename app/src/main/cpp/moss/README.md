@@ -39,7 +39,7 @@ runtime required 2855.86 MiB, exceeding the 2662.40 MiB budget. Raising the
 runtime limit is unsafe against the ~3.35GB v81 address-mapping window.
 
 The MOSS-only staged upstream patch reserves 320 MiB per virtual HTP session
-*when planning weight placement*. Runtime `max_vram` remains at 2.60 GiB,
+*when planning weight placement*. Runtime `max_vram` was 2.60 GiB in alpha.72,
 with the original capacity checks active and no CPU inference fallback.
 The original pinned git submodule remains unchanged. The same source patch is
 applied from scratch on every native build and compiled by CI; see
@@ -51,3 +51,27 @@ not a claim of successful on-device MOSS image output. A 512x512 Turbo run must
 still confirm text encoding, each of the eight diffusion steps, VAE decoding,
 image artifact creation, and absence of DSPQueue mapping faults. Keep Breeze,
 SDXL and permanent signing untouched.
+
+## Alpha.73 — MOSS Turbo graph placement (2026-10-23)
+The on-device alpha.72 retest **verified Qwen3.5 completion in 19.59 seconds**
+and successful release of its per-device buffers. The next failure occurred
+immediately as the Turbo-LoRA diffusion graph began graph-cut layer partitioning.
+The old 2.60 GiB per-session budget combined with a 320 MiB planner reserve
+allowed only `2 × (2662.4 − 320) = 4684.8 MiB` of graph weights, below the
+~4.59 GiB LoRA-augmented diffusion model (~4700 MiB). That precludes a
+two-way layer split even though the text encoder now fits.
+
+MOSS-only managed `max_vram` is now **2.75 GiB per virtual HTP session**.
+The *existing* 320 MiB packing reserve is preserved, leaving 4992 MiB total
+planned capacity. This is still 367 MiB below the exact device-reported
+3,337,998,336-byte FastRPC op mapping window per HTP session, and all upstream
+runtime memory checks are preserved. No CPU/GPU inference fallback, no changes
+to Qwen/SDXL/Breeze, and no changes to the original permanent signer/workflows.
+New version: `3.0.0-alpha.73 (228)`.
+
+The synthetic regression protects the two model-planning scenarios but does
+not establish success of full 8-step inference. Confirm on-device separately:
+Qwen conditioning, full DiT partition, each diffusion step, VAE decoding,
+output image, and absence of `AEE_` / FastRPC errors. If allocation still
+fails, collect the **native** MOSS graph-cut failure line and per-HTP memory
+details; do not blindly increase beyond the FastRPC mapping window.

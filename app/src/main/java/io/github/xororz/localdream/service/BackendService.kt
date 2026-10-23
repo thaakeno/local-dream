@@ -1097,7 +1097,7 @@ class BackendService : Service() {
                 BackendDiagnostics.append(this, "MOSS_NPU",
                     "inference=HTP-only device_sessions=HTP0:0,HTP0:1 " +
                     "te=HTP-dual diffusion=HTP-dual vae=HTP0:0 " +
-                    "max_vram=HTP0:0=2.60GiB,HTP0:1=2.60GiB " +
+                    "max_vram=HTP0:0=2.75GiB,HTP0:1=2.75GiB " +
                     "param_staging=disk power=balanced opbatch=1024 opqueue=16 " +
                     "fusion=off cpu_inference_fallback=disabled")
             }

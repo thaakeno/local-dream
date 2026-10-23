@@ -99,13 +99,17 @@ dit_ctx *create(const dit_ctx_params* req) {
     // upstream layer_split_partition.cpp allocates ALL 34/43 segments to
     // HTP0:0 and crashes on the oversized ~4.6GB Qwen/DiT graphs.
     //
-    // Both 2.60 GiB budgets give ~5.20 GiB aggregate managed weights. This
-    // forces graph-cut placement across HTP0:0 and HTP0:1 while retaining
-    // ~0.55 GiB per-session NPU mapping headroom for compute/transfers.
+    // The previous 2.60 GiB per-device budget plus a 320 MiB placement reserve
+    // left only 4684.8 MiB total for graph weights, below the ~4.59 GiB
+    // Turbo-LoRA diffusion graph: Qwen completed, then diffusion partitioning
+    // failed before denoising. Allow 2.75 GiB managed per session (4992 MiB
+    // combined weight capacity after the same reserve), leaving 367 MiB below
+    // the device-reported 3183 MiB FastRPC op mapping window PER session.
+    // This limit is NOT a physical-RAM cap. Runtime memory checks stay enabled.
     // The two virtual sessions still run on the same physical NPU; CPU
     // fallback remains disabled. Never apply this device-specific budget to
     // single-backend or non-Hexagon callers.
-    constexpr const char *kMossHtpV81Budgets = "HTP0:0=2.60,HTP0:1=2.60";
+    constexpr const char *kMossHtpV81Budgets = "HTP0:0=2.75,HTP0:1=2.75";
     if (req->backend && std::strstr(req->backend, "HTP0:0&HTP0:1")) {
         p.max_vram = kMossHtpV81Budgets;
         std::fprintf(stderr,

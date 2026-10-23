@@ -10,8 +10,11 @@ from __future__ import annotations
 import pathlib
 import sys
 
-RUNTIME_BUDGET_MIB = 2.60 * 1024
+PREVIOUS_RUNTIME_BUDGET_MIB = 2.60 * 1024
+RUNTIME_BUDGET_MIB = 2.75 * 1024
 WORKSPACE_RESERVE_MIB = 320
+HEXAGON_MAPPING_WINDOW_MIB = 3337998336 / (1024 * 1024)
+TURBO_DIFFUSION_ESTIMATE_MIB = 4.59 * 1024
 OBSERVED_WORKSPACE_MIB = 2855.86 - 2580.0
 # Reproduces the observed 17 + 17 grouping, preserving the exact 2580/2031
 # MiB totals (not a claim that all real Qwen blocks have identical sizes).
@@ -28,10 +31,10 @@ def greedy_first_split(weights: list[float], cap: float) -> tuple[float, float]:
 
 
 def test_alpha72_original_failure() -> None:
-    first, second = greedy_first_split(QWEN_SEGMENTS_MIB, RUNTIME_BUDGET_MIB)
+    first, second = greedy_first_split(QWEN_SEGMENTS_MIB, PREVIOUS_RUNTIME_BUDGET_MIB)
     assert abs(first - 2580.0) < 0.01
-    assert first + OBSERVED_WORKSPACE_MIB > RUNTIME_BUDGET_MIB
-    assert second < RUNTIME_BUDGET_MIB
+    assert first + OBSERVED_WORKSPACE_MIB > PREVIOUS_RUNTIME_BUDGET_MIB
+    assert second < PREVIOUS_RUNTIME_BUDGET_MIB
 
 
 def test_reserved_partition_budget() -> None:
@@ -42,6 +45,30 @@ def test_reserved_partition_budget() -> None:
     assert second <= planner_cap, (first, second, planner_cap)
     assert max(first, second) + OBSERVED_WORKSPACE_MIB <= RUNTIME_BUDGET_MIB
 
+
+def test_turbo_diffusion_capacity() -> None:
+    # Previous cap worked for the 4.61 GiB Qwen encoder, but the separately
+    # loaded, LoRA-augmented diffusion graph needs ~4.59 GiB plus placement
+    # granularity. This synthetic test checks *planner capacity*, not runtime.
+    old_total_weight_capacity = 2 * (PREVIOUS_RUNTIME_BUDGET_MIB - WORKSPACE_RESERVE_MIB)
+    new_per_session = RUNTIME_BUDGET_MIB - WORKSPACE_RESERVE_MIB
+    assert old_total_weight_capacity < TURBO_DIFFUSION_ESTIMATE_MIB
+    assert 2 * new_per_session > TURBO_DIFFUSION_ESTIMATE_MIB
+    assert HEXAGON_MAPPING_WINDOW_MIB - RUNTIME_BUDGET_MIB > 350
+
+    segments = [TURBO_DIFFUSION_ESTIMATE_MIB / 42] * 42
+    first, second = greedy_first_split(segments, new_per_session)
+    assert first <= new_per_session
+    assert second <= new_per_session
+    assert first + second > old_total_weight_capacity
+
+
+def test_moss_native_budget(source: pathlib.Path) -> None:
+    bridge = pathlib.Path(__file__).resolve().parents[1] / "MossEngine.cpp"
+    native = bridge.read_text()
+    assert 'HTP0:0=2.75,HTP0:1=2.75' in native
+    assert 'p.auto_fit = false' in native
+    assert 'p.max_vram = kMossHtpV81Budgets' in native
 
 def test_scoped_upstream_patch(source: pathlib.Path) -> None:
     data = source.read_text()
@@ -55,7 +82,9 @@ def test_scoped_upstream_patch(source: pathlib.Path) -> None:
 if __name__ == "__main__":
     test_alpha72_original_failure()
     test_reserved_partition_budget()
+    test_turbo_diffusion_capacity()
     if len(sys.argv) != 2:
         raise SystemExit("Pass staged source path to verify the scoped patch")
     test_scoped_upstream_patch(pathlib.Path(sys.argv[1]))
-    print("MOSS SM8850 partition regression: PASS (synthetic); staged patch verified")
+    test_moss_native_budget(pathlib.Path(sys.argv[1]))
+    print("MOSS SM8850 Qwen/Turbo partition regressions: PASS (synthetic); staged patch verified")
