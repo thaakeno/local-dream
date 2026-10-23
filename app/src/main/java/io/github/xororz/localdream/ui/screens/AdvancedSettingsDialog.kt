@@ -225,7 +225,7 @@ internal fun AdvancedSettingsDialog(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Text(
-                            stringResource(R.string.width),
+                            "${stringResource(R.string.width)} · ${currentWidth}px",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -233,12 +233,11 @@ internal fun AdvancedSettingsDialog(
                             value = currentWidth.toFloat(),
                             onValueChange = onDitWidthChange,
                             valueRange = DIT_MIN_SIZE.toFloat()..DIT_MAX_SIZE.toFloat(),
-                            steps = DIT_SIZE_STEPS,
                             enabled = !isRunning,
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Text(
-                            stringResource(R.string.height),
+                            "${stringResource(R.string.height)} · ${currentHeight}px",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -246,7 +245,6 @@ internal fun AdvancedSettingsDialog(
                             value = currentHeight.toFloat(),
                             onValueChange = onDitHeightChange,
                             valueRange = DIT_MIN_SIZE.toFloat()..DIT_MAX_SIZE.toFloat(),
-                            steps = DIT_SIZE_STEPS,
                             enabled = !isRunning,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -482,7 +480,6 @@ internal fun AdvancedSettingsDialog(
                             value = currentWidth.toFloat(),
                             onValueChange = onSizeChange,
                             valueRange = 128f..512f,
-                            steps = 5,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -580,7 +577,6 @@ internal fun AdvancedSettingsDialog(
                         value = batchCounts.toFloat(),
                         onValueChange = onBatchCountsChange,
                         valueRange = 1f..10f,
-                        steps = 8,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -594,7 +590,6 @@ internal fun AdvancedSettingsDialog(
                             value = denoiseStrength,
                             onValueChange = onDenoiseStrengthChange,
                             valueRange = 0f..1f,
-                            steps = 99,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
