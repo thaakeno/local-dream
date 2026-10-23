@@ -157,3 +157,32 @@ and absence of old custom ggml changes.
 The original GitHub branch, CI, package identity and permanent signer are
 unchanged. Full 8-step generation and speed remain UNVERIFIED on SM8850
 until on-device confirmation.
+
+## Alpha.77 (232) — restore native Hexagon acceleration (October 23)
+
+Comparing our launch with Nightmare Mobile and the pinned ggml driver
+identified two accidental performance inhibitors still present after the
+alpha.76 single-backend fix. Android's MOSS-only launcher explicitly set
+`GGML_HEXAGON_NHMX=0` (HVX only, no hardware matrix engine) and
+`GGML_HEXAGON_OPFUSION=0` (all operator fusions disabled).
+The exact pinned ggml's defaults are **HMX enabled**, **fusion enabled**,
+1280 operations per batch, 8 queued batches, and automatic thread counts.
+The old launcher additionally forced 1024 operations and 16 queued batches.
+
+Those experimental overrides have been **removed**, not replaced with
+new arbitrary tuning values. Hexagon now measures the device capabilities
+and automatically chooses the eligible HMX or HVX execution path. A default
+power profile is used for benchmark comparability. No special fallback to
+CPU is requested; strict MOSS compute is still on HTP0:0, using `all=disk`
+segmented streaming and its 2.60 GiB budget. The runtime library is still
+the standalone, unmodified pinned leejet/ggml in alpha.76.
+
+Nightmare's separate QK/RoPE fused operation (`ggml_qknorm_rope`) does NOT
+exist in our pinned leejet/ggml snapshot. Applying its C++ patch directly
+is incompatible, so we did not silently graft untested Qualcomm DSP code
+or replace our GGML with the older Nightmare stack. A safe port needs
+a compatible ggml implementation, matched DSP skels and output parity
+tests after single-HTP end-to-end generation succeeds.
+
+Run-time speedup is **not yet measured on the user's SM8850**. The exact
+Nightmare benchmark uses Snapdragon 8 Elite (S25 Ultra), not Elite Gen 5.

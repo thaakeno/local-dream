@@ -1086,19 +1086,20 @@ class BackendService : Service() {
                 // HTP0:0 alone previously failed context creation. C++ selects
                 // ONLY HTP0:0 for MOSS execution; no cross-session transfers.
                 env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
-                env["GGML_HEXAGON_POWER_MODE"] = "balanced"
-                env["GGML_HEXAGON_NHMX"] = "0"
-                env["GGML_HEXAGON_NHVX"] = "0"
-                env["GGML_HEXAGON_OPBATCH"] = "1024"
-                env["GGML_HEXAGON_OPQUEUE"] = "16"
-                env["GGML_HEXAGON_OPPOLL"] = "0"
-                env["GGML_HEXAGON_OPFUSION"] = "0"
+                // Do not override HMX, OPFUSION, OPBATCH or OPQUEUE.
+                // Legacy dual-device crash experiments disabled HMX (NHMX=0)
+                // and op fusion (OPFUSION=0), which prevents the NPU from
+                // using its native matrix engine and normal fusion passes.
+                // Our pinned ggml defaults are HMX=1, OPFUSION=1,
+                // OPBATCH=1280, OPQUEUE=8, NHVX=all and power=burst.
+                // Allow the driver to choose whether an individual tensor
+                // is actually HMX-eligible, otherwise it falls back to HVX.
                 BackendDiagnostics.append(this, "MOSS_NPU",
                     "inference=HTP-only compute_session=HTP0:0 " +
                     "te=HTP-single-segmented diffusion=HTP-single-segmented vae=HTP0:0 " +
                     "max_vram=HTP0:0=2.60GiB params_backend=all=disk " +
-                    "power=balanced opbatch=1024 opqueue=16 fusion=off " +
-                    "cpu_inference_fallback=disabled")
+                    "hmx=auto fusion=auto opbatch=upstream opqueue=upstream " +
+                    "power=upstream-default cpu_inference_fallback=disabled")
             }
             if (backendType == "sdxl") {
                 // SDXL must not monopolize the phone's CPU/DDR fabric while

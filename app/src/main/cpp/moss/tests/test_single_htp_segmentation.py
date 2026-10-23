@@ -21,6 +21,15 @@ assert 'kMossSingleHtpBudget = "HTP0:0=2.60"' in bridge
 assert 'std::strcmp(req->params_backend, "all=disk")' in bridge
 assert 'max_vram=HTP0:0=2.60GiB params_backend=all=disk' in svc
 assert 'env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"' in svc
+# The native driver defaults must be restored: on the old crash workaround
+# NHMX=0 blocked HMX matmul; OPFUSION=0 disabled the normal NPU graph fusions.
+assert 'env["GGML_HEXAGON_NHMX"] =' not in svc
+assert 'env["GGML_HEXAGON_OPFUSION"] =' not in svc
+assert 'env["GGML_HEXAGON_OPBATCH"] =' not in svc
+assert 'env["GGML_HEXAGON_OPQUEUE"] =' not in svc
+assert 'opt_nhmx    = 1' in hexagon
+assert 'opt_opfusion = 1' in hexagon
+
 assert '!is_multi_device() && !sd_backend_is_cpu(runtime_backend)' in runner
 assert 'manager->segmented_compute_enabled()' in runner
 assert 'ggml_graph_cut::build_segment_graph' in runner
