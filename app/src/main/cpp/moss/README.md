@@ -186,3 +186,14 @@ tests after single-HTP end-to-end generation succeeds.
 
 Run-time speedup is **not yet measured on the user's SM8850**. The exact
 Nightmare benchmark uses Snapdragon 8 Elite (S25 Ultra), not Elite Gen 5.
+
+## Source-tree cleanup
+
+The abandoned dual-device patch and its ad hoc instrumentation scripts have
+been removed from the active source tree. The historical commits remain
+available through Git. The only MOSS-specific regression script kept in the
+build path is `tests/test_single_htp_segmentation.py`, which asserts that
+the staged source is unmodified upstream and that memory segmentation and
+driver-default accelerators are selected. The standalone MOSS engine still
+uses the independent `moss-stable-diffusion.cpp` submodule with no changes
+to the regular Qwen/SDXL DiT dependencies.
