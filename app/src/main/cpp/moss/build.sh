@@ -36,6 +36,7 @@ test -f "$STAGED_SOURCE/ggml/CMakeLists.txt"
     patch --batch --forward --fuzz=0 -p1 < "$PATCH_FILE"
 )
 python3 tests/instrument_moss_split.py "$STAGED_SOURCE"
+python3 tests/fix_htp_virtual_copy.py "$STAGED_SOURCE"
 python3 tests/test_htp_partition.py "$STAGED_SOURCE/src/core/layer_split_partition.cpp"
 test -z "$(git -C "$UPSTREAM" status --porcelain --untracked-files=no)" || {
     echo "Pinned MOSS upstream checkout changed unexpectedly" >&2

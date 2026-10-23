@@ -93,3 +93,32 @@ engine loads, so a subsequent fatal PC can be expressed as a module offset
 (`pc - base`) for symbolication. Original repo and all other engines remain
 untouched; original CI workflows and signing key remain unchanged. There is
 **no claim that this alone resolves the SIGSEGV** without the next device log.
+
+## Alpha.75 (230): avoid broken Hexagon virtual-session buffer cloning
+Alpha.74 successfully partitioned the 43-segment MOSS graph (4308.0 MiB of
+weights), loaded all 378 diffusion tensors, and allocated 2,569.67/2,021.80
+MB on the two HTP sessions. Then `ggml_backend_sched_split_inputs_grow`
+reported extra cross-backend inputs and the process SIGSEGV'd.
+
+Disassembling **the actual alpha.74 signed APK** at the reported
+`pc=0x7852d690a8` minus `[MOSS_NATIVE_MAP] base=0x7850a36000`
+gives ELF `0x23330a8`: ARM64 `ldadd` on the reference count of the
+`ggml_hexagon_shared_buffer::mem` shared_ptr in
+`ggml_hexagon_session::clone_buffer()` (pinned leejet/ggml file
+`src/ggml-hexagon/ggml-hexagon.cpp`, lines 4710-4716). The fault address
+is an invalid refcount pointer, *not* a budget-check or scheduler-growth error.
+
+MOSS's separate staged pinned ggml is therefore modified **only** at the
+virtual HTP-to-HTP async-copy entry point: for two *different virtual*
+sessions on the same physical Hexagon device, reject the unsafe async
+shortcut by returning `false`, letting the **existing upstream scheduler**
+synchronize the source and destination and copy tensor data through
+ggml's normal `ggml_backend_tensor_copy` host staging. Only tensor
+**transfers** use the host; neither Qwen nor the DiT performs CPU
+inference. No change for same-session fast copies, distinct physical
+NPUs, QNN/SDXL/Breeze/other native engines, HTP limits, model weights,
+app signing, or GitHub workflows.
+
+The staged source test verifies the exact pinned source receives the
+guard before its unsafe `clone_buffer` call. There is no on-device
+8-step success claim until alpha.75 is tested on SM8850.
