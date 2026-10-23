@@ -2,6 +2,7 @@
 #include "DitEngine.h"
 #include "stable-diffusion.h"
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
@@ -90,7 +91,14 @@ dit_ctx *create(const dit_ctx_params* req) {
     p.diffusion_model_path = req->diffusion_model_path;
     p.llm_path = req->llm_path;
     p.vae_path = req->vae_path;
-    p.tokenizer = token_path.c_str();
+    // Nightmare's upstream MOSS patch (dit/028) resolves Qwen3.5 tokenizer
+    // via SD_QWEN35_TOKENIZER, not via the newer leejet-only p.tokenizer API.
+    // Local Dream starts MOSS in its own isolated backend process.
+    if (setenv("SD_QWEN35_TOKENIZER", token_path.c_str(), 1) != 0) {
+        creation_error = "unable to configure Qwen3.5 tokenizer path";
+        delete ctx;
+        return nullptr;
+    }
     p.n_threads = req->n_threads > 0 ? req->n_threads : 4;
     p.flash_attn = req->flash_attn;
     p.diffusion_flash_attn = req->flash_attn;
@@ -181,7 +189,19 @@ bool generate(dit_ctx* ctx, const dit_gen_params* req,
                             PREVIEW_PROJ, ctx->preview_interval, true, false, nullptr);
     sd_image_t *out = nullptr;
     int count = 0;
+    const auto run_start = std::chrono::steady_clock::now();
     bool ok = generate_image(ctx->model, &params, &out, &count);
+    const auto run_end = std::chrono::steady_clock::now();
+    const bool composed_rope = std::getenv("NM_MOSS_COMPOSED_ROPE") != nullptr;
+    const double duration_s =
+        std::chrono::duration<double>(run_end - run_start).count();
+    // Comparable metrics for internal A/B runs: keep prompt private and
+    // reuse the SAME seed, dimensions, steps and model for both paths.
+    std::fprintf(stderr,
+                 "[MOSS_BENCH] rope=%s status=%s resolution=%dx%d steps=%d seed=%lld total_s=%.3f\n",
+                 composed_rope ? "composed" : "fused_or_backend_fallback",
+                 ok ? "ok" : "failed", req->width, req->height, req->steps,
+                 static_cast<long long>(req->seed), duration_s);
     sd_set_progress_callback(nullptr, nullptr);
     sd_set_preview_callback(nullptr, PREVIEW_NONE, 0, false, false, nullptr);
     const bool cancelled = active.cancelled;

@@ -1086,6 +1086,18 @@ class BackendService : Service() {
                 // HTP0:0 alone previously failed context creation. C++ selects
                 // ONLY HTP0:0 for MOSS execution; no cross-session transfers.
                 env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
+                // Developer-only A/B baseline. Never show a user setting:
+                // debug/test builds can create files/moss_composed_rope.flag
+                // to force Nightmare's mathematically equivalent old graph.
+                val composedRopeFlag = File(filesDir, "moss_composed_rope.flag")
+                if (composedRopeFlag.isFile) {
+                    env["NM_MOSS_COMPOSED_ROPE"] = "1"
+                } else {
+                    env.remove("NM_MOSS_COMPOSED_ROPE")
+                }
+                BackendDiagnostics.append(this, "MOSS_ROPE",
+                    if (composedRopeFlag.isFile) "benchmark=composed"
+                    else "benchmark=fused-with-capability-fallback")
                 // Do not override HMX, OPFUSION, OPBATCH or OPQUEUE.
                 // Legacy dual-device crash experiments disabled HMX (NHMX=0)
                 // and op fusion (OPFUSION=0), which prevents the NPU from

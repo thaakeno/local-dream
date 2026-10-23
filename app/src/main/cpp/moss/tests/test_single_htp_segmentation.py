@@ -42,6 +42,26 @@ assert 'manager->segmented_compute_enabled()' in runner
 assert 'ggml_graph_cut::build_segment_graph' in runner
 assert '[MOSS_HTP_COPY]' not in hexagon
 assert 'MOSS HTP split planner:' not in partition
+# The build must use the already pinned Nightmare-compatible happyyzy/ggml,
+# but never alter the shared DiT submodule in place.
+build_script = (moss / "build.sh").read_text()
+assert 'UPSTREAM="../3rdparty/stable-diffusion.cpp"' in build_script
+assert 'EXPECTED=a63954dc794f6daade32c407da1a9c4bc2d73cf0' in build_script
+assert 'BUILD_DIR=build/android-moss-fused-rope' in build_script
+assert '035-nightmare-moss-fused-rope.sdcpp.patch' in build_script
+assert '028-nightmare-moss-image.sdcpp.patch' in build_script
+moss_model = (stage / "src/model/diffusion/moss_image.hpp").read_text()
+assert 'class MOSSQKNorm' in moss_model
+assert 'ggml_qknorm_rope' in moss_model
+assert 'NM_MOSS_COMPOSED_ROPE' in moss_model
+assert 'if (!ggml_backend_supports_op(ctx->backend, out))' in moss_model
+assert 'GGML_OP_QKNORM_ROPE' in (stage / "ggml/include/ggml.h").read_text()
+assert 'ggml_qknorm_rope' in hexagon
+assert 'std::getenv("NM_MOSS_COMPOSED_ROPE")' in bridge
+assert '[MOSS_BENCH]' in bridge
+assert 'setenv("SD_QWEN35_TOKENIZER"' in bridge
+assert 'p.tokenizer =' not in bridge
+assert 'moss_composed_rope.flag' in svc
 print("MOSS single HTP segmented graph cut and pristine ggml source: PASS")
 
 # 8-step merged Turbo catalog and shared-asset safety regression.

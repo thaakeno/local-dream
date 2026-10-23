@@ -231,3 +231,46 @@ so is not silently claimed or exposed. We retain upstream HMX/fusion
 and segmented single-HTP architecture as a correctness baseline.
 
 No image was successfully generated yet on SM8850 with this release.
+
+## Alpha.79 (234) — phase-one MOSS fused Q/K RMSNorm + RoPE
+
+**Source provenance:** applies the exact Nightmare Mobile patches
+`backend-patches/dit/028-moss-image.sdcpp.patch` and
+`backend-patches/dit/035-moss-fused-rope.sdcpp.patch` to an ISOLATED copy
+of `happyyzy/stable-diffusion.cpp@a63954dc...`. Its
+`ggml@f8758628...` already includes the `GGML_OP_QKNORM_ROPE` factory,
+CPU/backend implementation and Hexagon support. This is the EXISTING
+stable-diffusion source pinned by Local Dream's classic DiT, not an
+unverified or newly added public dependency. Its existing checkout remains
+pristine. The obsolete standalone leejet MOSS gitlink remains checked out
+for history but is no longer part of the compiled MOSS engine.
+
+Why two patches: the happyyzy source alone lacks MOSS. 028 adds MOSS and
+Qwen3.5 tokenizer integration; 035 fuses norm/position in its 42 diffusion
+blocks and two text blocks. Both patches apply in order with fuzz disabled;
+a clean native build directory prevents stale objects. The MOSS bridge
+provides Qwen3.5's tokenizer via `SD_QWEN35_TOKENIZER`, the upstream
+patch's actual supported API (not the newer leejet-only `p.tokenizer`).
+
+**No UI toggle.** Fused RoPE is requested by default on MOSS; the patch
+automatically falls back to composed operations when the backend does not
+support the fused op, tensor shape is incompatible or precision differs.
+Developers can create `files/moss_composed_rope.flag` inside the app's
+private data directory on a debuggable build to force the baseline
+(`NM_MOSS_COMPOSED_ROPE=1`). Restart the MOSS backend after changing it.
+The flag affects MOSS only and does not touch Qwen, Z-Image, SDXL or YuE2.
+A kernel SIGSEGV cannot safely be caught within native inference; use a
+separate-process rollout and preserve old builds for rollback.
+
+**Measuring:** log `[MOSS_BENCH] rope=... resolution=... steps=...
+seed=... total_s=...` without disclosing prompts. For A/B compare
+identical GGUF, prompt, fixed seed, resolution, steps and device state,
+alternate baseline/fused, repeat multiple runs and use medians. Upstream
+graph timings separately show text encoder, diffusion steps and VAE.
+First use 512x512, then 1024x1024 only after 512 completes.
+
+The 3–4× reports are Nightmare's developer benchmarks on a different
+chip, NOT yet achieved or confirmed on SM8850. No user-facing 5× claim.
+
+Other engines, shared runtime, model downloads, signing, package ID and
+existing GitHub workflows remain unchanged.
