@@ -36,3 +36,20 @@ assert 'ggml_graph_cut::build_segment_graph' in runner
 assert '[MOSS_HTP_COPY]' not in hexagon
 assert 'MOSS HTP split planner:' not in partition
 print("MOSS single HTP segmented graph cut and pristine ggml source: PASS")
+
+# 8-step merged Turbo catalog and shared-asset safety regression.
+pkg = (moss.parent.parent / "java/io/github/xororz/localdream/data/MossImagePackages.kt").read_text()
+model = (moss.parent.parent / "java/io/github/xororz/localdream/data/Model.kt").read_text()
+downloader = (moss.parent.parent / "java/io/github/xororz/localdream/service/ModelDownloadService.kt").read_text()
+engine = (moss / "MossEngine.cpp").read_text()
+assert 'molbal/MOSS-Image-GGUF/resolve/main/moss_image_sft_turbo-Q4_0.gguf|dit.gguf' in pkg
+assert 'molbal/MOSS-Image-GGUF/resolve/main/moss_image_sft_turbo-Q4_K_M.gguf|dit.gguf' in pkg
+assert 'add(createMossMergedTurboModel(fast = true))' in model
+assert 'add(createMossMergedTurboModel(fast = false))' in model
+assert 'steps = 8f' in model
+assert 'cfg = 1f' in model
+assert 'android.system.Os.link(source.absolutePath, dest.absolutePath)' in downloader
+assert 'source.length() != expected' in downloader
+assert 'File(donorDir, MossImagePackages.MODEL_MARKER).isFile' in downloader
+assert '[MOSS_TURBO] merged DMD checkpoint; no runtime LoRA' in engine
+print("MOSS pre-merged Turbo catalog and common-runtime file hard links: PASS")

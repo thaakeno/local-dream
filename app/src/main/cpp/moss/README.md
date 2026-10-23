@@ -197,3 +197,37 @@ the staged source is unmodified upstream and that memory segmentation and
 driver-default accelerators are selected. The standalone MOSS engine still
 uses the independent `moss-stable-diffusion.cpp` submodule with no changes
 to the regular Qwen/SDXL DiT dependencies.
+
+## Alpha.78 (233): Nightmare-style 8-step merged Turbo checkpoints
+
+The stock MOSS catalog now offers the two upstream molbal
+`molbal/MOSS-Image-GGUF` Apache-2.0 checkpoints:
+
+* **MOSS-Image Turbo Q4_0 (Fast)** uses
+  `moss_image_sft_turbo-Q4_0.gguf` (~3.33 GB) with DMD merged.
+  Nightmare Mobile's similar Q4_0 checkpoint reports ~40s/512² on 8 Elite,
+  not a measured speed on SM8850.
+* **MOSS-Image Turbo Q4_K_M (Quality)** uses
+  `moss_image_sft_turbo-Q4_K_M.gguf` (~3.60 GB) with DMD merged.
+  Finer quantization may preserve more detail, but faster/quality comparison
+  and SM8850 NPU compatibility are not yet established.
+
+Each has its own independent model ID and directory; both default to
+8 Euler steps and CFG 1. The native bridge refuses to apply an extra
+runtime DMD LoRA to these merged models even if a stale adapter file
+exists. The previous SFT/Base options and explicit runtime 8-step LoRAs
+remain intact.
+
+The downloader reuses the exact Qwen3.5 GGUF, FLUX VAE, and tokenizer
+across any completed MOSS package with matching remote content size:
+Android's same-filesystem hard link means no extra storage, no duplicated
+download, and independent deletion. Missing donors/failed link fall back
+to normal resumable Hub downloads. Model marker is checked before linking.
+
+Nightmare's separate fused `GGML_OP_QKNORM_ROPE` requires changes
+through ggml header, CPU reference, host backend, Hexagon ABI and
+a MATCHED recompiled DSP skel; it is not compatible with pinned leejet/ggml,
+so is not silently claimed or exposed. We retain upstream HMX/fusion
+and segmented single-HTP architecture as a correctness baseline.
+
+No image was successfully generated yet on SM8850 with this release.
