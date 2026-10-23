@@ -20,13 +20,20 @@ assert 'const std::string moss_htp = "HTP0:0&HTP0:1"' not in main
 assert 'kMossSingleHtpBudget = "HTP0:0=2.60"' in bridge
 assert 'std::strcmp(req->params_backend, "all=disk")' in bridge
 assert 'max_vram=HTP0:0=2.60GiB params_backend=all=disk' in svc
-assert 'env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"' in svc
-# The native driver defaults must be restored: on the old crash workaround
-# NHMX=0 blocked HMX matmul; OPFUSION=0 disabled the normal NPU graph fusions.
-assert 'env["GGML_HEXAGON_NHMX"] =' not in svc
-assert 'env["GGML_HEXAGON_OPFUSION"] =' not in svc
-assert 'env["GGML_HEXAGON_OPBATCH"] =' not in svc
-assert 'env["GGML_HEXAGON_OPQUEUE"] =' not in svc
+# Scope accelerator checks to MOSS only. Other backends (notably YuE2)
+# intentionally supply their own NHMX/fusion/batch/queue values, and must
+# NEVER be mutated just to satisfy a MOSS regression.
+moss_service = svc.split('if (backendType == MossImagePackages.DIT_KIND) {', 1)[1].split(
+    'if (backendType == "sdxl")', 1
+)[0]
+assert 'env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"' in moss_service
+# The pinned MOSS ggml already enables HMX and fusion by default.
+for setting in ("NHMX", "OPFUSION", "OPBATCH", "OPQUEUE"):
+    assert f'env["GGML_HEXAGON_{setting}"] =' not in moss_service
+# Guard against a false positive: these overrides DO exist, but only for
+# the separate YuE2 engine in the rest of BackendService.
+assert 'env["GGML_HEXAGON_NHMX"] = "1"' in svc
+assert 'env["GGML_HEXAGON_OPFUSION"] = "1"' in svc
 assert 'opt_nhmx    = 1' in hexagon
 assert 'opt_opfusion = 1' in hexagon
 
