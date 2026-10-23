@@ -53,7 +53,8 @@ cmake -S . -B "$BUILD_DIR" -G Ninja \
 cmake --build "$BUILD_DIR" --target moss_engine -j "$(nproc)"
 JNI_DIR="$(cd ../.. && pwd)/jniLibs/arm64-v8a"
 mkdir -p "$JNI_DIR"
-cp build/android/lib/arm64-v8a/libmoss_engine.so "$JNI_DIR/"
+test -s "$BUILD_DIR/lib/arm64-v8a/libmoss_engine.so"
+cp "$BUILD_DIR/lib/arm64-v8a/libmoss_engine.so" "$JNI_DIR/"
 # DSP skels are optional source outputs but mandatory for HTP deployment.
 # Reuse the established ditlibs packaging path; never silently replace a
 # working v79/v81 skeleton with an unverified new one.
