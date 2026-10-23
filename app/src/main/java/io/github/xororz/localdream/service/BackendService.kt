@@ -1082,10 +1082,9 @@ class BackendService : Service() {
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
             if (backendType == MossImagePackages.DIT_KIND) {
-                // Separate *virtual* FastRPC mapping windows on one physical
-                // Hexagon. This avoids packing both the 4.6 GiB text model
-                // and the 4.59 GiB LoRA-augmented DiT into a 3.35 GiB window.
-                // Do not use a CPU/GPU inference fallback or maximum-power pin.
+                // Keep both devices enumerated: restricting the registry to
+                // HTP0:0 alone previously failed context creation. C++ selects
+                // ONLY HTP0:0 for MOSS execution; no cross-session transfers.
                 env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
                 env["GGML_HEXAGON_POWER_MODE"] = "balanced"
                 env["GGML_HEXAGON_NHMX"] = "0"
@@ -1095,11 +1094,11 @@ class BackendService : Service() {
                 env["GGML_HEXAGON_OPPOLL"] = "0"
                 env["GGML_HEXAGON_OPFUSION"] = "0"
                 BackendDiagnostics.append(this, "MOSS_NPU",
-                    "inference=HTP-only device_sessions=HTP0:0,HTP0:1 " +
-                    "te=HTP-dual diffusion=HTP-dual vae=HTP0:0 " +
-                    "max_vram=HTP0:0=2.75GiB,HTP0:1=2.75GiB " +
-                    "param_staging=disk power=balanced opbatch=1024 opqueue=16 " +
-                    "fusion=off cpu_inference_fallback=disabled")
+                    "inference=HTP-only compute_session=HTP0:0 " +
+                    "te=HTP-single-segmented diffusion=HTP-single-segmented vae=HTP0:0 " +
+                    "max_vram=HTP0:0=2.60GiB params_backend=all=disk " +
+                    "power=balanced opbatch=1024 opqueue=16 fusion=off " +
+                    "cpu_inference_fallback=disabled")
             }
             if (backendType == "sdxl") {
                 // SDXL must not monopolize the phone's CPU/DDR fabric while

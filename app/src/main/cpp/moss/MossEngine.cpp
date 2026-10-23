@@ -93,30 +93,20 @@ dit_ctx *create(const dit_ctx_params* req) {
     p.auto_fit = false;
     if (req->backend && req->backend[0]) p.backend = req->backend;
     if (req->params_backend && req->params_backend[0]) p.params_backend = req->params_backend;
-    // SM8850 HTP v81 uses separate virtual FastRPC sessions, but the GGML
-    // backend's get_memory() reports a synthetic constant rather than the
-    // ~3.35GB op-batch mapping capacity. Without an explicit max-vram budget,
-    // upstream layer_split_partition.cpp allocates ALL 34/43 segments to
-    // HTP0:0 and crashes on the oversized ~4.6GB Qwen/DiT graphs.
-    //
-    // The previous 2.60 GiB per-device budget plus a 320 MiB placement reserve
-    // left only 4684.8 MiB total for graph weights, below the ~4.59 GiB
-    // Turbo-LoRA diffusion graph: Qwen completed, then diffusion partitioning
-    // failed before denoising. Allow 2.75 GiB managed per session (4992 MiB
-    // combined weight capacity after the same reserve), leaving 367 MiB below
-    // the device-reported 3183 MiB FastRPC op mapping window PER session.
-    // This limit is NOT a physical-RAM cap. Runtime memory checks stay enabled.
-    // The two virtual sessions still run on the same physical NPU; CPU
-    // fallback remains disabled. Never apply this device-specific budget to
-    // single-backend or non-Hexagon callers.
-    constexpr const char *kMossHtpV81Budgets = "HTP0:0=2.75,HTP0:1=2.75";
-    if (req->backend && std::strstr(req->backend, "HTP0:0&HTP0:1")) {
-        p.max_vram = kMossHtpV81Budgets;
-        std::fprintf(stderr,
-            "[MOSS_PARTITION] max_vram=%s runtime=%s "
-            "note=managed-weight-budget,not-physical-memory-cap\n",
-            kMossHtpV81Budgets, req->backend);
+    // Budgeted single-backend segments stream both Qwen and DiT weights
+    // from disk; the two-session layer split previously disabled segmentation.
+    // 2.60 GiB is a managed runner budget, not physical DSP memory capacity.
+    constexpr const char *kMossSingleHtpBudget = "HTP0:0=2.60";
+    if (!req->backend || std::strstr(req->backend, "HTP0:0&") ||
+        !std::strstr(req->backend, "diffusion=HTP0:0,te=HTP0:0,vae=HTP0:0") ||
+        !req->params_backend || std::strcmp(req->params_backend, "all=disk") != 0) {
+        creation_error = "MOSS requires single HTP0:0 compute and all=disk segmentation";
+        delete ctx;
+        return nullptr;
     }
+    p.max_vram = kMossSingleHtpBudget;
+    std::fprintf(stderr, "[MOSS_SEGMENTED] max_vram=%s runtime=%s params=%s\n",
+                 kMossSingleHtpBudget, req->backend, req->params_backend);
     ctx->model = new_sd_ctx(&p);
     if (!ctx->model) {
         creation_error = "MOSS upstream new_sd_ctx failed; check tokenizer, weights and backend";
