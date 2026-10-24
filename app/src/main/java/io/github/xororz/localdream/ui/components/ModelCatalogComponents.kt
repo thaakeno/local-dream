@@ -88,6 +88,14 @@ import io.github.xororz.localdream.data.Model
 import java.io.File
 import io.github.xororz.localdream.utils.AppHaptics
 import java.util.Locale
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import kotlinx.coroutines.launch
 
 
@@ -212,7 +220,7 @@ private fun StudioFamilyCard(
                 ) {
                     Text(
                         if (officialQwenTurbo) "Standard + Turbo"
-                        else if (kind == "moss") "Base + SFT"
+                        else if (kind == "moss") "Standard + Turbo"
                         else featured.variantPrecision.ifBlank { "Models" },
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -222,7 +230,7 @@ private fun StudioFamilyCard(
                 }
                 Text(
                     if (kind == "moss") {
-                        "${variants.size} variants · ≈9.4–10.6 GB"
+                        "${variants.size} variants · $installed installed"
                     } else if (installed > 0) "$installed installed" else "${variants.size} options",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -238,88 +246,338 @@ private fun StudioFamilyCard(
     }
 }
 
+private val mossSizeClient = OkHttpClient.Builder()
+    .followRedirects(false)
+    .callTimeout(8, TimeUnit.SECONDS)
+    .build()
+
+private fun formatMossBytes(bytes: Long): String = if (bytes >= 1_000_000_000L) {
+    String.format(Locale.US, "%.2f GB", bytes / 1_000_000_000.0)
+} else {
+    String.format(Locale.US, "%.1f MB", bytes / 1_000_000.0)
+}
+
+private fun mossInstalledFileBytes(context: android.content.Context, model: Model): Long {
+    val dir = File(Model.getModelsDir(context), model.id)
+    return model.packageFiles.map { it.substringAfter('|') }.distinct().sumOf { local ->
+        File(dir, local).takeIf { it.isFile }?.length() ?: 0L
+    }
+}
+
+private fun mossPackageSourceBytes(model: Model, bytes: Map<String, Long>): Long? {
+    if (model.packageFiles.isEmpty()) return null
+    val parts = model.packageFiles.map { entry ->
+        model.baseUrl.trimEnd('/') + "/" + entry.substringBefore('|')
+    }
+    val sizes = parts.map { bytes[it] }
+    return if (sizes.all { it != null && it > 0L }) {
+        sizes.sumOf { it ?: 0L }
+    } else null
+}
+
+/**
+ * Probe only on sheet open. HF redirects normally lead to a CDN whose 3xx
+ * Content-Length is NOT the model file size; only X-Linked-Size is trusted
+ * on redirects. Unknown is displayed as unknown, never a fabricated estimate.
+ */
+private suspend fun mossRemoteFileBytes(url: String): Long = withContext(Dispatchers.IO) {
+    var current = url
+    try {
+        repeat(6) {
+            val request = Request.Builder().url(current).head()
+                .header("Accept-Encoding", "identity").build()
+            var next: String? = null
+            var size: Long? = null
+            mossSizeClient.newCall(request).execute().use { response ->
+                val location = response.header("Location")
+                val redirected = response.code in 300..399 && !location.isNullOrBlank()
+                size = response.header("X-Linked-Size")?.toLongOrNull()
+                if (!redirected && response.isSuccessful && size == null) {
+                    size = response.header("Content-Length")?.toLongOrNull()
+                }
+                if (redirected && (size == null || size!! <= 0L)) {
+                    val nextUrl = response.request.url.resolve(location!!)
+                    val host = nextUrl?.host.orEmpty()
+                    if (host == "huggingface.co" || host.endsWith(".huggingface.co")) {
+                        next = nextUrl.toString()
+                    }
+                }
+            }
+            if (size != null && size!! > 0L) return@withContext size!!
+            if (next == null) return@withContext -1L
+            current = next!!
+        }
+        -1L
+    } catch (_: IOException) {
+        -1L
+    } catch (_: IllegalArgumentException) {
+        -1L
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MossFamilyCard(
     variants: List<Model>,
     onOpen: (Model) -> Unit,
     onDownload: (Model) -> Unit,
+    onDelete: (Model) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var showSheet by remember { mutableStateOf(false) }
     if (variants.isEmpty()) return
-    val featured = variants.firstOrNull { it.id == "moss_image_sft_q4" } ?: variants.first()
+
+    val context = LocalContext.current
+    val turbo = variants.filter { it.id.contains("turbo") }
+    val standard = variants.filterNot { it.id.contains("turbo") }
+    val initial = variants.firstOrNull { it.isDownloaded }
+        ?: variants.firstOrNull { it.recommendedVariant }
+        ?: variants.first()
+    var selectedId by remember { mutableStateOf(initial.id) }
+    val selected = variants.firstOrNull { it.id == selectedId } ?: initial
+    var showSheet by remember { mutableStateOf(false) }
+    var sourceSizes by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    var checkingSizes by remember { mutableStateOf(false) }
+
+    // The same source files are reused across multiple MOSS variants.
+    // Fetch only missing unique files, concurrently, while the sheet is open.
+    LaunchedEffect(showSheet, variants) {
+        if (showSheet) {
+            val urls = variants.flatMap { model ->
+                model.packageFiles.map { entry ->
+                    model.baseUrl.trimEnd('/') + "/" + entry.substringBefore('|')
+                }
+            }.distinct().filterNot { it in sourceSizes }
+            if (urls.isNotEmpty()) {
+                checkingSizes = true
+                try {
+                    val sizes = coroutineScope {
+                        urls.map { url ->
+                            async(Dispatchers.IO) { url to mossRemoteFileBytes(url) }
+                        }.map { it.await() }.toMap()
+                    }
+                    sourceSizes = sourceSizes + sizes
+                } finally {
+                    checkingSizes = false
+                }
+            }
+        }
+    }
+
+    fun titleFor(model: Model): String = when (model.id) {
+        "moss_image_sft_turbo_merged_q4_0" -> "Q4_0 · Fast"
+        "moss_image_sft_turbo_merged_q4_k_m" -> "Q4_K_M · Quality"
+        "moss_image_sft_turbo_npu_q8" -> "Q4_0 + Q8_0 encoder"
+        "moss_image_sft_q4" -> "SFT · Q4_K"
+        "moss_image_base_q4" -> "Base · Q4_K"
+        "moss_image_sft_turbo_q4" -> "SFT · DMD adapter"
+        "moss_image_base_turbo_q4" -> "Base · DMD adapter"
+        else -> model.name
+    }
+
+    fun sizeFor(model: Model): String {
+        if (model.isDownloaded) {
+            return formatMossBytes(mossInstalledFileBytes(context, model)) + " installed"
+        }
+        val bytes = mossPackageSourceBytes(model, sourceSizes)
+        return when {
+            bytes != null -> formatMossBytes(bytes) + " source files"
+            checkingSizes -> "Checking file sizes…"
+            else -> "Size unavailable"
+        }
+    }
+
     StudioFamilyCard(
         title = "MOSS-Image",
-        subtitle = "Base · SFT · 8-step community Turbo",
+        subtitle = "Image generation · standard and 8-step Turbo",
         kind = "moss",
         variants = variants,
-        featured = featured,
-        onClick = { showSheet = true },
+        featured = selected,
+        onClick = {
+            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+            showSheet = true
+        },
         modifier = modifier,
     )
+
     if (showSheet) {
-        ModalBottomSheet(onDismissRequest = { showSheet = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showSheet = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+        ) {
             Column(
                 modifier = Modifier.fillMaxWidth()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 30.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                    .padding(horizontal = 18.dp)
+                    .padding(bottom = 25.dp),
+                verticalArrangement = Arrangement.spacedBy(13.dp),
             ) {
-                StudioGradientHeader(
-                    kind = "moss",
-                    title = "MOSS-Image",
-                    subtitle = "Choose the full 50-step model or experimental 8-step DMD",
-                    modifier = Modifier.clip(RoundedCornerShape(20.dp)),
-                )
-                Text("CHOOSE AN ENGINE", style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                variants.forEach { model ->
-                    val turbo = model.id.contains("turbo")
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        border = BorderStroke(1.dp,
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f)),
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Box(
+                        modifier = Modifier.size(48.dp)
+                            .background(
+                                MaterialTheme.colorScheme.primaryContainer,
+                                RoundedCornerShape(15.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Column(Modifier.fillMaxWidth().padding(15.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(if (turbo) Icons.Default.Bolt else Icons.Default.AutoAwesome,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(22.dp),
-                                    tint = MaterialTheme.colorScheme.primary)
-                                Spacer(Modifier.width(9.dp))
-                                Text(model.name, fontWeight = FontWeight.SemiBold,
+                        Icon(
+                            Icons.Default.AutoAwesome, null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "MOSS-Image",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "${variants.count { it.isDownloaded }} installed · ${variants.size} variants",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Text(
+                    "Tap a variant to select it. Hold an installed variant to delete it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                if (turbo.isNotEmpty()) {
+                    Text(
+                        "Turbo · 8 steps",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Experimental DMD acceleration. Quantization and NPU compatibility affect quality.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    turbo.forEach { model ->
+                        FamilyVariantTile(
+                            selected = selected.id == model.id,
+                            installed = model.isDownloaded,
+                            title = titleFor(model),
+                            subtitle = sizeFor(model) + " · " +
+                                if (model.id.contains("npu_q8")) {
+                                    "Separate FP32 adapter"
+                                } else if (model.id.contains("merged")) {
+                                    "Merged DMD"
+                                } else {
+                                    "Runtime DMD adapter"
+                                },
+                            icon = Icons.Default.Bolt,
+                            onClick = { selectedId = model.id },
+                            onLongClick = if (model.isDownloaded) {
+                                { onDelete(model) }
+                            } else null,
+                        )
+                    }
+                }
+
+                if (standard.isNotEmpty()) {
+                    HorizontalDivider()
+                    Text(
+                        "Standard · 50 steps",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "SFT for instruction following, Base for more flexible generation.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    standard.forEach { model ->
+                        FamilyVariantTile(
+                            selected = selected.id == model.id,
+                            installed = model.isDownloaded,
+                            title = titleFor(model),
+                            subtitle = sizeFor(model) + " · Reference quality",
+                            icon = Icons.Default.Memory,
+                            onClick = { selectedId = model.id },
+                            onLongClick = if (model.isDownloaded) {
+                                { onDelete(model) }
+                            } else null,
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(15.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    titleFor(selected),
                                     style = MaterialTheme.typography.titleMedium,
-                                    modifier = Modifier.weight(1f))
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    sizeFor(selected),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
-                            Text(model.description, style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("≈ ${model.approximateSize.replace("GB", " GB")} total download",
-                                fontWeight = FontWeight.SemiBold,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(if (turbo) "8 steps · CFG 1 · experimental adapter"
-                                    else "50 steps · CFG 3 · reference quality",
-                                    modifier = Modifier.weight(1f),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Button(onClick = {
-                                    showSheet = false
-                                    if (model.isDownloaded) onOpen(model)
-                                    else onDownload(model)
-                                }) { Text(if (model.isDownloaded) "Open" else "Download") }
+                            if (selected.isDownloaded) {
+                                Icon(Icons.Default.CheckCircle, "Installed",
+                                    tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        Text(
+                            selected.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (selected.isDownloaded) {
+                            TextButton(
+                                onClick = {
+                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                    onDelete(selected)
+                                },
+                                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error,
+                                ),
+                            ) {
+                                Icon(Icons.Default.Delete, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Remove this variant")
                             }
                         }
                     }
                 }
-                Text("Experimental 8-step Turbo uses lodestones' DMD LoRA. This native path still requires an on-device compatibility and quality test; 4-step data-space DMD is not supported.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(
+                    onClick = {
+                        AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                        showSheet = false
+                        if (selected.isDownloaded) onOpen(selected) else onDownload(selected)
+                    },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Icon(
+                        if (selected.isDownloaded) Icons.Default.PlayArrow
+                        else Icons.Default.CloudDownload,
+                        null,
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Text(
+                        if (selected.isDownloaded) "Open selected model"
+                        else "Download selected model",
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
             }
         }
     }

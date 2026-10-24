@@ -139,6 +139,7 @@ private sealed interface FamilyAssetDeleteTarget {
     data class QwenAdapter(val adapter: String) : FamilyAssetDeleteTarget
     data class YueVariant(val model: Model) : FamilyAssetDeleteTarget
     data class BreezeVariant(val model: Model) : FamilyAssetDeleteTarget
+    data class MossVariant(val model: Model) : FamilyAssetDeleteTarget
 }
 
 private fun getCleanFileName(uri: Uri): String {
@@ -1408,6 +1409,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 "Delete YuE2 ${target.model.variantPrecision}?"
             is FamilyAssetDeleteTarget.BreezeVariant ->
                 "Delete Breeze ${target.model.variantPrecision}?"
+            is FamilyAssetDeleteTarget.MossVariant ->
+                "Delete MOSS ${target.model.variantPrecision.ifBlank { target.model.name }}?"
         }
         val body = when (target) {
             is FamilyAssetDeleteTarget.QwenPrecision ->
@@ -1422,6 +1425,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             is FamilyAssetDeleteTarget.BreezeVariant ->
                 "This removes only the ${target.model.variantPrecision} Breeze model. " +
                     "Other Breeze variants and speech history are untouched."
+            is FamilyAssetDeleteTarget.MossVariant ->
+                "This deletes only the selected MOSS package folder. " +
+                    "Other MOSS variants, shared files linked to them, and generation history remain untouched."
         }
 
         AlertDialog(
@@ -1450,6 +1456,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                     is FamilyAssetDeleteTarget.YueVariant ->
                                         request.model.deleteModel(context, keepHistory = true)
                                     is FamilyAssetDeleteTarget.BreezeVariant ->
+                                        request.model.deleteModel(context, keepHistory = true)
+                                    is FamilyAssetDeleteTarget.MossVariant ->
                                         request.model.deleteModel(context, keepHistory = true)
                                 }
                             }
@@ -1957,6 +1965,10 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                     navController.navigate(Screen.ModelRun.createRoute(model.id))
                                 },
                                 onDownload = { model -> showDownloadConfirm = model },
+                                onDelete = { model ->
+                                    familyAssetDeleteTarget =
+                                        FamilyAssetDeleteTarget.MossVariant(model)
+                                },
                                 modifier = Modifier.animateItem(
                                     fadeInSpec = tween(Motion.DurationMedium),
                                     fadeOutSpec = tween(Motion.DurationMedium),
