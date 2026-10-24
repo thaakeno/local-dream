@@ -3,6 +3,9 @@
 
 #include <MNN/Interpreter.hpp>
 #include <cstdint>
+#include <fstream>
+#include <future>
+#include <chrono>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
@@ -12,8 +15,8 @@
 #include "MnnUtils.hpp"
 #include "PipelineQnn.hpp"
 
-// sdxl: QNN (HTP) UNet/VAE at a fixed 1024x1024, dual MNN CLIP encoders
-// (CLIP-L + CLIP-G) with pooled output, plus SDXL micro-conditioning
+// sdxl: QNN (HTP) UNet/VAE at a fixed 1024x1024. Matching dual QNN CLIP
+// contexts are preferred when present; legacy MNN CLIP is a reported fallback.\n// (CLIP-L + CLIP-G) pooled output plus SDXL micro-conditioning
 // (time_ids). In lowram mode every stage model is loaded right before use and
 // released right after, trading latency for peak memory.
 class PipelineSdxl : public PipelineQnn {
@@ -40,22 +43,30 @@ class PipelineSdxl : public PipelineQnn {
       return true;
     }
 
-    try {
-      loadClipsIfNeeded();
-    } catch (const std::exception &e) {
-      QNN_ERROR("%s", e.what());
-      return false;
+    // Restore the known-good v141 behavior: all normal-generation stages
+    // must be ready BEFORE the first request, not deferred into the timer.
+    // CPU MNN CLIP and HTP UNet have independent backends, so initialize
+    // them concurrently to reduce real wall-clock cold-start latency.
+    // Never keep the service alive after exit or raise HTP clocks to MAX.
+    const auto startup_begin = std::chrono::steady_clock::now();
+    const bool probe = std::getenv("LOCALDREAM_SDXL_SPILL_FILL_PROBE") != nullptr;
+    std::future<void> clip_init;
+    if (!probe && !npuClipContextsAvailable()) {
+      clip_init = std::async(std::launch::async, [this]() {
+        loadClipsIfNeeded();
+      });
     }
-    QNN_INFO("Persistent SDXL MNN CLIP1/CLIP2 sessions created.");
 
     unet_ = qnn_runtime::createModel(unet_path_, "unet");
     if (!unet_) {
       QNN_ERROR("Failed create QNN UNET model.");
       return false;
     }
+    // Always construct the decoder during initialization. Deferring this
+    // stage silently added ~1-2s to the first generation and preview.
     vae_decoder_ = qnn_runtime::createModel(vae_decoder_path_, "vae_decoder");
     if (!vae_decoder_) {
-      QNN_ERROR("Failed create QNN VAE Decoder model.");
+      QNN_ERROR("Failed create QNN VAE Decoder model");
       return false;
     }
     if (vae_encoder_path_.empty()) {
@@ -67,7 +78,7 @@ class PipelineSdxl : public PipelineQnn {
       if (!vae_encoder_) QNN_WARN("Failed create QNN VAE Enc model.");
     } else {
       QNN_INFO(
-          "SDXL fast mode: VAE encoder is lazy; UNET + decoder stay resident");
+          "SDXL fast mode: VAE encoder lazy; UNET and decoder ready at startup");
     }
 
     // Probe mode: getProperty(MAX_SPILLFILL_BUFFER_SIZE) returns 0 on this HTP
@@ -118,10 +129,27 @@ class PipelineSdxl : public PipelineQnn {
     if (sf_bytes) group_head = unet_->getContextHandle();
     logSpillFill("UNET", unet_);
 
+    // VAE joins the UNet spill/fill group when a measured shared size is set.
+    // Otherwise both contexts retain independent QNN allocations.
     if (sf_bytes) vae_decoder_->setSpillFillGroup(sf_bytes, group_head);
     if (qnn_runtime::initializeApp("VAEDecoder", vae_decoder_) != EXIT_SUCCESS)
       return false;
     logSpillFill("VAEDecoder", vae_decoder_);
+
+    if (clip_init.valid()) {
+      try {
+        clip_init.get();
+      } catch (const std::exception &e) {
+        QNN_ERROR("[SDXL startup] CLIP init failed: %s", e.what());
+        return false;
+      }
+    }
+    const auto total_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - startup_begin).count();
+    QNN_INFO("[SDXL startup] READY clip=%s unet=HTP vae=HTP total=%.1fms "
+             "power=unchanged service_keepalive=off",
+             npuClipContextsAvailable() ? "QNN-on-first-prompt" : "CPU-MNN",
+             total_ms);
 
     return true;
   }
@@ -141,15 +169,28 @@ class PipelineSdxl : public PipelineQnn {
 
   void encodeText(const ProcessedPromptPair &prompts, bool need_negative,
                   bool need_positive, Conditioning &cond) override {
-    if (lowram_) loadClipsIfNeeded();
-    if (!clip_interpreter_ || !clip2_interpreter_)
-      throw std::runtime_error("SDXL CLIP interpreters not initialized!");
+    const bool use_npu = npuClipContextsAvailable();
+    const char *backend = std::getenv("LOCALDREAM_SDXL_CLIP_BACKEND");
+    if (!use_npu && backend && std::string(backend) == "npu")
+      throw std::runtime_error(
+          "NPU CLIP requested but matching clip_qnn.bin and clip2_qnn.bin "
+          "are missing. These must be converted from the exact SDXL CLIP "
+          "weights with input_embedding IO; token-ID QNN models are incompatible.");
+    if (use_npu) {
+      loadNpuClipsIfNeeded();
+    } else {
+      loadClipsIfNeeded();
+      if (!clip_interpreter_ || !clip2_interpreter_)
+        throw std::runtime_error("SDXL legacy CLIP sessions unavailable");
+      QNN_WARN("[SDXL CLIP] model lacks QNN CLIP context files; "
+               "legacy CPU MNN fallback in use, not NPU inference");
+    }
 
     std::vector<float> pooled(text_embedding_size_2);
     for (int chunk = 0; chunk < cond.seq_len / 77; ++chunk) {
       const int offset = chunk * 77;
       if (need_negative) {
-        runDualClip(prompts.negative_embeddings.data() + offset * text_embedding_size,
+        runSelectedClip(use_npu, prompts.negative_embeddings.data() + offset * text_embedding_size,
                     prompts.negative_embeddings_2.data() + offset * text_embedding_size_2,
                     prompts.eos_positions[chunk],
                     cond.negHidden() + offset * cond.hidden_dim, pooled.data());
@@ -161,7 +202,7 @@ class PipelineSdxl : public PipelineQnn {
           std::copy(pooled.begin(), pooled.end(), cond.negPooled());
       }
       if (need_positive) {
-        runDualClip(prompts.positive_embeddings.data() + offset * text_embedding_size,
+        runSelectedClip(use_npu, prompts.positive_embeddings.data() + offset * text_embedding_size,
                     prompts.positive_embeddings_2.data() + offset * text_embedding_size_2,
                     prompts.eos_positions[cond.seq_len / 77 + chunk],
                     cond.posHidden() + offset * cond.hidden_dim, pooled.data());
@@ -170,6 +211,7 @@ class PipelineSdxl : public PipelineQnn {
       }
     }
 
+    if (use_npu) releaseNpuClips();
     if (lowram_) releaseClips();
   }
 
@@ -298,6 +340,7 @@ class PipelineSdxl : public PipelineQnn {
   void releaseTransientModels() override {
     if (!lowram_) return;
     if (clip_interpreter_ || clip2_interpreter_) releaseClips();
+    releaseNpuClips();
     if (unet_) {
       unet_.reset();
       QNN_INFO("[lowram] SDXL UNET released");
@@ -350,6 +393,63 @@ class PipelineSdxl : public PipelineQnn {
   }
 
  protected:
+  bool npuClipContextsAvailable() const {
+    return std::ifstream(model_dir_ + "/clip_qnn.bin").good() &&
+           std::ifstream(model_dir_ + "/clip2_qnn.bin").good();
+  }
+
+  void loadNpuClipsIfNeeded() {
+    if (npu_clip_ && npu_clip2_) return;
+    npu_clip_ = qnn_runtime::createAndInitModel(
+        model_dir_ + "/clip_qnn.bin", "SDXL CLIP-L");
+    npu_clip2_ = qnn_runtime::createAndInitModel(
+        model_dir_ + "/clip2_qnn.bin", "SDXL CLIP-G");
+    QNN_INFO("[SDXL CLIP] using actual QNN HTP CLIP-L + CLIP-G contexts");
+  }
+
+  void releaseNpuClips() {
+    npu_clip2_.reset();
+    npu_clip_.reset();
+  }
+
+  void runSelectedClip(bool use_npu, const float *emb1, const float *emb2,
+                       int eos_pos, float *out_hidden, float *out_pooled) {
+    if (use_npu) runDualNpuClip(emb1, emb2, eos_pos, out_hidden, out_pooled);
+    else runDualClip(emb1, emb2, eos_pos, out_hidden, out_pooled);
+  }
+
+  void runDualNpuClip(const float *emb1, const float *emb2, int eos_pos,
+                      float *out_hidden, float *out_pooled) {
+    std::vector<float> l(77 * text_embedding_size);
+    std::vector<float> g(77 * text_embedding_size_2);
+    std::vector<float> pooled(77 * text_embedding_size_2);
+    size_t pooled_written = 0;
+    if (!npu_clip_ || !npu_clip2_ ||
+        npu_clip_->executeSdxlClipGraphs(
+            emb1, l.size(), l.data(), l.size(), nullptr, 0, nullptr) !=
+            StatusCode::SUCCESS ||
+        npu_clip2_->executeSdxlClipGraphs(
+            emb2, g.size(), g.data(), g.size(), pooled.data(), pooled.size(),
+            &pooled_written) != StatusCode::SUCCESS)
+      throw std::runtime_error(
+          "SDXL NPU CLIP context contract mismatch; refusing incorrect conditioning");
+    for (int t = 0; t < 77; ++t) {
+      std::memcpy(out_hidden + t * (text_embedding_size + text_embedding_size_2),
+                  l.data() + t * text_embedding_size,
+                  text_embedding_size * sizeof(float));
+      std::memcpy(out_hidden + t * (text_embedding_size + text_embedding_size_2)
+                      + text_embedding_size,
+                  g.data() + t * text_embedding_size_2,
+                  text_embedding_size_2 * sizeof(float));
+    }
+    if (pooled_written == 1280) {
+      std::memcpy(out_pooled, pooled.data(), 1280 * sizeof(float));
+    } else {
+      std::memcpy(out_pooled, pooled.data() + eos_pos * text_embedding_size_2,
+                  text_embedding_size_2 * sizeof(float));
+    }
+  }
+
   void loadClipsIfNeeded() {
     if (!clip_interpreter_) {
       clip_interpreter_ = createMnnInterpreterMmap(clip_path_.c_str());
@@ -467,6 +567,8 @@ class PipelineSdxl : public PipelineQnn {
   const bool lowram_;
   int unet_tokens_ = 77;
 
+  std::unique_ptr<QnnModel> npu_clip_;
+  std::unique_ptr<QnnModel> npu_clip2_;
   MNN::Interpreter *clip_interpreter_ = nullptr;
   MNN::Interpreter *clip2_interpreter_ = nullptr;
   MNN::Session *clip_session_ = nullptr;

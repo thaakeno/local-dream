@@ -5,6 +5,7 @@ import io.github.xororz.localdream.utils.CrashDiagnostics
 
 import android.app.*
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -74,7 +75,7 @@ class BackendService : Service() {
         private const val MOSS_RUNTIME_DIR = "runtime_moss_htp"
         private const val MOSS_RUNTIME_VERSION = "moss-leejet-95b309-v79v81"
         private const val MUSIC_RUNTIME_VERSION = "hexagon_dual_37f752_yue2_v7"
-        private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
+        private const val RUNTIME_VERSION = "qnn_2_51_0_260929"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
         private const val CHANNEL_ID = "backend_service_channel"
@@ -172,6 +173,11 @@ class BackendService : Service() {
                 // no references). It is not a backend failure. A real
                 // reference-image failure will still be returned by /generate.
                 "no vision weights detected, vision disabled" in lower -> return null
+
+                // Preserve the native MOSS signal PC/LR and fault pointer.
+                // These identify graph scheduler crashes when Android tombstones
+                // are inaccessible from the ordinary app sandbox.
+                "[moss_native_crash]" in lower -> trimmed
 
                 // FastRPC/DSPQueue transport failures abort the process and are
                 // the useful root cause; surface these ahead of the resulting
@@ -545,10 +551,13 @@ class BackendService : Service() {
 
             try {
                 val qnnlibsAssets = assets.list("qnnlibs")
+                // Refresh same-size Qualcomm binaries after an APK upgrade.
+                val apkUpdateTime = packageManager.getPackageInfo(packageName, 0).lastUpdateTime
                 qnnlibsAssets?.forEach { fileName ->
                     val targetLib = File(runtimeDir, fileName)
 
                     val needsCopy = !targetLib.exists() ||
+                        targetLib.lastModified() < apkUpdateTime ||
                         run {
                             val assetInputStream = assets.open("qnnlibs/$fileName")
                             val assetSize = assetInputStream.use { it.available().toLong() }
@@ -1073,6 +1082,83 @@ class BackendService : Service() {
             env["LD_LIBRARY_PATH"] = systemLibPathsStr
             env["DSP_LIBRARY_PATH"] = runtimeDir.absolutePath
 
+            if (backendType == MossImagePackages.DIT_KIND) {
+                // Keep both devices enumerated: restricting the registry to
+                // HTP0:0 alone previously failed context creation. C++ selects
+                // ONLY HTP0:0 for MOSS execution; no cross-session transfers.
+                env["GGML_HEXAGON_DEVICES"] = "HTP0:0,HTP0:1"
+                // Developer-only A/B baseline. Never show a user setting:
+                // debug/test builds can create files/moss_composed_rope.flag
+                // to force Nightmare's mathematically equivalent old graph.
+                val composedRopeFlag = File(filesDir, "moss_composed_rope.flag")
+                if (composedRopeFlag.isFile) {
+                    env["NM_MOSS_COMPOSED_ROPE"] = "1"
+                } else {
+                    env.remove("NM_MOSS_COMPOSED_ROPE")
+                }
+                BackendDiagnostics.append(this, "MOSS_ROPE",
+                    if (composedRopeFlag.isFile) "benchmark=composed"
+                    else "benchmark=fused-with-capability-fallback")
+                // Developer-only on-device per-op NPU timings. Absent by default:
+                // profiling changes performance, so never use its timings as baseline.
+                // Strictly scoped to this MOSS child process, not SDXL/Breeze/YuE.
+                val mossHtpProfile = File(filesDir, "moss_htp_profile.flag").isFile
+                if (mossHtpProfile) {
+                    env["GGML_HEXAGON_PROFILE"] = "1"
+                } else {
+                    env.remove("GGML_HEXAGON_PROFILE")
+                }
+                BackendDiagnostics.append(this, "MOSS_PROFILE",
+                    if (mossHtpProfile) "enabled=1 per-op NPU profiler (slow diagnostic run)"
+                    else "enabled=0 baseline unchanged")
+                // The v81 Snapdragon SM8850 has a roughly 3.08 GiB DSP
+                // mapping window. Alpha.80 forced 2.60 GiB regardless of
+                // resolution, evicting weights after MOSS layer 20 on every
+                // pass. A modest headroom-preserving increase can reduce those
+                // redundant uploads. Never use both HTP virtual sessions.
+                // The Settings compatibility switch restores the exact known
+                // good 2.60 GiB budget on the next backend restart.
+                val isV81Sm8850 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    Build.SOC_MODEL.contains("SM8850", ignoreCase = true)
+                val fastResidency = isV81Sm8850 &&
+                    preferences.getBoolean("moss_fast_residency", true)
+                val mossBudget = if (!fastResidency) {
+                    "HTP0:0=2.60"
+                } else if (width.toLong() * height.toLong() <= 512L * 512L) {
+                    "HTP0:0=2.88"
+                } else {
+                    // At 1024² graph activations alone peak around 678 MB.
+                    // Retain at least ~240 MiB HTP virtual-address headroom.
+                    "HTP0:0=2.84"
+                }
+                env["NM_MOSS_MAX_VRAM"] = mossBudget
+                BackendDiagnostics.append(this, "MOSS_MEMORY",
+                    "profile=" + if (fastResidency) "fast" else "compatibility")
+                BackendDiagnostics.append(this, "MOSS_MEMORY",
+                    "budget=$mossBudget resolution=${width}x${height} device=${Build.SOC_MODEL}")
+                // Pinned HTP MUL_MAT lacks Q4_K/Q5_K/Q6_K kernels. Existing
+                // Qwen3.5-K encoders can execute CPU graph islands even when
+                // the initial requested backend is HTP0:0.
+                BackendDiagnostics.append(this, "MOSS_ENCODER",
+                    if (config.modelId == MossImagePackages.TURBO_NPU_Q8_ID)
+                        "Q8_0 text encoder supports HTP matmul; device parity/perf unverified"
+                    else
+                        "Q4_K/Q5_K/Q6_K encoder uses CPU matmul islands; long prompt cost")
+                // Do not override HMX, OPFUSION, OPBATCH or OPQUEUE.
+                // Legacy dual-device crash experiments disabled HMX (NHMX=0)
+                // and op fusion (OPFUSION=0), which prevents the NPU from
+                // using its native matrix engine and normal fusion passes.
+                // Our pinned ggml defaults are HMX=1, OPFUSION=1,
+                // OPBATCH=1280, OPQUEUE=8, NHVX=all and power=burst.
+                // Allow the driver to choose whether an individual tensor
+                // is actually HMX-eligible, otherwise it falls back to HVX.
+                BackendDiagnostics.append(this, "MOSS_NPU",
+                    "requested_compute=HTP0:0 compute_session=HTP0:0 " +
+                    "te=HTP-single-segmented diffusion=HTP-single-segmented vae=HTP0:0 " +
+                    "max_vram=$mossBudget params_backend=all=disk " +
+                    "hmx=auto fusion=auto opbatch=upstream opqueue=upstream " +
+                    "power=upstream-default cpu_graph_islands=possible")
+            }
             if (backendType == "sdxl") {
                 // SDXL must not monopolize the phone's CPU/DDR fabric while
                 // denoising. Keep TURBO as the HTP target but release the fixed

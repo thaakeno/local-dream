@@ -1,5 +1,9 @@
 #include <algorithm>
 #include <chrono>
+#include <csignal>
+#include <cstdint>
+#include <ucontext.h>
+#include <unistd.h>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -410,14 +414,24 @@ static std::unique_ptr<Pipeline> createPipeline(const ServerOptions &opts,
     const char *htp_mode_env = std::getenv("LOCAL_DREAM_HTP_MODE");
     const bool qwen_dual_htp =
         htp_mode_env != nullptr && std::string(htp_mode_env) == "dual";
+    // MOSS: run on ONE HTP session with budgeted graph-cut segments.
+    // The pinned GGMLRunner only segments graphs when !is_multi_device().
+    // Dual virtual sessions disabled this path and crashed in buffer cloning.
+    // Keep weights disk-backed for BOTH Qwen and the diffusion transformer.
+    const bool moss = opts.type == ServerOptions::ModelType::kMossImage;
     const std::string runtime_backend =
         qwen
             ? (qwen_dual_htp
                    ? "diffusion=HTP0:0&HTP0:1,te=HTP0:0&HTP0:1,vae=HTP0:0"
                    : "diffusion=HTP0:0,te=HTP0:0,vae=HTP0:0")
-            : opts.dit_backend;
+            : moss ? "diffusion=HTP0:0,te=HTP0:0,vae=HTP0:0" : opts.dit_backend;
     const std::string params_backend =
-        qwen ? "te=disk,vae=disk" : opts.dit_params_backend;
+        qwen ? "te=disk,vae=disk" : moss ? "all=disk" : opts.dit_params_backend;
+    if (moss) {
+        QNN_INFO("[MOSS_NPU] strict_backend=HTP0:0 single-device-segmented "
+                 "text_encoder=HTP0:0 diffusion=HTP0:0 vae=HTP0:0 "
+                 "params_backend=all=disk cpu_inference_fallback=disabled");
+    }
     return std::make_unique<PipelineDit>(
         text_encoder, opts.model_dir, engine_path, dit_path, llm_path,
         llm_vision_path, vae_path, kind, runtime_backend, params_backend,
@@ -840,7 +854,66 @@ static void registerTokenizeEndpoint(httplib::Server &svr,
   });
 }
 
+
+// Native crash diagnostics for MOSS before/during HTP scheduler setup.
+// Android's signal handler cannot use malloc, printf or C++ streams safely.
+// Emit only program counters; allow the default handler to create a tombstone.
+#if defined(__aarch64__)
+namespace {
+void mossCrashAppendHex(char *out, size_t &pos, uint64_t value) {
+    constexpr char digits[] = "0123456789abcdef";
+    out[pos++] = '0'; out[pos++] = 'x';
+    for (int shift = 60; shift >= 0; shift -= 4)
+        out[pos++] = digits[(value >> shift) & 0xf];
+}
+void mossCrashSignal(int sig, siginfo_t *info, void *opaque) {
+    char line[250];
+    size_t n = 0;
+    const char head[] = "[MOSS_NATIVE_CRASH] signal=";
+    for (size_t i = 0; i < sizeof(head) - 1; ++i) line[n++] = head[i];
+    // These handlers only cover SIGSEGV(11) and SIGBUS(7).
+    if (sig >= 10) line[n++] = char('0' + sig / 10);
+    line[n++] = char('0' + sig % 10);
+    if (opaque) {
+        auto *context = reinterpret_cast<ucontext_t*>(opaque);
+        const char pcText[] = " pc=";
+        for (size_t i = 0; i < sizeof(pcText) - 1; ++i) line[n++] = pcText[i];
+        mossCrashAppendHex(line, n, context->uc_mcontext.pc);
+        const char lrText[] = " lr=";
+        for (size_t i = 0; i < sizeof(lrText) - 1; ++i) line[n++] = lrText[i];
+        mossCrashAppendHex(line, n, context->uc_mcontext.regs[30]);
+        const char faultText[] = " fault=";
+        for (size_t i = 0; i < sizeof(faultText) - 1; ++i) line[n++] = faultText[i];
+        mossCrashAppendHex(line, n, reinterpret_cast<uintptr_t>(
+            info ? info->si_addr : nullptr));
+    }
+    line[n++] = '\n';
+    (void) write(STDERR_FILENO, line, n);
+    // SA_RESETHAND resets our handler; re-raise to preserve normal tombstones.
+    raise(sig);
+}
+void installMossNativeCrashLogger() {
+    struct sigaction handler{};
+    handler.sa_sigaction = mossCrashSignal;
+    sigemptyset(&handler.sa_mask);
+    handler.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    sigaction(SIGSEGV, &handler, nullptr);
+    sigaction(SIGBUS, &handler, nullptr);
+}
+}
+#endif
+
 int main(int argc, char **argv) {
+#if defined(__aarch64__)
+  // Crash handler provides PC/LR in the same streamed native backend log.
+  // Only enable in MOSS process, not our proven Breeze/YuE2 runtimes.
+  for (int i = 1; i + 1 < argc; ++i) {
+    if (std::string(argv[i]) == "--type" && std::string(argv[i + 1]) == "moss") {
+      installMossNativeCrashLogger();
+      break;
+    }
+  }
+#endif
   if (!qnn::log::initializeLogging()) {
     std::cerr << "ERROR: Init logging failed!\n";
     return EXIT_FAILURE;

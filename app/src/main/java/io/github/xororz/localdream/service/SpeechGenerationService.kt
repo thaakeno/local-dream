@@ -43,6 +43,11 @@ class SpeechGenerationService : Service() {
     @Volatile private var nativeDecodedFrames: Int = 0
     @Volatile private var nativeGeneratedFrames: Int = 0
     @Volatile private var nativeVocoderMsPerFrame: Float = 0f
+    @Volatile private var profileBackboneMs: Float = 0f
+    @Volatile private var profileDepthMs: Float = 0f
+    @Volatile private var profileVocoderMs: Double = 0.0
+    @Volatile private var profileVocoderFlushes: Int = 0
+    @Volatile private var profileModelFrames: Int = 0
     @Volatile private var usingQnnVocoder: Boolean = false
     @Volatile private var nativeGenerationDone: Boolean = false
     @Volatile private var nativeSegmentCount: Int = 1
@@ -273,6 +278,7 @@ class SpeechGenerationService : Service() {
                 "--chunk-first", "8",
                 "--chunk-max", "32",
                 "--split-chars", "600",
+                "--voices-dir", BreezeVoiceLibrary.directory(this).absolutePath,
                 "--verbose",
             )
 
@@ -285,9 +291,12 @@ class SpeechGenerationService : Service() {
             ).joinToString(";")
 
             val env = mutableMapOf(
-                // Match the device-proven v153 process environment exactly.
-                // The backend defaults are already opbatch=1280, opqueue=32,
-                // oppoll=0 and opfusion=1.
+                // Restore v153's device-proven 1280-op / 32-outstanding packet
+                // throughput. The 64/8 reduction was an unmeasured stability
+                // experiment and should not become a permanent performance
+                // regression. The native ggml-Hexagon overlay now handles
+                // transient AEE_EINTERRUPTED (0x2e) with bounded retries.
+                // Generator stays HVX-only on HTP; QNN v3 vocoder stays on HTP.
                 "LD_LIBRARY_PATH" to listOf(
                     nativeDir,
                     runtimeDir.absolutePath,
@@ -312,6 +321,11 @@ class SpeechGenerationService : Service() {
                 // This removes the response sleep/wake path used by the
                 // autoregressive one-frame generator.
                 "GGML_HEXAGON_OPPOLL" to "0",
+                "GGML_HEXAGON_OPBATCH" to "1280",
+                "GGML_HEXAGON_OPQUEUE" to "32",
+                // Keep every reference and KV token. Only zero-mask the
+                // unfilled KV tail so HTP softmax can use 32-lane HVX kernels.
+                "BREEZE_HTP_PAD_ATTN" to "1",
             )
             if (usingQnnRuntime) {
                 env["BREEZE_QNN_LIB_DIR"] = runtimeDir.absolutePath
@@ -437,6 +451,7 @@ class SpeechGenerationService : Service() {
         val modelId = intent.getStringExtra("modelId").orEmpty()
         val text = intent.getStringExtra("text")?.trim().orEmpty()
         val instruction = intent.getStringExtra("instruction")?.trim().orEmpty()
+        val voiceId = intent.getStringExtra("voiceId")?.trim().orEmpty()
         if (modelId.isBlank() || text.isBlank()) {
             fail("Enter text to speak.", modelId.ifBlank { null })
             return
@@ -485,6 +500,16 @@ class SpeechGenerationService : Service() {
                 nativeCodecOverallProgress = 0f
                 nativeVocoderOverallProgress = 0f
                 nativeVocoderMsPerFrame = if (usingQnnVocoder) 50f else 0f
+                profileBackboneMs = 0f
+                profileDepthMs = 0f
+                profileVocoderMs = 0.0
+                profileVocoderFlushes = 0
+                profileModelFrames = 0
+                BackendDiagnostics.append(this@SpeechGenerationService, "BREEZE_RUN",
+                    "event=begin model=" + modelId + " voice=" + voiceId.ifBlank { "design" } +
+                    " text_chars=" + text.length + " direction_chars=" + instruction.length +
+                    " cfg=" + cfg + " seed=" + seed +
+                    " vocoder=" + if (usingQnnVocoder) "qnn-htp-v3" else "ggml-fallback")
                 _state.value = SpeechState.Generating(
                     modelId = modelId,
                     detail = "Starting speech generation",
@@ -494,6 +519,10 @@ class SpeechGenerationService : Service() {
 
                 val payload = JSONObject().apply {
                     put("model", "breeze-tts-2")
+                    if (voiceId.isNotBlank()) {
+                        require(voiceId.matches(Regex("[A-Za-z0-9_-]{1,100}")))
+                        put("voice", voiceId)
+                    }
                     put("input", text)
                     put(
                         "instructions",
@@ -594,6 +623,18 @@ class SpeechGenerationService : Service() {
                 val elapsed = System.currentTimeMillis() - started
                 val audioDurationMillis =
                     (pcmBytes / 2L * 1000L / sampleRate.toLong()).coerceAtLeast(0L)
+                val rtf = if (elapsed > 0) audioDurationMillis.toDouble() / elapsed else 0.0
+                BackendDiagnostics.append(this@SpeechGenerationService, "BREEZE_RUN",
+                    "event=complete model=" + modelId + " voice=" + voiceId.ifBlank { "design" } +
+                    " elapsed_ms=" + elapsed + " audio_ms=" + audioDurationMillis +
+                    " rtf=" + String.format(Locale.US, "%.3f", rtf) +
+                    " generated_frames=" + profileModelFrames +
+                    " backbone_ms_per_frame=" + profileBackboneMs +
+                    " depth_ms_per_frame=" + profileDepthMs +
+                    " vocoder_ms=" + String.format(Locale.US, "%.1f", profileVocoderMs) +
+                    " vocoder_flushes=" + profileVocoderFlushes +
+                    " pcm_bytes=" + pcmBytes + " sample_rate=" + sampleRate +
+                    " vocoder=" + if (usingQnnVocoder) "qnn-htp-v3" else "ggml-fallback")
                 val item = SpeechHistoryStore.add(
                     context = this@SpeechGenerationService,
                     file = output,
@@ -611,6 +652,7 @@ class SpeechGenerationService : Service() {
                     splitChars = splitChars,
                     maxNewTokens = maxNewTokens,
                     accelerated = usingQnnVocoder,
+                    voiceId = voiceId,
                 )
                 _state.value = SpeechState.Complete(
                     output,
@@ -622,8 +664,14 @@ class SpeechGenerationService : Service() {
                     item.id,
                 )
             } catch (e: CancellationException) {
+                BackendDiagnostics.append(this@SpeechGenerationService, "BREEZE_RUN",
+                    "event=cancelled model=" + modelId + " voice=" + voiceId.ifBlank { "design" })
                 _state.value = SpeechState.Idle
             } catch (e: Exception) {
+                BackendDiagnostics.append(this@SpeechGenerationService, "BREEZE_RUN",
+                    "event=failed model=" + modelId + " voice=" + voiceId.ifBlank { "design" } +
+                    " error_type=" + e.javaClass.simpleName +
+                    " native_failure=" + (lastNativeFailure != null))
                 if (activeCall?.isCanceled() == true) {
                     _state.value = SpeechState.Idle
                 } else if ((_state.value as? SpeechState.Error)?.modelId != modelId) {
@@ -989,13 +1037,28 @@ class SpeechGenerationService : Service() {
 
         // Preserve the entire native record, including DSP stack traces.
         BackendDiagnostics.append(this, "BREEZE_NATIVE", line)
+        // Structured session counters, without copying text, transcript or PCM.
+        if (line.contains("[BREEZE_AUDIO]")) {
+            Regex("frames=([0-9]+)").find(line)?.groupValues?.getOrNull(1)
+                ?.toIntOrNull()?.let { profileModelFrames = it }
+            Regex("vocoder_ms=([0-9.]+)").find(line)?.groupValues?.getOrNull(1)
+                ?.toDoubleOrNull()?.let { profileVocoderMs = it }
+            Regex("flushes=([0-9]+)").find(line)?.groupValues?.getOrNull(1)
+                ?.toIntOrNull()?.let { profileVocoderFlushes = it }
+        }
 
         if (line.contains("dspqueue_read failed", ignoreCase = true)) {
             val nativeCode = Regex("dspqueue_read failed:\\s*(0x[0-9a-fA-F]+)")
                 .find(line)?.groupValues?.getOrNull(1)
+            BackendDiagnostics.append(this, "BREEZE_DSPQUEUE",
+                "event=transport_failure code=" + (nativeCode ?: "unknown") +
+                " generator=HTP-HVX qnn_vocoder=HTP opbatch=1280 opqueue=32 " +
+                "session_recovery=required cpu_fallback=disabled")
             lastNativeFailure = "Hexagon DSPQueue failure" +
                 (nativeCode?.let { " ($it)" } ?: "") +
-                ". The native accelerator stopped; see the complete backend log."
+                ". The NPU session failed. The voice was saved; restart the " +
+                "speech engine. If it fails again after a MOSS crash, reboot " +
+                "the phone to reset the Qualcomm DSP session."
         } else if (line.contains("GGML_ABORT", ignoreCase = true) && lastNativeFailure == null) {
             lastNativeFailure = "Hexagon native abort; see the complete backend log."
         }
@@ -1152,6 +1215,8 @@ class SpeechGenerationService : Service() {
         }
 
         nativeStageRegex.find(line)?.let { match ->
+            profileDepthMs = match.groupValues[3].toFloatOrNull() ?: profileDepthMs
+            profileBackboneMs = match.groupValues[4].toFloatOrNull() ?: profileBackboneMs
             val frames = match.groupValues[1].toIntOrNull() ?: return
             val nativeTotalFrames = match.groupValues[2].toIntOrNull()
                 ?: (nativeCompletedFrames + frames)

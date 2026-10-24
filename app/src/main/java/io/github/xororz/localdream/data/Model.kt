@@ -168,7 +168,24 @@ data class Model(
 
     // Per-field priority: code defaults > config.json > global defaults.
     val defaults: GenerationDefaults
-        get() = codeDefaults.withFallback(configDefaults).resolve()
+        get() {
+            val resolved = codeDefaults.withFallback(configDefaults).resolve()
+            // Custom imported models may lack per-model defaults.
+            return when {
+                isAnima && resolved.scheduler !in setOf("euler", "euler_a") ->
+                    resolved.copy(scheduler = "euler")
+                ditKind == "moss" && !resolved.scheduler.startsWith("euler|") ->
+                    resolved.copy(
+                        scheduler = if (id.contains("turbo", ignoreCase = true))
+                            "euler|simple" else "euler|sgm_uniform",
+                    )
+                isDit && resolved.scheduler != "euler" ->
+                    // Z-Image, Klein, Krea and Qwen use native Euler; SDXL
+                    // Karras/DPM selections are not implemented by these engines.
+                    resolved.copy(scheduler = "euler")
+                else -> resolved
+            }
+        }
 
     // SDXL and Anima both render on a fixed 1024 canvas and reach non-1:1
     // outputs via aspect-ratio inpaint padding; the run screen treats them
@@ -811,8 +828,13 @@ class ModelRepository private constructor(private val context: Context) {
                 add(createKrea2TurboModel())
                 add(createQwenImage21OfficialTurboModel())
                 if (MossImagePackages.engineAvailable(context)) {
-                    add(createMossImageModel(sft = true))
-                    add(createMossImageModel(sft = false))
+                    add(createMossMergedTurboModel(fast = true))
+                    add(createMossMergedTurboModel(fast = false))
+                    add(createMossNpuQ8TurboModel())
+                    add(createMossImageModel(sft = true, turbo = false))
+                    add(createMossImageModel(sft = false, turbo = false))
+                    add(createMossImageModel(sft = true, turbo = true))
+                    add(createMossImageModel(sft = false, turbo = true))
                 }
                 add(createQwenImage21Model())
                 add(createQwenImage21GgufViggleTurboModel())
@@ -1128,35 +1150,125 @@ class ModelRepository private constructor(private val context: Context) {
             ),
             runOnCpu = false,
             ditKind = "qwen21",
+            // Separate transformer & install folder, never the Viggle LoRA.
+            catalogFamily = "qwen21",
+            variantPrecision = "FP8 Turbo",
+            variantFormat = "FP8",
+            variantProfile = "Official distilled transformer · 8 steps",
+            recommendedVariant = false,
         )
     }
 
-    private fun createMossImageModel(sft: Boolean): Model {
-        val id = if (sft) "moss_image_sft_q4" else "moss_image_base_q4"
-        val packageFiles = if (sft) MossImagePackages.SFT_Q4 else MossImagePackages.BASE_Q4
+    /** Nightmare-style pre-merged 8-step DMD GGUF variants. */
+    private fun createMossMergedTurboModel(fast: Boolean): Model {
+        val id = if (fast) MossImagePackages.MERGED_TURBO_FAST_ID
+            else MossImagePackages.MERGED_TURBO_QUALITY_ID
+        val packageFiles = if (fast) MossImagePackages.MERGED_TURBO_FAST_Q4_0
+            else MossImagePackages.MERGED_TURBO_QUALITY_Q4_K_M
         return Model(
             id = id,
-            name = if (sft) "MOSS-Image SFT · Q4_K" else "MOSS-Image Base · Q4_K",
-            description = if (sft) {
-                "5B text-to-image diffusion • Qwen3.5-9B • detailed illustrations and text"
-            } else {
-                "5B foundation diffusion • Qwen3.5-9B • flexible styles and future LoRAs"
-            },
+            name = if (fast) "MOSS-Image Turbo · Q4_0 (Fast)"
+                else "MOSS-Image Turbo · Q4_K_M (Quality)",
+            description = if (fast)
+                "Experimental merged DMD · Q4_0 can reduce subtle adapter corrections"
+            else
+                "8-step merged DMD GGUF · finer Q4_K_M quantization · experimental on NPU",
             baseUrl = baseUrl,
             packageFiles = packageFiles,
             generationSize = 1024,
-            approximateSize = "9.4GB",
+            approximateSize = if (fast) "9.3GB" else "9.6GB",
             isDownloaded = Model.isDitPackageDownloaded(context, id, "moss", packageFiles),
             codeDefaults = ModelConfig(
-                prompt = "A cinematic portrait with natural lighting, intricate detail",
+                prompt = MossPromptPresets.options.first().prompt,
                 negativePrompt = "",
-                steps = MossImagePackages.STEPS.toFloat(),
-                cfg = MossImagePackages.CFG,
-                scheduler = "euler",
+                steps = 8f,
+                cfg = 1f,
+                scheduler = "euler|simple",
                 denoiseStrength = 1f,
             ),
             runOnCpu = false,
             ditKind = "moss",
+            catalogFamily = "moss",
+            variantPrecision = if (fast) "Q4_0" else "Q4_K_M",
+            variantFormat = "GGUF",
+            variantProfile = if (fast) "Fast merged DMD · artifact risk"
+                else "Finer quantization · still experimental",
+            recommendedVariant = fast,
+        )
+    }
+
+    /** Optional: HTP-supported Q4_0 DiT + Q8_0 text encoder + unmerged DMD. */
+    private fun createMossNpuQ8TurboModel(): Model = Model(
+        id = MossImagePackages.TURBO_NPU_Q8_ID,
+        name = "MOSS Turbo · HTP Q8 Encoder (Experimental)",
+        description = "Unmerged FP32 DMD LoRA · Q4_0 diffusion · Q8_0 Qwen3.5 (~14 GB)",
+        baseUrl = baseUrl,
+        packageFiles = MossImagePackages.SFT_TURBO_NPU_Q8,
+        generationSize = 1024,
+        approximateSize = "14GB",
+        isDownloaded = Model.isDitPackageDownloaded(
+            context, MossImagePackages.TURBO_NPU_Q8_ID,
+            "moss", MossImagePackages.SFT_TURBO_NPU_Q8,
+        ),
+        codeDefaults = ModelConfig(
+            prompt = MossPromptPresets.options.first().prompt,
+            negativePrompt = "",
+            steps = 8f,
+            cfg = 1f,
+            scheduler = "euler|simple",
+            denoiseStrength = 1f,
+        ),
+        runOnCpu = false,
+        ditKind = "moss",
+        catalogFamily = "moss",
+        variantPrecision = "Q4_0 DiT + Q8_0 TE",
+        variantFormat = "GGUF + LoRA",
+        variantProfile = "Unmerged FP32 DMD · NPU-eligible weights · unverified",
+        recommendedVariant = false,
+    )
+
+    private fun createMossImageModel(sft: Boolean, turbo: Boolean): Model {
+        val id = when {
+            sft && turbo -> "moss_image_sft_turbo_q4"
+            sft -> "moss_image_sft_q4"
+            turbo -> "moss_image_base_turbo_q4"
+            else -> "moss_image_base_q4"
+        }
+        val packageFiles = when {
+            sft && turbo -> MossImagePackages.SFT_TURBO_Q4
+            sft -> MossImagePackages.SFT_Q4
+            turbo -> MossImagePackages.BASE_TURBO_Q4
+            else -> MossImagePackages.BASE_Q4
+        }
+        return Model(
+            id = id,
+            name = when {
+                sft && turbo -> "MOSS-Image SFT · 8-step Turbo"
+                sft -> "MOSS-Image SFT · Q4_K"
+                turbo -> "MOSS-Image Base · 8-step Turbo"
+                else -> "MOSS-Image Base · Q4_K"
+            },
+            description = when {
+                turbo -> "Experimental DMD LoRA • 8-step Euler • CFG 1 • community model"
+                sft -> "5B text-to-image diffusion • Qwen3.5-9B • detailed illustrations and text"
+                else -> "5B foundation diffusion • Qwen3.5-9B • flexible styles"
+            },
+            baseUrl = baseUrl,
+            packageFiles = packageFiles,
+            generationSize = 1024,
+            approximateSize = if (turbo) "10.6GB" else "9.4GB",
+            isDownloaded = Model.isDitPackageDownloaded(context, id, "moss", packageFiles),
+            codeDefaults = ModelConfig(
+                prompt = MossPromptPresets.options.first().prompt,
+                negativePrompt = "",
+                steps = if (turbo) 8f else MossImagePackages.STEPS.toFloat(),
+                cfg = if (turbo) 1f else MossImagePackages.CFG,
+                scheduler = if (turbo) "euler|simple" else "euler|sgm_uniform",
+                denoiseStrength = 1f,
+            ),
+            runOnCpu = false,
+            ditKind = "moss",
+            catalogFamily = "moss",
         )
     }
 
@@ -1739,7 +1851,9 @@ class ModelRepository private constructor(private val context: Context) {
             "absoluterealitycpu", "chilloutmixcpu",
             // DiT
             "z_image_turbo", "flux2_klein_4b", "qwen_image_2_1", "krea_2_turbo",
-            "moss_image_sft_q4", "moss_image_base_q4", "qwen_image_2_1_turbo",
+            "moss_image_sft_q4", "moss_image_base_q4", "moss_image_sft_turbo_q4", "moss_image_base_turbo_q4",
+            MossImagePackages.MERGED_TURBO_FAST_ID, MossImagePackages.MERGED_TURBO_QUALITY_ID,
+            "qwen_image_2_1_turbo",
             "qwen_image_2_1_fp8", "qwen_image_2_1_viggle_turbo",
             "qwen_image_2_1_viggle_turbo_gguf",
             "qwen_image_2_1_q4_viggle_r256",

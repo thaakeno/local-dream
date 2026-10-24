@@ -15,6 +15,7 @@ import io.github.xororz.localdream.BuildConfig
 import io.github.xororz.localdream.R
 import io.github.xororz.localdream.data.GenerationPreferences
 import io.github.xororz.localdream.data.Model
+import io.github.xororz.localdream.data.MossImagePackages
 import io.github.xororz.localdream.data.ModelStorage
 import io.github.xororz.localdream.utils.DownloadDiagnostics
 import io.github.xororz.localdream.utils.Http
@@ -520,6 +521,20 @@ class ModelDownloadService : Service() {
                 continue
             }
 
+            // Reuse the exact same completed encoder, VAE and tokenizer
+            // across MOSS variants without copying 5+ GB a second time.
+            if (markerFile == MossImagePackages.MODEL_MARKER &&
+                tryReuseMossRuntimeFile(modelDir, local, expected)
+            ) {
+                part.delete()
+                completedBytes += dest.length()
+                DownloadDiagnostics.info(
+                    this@ModelDownloadService,
+                    "Reused MOSS common file $local via hard link bytes=${dest.length()}",
+                )
+                continue
+            }
+
             if (expected > 0 && part.exists() && part.length() > expected) {
                 DownloadDiagnostics.warn(
                     this@ModelDownloadService,
@@ -607,6 +622,33 @@ class ModelDownloadService : Service() {
             )
         }
         if (!markerFile.isNullOrEmpty()) File(modelDir, markerFile).createNewFile()
+    }
+
+    /**
+     * Share only common MOSS files from a COMPLETE, trusted package with
+     * the same remote source. Hard links preserve independent deletes.
+     * When hard-linking fails (e.g. EXDEV) normal HTTP/Xet download resumes.
+     */
+    private fun tryReuseMossRuntimeFile(modelDir: File, local: String, expected: Long): Boolean {
+        if (local !in MossImagePackages.SHARED_RUNTIME_FILES) return false
+        val dest = File(modelDir, local)
+        if (dest.exists()) return false
+        for (modelId in MossImagePackages.KNOWN_MODEL_IDS) {
+            val donorDir = File(getModelsDir(), modelId)
+            if (donorDir.absolutePath == modelDir.absolutePath) continue
+            if (!File(donorDir, MossImagePackages.MODEL_MARKER).isFile) continue
+            val source = File(donorDir, local)
+            if (!source.isFile || source.length() <= 0L) continue
+            if (expected > 0L && source.length() != expected) continue
+            try {
+                android.system.Os.link(source.absolutePath, dest.absolutePath)
+                if (dest.length() == source.length()) return true
+                dest.delete()
+            } catch (e: Exception) {
+                Log.d(TAG, "MOSS shared file link failed for $local: ${e.message}")
+            }
+        }
+        return false
     }
 
     private fun recoverInterruptedXetPart(part: File, expectedSize: Long) {

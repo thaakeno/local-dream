@@ -34,6 +34,7 @@ data class SpeechHistoryItem(
     val maxNewTokens: Int = 750,
     val accelerated: Boolean = false,
     val favorite: Boolean = false,
+    val voiceId: String = "",
 )
 
 object SpeechHistoryStore {
@@ -93,6 +94,7 @@ object SpeechHistoryStore {
         splitChars: Int = 240,
         maxNewTokens: Int = 750,
         accelerated: Boolean = false,
+    voiceId: String = "",
     ): SpeechHistoryItem = withContext(Dispatchers.IO) {
         mutex.withLock {
             val item = SpeechHistoryItem(
@@ -113,6 +115,7 @@ object SpeechHistoryStore {
                 splitChars = splitChars,
                 maxNewTokens = maxNewTokens,
                 accelerated = accelerated,
+                voiceId = voiceId,
             )
             val next = (listOf(item) + loadForModelUnlocked(context, modelId))
                 .filter { it.modelId == modelId && File(it.filePath).isFile }
@@ -262,6 +265,7 @@ object SpeechHistoryStore {
                             maxNewTokens = obj.optInt("maxNewTokens", 750),
                             accelerated = obj.optBoolean("accelerated", false),
                             favorite = obj.optBoolean("favorite", false),
+                            voiceId = obj.optString("voiceId"),
                         ),
                     )
                 }
@@ -301,6 +305,7 @@ object SpeechHistoryStore {
                     put("maxNewTokens", item.maxNewTokens)
                     put("accelerated", item.accelerated)
                     put("favorite", item.favorite)
+                    put("voiceId", item.voiceId)
                 },
             )
         }

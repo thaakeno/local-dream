@@ -12,9 +12,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.ui.graphics.Color
-import io.github.xororz.localdream.ui.glass.DreamGlassBackdropLayer
-import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
@@ -139,14 +136,12 @@ class MainActivity : ComponentActivity() {
             val themeController = rememberThemeController()
             CompositionLocalProvider(LocalThemeController provides themeController) {
                 LocalDreamTheme(themeController.state) {
-                    CompositionLocalProvider(LocalDreamGlassEnabled provides themeController.state.liquidGlass) {
-                    DreamGlassBackdropLayer {
                     val migrationState by app.migrationState.collectAsState()
                     val crashRecoveryReport by app.crashRecoveryReport.collectAsState()
 
                     Surface(
                         modifier = Modifier.fillMaxSize(),
-                        color = if (themeController.state.liquidGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
+                        color = MaterialTheme.colorScheme.surface,
                     ) {
                         when (migrationState) {
                             is MigrationState.Done,
@@ -170,8 +165,7 @@ class MainActivity : ComponentActivity() {
                             onDismiss = { app.dismissCrashRecoveryReport() },
                         )
                     }
-                    } // backdrop scene
-                    } // presentation mode
+
                 }
             }
         }

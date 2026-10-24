@@ -1,6 +1,5 @@
 package io.github.xororz.localdream.ui.screens
 
-import io.github.xororz.localdream.ui.glass.DreamElevatedCard
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -96,6 +95,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -148,6 +149,7 @@ import io.github.xororz.localdream.data.GenerationPreferences
 import io.github.xororz.localdream.data.HistoryFilter
 import io.github.xororz.localdream.data.HistoryItem
 import io.github.xororz.localdream.data.HistoryManager
+import io.github.xororz.localdream.data.MossPromptPresets
 import io.github.xororz.localdream.data.ModelRepository
 import io.github.xororz.localdream.data.ModelStorage
 import io.github.xororz.localdream.data.PatchScanner
@@ -410,6 +412,9 @@ fun ModelRunScreen(
     var generationTotalSteps by remember { mutableIntStateOf(0) }
     var generationPhase by remember { mutableStateOf("preparing") }
     var lastImageProgressHapticKey by remember { mutableStateOf<String?>(null) }
+    // MOSS is 43 NPU segments PER sampler step. Haptic pulses belong to
+    // completed sampler passes, not to every native graph-layer update.
+    var lastMossCompletedHapticStep by remember { mutableIntStateOf(0) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isCheckingBackend by remember { mutableStateOf(true) }
 
@@ -1452,6 +1457,7 @@ fun ModelRunScreen(
         generationStep = 0
         generationTotalSteps = 0
         generationPhase = "queued"
+        lastMossCompletedHapticStep = 0
         currentBatchIndex = 0
         generationStartTime = null
         Toast.makeText(
@@ -1514,7 +1520,22 @@ fun ModelRunScreen(
             useOpenCL = prefs.useOpenCL
             htpMode = prefs.htpMode
             batchCounts = prefs.batchCounts
-            scheduler = if (isFirstRun) defaults.scheduler else prefs.scheduler
+            scheduler = if (model.ditKind == "moss") {
+                val restored = if (isFirstRun) defaults.scheduler else prefs.scheduler
+                // Old builds displayed "Euler" yet always used Discrete in
+                // native code. Migrate those misleading saved values to the
+                // model's actually supported published schedule.
+                if (restored.startsWith("euler|") &&
+                    restored.substringAfter('|') in
+                    setOf("simple", "sgm_uniform", "discrete", "karras")
+                ) restored else defaults.scheduler
+            } else if (model.isDit || model.isAnima) {
+                // Native DiT / FlowMatch engines do not honor the old
+                // SD1.5/SDXL-style DPM / Karras choices.
+                defaults.scheduler
+            } else {
+                if (isFirstRun) defaults.scheduler else prefs.scheduler
+            }
             // Without img2img the backend has no VAE encoder, so a stored
             // non-1:1 ratio would silently fall back to 1024x1024 anyway.
             aspectRatio = if (useImg2img) prefs.aspectRatio else "1:1"
@@ -1645,20 +1666,57 @@ fun ModelRunScreen(
                 progress = state.progress
                 generationStep = state.step
                 generationTotalSteps = state.totalSteps
+                val priorPhase = generationPhase
                 generationPhase = state.phase
-                val hapticKey =
-                    state.phase + ":" + state.step + ":" + (state.progress * 1000f).toInt()
-                if (state.progress > 0f && hapticKey != lastImageProgressHapticKey) {
-                    AppHaptics.perform(context, AppHaptics.Kind.Progress)
-                    lastImageProgressHapticKey = hapticKey
-                } else if (state.progress <= 0f) {
-                    lastImageProgressHapticKey = null
+                if (model?.ditKind == "moss") {
+                    // The MOSS native layer progress is a completed-layer
+                    // counter across N passes. Only vibrate at N*layers.
+                    val parts = state.phase
+                        .takeIf { it.startsWith("moss_sampling_layers:") }
+                        ?.split(':')
+                    val layersPerStep = parts?.getOrNull(1)?.toIntOrNull()
+                    val scheduledSteps = parts?.getOrNull(2)?.toIntOrNull()
+                    if (layersPerStep != null && layersPerStep > 0 &&
+                        scheduledSteps != null && scheduledSteps > 0 &&
+                        state.totalSteps == layersPerStep * scheduledSteps
+                    ) {
+                        val completed = (state.step.coerceAtLeast(0) / layersPerStep)
+                            .coerceAtMost(scheduledSteps)
+                        if (completed > lastMossCompletedHapticStep) {
+                            // Exactly one notification for the newly completed
+                            // Euler step, even when progress emits multiple times.
+                            AppHaptics.perform(context, AppHaptics.Kind.Progress)
+                        }
+                        lastMossCompletedHapticStep = completed
+                    } else if (state.phase == "decoding" &&
+                        priorPhase.startsWith("moss_sampling_layers:")) {
+                        // The last 43/43 progress event can be coalesced by
+                        // Compose with the decode transition. The native
+                        // decode stage proves the final sampler step finished.
+                        val finalStep = priorPhase.split(':').getOrNull(2)?.toIntOrNull()
+                        if (finalStep != null && finalStep > lastMossCompletedHapticStep) {
+                            AppHaptics.perform(context, AppHaptics.Kind.Progress)
+                            lastMossCompletedHapticStep = finalStep
+                        }
+                    }
+                    // Encoder segments, tensor loads, layers and VAE decode
+                    // are deliberately silent; the completion sound is separate.
+                } else {
+                    val hapticKey =
+                        state.phase + ":" + state.step + ":" + (state.progress * 1000f).toInt()
+                    if (state.progress > 0f && hapticKey != lastImageProgressHapticKey) {
+                        AppHaptics.perform(context, AppHaptics.Kind.Progress)
+                        lastImageProgressHapticKey = hapticKey
+                    } else if (state.progress <= 0f) {
+                        lastImageProgressHapticKey = null
+                    }
                 }
                 isRunning = true
                 state.intermediateImage?.let { intermediateBitmap = it }
             }
 
             is GenerationState.Complete -> {
+                lastMossCompletedHapticStep = 0
                 lastImageProgressHapticKey = null
                 intermediateBitmap = null
                 withContext(Dispatchers.Main) {
@@ -2223,7 +2281,7 @@ fun ModelRunScreen(
                 enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
                 exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top),
             ) {
-                DreamElevatedCard(
+                ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.large,
                 ) {
@@ -2346,6 +2404,11 @@ fun ModelRunScreen(
                                     cfg = cfg,
                                     useOpenCL = useOpenCL,
                                     isQwen21 = model?.ditKind == "qwen21" && !isRemote,
+                                    ditKind = model?.ditKind.orEmpty(),
+                                    isAnima = model?.isAnima == true,
+                                    mossIsTurbo = model?.ditKind == "moss" &&
+                                        (model?.id?.contains("turbo", ignoreCase = true) == true ||
+                                            model?.id?.contains("merged", ignoreCase = true) == true),
                                     htpMode = htpMode,
                                     batchCounts = batchCounts,
                                     denoiseStrength = denoiseStrength,
@@ -2456,6 +2519,50 @@ fun ModelRunScreen(
                             }
                         }
 
+                        if (model?.ditKind == "moss") {
+                            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(17.dp))
+                                    Spacer(Modifier.width(7.dp))
+                                    Text("Scene starters",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.weight(1f))
+                                    Text("Tap to use",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Row(
+                                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    MossPromptPresets.options.forEach { preset ->
+                                        OutlinedButton(
+                                            onClick = {
+                                                promptField.replaceText(preset.prompt)
+                                                negativePromptField.replaceText("")
+                                                saveAllFields()
+                                            },
+                                            shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+                                        ) {
+                                            Text("${preset.title} · ${preset.category}",
+                                                maxLines = 1,
+                                                style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
+                                Text("Describe a subject, its setting, and believable lighting. Turbo uses 8 steps with CFG 1; negative prompts have no meaningful guidance effect at CFG 1.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+
                         ControlledPromptTagTextField(
                             controller = promptField,
                             autocompleteAvailable = tagAutocompleteAvailable,
@@ -2470,6 +2577,7 @@ fun ModelRunScreen(
                             },
                         )
 
+                        if (model?.ditKind != "moss" || !model.id.contains("turbo")) {
                         ControlledPromptTagTextField(
                             controller = negativePromptField,
                             autocompleteAvailable = tagAutocompleteAvailable,
@@ -2483,6 +2591,7 @@ fun ModelRunScreen(
                                 )
                             },
                         )
+                        }
 
                         Button(
                             onClick = {
@@ -3042,16 +3151,14 @@ fun ModelRunScreen(
                                     text = model?.name ?: "Running Model",
                                     fontWeight = FontWeight.Normal,
                                     maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 )
                                 Text(
                                     text = model?.description ?: "",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 )
                             }
                         }

@@ -21,6 +21,37 @@ object MossImagePackages {
         "OpenMOSS-Team/MOSS-Image-Base/resolve/main/tokenizer/tokenizer.json|tokenizer.json",
     )
 
+    // The 8-step DMD adapter is already merged into these molbal GGUFs.
+    // Download one checkpoint per model. Common encoder/VAE/tokenizer files
+    // are shared safely by the downloader when already installed.
+    const val MERGED_TURBO_FAST_ID = "moss_image_sft_turbo_merged_q4_0"
+    const val MERGED_TURBO_QUALITY_ID = "moss_image_sft_turbo_merged_q4_k_m"
+    // Opt-in experimental native HTP matmul path. Keep the FP32 DMD adapter
+    // separate; this package does not alter existing installed checkpoints.
+    const val TURBO_NPU_Q8_ID = "moss_image_sft_turbo_npu_q8"
+    val SFT_TURBO_NPU_Q8 = listOf(
+        "molbal/MOSS-Image-GGUF/resolve/main/moss_image_sft-Q4_0.gguf|dit.gguf",
+        "unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q8_0.gguf|llm.gguf",
+        "Comfy-Org/MOSS-Image/resolve/main/vae/flux2-vae.safetensors|vae.safetensors",
+        "OpenMOSS-Team/MOSS-Image-Base/resolve/main/tokenizer/tokenizer.json|tokenizer.json",
+        "lodestones/MOSS-Image-SFT-8-steps-dmd/resolve/main/lora.safetensors|moss_turbo_lora.safetensors",
+    )
+
+    val MERGED_TURBO_FAST_Q4_0 = listOf(
+        "molbal/MOSS-Image-GGUF/resolve/main/moss_image_sft_turbo-Q4_0.gguf|dit.gguf",
+    ) + common
+
+    val MERGED_TURBO_QUALITY_Q4_K_M = listOf(
+        "molbal/MOSS-Image-GGUF/resolve/main/moss_image_sft_turbo-Q4_K_M.gguf|dit.gguf",
+    ) + common
+
+    val SHARED_RUNTIME_FILES = setOf("llm.gguf", "vae.safetensors", "tokenizer.json")
+    val KNOWN_MODEL_IDS = listOf(
+        "moss_image_sft_q4", "moss_image_base_q4",
+        "moss_image_sft_turbo_q4", "moss_image_base_turbo_q4",
+        MERGED_TURBO_FAST_ID, MERGED_TURBO_QUALITY_ID, TURBO_NPU_Q8_ID,
+    )
+
     val SFT_Q4 = listOf(
         "leejet/MOSS-Image-SFT-GGUF/resolve/main/MOSS-Image-SFT-Q4_K.gguf|dit.gguf",
     ) + common
@@ -28,6 +59,15 @@ object MossImagePackages {
     val BASE_Q4 = listOf(
         "leejet/MOSS-Image-Base-GGUF/resolve/main/MOSS-Image-Base-Q4_K.gguf|dit.gguf",
     ) + common
+
+    // Community 8-step adapters; separate packages, never silently enabled.
+    // The 4-step data-space DMD sampler is NOT supported by the stock engine.
+    val SFT_TURBO_Q4 = SFT_Q4 + listOf(
+        "lodestones/MOSS-Image-SFT-8-steps-dmd/resolve/main/lora.safetensors|moss_turbo_lora.safetensors",
+    )
+    val BASE_TURBO_Q4 = BASE_Q4 + listOf(
+        "lodestones/MOSS-Image-Base-8-steps-dmd/resolve/main/lora.safetensors|moss_turbo_lora.safetensors",
+    )
 
     // MOSS's reference quality recipe. Accelerated community LoRAs need
     // separate fidelity verification and must not silently replace Base/SFT.

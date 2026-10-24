@@ -4099,6 +4099,12 @@ void ggml_hexagon_session::flush_async() {
 }
 
 void ggml_hexagon_session::flush_pending(bool all) {
+    // 0x2e is AEE_EINTERRUPTED: the wait can be interrupted even though the
+    // DSPQueue session and outstanding response remain valid. Previously a
+    // single transient interruption fatally aborted Breeze generation.
+    // Retry briefly and *boundedly*. Do not swallow persistent HTP failure,
+    // replay compute, or silently switch to CPU.
+    int interrupted_wait_retries = 0;
     for (auto & sub : this->mdev.sessions) {
         sub->flush_pending(all);
         if (sub->last_error > HTP_STATUS_OK) {
@@ -4122,9 +4128,18 @@ void ggml_hexagon_session::flush_pending(bool all) {
             continue;
         }
 
-        if (err != 0) {
-            GGML_ABORT("ggml-hex: dspqueue_read failed: 0x%08x\n", (unsigned) err);
+        if (err == 0x2e && interrupted_wait_retries < 16) { // AEE_EINTERRUPTED
+            if (interrupted_wait_retries++ == 0) {
+                GGML_LOG_WARN("ggml-hex: %s dspqueue wait interrupted (0x2e), retrying without discarding the outstanding response\n", this->c_name());
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
         }
+        if (err != 0) {
+            GGML_ABORT("ggml-hex: dspqueue_read failed: 0x%08x (wait_interrupted_retries=%d)\n",
+                       (unsigned) err, interrupted_wait_retries);
+        }
+        interrupted_wait_retries = 0;
 
         // Basic sanity checks
         if (rsp_size != sizeof(rsp) || n_dbufs != 1) {

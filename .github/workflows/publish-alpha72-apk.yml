@@ -1,0 +1,48 @@
+name: Publish alpha.72 direct APK
+on:
+  push:
+    branches:
+      - fix/sdxl-efficient-classic-catalog-20261022
+    paths:
+      - .github/workflows/publish-alpha72-apk.yml
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified permanently signed alpha.72 build
+        uses: actions/download-artifact@v4
+        with:
+          name: LocalDream-Classic-Permanent
+          run-id: 39861716784
+          github-token: ${{ github.token }}
+          path: apk
+      - name: Verify package and publish raw APK
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          apk_src="$(find apk -type f -name '*.apk' -print -quit)"
+          test -n "$apk_src"
+          test -s "$apk_src"
+          target="LocalDream_armv8a_3.0.0-alpha.72.apk"
+          cp "$apk_src" "$target"
+          magic="$(head -c 2 "$target" | od -An -tx1 | tr -d ' \n')"
+          test "$magic" = "504b"
+          unzip -p "$target" assets/mosslibs/upstream-revision.txt | head -c 45 || true
+          sha256sum "$target"
+          tag="v3.0.0-alpha.72"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$target" --clobber
+          else
+            gh release create "$tag" "$target" \
+              --target e63b8403bb263ae4429245928c8baf48c0ef3dd3 \
+              --title "Local Dream 3.0.0-alpha.72 (227)" \
+              --notes "Permanently signed APK from verified CI run 39861716784. MOSS NPU layer partition and Breeze high-throughput 1280x32 recovery. Runtime performance and MOSS image generation still require on-device verification; permanently signed CI build passed." \
+              --prerelease
+          fi
+          echo "Published https://github.com/$GH_REPO/releases/download/$tag/$target"

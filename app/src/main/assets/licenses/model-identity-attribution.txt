@@ -1,0 +1,6 @@
+Source logos and icon attribution:
+- Qwen Image: QwenLM/Qwen-Image-2.1, assets/logo.png (transparent project logo), https://github.com/QwenLM/Qwen-Image-2.1
+- Breeze TTS: breezeblue-ai/breeze-tts, assets/leaderboard-logos/breezeblue.jpg, https://github.com/breezeblue-ai/breeze-tts
+- YuE2: multimodal-art-projection/YuE, assets/logo.png, https://github.com/multimodal-art-projection/YuE
+
+Each mark remains the trademark of its respective owner. These assets are used solely to identify the associated models.

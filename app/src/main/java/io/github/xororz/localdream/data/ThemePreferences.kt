@@ -8,10 +8,9 @@ import io.github.xororz.localdream.ui.theme.ThemePreset
 enum class DarkModePreference { SYSTEM, LIGHT, DARK }
 
 data class ThemeState(
-    val dynamicColor: Boolean = true,
-    val preset: ThemePreset = ThemePreset.TANGERINE,
+    val dynamicColor: Boolean = false,
+    val preset: ThemePreset = ThemePreset.OCEAN,
     val darkMode: DarkModePreference = DarkModePreference.SYSTEM,
-    val liquidGlass: Boolean = true,
 )
 
 class ThemePreferences(context: Context) {
@@ -19,14 +18,14 @@ class ThemePreferences(context: Context) {
 
     fun read(): ThemeState {
         val supportsDynamic = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-        val dynamic = supportsDynamic && prefs.getBoolean(KEY_DYNAMIC, supportsDynamic)
+        val dynamic = supportsDynamic && prefs.getBoolean(KEY_DYNAMIC, false)
         val preset = prefs.getString(KEY_PRESET, null)
             ?.let { name -> runCatching { ThemePreset.valueOf(name) }.getOrNull() }
-            ?: ThemePreset.TANGERINE
+            ?: ThemePreset.OCEAN
         val darkMode = prefs.getString(KEY_DARK_MODE, null)
             ?.let { name -> runCatching { DarkModePreference.valueOf(name) }.getOrNull() }
             ?: DarkModePreference.SYSTEM
-        return ThemeState(dynamic, preset, darkMode, prefs.getBoolean(KEY_LIQUID_GLASS, true))
+        return ThemeState(dynamic, preset, darkMode)
     }
 
     fun write(state: ThemeState) {
@@ -34,7 +33,6 @@ class ThemePreferences(context: Context) {
             putBoolean(KEY_DYNAMIC, state.dynamicColor)
             putString(KEY_PRESET, state.preset.name)
             putString(KEY_DARK_MODE, state.darkMode.name)
-            putBoolean(KEY_LIQUID_GLASS, state.liquidGlass)
         }
     }
 
@@ -43,6 +41,5 @@ class ThemePreferences(context: Context) {
         private const val KEY_DYNAMIC = "dynamic_color"
         private const val KEY_PRESET = "preset"
         private const val KEY_DARK_MODE = "dark_mode"
-        private const val KEY_LIQUID_GLASS = "liquid_glass"
     }
 }

@@ -60,6 +60,17 @@ class PipelineDit : public Pipeline {
       QNN_ERROR("engine entry point missing: %s", dlerror());
       return false;
     }
+    // Emit an ASLR base address for symbolizing native MOSS crashes. The
+    // crash signal handler already writes raw PC/LR, but without the loaded
+    // module base those addresses cannot be mapped to source.
+    if (kind_ == DIT_MODEL_MOSS_IMAGE) {
+      Dl_info module_info{};
+      if (dladdr(reinterpret_cast<void *>(get_api), &module_info) != 0) {
+        QNN_INFO("[MOSS_NATIVE_MAP] lib=%s base=%p api=%p",
+                 module_info.dli_fname ? module_info.dli_fname : "unknown",
+                 module_info.dli_fbase, reinterpret_cast<void *>(get_api));
+      }
+    }
     api_ = get_api(DIT_ENGINE_ABI_VERSION);
     if (!api_) {
       QNN_ERROR("engine ABI mismatch; core wants v%d", DIT_ENGINE_ABI_VERSION);
@@ -216,7 +227,15 @@ class PipelineDit : public Pipeline {
     params.cfg_scale = req.cfg;
     params.guidance = kDistilledGuidance;
     params.seed = static_cast<int64_t>(req.seed);
-    params.sample_method = "euler";
+    // Only MOSS accepts sampler|noise-schedule; this is carried in the
+    // existing string so the stable DitEngine ABI and other DiT engines stay
+    // unchanged. Older stored "euler" values map to the Turbo Simple default.
+    const std::string moss_sampling = kind_ == DIT_MODEL_MOSS_IMAGE
+        ? (req.scheduler_type.rfind("euler|", 0) == 0
+            ? req.scheduler_type : std::string("euler|simple"))
+        : std::string();
+    params.sample_method = kind_ == DIT_MODEL_MOSS_IMAGE
+        ? moss_sampling.c_str() : "euler";
     params.denoise_strength = req.denoise_strength;
     if ((!native_edit || edit_from_base) && !init_rgb.empty()) {
       params.init_image_rgb = init_rgb.data();
@@ -258,6 +277,7 @@ class PipelineDit : public Pipeline {
                         0, 0, 0, false,
                         native_edit && params.init_image_rgb == nullptr,
                         pre_sample_steps};
+    callbacks.moss = kind_ == DIT_MODEL_MOSS_IMAGE;
     const auto start = std::chrono::high_resolution_clock::now();
 
     uint8_t *out_pixels = nullptr;
@@ -403,6 +423,9 @@ class PipelineDit : public Pipeline {
     bool sampling_started = false;
     bool full_sampling_schedule = false;
     int pre_sample_steps = 0;
+    // Strictly scoped to the standalone MOSS engine; other DiTs unchanged.
+    bool moss = false;
+    dit_generation_phase moss_phase = DIT_PHASE_PREPARING;
   };
 
   static std::vector<uint8_t> planarFloatToRgb(const std::vector<float> &planar,
@@ -485,6 +508,7 @@ class PipelineDit : public Pipeline {
   static void forwardPhase(dit_generation_phase phase, void *user_data) {
     auto *cb = static_cast<Callbacks *>(user_data);
     if (!cb || !cb->phase) return;
+    if (cb->moss) cb->moss_phase = phase;
     const char *name = "preparing";
     switch (phase) {
       case DIT_PHASE_ENCODING_INPUT: name = "encoding_input"; break;
@@ -513,8 +537,21 @@ class PipelineDit : public Pipeline {
         // Lazy weight residency can dominate the wait before the first sample.
         // Surface the real tensor counter as stage-local progress without
         // touching sampler steps.
-        (*cb->phase)("loading_model", std::clamp(step, 0, total_steps),
-                     total_steps);
+        std::string stage = "loading_model";
+        if (cb->moss) {
+          if (cb->moss_phase == DIT_PHASE_ENCODING_PROMPT) {
+            stage = "encoding_prompt";
+          } else if (cb->moss_phase == DIT_PHASE_DENOISING &&
+                     cb->req->steps > 0 &&
+                     total_steps % cb->req->steps == 0) {
+            // Wire format gives the UI the real NPU layers/pass without
+            // hardcoding the current 43-layer segmentation or a fake ETA.
+            stage = "moss_sampling_layers:" +
+                    std::to_string(total_steps / cb->req->steps) + ":" +
+                    std::to_string(cb->req->steps);
+          }
+        }
+        (*cb->phase)(stage, std::clamp(step, 0, total_steps), total_steps);
         return true;
       }
 

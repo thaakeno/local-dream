@@ -7,6 +7,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -76,16 +81,31 @@ internal fun GenerationProgressCard(
                             fontWeight = FontWeight.SemiBold,
                         )
                         val phaseLabel = generationPhaseLabel(phase)
-                        val numericStage =
-                            totalSteps > 0 &&
-                                (phase == "denoising" || phase == "loading_model")
+                        val mossLayers = phase.substringAfter("moss_sampling_layers:", "")
+                            .split(":")
+                            .mapNotNull { it.toIntOrNull() }
+                            .takeIf { phase.startsWith("moss_sampling_layers:") && it.size == 2 &&
+                                it[0] > 0 && it[1] > 0 && totalSteps == it[0] * it[1] }
+                        val numericStage = totalSteps > 0 &&
+                            (phase == "denoising" || phase == "loading_model" ||
+                                phase == "encoding_prompt" || mossLayers != null)
                         Text(
-                            text = if (numericStage) {
-                                val prefix = if (phase == "denoising") "Step " else ""
-                                "$phaseLabel · $prefix${step.coerceIn(0, totalSteps)}/$totalSteps · " +
-                                    "${(progress * 100).toInt()}%"
-                            } else {
-                                phaseLabel
+                            text = when {
+                                mossLayers != null -> {
+                                    val layersPerStep = mossLayers[0]
+                                    val steps = mossLayers[1]
+                                    val done = step.coerceIn(0, totalSteps)
+                                    val shownStep = (done / layersPerStep + 1).coerceAtMost(steps)
+                                    val doneInStep = done % layersPerStep
+                                    "Sampling · Step $shownStep/$steps · Layer $doneInStep/$layersPerStep · " +
+                                        "${(progress * 100).toInt()}%"
+                                }
+                                numericStage -> {
+                                    val prefix = if (phase == "denoising") "Step " else "Layer "
+                                    "$phaseLabel · $prefix${step.coerceIn(0, totalSteps)}/$totalSteps · " +
+                                        "${(progress * 100).toInt()}%"
+                                }
+                                else -> phaseLabel
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -97,7 +117,40 @@ internal fun GenerationProgressCard(
 
                 val determinate =
                     totalSteps > 0 &&
-                        (phase == "denoising" || phase == "loading_model")
+                        (phase == "denoising" || phase == "loading_model" ||
+                            phase == "encoding_prompt" || phase.startsWith("moss_sampling_layers:"))
+                if (phase.startsWith("moss_sampling_layers:")) {
+                    val parts = phase.split(":")
+                    val layerCount = parts.getOrNull(1)?.toIntOrNull()
+                    val stepCount = parts.getOrNull(2)?.toIntOrNull()
+                    if (layerCount != null && layerCount > 0 &&
+                        stepCount != null && stepCount in 1..50 &&
+                        totalSteps == layerCount * stepCount
+                    ) {
+                        val completed = (step.coerceIn(0, totalSteps) / layerCount)
+                            .coerceIn(0, stepCount)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            repeat(stepCount) { index ->
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(5.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            when {
+                                                index < completed -> MaterialTheme.colorScheme.primary
+                                                index == completed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                                else -> MaterialTheme.colorScheme.surfaceVariant
+                                            },
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                }
                 if (determinate) {
                     SmoothLinearWavyProgressIndicator(
                         progress = progress,
@@ -131,7 +184,9 @@ internal fun GenerationProgressCard(
     }
 }
 
-private fun generationPhaseLabel(phase: String): String = when (phase) {
+private fun generationPhaseLabel(phase: String): String = when {
+    phase.startsWith("moss_sampling_layers:") -> "Sampling"
+    else -> when (phase) {
     "queued" -> "Starting generation"
     "preparing" -> "Preparing model runtime"
     "preparing_latents" -> "Preparing latents"
@@ -144,6 +199,7 @@ private fun generationPhaseLabel(phase: String): String = when (phase) {
     "decoding" -> "Decoding image"
     "finalizing" -> "Finalizing result"
     else -> phase.replace('_', ' ').replaceFirstChar { it.uppercase() }
+    }
 }
 
 @Composable

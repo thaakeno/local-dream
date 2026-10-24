@@ -55,6 +55,7 @@ data class ModelConfig(
             "dpm_sde", "dpm_sde_karras",
             "euler", "euler_karras",
             "euler_a", "euler_a_karras",
+            "euler|simple", "euler|sgm_uniform", "euler|discrete", "euler|karras",
             "lcm",
         )
 

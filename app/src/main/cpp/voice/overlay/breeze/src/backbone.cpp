@@ -1,6 +1,9 @@
 #include "breeze/backbone.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
 #include <string>
 
 namespace breeze {
@@ -17,6 +20,12 @@ static ggml_tensor * bb_linear(ggml_context * ctx, ggml_tensor * w, ggml_tensor 
 void BackboneState::init(BreezeModel & m, int max_seq) {
     free();
     kv.init(m.backend, m.cfg.bb.n_layer, m.cfg.bb.head_dim, m.cfg.bb.n_kv_head, max_seq);
+    // New reference-aware attention can inspect up to 31 future KV slots to
+    // align the HTP softmax reduction. Masked slots must contain *finite* zero
+    // values: uninitialized bytes can create NaNs before the -inf mask applies.
+    const char * pad = std::getenv("BREEZE_HTP_PAD_ATTN");
+    if (pad && pad[0] == '1' && std::string(m.backend.name()).find("HTP") != std::string::npos)
+        ggml_backend_buffer_clear(kv.buffer, 0);
     pos = 0;
 }
 
@@ -92,6 +101,19 @@ static ggml_tensor * bb_layer(ggml_context * ctx, BreezeModel & m, Graph & g, Ba
         };
         auto * kfull = cache_append(ctx, g, branch.kv.k[il], slice(k), branch.pos);
         auto * vfull = cache_append(ctx, g, branch.kv.v[il], slice(v), branch.pos);
+        // Hexagon HVX softmax rejects most key lengths not divisible by 32.
+        // A long cloned voice's prefix otherwise makes the CPU fallback cost
+        // hundreds of milliseconds *each generated frame*. Round up the
+        // *logical view* of the existing KV cache, not the voice/context.
+        // Extra slots were initialized to zero; -inf mask excludes them.
+        const int64_t masked_len = branch_mask->ne[0];
+        if (masked_len > kfull->ne[2]) {
+            GGML_ASSERT(masked_len <= branch.kv.k[il]->ne[2]);
+            kfull = ggml_view_3d(ctx, branch.kv.k[il], kfull->ne[0], kfull->ne[1],
+                                 masked_len, kfull->nb[1], kfull->nb[2], 0);
+            vfull = ggml_view_3d(ctx, branch.kv.v[il], vfull->ne[0], vfull->ne[1],
+                                 masked_len, vfull->nb[1], vfull->nb[2], 0);
+        }
         return attention(ctx, slice(q), kfull, vfull, branch_mask, scale, c.n_head, c.n_kv_head);
     };
     ggml_tensor * a = attend(st, mask, 0);
@@ -128,8 +150,19 @@ StepOut backbone_run(BreezeModel & m, BackboneState & st, const std::vector<floa
     std::vector<int32_t> pos_i(n);
     for (int i = 0; i < n; i++) pos_i[i] = st.pos + i;
     ggml_tensor * pos = g.input_i32(pos_i, n);
+    // Do not round multi-token causal/prefill masks. For incremental decode,
+    // pad with masked future slots only; no reference tokens are discarded.
+    int attn_keys = total;
+    const char * htp_pad = std::getenv("BREEZE_HTP_PAD_ATTN");
+    if (n == 1 && htp_pad && htp_pad[0] == '1' &&
+        std::string(m.backend.name()).find("HTP") != std::string::npos) {
+        const int aligned = (total + 31) & ~31;
+        if (aligned <= st.kv.max_seq && total > 32)
+            attn_keys = aligned;
+    }
     std::vector<float> mask_v = build_causal_mask(n, total, st.pos, 0);
-    ggml_tensor * mask = g.input_f32(mask_v, total, n);
+    mask_v.resize(static_cast<size_t>(attn_keys), -std::numeric_limits<float>::infinity());
+    ggml_tensor * mask = g.input_f32(mask_v, attn_keys, n);
 
     for (int il = 0; il < c.n_layer; il++) x = bb_layer(g.ctx, m, g, st, x, il, pos, mask, n);
     x = rms_norm(g.ctx, x, m.w("bb.output_norm.weight"), c.rms_eps);
@@ -168,8 +201,23 @@ std::array<StepOut, 2> backbone_run_cfg(BreezeModel & m, BackboneState & cond, B
     }
     auto * x = ggml_concat(g.ctx, input, input, 1);
     auto * pos = g.input_i32({cond.pos, uncond.pos}, 2);
-    auto * mask_c = g.input_f32(std::vector<float>(cond.pos + 1, 0.0f), cond.pos + 1);
-    auto * mask_u = g.input_f32(std::vector<float>(uncond.pos + 1, 0.0f), uncond.pos + 1);
+    auto make_mask = [&](BackboneState & st) {
+        const int total = st.pos + 1;
+        int keys = total;
+        const char * pad = std::getenv("BREEZE_HTP_PAD_ATTN");
+        if (pad && pad[0] == '1' &&
+            std::string(m.backend.name()).find("HTP") != std::string::npos &&
+            total > 32) {
+            const int aligned = (total + 31) & ~31;
+            if (aligned <= st.kv.max_seq) keys = aligned;
+        }
+        std::vector<float> values(static_cast<size_t>(keys), 0.0f);
+        std::fill(values.begin() + total, values.end(),
+                  -std::numeric_limits<float>::infinity());
+        return g.input_f32(values, keys);
+    };
+    auto * mask_c = make_mask(cond);
+    auto * mask_u = make_mask(uncond);
     for (int il = 0; il < c.n_layer; il++)
         x = bb_layer(g.ctx, m, g, cond, x, il, pos, mask_c, 2, &uncond, mask_u);
     x = rms_norm(g.ctx, x, m.w("bb.output_norm.weight"), c.rms_eps);

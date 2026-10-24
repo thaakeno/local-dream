@@ -33,6 +33,7 @@ import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
@@ -42,6 +43,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.xororz.localdream.R
 import io.github.xororz.localdream.data.Resolution
+import io.github.xororz.localdream.utils.AppHaptics
 import kotlin.math.roundToInt
 
 /**
@@ -66,6 +68,9 @@ internal fun AdvancedSettingsDialog(
     cfg: Float,
     useOpenCL: Boolean,
     isQwen21: Boolean = false,
+    ditKind: String = "",
+    isAnima: Boolean = false,
+    mossIsTurbo: Boolean = false,
     htpMode: String = "auto",
     batchCounts: Int,
     denoiseStrength: Float,
@@ -92,6 +97,9 @@ internal fun AdvancedSettingsDialog(
     onReset: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val context = LocalContext.current
+    fun clickHaptic() = AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+    fun sliderHaptic() = AppHaptics.perform(context, AppHaptics.Kind.Progress)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -185,26 +193,32 @@ internal fun AdvancedSettingsDialog(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Text(
-                            stringResource(R.string.width),
+                            "${stringResource(R.string.width)} · ${currentWidth}px",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Slider(
                             value = currentWidth.toFloat(),
-                            onValueChange = onDitWidthChange,
+                            onValueChange = { value ->
+                                if ((value / 64).roundToInt() != (currentWidth / 64)) sliderHaptic()
+                                onDitWidthChange(value)
+                            },
                             valueRange = DIT_MIN_SIZE.toFloat()..DIT_MAX_SIZE.toFloat(),
                             steps = DIT_SIZE_STEPS,
                             enabled = !isRunning,
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Text(
-                            stringResource(R.string.height),
+                            "${stringResource(R.string.height)} · ${currentHeight}px",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Slider(
                             value = currentHeight.toFloat(),
-                            onValueChange = onDitHeightChange,
+                            onValueChange = { value ->
+                                if ((value / 64).roundToInt() != (currentHeight / 64)) sliderHaptic()
+                                onDitHeightChange(value)
+                            },
                             valueRange = DIT_MIN_SIZE.toFloat()..DIT_MAX_SIZE.toFloat(),
                             steps = DIT_SIZE_STEPS,
                             enabled = !isRunning,
@@ -251,81 +265,185 @@ internal fun AdvancedSettingsDialog(
                     }
                 }
 
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    // Split scheduler id into base + Karras flag so the UI
-                    // can offer one base chip per family plus a single
-                    // Karras switch, instead of listing every combination.
-                    val baseId = scheduler.removeSuffix("_karras")
-                    val karras = scheduler.endsWith("_karras")
-                    val karrasSupported = baseId != "lcm"
-                    val baseOptions = listOf(
-                        "dpm" to "DPM++ 2M",
-                        "dpm_sde" to "DPM++ 2M SDE",
-                        "euler_a" to "Euler A",
-                        "euler" to "Euler",
-                        "lcm" to "LCM",
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            stringResource(R.string.scheduler),
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            "Karras",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier
-                                .padding(end = 8.dp)
-                                .alpha(if (karrasSupported) 1f else 0.4f),
-                        )
-                        CompositionLocalProvider(
-                            LocalMinimumInteractiveComponentSize provides Dp.Unspecified,
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (ditKind == "moss") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Switch(
-                                checked = karras && karrasSupported,
-                                enabled = karrasSupported,
-                                onCheckedChange = { enable ->
-                                    onSchedulerChange(
-                                        if (enable) "${baseId}_karras" else baseId,
-                                    )
+                            Text("Sampler", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
+                            Text("Euler", style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary)
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Noise schedule", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
+                            Text(
+                                when (scheduler.substringAfter('|', "simple")) {
+                                    "sgm_uniform" -> "SGM Uniform"
+                                    "discrete" -> "Normal"
+                                    "karras" -> "Karras"
+                                    else -> "Simple"
                                 },
-                                modifier = Modifier.scale(0.8f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(
-                            ButtonGroupDefaults.ConnectedSpaceBetween,
-                        ),
-                    ) {
-                        baseOptions.forEachIndexed { index, (id, label) ->
-                            val shapes = when (index) {
-                                0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-
-                                baseOptions.lastIndex ->
-                                    ButtonGroupDefaults.connectedTrailingButtonShapes()
-
-                                else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                        val scheduleOptions = listOf(
+                            "simple" to "Simple",
+                            "sgm_uniform" to "SGM Uniform",
+                            "discrete" to "Normal",
+                            "karras" to "Karras",
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(
+                                ButtonGroupDefaults.ConnectedSpaceBetween,
+                            ),
+                        ) {
+                            scheduleOptions.forEachIndexed { index, (id, label) ->
+                                val shapes = when (index) {
+                                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                                    scheduleOptions.lastIndex ->
+                                        ButtonGroupDefaults.connectedTrailingButtonShapes()
+                                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                                }
+                                ToggleButton(
+                                    checked = scheduler == "euler|$id",
+                                    onCheckedChange = { checked ->
+                                        if (checked && !isRunning) {
+                                            clickHaptic()
+                                            onSchedulerChange("euler|$id")
+                                        }
+                                    },
+                                    shapes = shapes,
+                                    enabled = !isRunning,
+                                ) { Text(label) }
                             }
-                            ToggleButton(
-                                checked = baseId == id,
-                                onCheckedChange = { checked ->
-                                    if (checked) {
-                                        val nextKarras = karras && id != "lcm"
-                                        onSchedulerChange(
-                                            if (nextKarras) "${id}_karras" else id,
-                                        )
-                                    }
-                                },
-                                shapes = shapes,
+                        }
+                        Text(
+                            if (mossIsTurbo) "Recommended: Simple · 8 steps · CFG 1 · shift 5"
+                            else "Recommended: SGM Uniform · 50 steps · CFG 3 · shift 5",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (isDit) {
+                        Row(modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text("Sampler", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
+                            Text("Euler", color = MaterialTheme.colorScheme.primary)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text("Noise schedule", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
+                            Text(
+                                if (ditKind == "qwen21") "Native FlowMatch"
+                                else "Model-managed",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else if (isAnima) {
+                        Text("Sampler", style = MaterialTheme.typography.bodyMedium)
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(
+                                ButtonGroupDefaults.ConnectedSpaceBetween,
+                            ),
+                        ) {
+                            listOf("euler" to "Euler", "euler_a" to "Euler A")
+                                .forEachIndexed { index, (id, label) ->
+                                    ToggleButton(
+                                        checked = scheduler == id,
+                                        onCheckedChange = { checked ->
+                                            if (checked && !isRunning) {
+                                                clickHaptic()
+                                                onSchedulerChange(id)
+                                            }
+                                        },
+                                        shapes = if (index == 0)
+                                            ButtonGroupDefaults.connectedLeadingButtonShapes()
+                                        else ButtonGroupDefaults.connectedTrailingButtonShapes(),
+                                        enabled = !isRunning,
+                                    ) { Text(label) }
+                                }
+                        }
+                        Text("Native FlowMatch · shift 3",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        // SD1.5 and SDXL implement these samplers and Normal/Karras.
+                        val baseId = scheduler.removeSuffix("_karras")
+                        val karras = scheduler.endsWith("_karras")
+                        val karrasSupported = baseId != "lcm"
+                        val baseOptions = listOf(
+                            "dpm" to "DPM++ 2M",
+                            "dpm_sde" to "DPM++ 2M SDE",
+                            "euler_a" to "Euler A",
+                            "euler" to "Euler",
+                            "lcm" to "LCM",
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Sampler", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
+                            Text("Karras", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(end = 8.dp)
+                                    .alpha(if (karrasSupported) 1f else 0.4f))
+                            CompositionLocalProvider(
+                                LocalMinimumInteractiveComponentSize provides Dp.Unspecified,
                             ) {
-                                Text(label)
+                                Switch(
+                                    checked = karras && karrasSupported,
+                                    enabled = karrasSupported && !isRunning,
+                                    onCheckedChange = { enable ->
+                                        clickHaptic()
+                                        onSchedulerChange(if (enable) "${baseId}_karras" else baseId)
+                                    },
+                                    modifier = Modifier.scale(0.8f),
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(
+                                ButtonGroupDefaults.ConnectedSpaceBetween,
+                            ),
+                        ) {
+                            baseOptions.forEachIndexed { index, (id, label) ->
+                                val shapes = when (index) {
+                                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                                    baseOptions.lastIndex ->
+                                        ButtonGroupDefaults.connectedTrailingButtonShapes()
+                                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                                }
+                                ToggleButton(
+                                    checked = baseId == id,
+                                    onCheckedChange = { checked ->
+                                        if (checked && !isRunning) {
+                                            clickHaptic()
+                                            onSchedulerChange(
+                                                if (karras && id != "lcm") "${id}_karras" else id,
+                                            )
+                                        }
+                                    },
+                                    shapes = shapes,
+                                    enabled = !isRunning,
+                                ) { Text(label) }
                             }
                         }
                     }
@@ -338,7 +456,10 @@ internal fun AdvancedSettingsDialog(
                     )
                     Slider(
                         value = steps,
-                        onValueChange = onStepsChange,
+                        onValueChange = { value ->
+                            if (value.roundToInt() != steps.roundToInt()) sliderHaptic()
+                            onStepsChange(value)
+                        },
                         valueRange = 1f..50f,
                         steps = 48,
                         modifier = Modifier.fillMaxWidth(),
@@ -352,7 +473,10 @@ internal fun AdvancedSettingsDialog(
                     )
                     Slider(
                         value = cfg,
-                        onValueChange = onCfgChange,
+                        onValueChange = { value ->
+                            if ((value * 2).roundToInt() != (cfg * 2).roundToInt()) sliderHaptic()
+                            onCfgChange(value)
+                        },
                         valueRange = 1f..30f,
                         steps = 57,
                         modifier = Modifier.fillMaxWidth(),
@@ -374,7 +498,10 @@ internal fun AdvancedSettingsDialog(
                         )
                         Slider(
                             value = currentWidth.toFloat(),
-                            onValueChange = onSizeChange,
+                            onValueChange = { value ->
+                                if ((value / 64).roundToInt() != (currentWidth / 64)) sliderHaptic()
+                                onSizeChange(value)
+                            },
                             valueRange = 128f..512f,
                             steps = 5,
                             modifier = Modifier.fillMaxWidth(),
@@ -472,7 +599,10 @@ internal fun AdvancedSettingsDialog(
                     )
                     Slider(
                         value = batchCounts.toFloat(),
-                        onValueChange = onBatchCountsChange,
+                        onValueChange = { value ->
+                            if (value.roundToInt() != batchCounts) sliderHaptic()
+                            onBatchCountsChange(value)
+                        },
                         valueRange = 1f..10f,
                         steps = 8,
                         modifier = Modifier.fillMaxWidth(),
@@ -481,12 +611,16 @@ internal fun AdvancedSettingsDialog(
                 if (useImg2img) {
                     Column {
                         Text(
-                            "[img2img]Denoise Strength: %.2f".format(denoiseStrength),
+                            "Denoise Strength: %.2f".format(denoiseStrength),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Slider(
                             value = denoiseStrength,
-                            onValueChange = onDenoiseStrengthChange,
+                            onValueChange = { value ->
+                                if ((value * 20).roundToInt() !=
+                                    (denoiseStrength * 20).roundToInt()) sliderHaptic()
+                                onDenoiseStrengthChange(value)
+                            },
                             valueRange = 0f..1f,
                             steps = 99,
                             modifier = Modifier.fillMaxWidth(),
@@ -547,7 +681,7 @@ internal fun AdvancedSettingsDialog(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 TextButton(
-                    onClick = onReset,
+                    onClick = { clickHaptic(); onReset() },
                     colors = ButtonDefaults.textButtonColors(
                         contentColor = MaterialTheme.colorScheme.error,
                     ),
@@ -562,7 +696,7 @@ internal fun AdvancedSettingsDialog(
                     Text(stringResource(R.string.reset))
                 }
 
-                TextButton(onClick = onDismiss) {
+                TextButton(onClick = { clickHaptic(); onDismiss() }) {
                     Text(stringResource(R.string.confirm))
                 }
             }

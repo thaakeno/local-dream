@@ -63,8 +63,6 @@ import io.github.xororz.localdream.ui.components.ManageCollectionsDialog
 import io.github.xororz.localdream.ui.components.OverlayIconButton
 import io.github.xororz.localdream.ui.components.ShareParamsFlow
 import io.github.xororz.localdream.ui.components.ZoomableImageOverlay
-import io.github.xororz.localdream.ui.glass.DreamGlassTabRow
-import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
 import io.github.xororz.localdream.utils.saveImage
 import io.github.xororz.localdream.utils.saveImageFromFile
 import kotlinx.coroutines.Dispatchers
@@ -173,18 +171,7 @@ fun HistoryScreen(navController: NavController) {
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
-            if (LocalDreamGlassEnabled.current) {
-                DreamGlassTabRow(
-                    titles = mediaTitles,
-                    selectedIndex = mediaTab.ordinal,
-                    onSelected = { index ->
-                        mediaTab = mediaTabs[index]
-                        showFilterSheet = false
-                        isSelectionMode = false
-                        selectedIds.clear()
-                    },
-                )
-            } else {
+            
                 TabRow(selectedTabIndex = mediaTab.ordinal) {
                     mediaTabs.forEachIndexed { index, kind ->
                         Tab(
@@ -199,7 +186,7 @@ fun HistoryScreen(navController: NavController) {
                         )
                     }
                 }
-            }
+            
             if (mediaTab == MediaHistoryTab.IMAGES) {
             ModelRunHistoryPage(
                 historyFilter = historyFilter,

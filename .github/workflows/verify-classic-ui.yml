@@ -1,0 +1,38 @@
+name: Verify classic Local Dream UI
+
+on:
+  push:
+    branches:
+      - fix/sdxl-efficient-classic-catalog-20261022
+  pull_request:
+    paths:
+      - 'app/src/main/java/**'
+      - 'app/build.gradle.kts'
+      - '.github/workflows/verify-classic-ui.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  kotlin-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - name: Install Android platform
+        run: |
+          sdkmanager --channel=3 "platforms;android-37.0" "build-tools;37.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Check Kotlin and Android resources
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:compileBasicDebugKotlin --stacktrace

@@ -1,11 +1,5 @@
 package io.github.xororz.localdream.ui.screens
 
-import io.github.xororz.localdream.ui.glass.GlassSettingsCard
-import io.github.xororz.localdream.ui.glass.CompactModelCard
-import io.github.xororz.localdream.ui.glass.DreamCreateBubble
-import io.github.xororz.localdream.ui.glass.DreamGlassTabRow
-import io.github.xororz.localdream.ui.glass.DreamElevatedCard
-import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -102,6 +96,7 @@ import io.github.xororz.localdream.ui.components.CatalogFilterMode
 import io.github.xororz.localdream.ui.components.CatalogSortMode
 import io.github.xororz.localdream.ui.components.ModelCatalogControls
 import io.github.xororz.localdream.ui.components.BreezeFamilyCard
+import io.github.xororz.localdream.ui.components.MossFamilyCard
 import io.github.xororz.localdream.ui.components.QwenFamilyCard
 import io.github.xororz.localdream.ui.components.Yue2FamilyCard
 import io.github.xororz.localdream.ui.components.filterAndSortCatalog
@@ -144,6 +139,7 @@ private sealed interface FamilyAssetDeleteTarget {
     data class QwenAdapter(val adapter: String) : FamilyAssetDeleteTarget
     data class YueVariant(val model: Model) : FamilyAssetDeleteTarget
     data class BreezeVariant(val model: Model) : FamilyAssetDeleteTarget
+    data class MossVariant(val model: Model) : FamilyAssetDeleteTarget
 }
 
 private fun getCleanFileName(uri: Uri): String {
@@ -231,6 +227,46 @@ private fun DownloadLogsDialog(onDismiss: () -> Unit) {
                 Text(stringResource(R.string.close))
             }
         },
+    )
+}
+
+
+@Composable
+private fun MossPerformanceDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE) }
+    var faster by remember { mutableStateOf(prefs.getBoolean("moss_fast_residency", true)) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("MOSS NPU performance") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text(
+                    "On Snapdragon 8 Elite Gen 5, fast mode can retain more MOSS weights " +
+                        "on the NPU instead of reloading them after layer 20. " +
+                        "Model weights, sampler and image quality remain unchanged. " +
+                        "Actual speed and stability need on-device testing.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                HapticToggleRow(
+                    title = "Faster weight residency",
+                    subtitle = "Off: tested 2.60 GiB compatibility mode. " +
+                        "On: 2.84 GiB at 1024², 2.88 GiB at 512² on SM8850 only.",
+                    checked = faster,
+                    onCheckedChange = {
+                        faster = it
+                        prefs.edit().putBoolean("moss_fast_residency", it).apply()
+                    },
+                )
+                Text(
+                    "Restart the MOSS backend after changing this setting. " +
+                        "If an NPU allocation or graph fails, turn fast mode off.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
     )
 }
 
@@ -732,6 +768,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var showCleanTempDialog by remember { mutableStateOf(false) }
     var showBackendLogsDialog by remember { mutableStateOf(false) }
     var showHapticsDialog by remember { mutableStateOf(false) }
+    var showMossPerformanceDialog by remember { mutableStateOf(false) }
     var tempScanBytes by remember { mutableLongStateOf(0L) }
     var showEmbeddingManagerDialog by remember { mutableStateOf(false) }
     var showCustomModelDialog by remember { mutableStateOf(false) }
@@ -1063,6 +1100,11 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             onDismiss = { showHapticsDialog = false },
         )
     }
+    if (showMossPerformanceDialog) {
+        MossPerformanceDialog(
+            onDismiss = { showMossPerformanceDialog = false },
+        )
+    }
 
     if (showFileManagerDialog) {
         FileManagerDialog(
@@ -1367,6 +1409,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 "Delete YuE2 ${target.model.variantPrecision}?"
             is FamilyAssetDeleteTarget.BreezeVariant ->
                 "Delete Breeze ${target.model.variantPrecision}?"
+            is FamilyAssetDeleteTarget.MossVariant ->
+                "Delete MOSS ${target.model.variantPrecision.ifBlank { target.model.name }}?"
         }
         val body = when (target) {
             is FamilyAssetDeleteTarget.QwenPrecision ->
@@ -1381,6 +1425,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             is FamilyAssetDeleteTarget.BreezeVariant ->
                 "This removes only the ${target.model.variantPrecision} Breeze model. " +
                     "Other Breeze variants and speech history are untouched."
+            is FamilyAssetDeleteTarget.MossVariant ->
+                "This deletes only the selected MOSS package folder. " +
+                    "Other MOSS variants, shared files linked to them, and generation history remain untouched."
         }
 
         AlertDialog(
@@ -1409,6 +1456,8 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                     is FamilyAssetDeleteTarget.YueVariant ->
                                         request.model.deleteModel(context, keepHistory = true)
                                     is FamilyAssetDeleteTarget.BreezeVariant ->
+                                        request.model.deleteModel(context, keepHistory = true)
+                                    is FamilyAssetDeleteTarget.MossVariant ->
                                         request.model.deleteModel(context, keepHistory = true)
                                 }
                             }
@@ -1475,23 +1524,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     }
 
     Scaffold(
-        floatingActionButton = {
-            if (LocalDreamGlassEnabled.current && !isSelectionMode &&
-                pagerState.currentPage < 2
-            ) {
-                DreamCreateBubble(
-                    onAddModel = {
-                        if (pagerState.currentPage == 0) {
-                            showCustomModelDialog = true
-                        } else {
-                            showCustomNpuModelDialog = true
-                        }
-                    },
-                    onHistory = { navController.navigate(Screen.History.route) },
-                    onSettings = { showSettingsDialog = true },
-                )
-            }
-        },
         topBar = {
             MediumTopAppBar(
                 title = {
@@ -1703,13 +1735,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
             }
             }
 
-            if (LocalDreamGlassEnabled.current) {
-                DreamGlassTabRow(
-                    titles = tabTitles,
-                    selectedIndex = pagerState.currentPage,
-                    onSelected = { index -> scope.launch { pagerState.animateScrollToPage(index) } },
-                )
-            } else {
+            
             PrimaryTabRow(
                 selectedTabIndex = pagerState.currentPage,
                 modifier = Modifier.fillMaxWidth(),
@@ -1731,7 +1757,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                     )
                 }
             }
-            }
+            
 
             HorizontalPager(
                 state = pagerState,
@@ -1753,15 +1779,22 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                 } else {
                     emptyList()
                 }
+                val mossVariants = if (page == 1 && !remoteActive) {
+                    rawModels.filter { it.catalogFamily == "moss" }
+                } else {
+                    emptyList()
+                }
                 val standalone = if (
                     qwenVariants.isNotEmpty() ||
                     yue2Variants.isNotEmpty() ||
-                    breezeVariants.isNotEmpty()
+                    breezeVariants.isNotEmpty() ||
+                    mossVariants.isNotEmpty()
                 ) {
                     rawModels.filter {
                         it.catalogFamily != "qwen21" &&
                             it.catalogFamily != "yue2" &&
-                            it.catalogFamily != "breeze2"
+                            it.catalogFamily != "breeze2" &&
+                            it.catalogFamily != "moss"
                     }
                 } else {
                     rawModels
@@ -1790,6 +1823,16 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         CatalogFilterMode.All, CatalogFilterMode.Music -> true
                         CatalogFilterMode.Installed -> yue2Variants.any { it.isDownloaded }
                         CatalogFilterMode.Dit, CatalogFilterMode.Voice,
+                        CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
+                    }
+                val mossNeedle = catalogQuery.trim().lowercase(Locale.US)
+                val mossVisible = mossVariants.isNotEmpty() &&
+                    (mossNeedle.isBlank() ||
+                        "moss moss-image sft base turbo 8 steps dmd diffusion".contains(mossNeedle)) &&
+                    when (catalogFilter) {
+                        CatalogFilterMode.All, CatalogFilterMode.Dit -> true
+                        CatalogFilterMode.Installed -> mossVariants.any { it.isDownloaded }
+                        CatalogFilterMode.Music, CatalogFilterMode.Voice,
                         CatalogFilterMode.Sdxl, CatalogFilterMode.Custom -> false
                     }
                 val breezeNeedle = catalogQuery.trim().lowercase(Locale.US)
@@ -1914,6 +1957,27 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         }
                     }
 
+                    if (mossVisible) {
+                        item(key = "moss-family") {
+                            MossFamilyCard(
+                                variants = mossVariants,
+                                onOpen = { model ->
+                                    navController.navigate(Screen.ModelRun.createRoute(model.id))
+                                },
+                                onDownload = { model -> showDownloadConfirm = model },
+                                onDelete = { model ->
+                                    familyAssetDeleteTarget =
+                                        FamilyAssetDeleteTarget.MossVariant(model)
+                                },
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = tween(Motion.DurationMedium),
+                                    fadeOutSpec = tween(Motion.DurationMedium),
+                                    placementSpec = Motion.springExpressiveSpatial(),
+                                ),
+                            )
+                        }
+                    }
+
                     items(
                         items = models,
                         key = { model -> model.id },
@@ -1987,6 +2051,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         !qwenVisible &&
                         !yue2Visible &&
                         !breezeVisible &&
+                        !mossVisible &&
                         modelRepository.isLoaded
                     ) {
                         item {
@@ -2221,7 +2286,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                             }
 
                             Spacer(Modifier.height(12.dp))
-                            GlassSettingsCard(
+                            Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2262,7 +2327,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 DownloadLogsDialog(onDismiss = { showDownloadLogs = false })
                             }
 
-                            GlassSettingsCard(
+                            Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2325,7 +2390,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                         }
                     }
                     item {
-                        GlassSettingsCard(
+                        Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2386,7 +2451,7 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                 )
                             }
 
-                            GlassSettingsCard(
+                            Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2854,6 +2919,15 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                     }
                                 }
                             },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+
+                    item {
+                        SettingNavCard(
+                            icon = Icons.Default.Memory,
+                            label = "MOSS NPU performance",
+                            onClick = { showMossPerformanceDialog = true },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -3435,18 +3509,7 @@ fun ModelCard(
     modifier: Modifier = Modifier,
     isPinned: Boolean = false,
 ) {
-    if (LocalDreamGlassEnabled.current) {
-        CompactModelCard(
-            model = model,
-            isSelected = isSelected,
-            isSelectionMode = isSelectionMode,
-            isPinned = isPinned,
-            onClick = onClick,
-            onLongClick = onLongClick,
-            modifier = modifier,
-        )
-        return
-    }
+    
 
     val context = LocalContext.current
     val isDisabledInSelection = !model.isDownloaded && isSelectionMode
@@ -3479,7 +3542,7 @@ fun ModelCard(
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    DreamElevatedCard(
+    ElevatedCard(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.elevatedCardColors(
             containerColor = backgroundColor,
@@ -5212,15 +5275,6 @@ private fun AppearanceSection() {
                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
             ),
         ) {
-            SwitchSettingRow(
-                title = "Liquid glass",
-                description = "Fluid, refractive controls and compact model cards. Switch off for the classic design.",
-                checked = state.liquidGlass,
-                onCheckedChange = { enabled ->
-                    themeController.update { it.copy(liquidGlass = enabled) }
-                },
-            )
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
             if (dynamicColorSupported) {
                 SwitchSettingRow(
                     title = stringResource(R.string.dynamic_color),

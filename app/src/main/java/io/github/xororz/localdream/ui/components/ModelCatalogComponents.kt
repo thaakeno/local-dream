@@ -1,11 +1,5 @@
 package io.github.xororz.localdream.ui.components
 
-import io.github.xororz.localdream.ui.glass.GlassCatalogControls
-import io.github.xororz.localdream.ui.glass.DreamGlassRole
-import io.github.xororz.localdream.ui.glass.DreamGlassSurface
-import io.github.xororz.localdream.ui.glass.DreamElevatedCard
-import io.github.xororz.localdream.ui.glass.LocalDreamGlassEnabled
-import io.github.xororz.localdream.ui.glass.CompactFamilyCard
 
 import android.content.Intent
 import androidx.compose.animation.AnimatedContent
@@ -20,6 +14,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -81,8 +76,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import io.github.xororz.localdream.R
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -90,7 +88,500 @@ import io.github.xororz.localdream.data.Model
 import java.io.File
 import io.github.xororz.localdream.utils.AppHaptics
 import java.util.Locale
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import kotlinx.coroutines.launch
+
+
+
+/** Locally bundled, actual project marks. No network or glass shaders. */
+@Composable
+private fun StudioBrandMark(kind: String, modifier: Modifier = Modifier) {
+    val icon = when (kind) {
+        "voice" -> R.drawable.ic_model_breeze
+        "music" -> R.drawable.ic_model_yue2
+        else -> R.drawable.ic_qwen_brand_mark
+    }
+    Box(
+        modifier = modifier.size(60.dp)
+            .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(18.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (kind == "moss") {
+            Icon(Icons.Default.AutoAwesome, contentDescription = "MOSS Image",
+                tint = Color.White, modifier = Modifier.size(31.dp))
+        } else Image(
+            painter = painterResource(icon),
+            contentDescription = when (kind) {
+                "voice" -> "BreezeBlue logo"
+                "music" -> "YuE logo"
+                else -> "Official Qwen symbol"
+            },
+            contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+            modifier = Modifier.fillMaxSize().padding(10.dp),
+            colorFilter = if (kind == "image")
+                androidx.compose.ui.graphics.ColorFilter.tint(Color.White) else null,
+        )
+    }
+}
+
+private data class StudioColors(val start: Color, val middle: Color, val end: Color)
+
+private fun studioColors(kind: String): StudioColors = when (kind) {
+    "voice" -> StudioColors(Color(0xFF083C49), Color(0xFF126C7A), Color(0xFF176E87))
+    "music" -> StudioColors(Color(0xFF321243), Color(0xFF6B2E78), Color(0xFF86477E))
+    "moss" -> StudioColors(Color(0xFF241555), Color(0xFF533895), Color(0xFF8459AD))
+    else -> StudioColors(Color(0xFF111D54), Color(0xFF1D4799), Color(0xFF593B9C))
+}
+
+@Composable
+private fun StudioGradientHeader(
+    kind: String,
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier,
+) {
+    val colors = studioColors(kind)
+    val transition = rememberInfiniteTransition(label = "family-gradient-$kind")
+    val flow by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(12000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "family-glow-$kind",
+    )
+    // Slow, low-amplitude color movement: no blur, RenderEffect or offscreen layers.
+    val brush = Brush.linearGradient(
+        listOf(
+            androidx.compose.ui.graphics.lerp(colors.start, colors.middle, flow * 0.13f),
+            androidx.compose.ui.graphics.lerp(colors.middle, colors.end, flow * 0.20f),
+            androidx.compose.ui.graphics.lerp(colors.end, colors.middle, flow * 0.11f),
+        ),
+    )
+    Box(modifier = modifier.fillMaxWidth().background(brush).padding(18.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            StudioBrandMark(kind)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(when (kind) {
+                    "voice" -> "VOICE ENGINE"
+                    "music" -> "MUSIC ENGINE"
+                    else -> "IMAGE ENGINE"
+                }, style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold, color = Color.White.copy(alpha = .75f))
+                Text(title, style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold, color = Color.White, maxLines = 2)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = .83f), maxLines = 2)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StudioFamilyCard(
+    title: String,
+    subtitle: String,
+    kind: String,
+    variants: List<Model>,
+    featured: Model,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val installed = variants.count { it.isDownloaded }
+    val officialQwenTurbo = kind == "image" &&
+        variants.any { it.id == "qwen_image_2_1_turbo" }
+    Surface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(25.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .55f)),
+    ) {
+        Column {
+            StudioGradientHeader(kind, title, subtitle)
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 15.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(9.dp),
+                ) {
+                    Text(
+                        if (officialQwenTurbo) "Standard + Turbo"
+                        else if (kind == "moss") "Standard + Turbo"
+                        else featured.variantPrecision.ifBlank { "Models" },
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+                Text(
+                    if (kind == "moss") {
+                        "${variants.size} variants · $installed installed"
+                    } else if (installed > 0) "$installed installed" else "${variants.size} options",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.weight(1f))
+                Text("Explore", fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.labelMedium)
+                Icon(Icons.Default.Tune, contentDescription = "Configure",
+                    modifier = Modifier.size(19.dp),
+                    tint = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}
+
+private val mossSizeClient = OkHttpClient.Builder()
+    .followRedirects(false)
+    .callTimeout(8, TimeUnit.SECONDS)
+    .build()
+
+private fun formatMossBytes(bytes: Long): String = if (bytes >= 1_000_000_000L) {
+    String.format(Locale.US, "%.2f GB", bytes / 1_000_000_000.0)
+} else {
+    String.format(Locale.US, "%.1f MB", bytes / 1_000_000.0)
+}
+
+private fun mossInstalledFileBytes(context: android.content.Context, model: Model): Long {
+    val dir = File(Model.getModelsDir(context), model.id)
+    return model.packageFiles.map { it.substringAfter('|') }.distinct().sumOf { local ->
+        File(dir, local).takeIf { it.isFile }?.length() ?: 0L
+    }
+}
+
+private fun mossPackageSourceBytes(model: Model, bytes: Map<String, Long>): Long? {
+    if (model.packageFiles.isEmpty()) return null
+    val parts = model.packageFiles.map { entry ->
+        model.baseUrl.trimEnd('/') + "/" + entry.substringBefore('|')
+    }
+    val sizes = parts.map { bytes[it] }
+    return if (sizes.all { it != null && it > 0L }) {
+        sizes.sumOf { it ?: 0L }
+    } else null
+}
+
+/**
+ * Probe only on sheet open. HF redirects normally lead to a CDN whose 3xx
+ * Content-Length is NOT the model file size; only X-Linked-Size is trusted
+ * on redirects. Unknown is displayed as unknown, never a fabricated estimate.
+ */
+private suspend fun mossRemoteFileBytes(url: String): Long = withContext(Dispatchers.IO) {
+    var current = url
+    try {
+        repeat(6) {
+            val request = Request.Builder().url(current).head()
+                .header("Accept-Encoding", "identity").build()
+            var next: String? = null
+            var size: Long? = null
+            mossSizeClient.newCall(request).execute().use { response ->
+                val location = response.header("Location")
+                val redirected = response.code in 300..399 && !location.isNullOrBlank()
+                size = response.header("X-Linked-Size")?.toLongOrNull()
+                if (!redirected && response.isSuccessful && size == null) {
+                    size = response.header("Content-Length")?.toLongOrNull()
+                }
+                if (redirected && (size == null || size!! <= 0L)) {
+                    val nextUrl = response.request.url.resolve(location!!)
+                    val host = nextUrl?.host.orEmpty()
+                    if (host == "huggingface.co" || host.endsWith(".huggingface.co")) {
+                        next = nextUrl.toString()
+                    }
+                }
+            }
+            if (size != null && size!! > 0L) return@withContext size!!
+            if (next == null) return@withContext -1L
+            current = next!!
+        }
+        -1L
+    } catch (_: IOException) {
+        -1L
+    } catch (_: IllegalArgumentException) {
+        -1L
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MossFamilyCard(
+    variants: List<Model>,
+    onOpen: (Model) -> Unit,
+    onDownload: (Model) -> Unit,
+    onDelete: (Model) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (variants.isEmpty()) return
+
+    val context = LocalContext.current
+    val turbo = variants.filter { it.id.contains("turbo") }
+    val standard = variants.filterNot { it.id.contains("turbo") }
+    val initial = variants.firstOrNull { it.isDownloaded }
+        ?: variants.firstOrNull { it.recommendedVariant }
+        ?: variants.first()
+    var selectedId by remember { mutableStateOf(initial.id) }
+    val selected = variants.firstOrNull { it.id == selectedId } ?: initial
+    var showSheet by remember { mutableStateOf(false) }
+    var sourceSizes by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    var checkingSizes by remember { mutableStateOf(false) }
+
+    // The same source files are reused across multiple MOSS variants.
+    // Fetch only missing unique files, concurrently, while the sheet is open.
+    LaunchedEffect(showSheet, variants) {
+        if (showSheet) {
+            val urls = variants.flatMap { model ->
+                model.packageFiles.map { entry ->
+                    model.baseUrl.trimEnd('/') + "/" + entry.substringBefore('|')
+                }
+            }.distinct().filterNot { it in sourceSizes }
+            if (urls.isNotEmpty()) {
+                checkingSizes = true
+                try {
+                    val sizes = coroutineScope {
+                        urls.map { url ->
+                            async(Dispatchers.IO) { url to mossRemoteFileBytes(url) }
+                        }.map { it.await() }.toMap()
+                    }
+                    sourceSizes = sourceSizes + sizes
+                } finally {
+                    checkingSizes = false
+                }
+            }
+        }
+    }
+
+    fun titleFor(model: Model): String = when (model.id) {
+        "moss_image_sft_turbo_merged_q4_0" -> "Q4_0 · Fast"
+        "moss_image_sft_turbo_merged_q4_k_m" -> "Q4_K_M · Quality"
+        "moss_image_sft_turbo_npu_q8" -> "Q4_0 + Q8_0 encoder"
+        "moss_image_sft_q4" -> "SFT · Q4_K"
+        "moss_image_base_q4" -> "Base · Q4_K"
+        "moss_image_sft_turbo_q4" -> "SFT · DMD adapter"
+        "moss_image_base_turbo_q4" -> "Base · DMD adapter"
+        else -> model.name
+    }
+
+    fun sizeFor(model: Model): String {
+        if (model.isDownloaded) {
+            return formatMossBytes(mossInstalledFileBytes(context, model)) + " installed"
+        }
+        val bytes = mossPackageSourceBytes(model, sourceSizes)
+        return when {
+            bytes != null -> formatMossBytes(bytes) + " source files"
+            checkingSizes -> "Checking file sizes…"
+            else -> "Size unavailable"
+        }
+    }
+
+    StudioFamilyCard(
+        title = "MOSS-Image",
+        subtitle = "Image generation · standard and 8-step Turbo",
+        kind = "moss",
+        variants = variants,
+        featured = selected,
+        onClick = {
+            AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+            showSheet = true
+        },
+        modifier = modifier,
+    )
+
+    if (showSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSheet = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 18.dp)
+                    .padding(bottom = 25.dp),
+                verticalArrangement = Arrangement.spacedBy(13.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Box(
+                        modifier = Modifier.size(48.dp)
+                            .background(
+                                MaterialTheme.colorScheme.primaryContainer,
+                                RoundedCornerShape(15.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Default.AutoAwesome, null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "MOSS-Image",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "${variants.count { it.isDownloaded }} installed · ${variants.size} variants",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Text(
+                    "Tap a variant to select it. Hold an installed variant to delete it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                if (turbo.isNotEmpty()) {
+                    Text(
+                        "Turbo · 8 steps",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Experimental DMD acceleration. Quantization and NPU compatibility affect quality.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    turbo.forEach { model ->
+                        FamilyVariantTile(
+                            selected = selected.id == model.id,
+                            installed = model.isDownloaded,
+                            title = titleFor(model),
+                            subtitle = sizeFor(model) + " · " +
+                                if (model.id.contains("npu_q8")) {
+                                    "Separate FP32 adapter"
+                                } else if (model.id.contains("merged")) {
+                                    "Merged DMD"
+                                } else {
+                                    "Runtime DMD adapter"
+                                },
+                            icon = Icons.Default.Bolt,
+                            onClick = { selectedId = model.id },
+                            onLongClick = if (model.isDownloaded) {
+                                { onDelete(model) }
+                            } else null,
+                        )
+                    }
+                }
+
+                if (standard.isNotEmpty()) {
+                    HorizontalDivider()
+                    Text(
+                        "Standard · 50 steps",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "SFT for instruction following, Base for more flexible generation.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    standard.forEach { model ->
+                        FamilyVariantTile(
+                            selected = selected.id == model.id,
+                            installed = model.isDownloaded,
+                            title = titleFor(model),
+                            subtitle = sizeFor(model) + " · Reference quality",
+                            icon = Icons.Default.Memory,
+                            onClick = { selectedId = model.id },
+                            onLongClick = if (model.isDownloaded) {
+                                { onDelete(model) }
+                            } else null,
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(15.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    titleFor(selected),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    sizeFor(selected),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (selected.isDownloaded) {
+                                Icon(Icons.Default.CheckCircle, "Installed",
+                                    tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        Text(
+                            selected.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (selected.isDownloaded) {
+                            TextButton(
+                                onClick = {
+                                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                                    onDelete(selected)
+                                },
+                                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error,
+                                ),
+                            ) {
+                                Icon(Icons.Default.Delete, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Remove this variant")
+                            }
+                        }
+                    }
+                }
+                Button(
+                    onClick = {
+                        AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                        showSheet = false
+                        if (selected.isDownloaded) onOpen(selected) else onDownload(selected)
+                    },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Icon(
+                        if (selected.isDownloaded) Icons.Default.PlayArrow
+                        else Icons.Default.CloudDownload,
+                        null,
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Text(
+                        if (selected.isDownloaded) "Open selected model"
+                        else "Download selected model",
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+        }
+    }
+}
 
 enum class CatalogSortMode(val label: String) {
     Smart("Smart"),
@@ -168,18 +659,7 @@ fun ModelCatalogControls(
     onSortChange: (CatalogSortMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (LocalDreamGlassEnabled.current) {
-        GlassCatalogControls(
-            query = query,
-            onQueryChange = onQueryChange,
-            filter = filter,
-            onFilterChange = onFilterChange,
-            sort = sort,
-            onSortChange = onSortChange,
-            modifier = modifier,
-        )
-        return
-    }
+    
     var sortMenu by remember { mutableStateOf(false) }
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -245,111 +725,14 @@ private fun gb(bytes: Long): String =
 
 @Composable
 private fun AnimatedFamilyHero(
-    title: String,
-    subtitle: String,
-    music: Boolean,
-    voice: Boolean = false,
-    modifier: Modifier = Modifier,
+    title: String, subtitle: String, music: Boolean,
+    voice: Boolean = false, modifier: Modifier = Modifier,
 ) {
-    if (LocalDreamGlassEnabled.current) {
-        DreamGlassSurface(
-            modifier = modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(30.dp),
-            role = DreamGlassRole.OVERLAY,
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 25.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text(if (voice) "VOICE STUDIO" else if (music) "MUSIC STUDIO" else "IMAGE STUDIO",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(title, style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold)
-                Text(subtitle, style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-        return
-    }
-    val gradient = when {
-        voice -> Brush.linearGradient(
-            listOf(
-                Color(0xFF092D33),
-                Color(0xFF126A73),
-                Color(0xFF2AA9A5),
-            ),
-        )
-        music -> Brush.linearGradient(
-            listOf(
-                Color(0xFF351344),
-                Color(0xFF713069),
-                Color(0xFFB84D81),
-            ),
-        )
-        else -> Brush.linearGradient(
-            listOf(
-                Color(0xFF071D45),
-                Color(0xFF0A4A9F),
-                Color(0xFF2878E8),
-            ),
-        )
-    }
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(gradient, MaterialTheme.shapes.extraLarge)
-            .padding(horizontal = 18.dp, vertical = 18.dp),
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-            ) {
-                Surface(
-                    modifier = Modifier.size(54.dp),
-                    shape = MaterialTheme.shapes.large,
-                    color = Color.White.copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
-                ) {
-                    if (voice) {
-                        Icon(
-                            Icons.Default.GraphicEq,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.padding(13.dp),
-                        )
-                    } else if (music) {
-                        AnimatedMusicMark(Modifier.padding(11.dp))
-                    } else {
-                        Icon(
-                            Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.padding(13.dp),
-                        )
-                    }
-                }
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                    )
-                    Text(
-                        subtitle,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.78f),
-                    )
-                }
-
-            }
-
-        }
+    val kind = if (voice) "voice" else if (music) "music" else "image"
+    Surface(modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer) {
+        StudioGradientHeader(kind, title, subtitle)
     }
 }
 
@@ -407,110 +790,58 @@ private fun FamilyVariantTile(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    if (LocalDreamGlassEnabled.current) {
-        DreamGlassSurface(
-            modifier = modifier.heightIn(min = 84.dp).combinedClickable(
-                onClick = {
-                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                    onClick()
-                },
-                onLongClick = {
-                    if (installed) {
-                        AppHaptics.perform(context, AppHaptics.Kind.Stage)
-                        onLongClick?.invoke()
-                    }
-                },
-            ),
-            shape = RoundedCornerShape(24.dp),
-            role = if (selected) DreamGlassRole.SELECTION else DreamGlassRole.CARD,
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 18.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Icon(icon, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurface)
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(title, style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Medium)
-                    Text(subtitle, style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
-                }
-                if (installed) Icon(Icons.Default.CheckCircle, "Installed",
-                    Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurface)
-                else if (selected) Text("SELECTED", style = MaterialTheme.typography.labelSmall)
-            }
-        }
-        return
-    }
+    val accent = MaterialTheme.colorScheme.primary
+    val shape = RoundedCornerShape(18.dp)
     Surface(
-        modifier = modifier
-            .heightIn(min = 106.dp)
-            .combinedClickable(
-                onClick = {
-                    AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                    onClick()
-                },
-                onLongClick = {
-                    if (installed) {
-                        AppHaptics.perform(context, AppHaptics.Kind.Stage)
-                        onLongClick?.invoke()
-                    }
-                },
-            ),
-        shape = MaterialTheme.shapes.extraLarge,
-        color = if (selected) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
-        },
-        border = BorderStroke(
-            1.dp,
-            if (selected) {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
-            } else {
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+        modifier = modifier.fillMaxWidth().combinedClickable(
+            onClick = {
+                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
+                onClick()
+            },
+            onLongClick = {
+                if (installed) {
+                    AppHaptics.perform(context, AppHaptics.Kind.Stage)
+                    onLongClick?.invoke()
+                }
             },
         ),
-        tonalElevation = if (selected) 3.dp else 0.dp,
+        shape = shape,
+        color = if (selected) accent.copy(alpha = .11f)
+            else MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(if (selected) 1.5.dp else 1.dp,
+            if (selected) accent else MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f)),
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                    tint = if (selected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                if (installed) {
-                    Icon(
-                        Icons.Default.CheckCircle,
-                        contentDescription = "Installed",
-                        modifier = Modifier.size(19.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.size(43.dp)
+                .background(if (selected) accent.copy(alpha = .17f)
+                    else MaterialTheme.colorScheme.surfaceContainerHighest,
+                    RoundedCornerShape(13.dp)),
+                contentAlignment = Alignment.Center) {
+                Icon(icon, null, Modifier.size(21.dp),
+                    tint = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-            )
+            Column(Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2)
+            }
+            if (selected) {
+                Icon(Icons.Default.CheckCircle, "Selected",
+                    Modifier.size(23.dp), tint = accent)
+            } else if (installed) {
+                Text("READY", style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Icon(Icons.Default.CloudDownload, "Available to download",
+                    Modifier.size(19.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
@@ -540,89 +871,19 @@ fun QwenFamilyCard(
         ?: variants.firstOrNull { it.isDownloaded }
         ?: variants.first()
 
-    if (LocalDreamGlassEnabled.current) {
-        CompactFamilyCard(
-            title = "Qwen Image 2.1",
-            subtitle = "Image generation",
-            variants = variants,
-            onClick = {
-                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                showSheet = true
-            },
-            modifier = modifier,
-        )
-    } else {
-    DreamElevatedCard(
+    
+    StudioFamilyCard(
+        title = "Qwen Image 2.1",
+        subtitle = "Image generation · selectable precision",
+        kind = "image",
+        variants = variants,
+        featured = recommended,
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
         },
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
-    ) {
-        Column {
-            AnimatedFamilyHero(
-                title = "Qwen Image 2.1",
-                subtitle = "Image generation",
-                music = false,
-            )
-
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 18.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-            )
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Recommended",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "${recommended.variantPrecision}" +
-                            if (recommended.variantAdapter.isNotEmpty()) {
-                                " + Viggle ${recommended.variantAdapter}"
-                            } else {
-                                " · Base"
-                            },
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-
-                VerticalDivider(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .padding(vertical = 2.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                )
-
-                TextButton(
-                    onClick = {
-                        AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                        showSheet = true
-                    },
-                    modifier = Modifier.padding(start = 8.dp),
-                ) {
-                    Icon(Icons.Default.Tune, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Configure")
-                }
-            }
-        }
-    }
-    }
+        modifier = modifier,
+    )
 
     if (showSheet) {
         QwenVariantSheet(
@@ -652,211 +913,172 @@ private fun QwenVariantSheet(
     onOpen: (Model) -> Unit,
     onDownload: (Model) -> Unit,
 ) {
-    val initial = variants.firstOrNull { it.recommendedVariant }
-        ?: variants.firstOrNull { it.isDownloaded }
-        ?: variants.first()
-    var precision by remember { mutableStateOf(initial.variantPrecision) }
-    var adapter by remember { mutableStateOf(initial.variantAdapter) }
-
-    val precisions = listOf("Q4_0", "Q8_0", "FP8")
-    val adapters = listOf("", "r128", "r256")
-    val selected = variants.firstOrNull {
+    val official = variants.firstOrNull { it.id == "qwen_image_2_1_turbo" }
+    val baseVariants = variants.filterNot { it.id == "qwen_image_2_1_turbo" }
+    val initial = baseVariants.firstOrNull { it.recommendedVariant }
+        ?: baseVariants.firstOrNull { it.isDownloaded } ?: baseVariants.firstOrNull()
+    if (initial == null && official == null) return
+    var useOfficial by remember { mutableStateOf(initial == null) }
+    var precision by remember { mutableStateOf(initial?.variantPrecision ?: "Q8_0") }
+    var adapter by remember { mutableStateOf(initial?.variantAdapter ?: "") }
+    val base = baseVariants.firstOrNull {
         it.variantPrecision == precision && it.variantAdapter == adapter
-    } ?: variants.first()
-
-    fun precisionReady(p: String): Boolean =
-        variants.any {
-            it.variantPrecision == p &&
-                it.variantAdapter.isEmpty() &&
-                it.isDownloaded
-        }
-
-    fun adapterReady(a: String): Boolean =
-        a.isEmpty() || variants.any { it.variantAdapter == a && it.isDownloaded }
-
-    val baseReady = precisionReady(precision)
-    val turboReady = adapterReady(adapter)
+    } ?: initial
+    val current = (if (useOfficial) official else base) ?: initial ?: official ?: return
+    val isReady = current.isDownloaded
+    fun precisionReady(p: String): Boolean = baseVariants.any {
+        it.variantPrecision == p && it.variantAdapter.isBlank() && it.isDownloaded
+    }
+    fun adapterReady(a: String): Boolean = a.isBlank() || baseVariants.any {
+        it.variantAdapter == a && it.isDownloaded
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = if (LocalDreamGlassEnabled.current)
-            MaterialTheme.colorScheme.surface.copy(alpha = .97f)
-            else MaterialTheme.colorScheme.surfaceContainerLow,
-        shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp),
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp)
-                .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            AnimatedFamilyHero(
-                title = "Qwen Image 2.1",
-                subtitle = "Choose quality and optional Viggle LoRA",
-                music = false,
-            )
-
-            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                Text(
-                    "Transformer",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    precisions.forEach { p ->
-                        FamilyVariantTile(
-                            selected = precision == p,
-                            installed = precisionReady(p),
-                            title = p,
-                            subtitle = when (p) {
-                                "Q4_0" -> "4.20 GB · compact"
-                                "Q8_0" -> "7.69 GB · quality"
-                                else -> "7.12 GB · FP8"
-                            },
-                            icon = when (p) {
-                                "Q4_0" -> Icons.Default.SdStorage
-                                "Q8_0" -> Icons.Default.Memory
-                                else -> Icons.Default.Bolt
-                            },
-                            onClick = { precision = p },
-                            onLongClick = if (precisionReady(p)) {
-                                { onDeletePrecision(p) }
-                            } else {
-                                null
-                            },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "Turbo adapter",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        "shared across all precisions",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    adapters.forEach { a ->
-                        FamilyVariantTile(
-                            selected = adapter == a,
-                            installed = a.isNotEmpty() && adapterReady(a),
-                            title = when (a) {
-                                "r128" -> "r128"
-                                "r256" -> "r256"
-                                else -> "Base"
-                            },
-                            subtitle = when (a) {
-                                "r128" -> "680 MB · 6-pass"
-                                "r256" -> "1.36 GB · 6-pass"
-                                else -> "20 steps · no extra file"
-                            },
-                            icon = if (a.isEmpty()) Icons.Default.PlayArrow else Icons.Default.Speed,
-                            onClick = { adapter = a },
-                            onLongClick = if (a.isNotEmpty() && adapterReady(a)) {
-                                { onDeleteAdapter(a) }
-                            } else {
-                                null
-                            },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            }
-
-            AnimatedContent(
-                targetState = selected.id,
-                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
-                label = "qwenVariantDetails",
+        Column(Modifier.fillMaxWidth().fillMaxHeight(.92f)) {
+            Column(
+                Modifier.weight(1f).verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(19.dp),
             ) {
-                Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(11.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "$precision" +
-                                        if (adapter.isBlank()) " · Base" else " + Viggle $adapter",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    if (adapter.isBlank()) {
-                                        "Standard Qwen Image 2.1 runtime"
-                                    } else {
-                                        "Viggle LoRA enabled"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            if (baseReady && turboReady) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
+                AnimatedFamilyHero(
+                    "Qwen Image 2.1",
+                    "Standard and Official Turbo are different transformers",
+                    music = false,
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Model architecture", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold)
+                    if (initial != null) {
+                        FamilyVariantTile(
+                            selected = !useOfficial,
+                            installed = baseVariants.any { it.isDownloaded },
+                            title = "Qwen Image 2.1 · Standard",
+                            subtitle = "Choose Q4 / Q8 / FP8; optionally add a Viggle LoRA",
+                            icon = Icons.Default.AutoAwesome,
+                            onClick = { useOfficial = false },
+                        )
+                    }
+                    if (official != null) {
+                        FamilyVariantTile(
+                            selected = useOfficial,
+                            installed = official.isDownloaded,
+                            title = "Qwen Image 2.1 Turbo · FP8",
+                            subtitle = "Official distilled model · 8 steps · 13.7 GB · no LoRA",
+                            icon = Icons.Default.Bolt,
+                            onClick = { useOfficial = true },
+                        )
+                    }
+                }
+                if (!useOfficial && initial != null) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Standard precision", style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold)
+                        listOf("Q4_0", "Q8_0", "FP8").forEach { p ->
+                            FamilyVariantTile(
+                                selected = precision == p,
+                                installed = precisionReady(p),
+                                title = p,
+                                subtitle = when (p) {
+                                    "Q4_0" -> "Smaller GGUF · 4.20 GB"
+                                    "Q8_0" -> "High quality GGUF · 7.69 GB"
+                                    else -> "FP8 transformer · 7.12 GB"
+                                },
+                                icon = if (p == "Q4_0") Icons.Default.SdStorage else Icons.Default.Memory,
+                                onClick = { precision = p },
+                                onLongClick = if (precisionReady(p)) {
+                                    { onDeletePrecision(p) }
+                                } else null,
+                            )
                         }
-
-                        Text(
-                            "Common encoder/VAE files and Viggle LoRAs are stored once. Switching Q4/Q8/FP8 reuses them automatically.",
-                            style = MaterialTheme.typography.bodySmall,
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Optional Viggle LoRA", style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold)
+                        Text("For Standard only. This is NOT Qwen Image 2.1 Turbo.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            "Full stack from zero: ${selected.approximateSize}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                            style = MaterialTheme.typography.bodySmall)
+                        listOf("", "r128", "r256").forEach { choice ->
+                            FamilyVariantTile(
+                                selected = adapter == choice,
+                                installed = choice.isNotBlank() && adapterReady(choice),
+                                title = if (choice.isBlank()) "None · standard model"
+                                    else "Viggle $choice",
+                                subtitle = when (choice) {
+                                    "r128" -> "6-step LoRA · 680 MB"
+                                    "r256" -> "6-step LoRA · 1.36 GB"
+                                    else -> "No extra adapter · 20 steps"
+                                },
+                                icon = if (choice.isBlank()) Icons.Default.AutoAwesome
+                                    else Icons.Default.Speed,
+                                onClick = { adapter = choice },
+                                onLongClick = if (choice.isNotBlank() && adapterReady(choice)) {
+                                    { onDeleteAdapter(choice) }
+                                } else null,
+                            )
+                        }
+                    }
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(17.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .42f),
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Actual Turbo model", style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold)
+                            Text("Separate distilled FP8 DiT. Default 8-step inference, CFG 1. Installs independently and does not load Viggle adapters.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = RoundedCornerShape(18.dp),
+                ) {
+                    Row(Modifier.fillMaxWidth().padding(15.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(if (isReady) Icons.Default.CheckCircle else Icons.Default.CloudDownload,
+                            null, tint = MaterialTheme.colorScheme.primary)
+                        Column(Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(if (useOfficial) "Official Turbo FP8"
+                                else "$precision" + if (adapter.isEmpty()) " · Standard"
+                                else " + Viggle $adapter",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold)
+                            Text(if (isReady) "Installed" else "Download required",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(current.approximateSize,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
             }
-
-            Button(
-                onClick = {
-                    if (baseReady && turboReady) onOpen(selected) else onDownload(selected)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.large,
-            ) {
-                Icon(
-                    if (baseReady && turboReady) Icons.Default.PlayArrow else Icons.Default.CloudDownload,
-                    contentDescription = null,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    when {
-                        baseReady && turboReady ->
-                            "Use $precision" + if (adapter.isBlank()) "" else " + $adapter"
-                        !baseReady && turboReady ->
-                            "Download $precision transformer"
-                        baseReady && !turboReady ->
-                            "Download Viggle $adapter only"
-                        else -> "Download missing assets"
-                    },
-                )
+            Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, tonalElevation = 4.dp) {
+                Button(
+                    onClick = { if (isReady) onOpen(current) else onDownload(current) },
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .heightIn(min = 54.dp),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Icon(if (isReady) Icons.Default.PlayArrow else Icons.Default.CloudDownload,
+                        contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isReady) "Use selected model"
+                        else if (useOfficial) "Download Official Turbo"
+                        else "Download selected files",
+                        fontWeight = FontWeight.SemiBold)
+                }
             }
         }
     }
@@ -891,84 +1113,19 @@ fun Yue2FamilyCard(
     val selected = supported.firstOrNull { it.id == selectedId } ?: initial
     val installed = supported.count { it.isDownloaded }
 
-    if (LocalDreamGlassEnabled.current) {
-        CompactFamilyCard(
-            title = "YuE2 3B",
-            subtitle = "Music generation",
-            variants = supported,
-            onClick = {
-                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                showSheet = true
-            },
-            modifier = modifier,
-        )
-    } else {
-    DreamElevatedCard(
+    
+    StudioFamilyCard(
+        title = "YuE2 3B",
+        subtitle = "Full-length music and vocals",
+        kind = "music",
+        variants = supported,
+        featured = selected,
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
         },
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
-    ) {
-        Column {
-            AnimatedFamilyHero(
-                title = "YuE2 3B",
-                subtitle = "Text to music",
-                music = true,
-            )
-
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 18.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-            )
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        if (selected.isDownloaded) "Ready to create" else "Recommended",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "${selected.variantPrecision} · ${selected.variantProfile}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-
-                VerticalDivider(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .padding(vertical = 2.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                )
-
-                TextButton(
-                    onClick = {
-                        AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                        showSheet = true
-                    },
-                    modifier = Modifier.padding(start = 8.dp),
-                ) {
-                    Icon(Icons.Default.Tune, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Configure")
-                }
-            }
-        }
-    }
-    }
+        modifier = modifier,
+    )
 
     if (showSheet) {
         Yue2VariantSheet(
@@ -1015,9 +1172,7 @@ private fun Yue2VariantSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = if (LocalDreamGlassEnabled.current)
-            MaterialTheme.colorScheme.surface.copy(alpha = .97f)
-            else MaterialTheme.colorScheme.surfaceContainerLow,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp),
     ) {
         Column(
@@ -1034,7 +1189,7 @@ private fun Yue2VariantSheet(
                 music = true,
             )
 
-            sorted.chunked(if (LocalDreamGlassEnabled.current) 1 else 2).forEach { row ->
+            sorted.chunked(1).forEach { row ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1325,85 +1480,24 @@ fun BreezeFamilyCard(
     val selected = sorted.firstOrNull { it.id == selectedId } ?: initial
     val installed = sorted.count { it.isDownloaded }
 
-    if (LocalDreamGlassEnabled.current) {
-        CompactFamilyCard(
-            title = "Breeze TTS 2",
-            subtitle = "Speech generation",
-            variants = sorted,
-            onClick = {
-                AppHaptics.perform(context, AppHaptics.Kind.Interaction)
-                showSheet = true
-            },
-            modifier = modifier,
-        )
-    } else {
-    DreamElevatedCard(
+    
+    StudioFamilyCard(
+        title = "Breeze TTS 2",
+        subtitle = "Expressive speech and voices",
+        kind = "voice",
+        variants = sorted,
+        featured = selected,
         onClick = {
             AppHaptics.perform(context, AppHaptics.Kind.Interaction)
             showSheet = true
         },
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
-    ) {
-        Column {
-            AnimatedFamilyHero(
-                title = "Breeze TTS 2",
-                subtitle = "Text to speech",
-                music = false,
-                voice = true,
-            )
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 18.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        if (selected.isDownloaded) "Ready to speak" else "Recommended",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        selected.variantPrecision + " · " + selected.variantProfile,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-                VerticalDivider(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .padding(vertical = 2.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                )
-                TextButton(
-                    onClick = { showSheet = true },
-                    modifier = Modifier.padding(start = 8.dp),
-                ) {
-                    Icon(Icons.Default.Tune, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Configure")
-                }
-            }
-        }
-    }
-    }
+        modifier = modifier,
+    )
 
     if (showSheet) {
         ModalBottomSheet(
         onDismissRequest = { showSheet = false },
-        containerColor = if (LocalDreamGlassEnabled.current)
-            MaterialTheme.colorScheme.surface.copy(alpha = .97f)
-            else MaterialTheme.colorScheme.surfaceContainerLow,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp),
     ) {
             Column(
@@ -1427,7 +1521,7 @@ fun BreezeFamilyCard(
                     fontWeight = FontWeight.SemiBold,
                 )
                 sorted.filterNot { "DD" in it.variantPrecision }
-                    .chunked(if (LocalDreamGlassEnabled.current) 1 else 2)
+                    .chunked(1)
                     .forEach { row ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1454,7 +1548,7 @@ fun BreezeFamilyCard(
                                     modifier = Modifier.weight(1f),
                                 )
                             }
-                            if (row.size == 1) Spacer(Modifier.weight(1f))
+
                         }
                     }
 
@@ -1469,7 +1563,7 @@ fun BreezeFamilyCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 sorted.filter { "DD" in it.variantPrecision }
-                    .chunked(if (LocalDreamGlassEnabled.current) 1 else 2)
+                    .chunked(1)
                     .forEach { row ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1492,69 +1586,36 @@ fun BreezeFamilyCard(
                                     modifier = Modifier.weight(1f),
                                 )
                             }
-                            if (row.size == 1) Spacer(Modifier.weight(1f))
+
                         }
                     }
 
                 val current = sorted.firstOrNull { it.id == selectedId } ?: selected
                 Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    Row(
+                        Modifier.fillMaxWidth().padding(15.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "Breeze TTS 2 · " + current.variantPrecision,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    current.variantProfile,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            if (current.isDownloaded) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    contentDescription = "Installed",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
+                        Icon(Icons.Default.CheckCircle, null,
+                            modifier = Modifier.size(23.dp),
+                            tint = MaterialTheme.colorScheme.primary)
+                        Column(Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text("Selected · ${current.variantPrecision}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold)
+                            Text(current.variantProfile,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text(
-                            when (current.variantPrecision) {
-                                "Q8_0" ->
-                                    "Recommended. Near-lossless against F16 while keeping the full depth decoder at Q8."
-                                "Q6_K" ->
-                                    "Balanced memory and quality with the full depth decoder preserved."
-                                "Q4_K" ->
-                                    "Smallest normal model. Good mobile footprint without the experimental depth quant."
-                                "F16" ->
-                                    "Reference-quality model with the highest memory requirement."
-                                else ->
-                                    "Experimental depth-quantized build intended for faster short utterances."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text(
-                                "Download",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                current.approximateSize,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                        }
+                        Text(current.approximateSize,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold)
                     }
                 }
 
@@ -1563,26 +1624,22 @@ fun BreezeFamilyCard(
                         showSheet = false
                         if (current.isDownloaded) onOpen(current) else onDownload(current)
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.large,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
                 ) {
                     Icon(
-                        if (current.isDownloaded) {
-                            Icons.Default.GraphicEq
-                        } else {
-                            Icons.Default.CloudDownload
-                        },
-                        contentDescription = null,
+                        if (current.isDownloaded) Icons.Default.PlayArrow
+                        else Icons.Default.CloudDownload,
+                        null,
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (current.isDownloaded) {
-                            "Open text to speech"
-                        } else {
-                            "Download " + current.variantPrecision + " · " +
-                                current.approximateSize
-                        },
-                    )
+                    Spacer(Modifier.width(9.dp))
+                    Text(if (current.isDownloaded) "Open selected voice model"
+                        else "Download selected model",
+                        fontWeight = FontWeight.SemiBold)
                 }
             }
         }
